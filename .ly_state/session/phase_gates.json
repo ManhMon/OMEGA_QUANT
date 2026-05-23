@@ -19,21 +19,24 @@
     },
     "P2_GAP_POV_ROUTING": {
         "status": "APPROVED",
-        "l3_session_id": "mellow-valley",
+        "l3_session_id": "8f37a5ad-4ac3-4042-9563-53a2492e8340",
         "audit_report_path": ".ly_state/session/audit_reports/role21_routing_and_preemption_audit_20260523.md",
-        "final_verdict": "[APPROVED]"
+        "final_verdict": "[APPROVED]",
+        "l3_session_key": "agent:main:subagent:562efadc-7a76-4505-b048-31c9b1eafaab"
     },
     "P2_GAP_TASK_PREEMPTION": {
         "status": "APPROVED",
-        "l3_session_id": "mellow-valley",
+        "l3_session_id": "8f37a5ad-4ac3-4042-9563-53a2492e8340",
         "audit_report_path": ".ly_state/session/audit_reports/role21_routing_and_preemption_audit_20260523.md",
-        "final_verdict": "[APPROVED]"
+        "final_verdict": "[APPROVED]",
+        "l3_session_key": "agent:main:subagent:562efadc-7a76-4505-b048-31c9b1eafaab"
     },
     "P2_GAP_MEMORY_COMPRESSION": {
         "status": "APPROVED",
-        "l3_session_id": "cool-bloom",
+        "l3_session_id": "8f37a5ad-4ac3-4042-9563-53a2492e8340",
         "audit_report_path": ".ly_state/session/audit_reports/role21_memory_compression_audit_20260523.md",
-        "final_verdict": "[APPROVED]"
+        "final_verdict": "[APPROVED]",
+        "l3_session_key": "agent:main:subagent:562efadc-7a76-4505-b048-31c9b1eafaab"
     },
     "PAPER_TRADING_OPS_SCRIPTS": {
         "status": "APPROVED",
