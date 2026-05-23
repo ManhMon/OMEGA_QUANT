@@ -13,7 +13,10 @@ Spec Reference:
 
 Author: DevOps Engineer (Role 12)
 Date: 2026-05-13
-Version: 1.0.0
+Version: 1.1.0
+Changelog:
+    1.1.0 (2026-05-23): Added CancellationToken, preemption flags, cancel_task(),
+                        preempt_task() — Role 9 / P2 Gap implementation.
 """
 
 from __future__ import annotations
@@ -28,6 +31,71 @@ from enum import Enum
 from typing import Dict, Any, List, Optional, Callable, Set
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Cancellation / Preemption
+# ---------------------------------------------------------------------------
+
+class CancellationToken:
+    """
+    Cooperative cancellation token for long-running tasks.
+
+    Workers poll `is_cancelled` at safe checkpoints and raise
+    `TaskCancelledError` to unwind cleanly.  The token is NOT a forceful
+    thread kill — it relies on the worker cooperating.
+
+    Usage::
+
+        token = CancellationToken()
+        # pass token into worker; worker calls token.check() periodically
+        token.cancel(reason="preempted by CRITICAL task")
+    """
+
+    def __init__(self) -> None:
+        self._event: threading.Event = threading.Event()
+        self._reason: str = ""
+        self._cancelled_at: Optional[datetime] = None
+
+    # -- public API ----------------------------------------------------------
+
+    def cancel(self, reason: str = "") -> None:
+        """Signal cancellation.  Idempotent — safe to call multiple times."""
+        if not self._event.is_set():
+            self._reason = reason
+            self._cancelled_at = datetime.now(timezone.utc)
+            self._event.set()
+            logger.info(f"CancellationToken cancelled: {reason!r}")
+
+    @property
+    def is_cancelled(self) -> bool:
+        """True once cancel() has been called."""
+        return self._event.is_set()
+
+    @property
+    def reason(self) -> str:
+        return self._reason
+
+    @property
+    def cancelled_at(self) -> Optional[datetime]:
+        return self._cancelled_at
+
+    def check(self) -> None:
+        """
+        Raise TaskCancelledError if cancelled.
+
+        Call this at safe checkpoints inside long-running work loops.
+        """
+        if self._event.is_set():
+            raise TaskCancelledError(self._reason)
+
+    def wait(self, timeout: Optional[float] = None) -> bool:
+        """Block until cancelled or timeout.  Returns True if cancelled."""
+        return self._event.wait(timeout=timeout)
+
+
+class TaskCancelledError(Exception):
+    """Raised by CancellationToken.check() when a task has been cancelled."""
 
 
 def _default_uuid_str() -> str:
@@ -68,6 +136,8 @@ class TaskState(Enum):
     FALLBACK = "FALLBACK"
     ESCALATED = "ESCALATED"
     ABORTED = "ABORTED"
+    # Cancellation / preemption (P2 Gap — Role 9, 2026-05-23)
+    CANCELLED = "CANCELLED"
 
 
 class TaskPriority(Enum):
@@ -113,30 +183,34 @@ class Task:
     audit_ref: str = ""
     retry_count: int = 0
     last_error: Optional[str] = None
-    
+    # Preemption / cancellation (P2 Gap — Role 9, 2026-05-23)
+    cancellation_token: CancellationToken = field(default_factory=CancellationToken)
+    preemption_requested: bool = False
+
     def can_transition_to(self, new_state: TaskState) -> bool:
         """Validate state transition (Spec Section 4.2)."""
         valid_transitions = {
-            TaskState.CREATED: [TaskState.QUEUED, TaskState.FAILED],
-            TaskState.QUEUED: [TaskState.PLANNED, TaskState.FAILED],
-            TaskState.PLANNED: [TaskState.DISPATCHED, TaskState.FAILED],
-            TaskState.DISPATCHED: [TaskState.RUNNING, TaskState.FAILED],
-            TaskState.RUNNING: [TaskState.WAITING, TaskState.VERIFYING, TaskState.FAILED],
-            TaskState.WAITING: [TaskState.RUNNING, TaskState.FAILED],
-            TaskState.VERIFYING: [TaskState.REVIEWING, TaskState.FAILED],
-            TaskState.REVIEWING: [TaskState.RISK_CHECK, TaskState.FAILED],
-            TaskState.RISK_CHECK: [TaskState.APPROVED, TaskState.FAILED],
-            TaskState.APPROVED: [TaskState.DEPLOYED, TaskState.FAILED],
-            TaskState.DEPLOYED: [TaskState.MONITORING, TaskState.FAILED],
-            TaskState.MONITORING: [TaskState.ARCHIVED, TaskState.FAILED],
+            TaskState.CREATED: [TaskState.QUEUED, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.QUEUED: [TaskState.PLANNED, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.PLANNED: [TaskState.DISPATCHED, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.DISPATCHED: [TaskState.RUNNING, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.RUNNING: [TaskState.WAITING, TaskState.VERIFYING, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.WAITING: [TaskState.RUNNING, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.VERIFYING: [TaskState.REVIEWING, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.REVIEWING: [TaskState.RISK_CHECK, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.RISK_CHECK: [TaskState.APPROVED, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.APPROVED: [TaskState.DEPLOYED, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.DEPLOYED: [TaskState.MONITORING, TaskState.FAILED, TaskState.CANCELLED],
+            TaskState.MONITORING: [TaskState.ARCHIVED, TaskState.FAILED, TaskState.CANCELLED],
             TaskState.ARCHIVED: [],
-            
+
             # Failure path
             TaskState.FAILED: [TaskState.RETRYING, TaskState.ESCALATED, TaskState.ABORTED],
-            TaskState.RETRYING: [TaskState.QUEUED, TaskState.ESCALATED, TaskState.ABORTED],
+            TaskState.RETRYING: [TaskState.QUEUED, TaskState.ESCALATED, TaskState.ABORTED, TaskState.CANCELLED],
             TaskState.FALLBACK: [TaskState.QUEUED, TaskState.ABORTED],
             TaskState.ESCALATED: [TaskState.ABORTED],
             TaskState.ABORTED: [],
+            TaskState.CANCELLED: [],
         }
         return new_state in valid_transitions.get(self.state, [])
 
@@ -378,6 +452,96 @@ class TaskStateMachine:
         
         logger.debug(f"Event: {event_type} (trace_id={event.trace_id}, causation_id={event.causation_id})")
     
+    def cancel_task(self, task_id: str, reason: str = "") -> bool:
+        """
+        Cancel a task safely via its CancellationToken.
+
+        Signals the token so cooperative workers can unwind, then transitions
+        the task to CANCELLED.  Safe to call from any thread.
+
+        Args:
+            task_id: Task to cancel.
+            reason:  Human-readable cancellation reason (logged + stored).
+
+        Returns:
+            True if cancellation was applied, False if task not found or
+            already in a terminal state (ARCHIVED, ABORTED, CANCELLED).
+        """
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                logger.error(f"cancel_task: task {task_id} not found")
+                return False
+
+            if not task.can_transition_to(TaskState.CANCELLED):
+                logger.warning(
+                    f"cancel_task: task {task_id} in terminal state {task.state.value}, skipping"
+                )
+                return False
+
+            # Signal the token first so any polling worker sees it before
+            # the state flip — prevents a worker from writing results after
+            # the state has already moved to CANCELLED.
+            task.cancellation_token.cancel(reason=reason)
+            task.state = TaskState.CANCELLED
+            task.updated_at = datetime.now(timezone.utc)
+
+        self._emit_event(
+            event_type="TASK_CANCELLED",
+            source="TaskStateMachine",
+            target=task_id,
+            correlation_id=task_id,
+            severity="WARN",
+            payload={"reason": reason},
+        )
+
+        logger.info(f"Task {task_id} cancelled: {reason!r}")
+        return True
+
+    def preempt_task(self, task_id: str, reason: str = "") -> bool:
+        """
+        Request preemption of a running task on behalf of a higher-priority task.
+
+        Sets `preemption_requested = True` and signals the cancellation token.
+        The worker is expected to poll `task.cancellation_token.is_cancelled`
+        or call `task.cancellation_token.check()` and abort cleanly.
+
+        Preemption is only meaningful for tasks in RUNNING or WAITING state;
+        for all other cancellable states `cancel_task` is called directly.
+
+        Args:
+            task_id: Task to preempt.
+            reason:  Human-readable preemption reason.
+
+        Returns:
+            True if preemption was requested, False otherwise.
+        """
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                logger.error(f"preempt_task: task {task_id} not found")
+                return False
+
+            if task.state not in (TaskState.RUNNING, TaskState.WAITING):
+                # Fall back to plain cancellation for non-running tasks
+                pass  # release lock, then delegate
+            else:
+                task.preemption_requested = True
+
+        # Delegate to cancel_task (acquires its own lock)
+        preempted = self.cancel_task(task_id, reason=reason or "preempted")
+        if preempted:
+            self._emit_event(
+                event_type="TASK_PREEMPTED",
+                source="TaskStateMachine",
+                target=task_id,
+                correlation_id=task_id,
+                severity="WARN",
+                payload={"reason": reason},
+            )
+            logger.info(f"Task {task_id} preempted: {reason!r}")
+        return preempted
+
     def get_task(self, task_id: str) -> Optional[Task]:
         """Get task by ID."""
         with self._lock:

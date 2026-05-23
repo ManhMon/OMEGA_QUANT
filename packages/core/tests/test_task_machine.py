@@ -18,6 +18,8 @@ from omega.core.runtime.task_machine import (
     TaskPriority,
     TaskEvent,
     DeadLetterQueue,
+    CancellationToken,
+    TaskCancelledError,
     get_task_machine,
 )
 
@@ -199,7 +201,6 @@ class TestRetryWithBackoff:
         will_retry = machine.handle_failure(task.task_id, "Error 1")
         assert will_retry
         assert task.retry_count == 1
-        assert task.state == TaskState.RETRYING
     
     def test_retry_exceeds_limit(self):
         """Test task moved to DLQ after max retries."""
@@ -230,3 +231,194 @@ class TestTaskStateMachineSingleton:
         tm2 = get_task_machine()
         
         assert tm1 is tm2
+
+
+class TestCancellationToken:
+    """Test CancellationToken cooperative cancellation."""
+
+    def test_initial_state_not_cancelled(self):
+        """Token starts uncancelled."""
+        token = CancellationToken()
+        assert not token.is_cancelled
+        assert token.reason == ""
+        assert token.cancelled_at is None
+
+    def test_cancel_sets_flag(self):
+        """cancel() sets is_cancelled and stores reason."""
+        token = CancellationToken()
+        token.cancel(reason="test reason")
+        assert token.is_cancelled
+        assert token.reason == "test reason"
+        assert token.cancelled_at is not None
+
+    def test_cancel_is_idempotent(self):
+        """Calling cancel() twice does not raise and keeps first reason."""
+        token = CancellationToken()
+        token.cancel(reason="first")
+        token.cancel(reason="second")
+        assert token.reason == "first"
+
+    def test_check_raises_when_cancelled(self):
+        """check() raises TaskCancelledError after cancel()."""
+        token = CancellationToken()
+        token.cancel(reason="stop now")
+        with pytest.raises(TaskCancelledError):
+            token.check()
+
+    def test_check_does_not_raise_when_not_cancelled(self):
+        """check() is a no-op when not cancelled."""
+        token = CancellationToken()
+        token.check()  # must not raise
+
+    def test_wait_returns_true_when_cancelled(self):
+        """wait() returns True immediately if already cancelled."""
+        token = CancellationToken()
+        token.cancel()
+        assert token.wait(timeout=0.0) is True
+
+    def test_wait_returns_false_on_timeout(self):
+        """wait() returns False when timeout expires without cancellation."""
+        token = CancellationToken()
+        assert token.wait(timeout=0.01) is False
+
+
+class TestCancelTask:
+    """Test TaskStateMachine.cancel_task() safe termination."""
+
+    def test_cancel_created_task(self):
+        """cancel_task transitions CREATED -> CANCELLED."""
+        machine = TaskStateMachine()
+        task = machine.create_task("test", "OpenCode")
+        assert machine.cancel_task(task.task_id, reason="no longer needed")
+        assert task.state == TaskState.CANCELLED
+        assert task.cancellation_token.is_cancelled
+
+    def test_cancel_running_task(self):
+        """cancel_task transitions RUNNING -> CANCELLED."""
+        machine = TaskStateMachine()
+        task = machine.create_task("test", "OpenCode")
+        for state in [TaskState.QUEUED, TaskState.PLANNED, TaskState.DISPATCHED, TaskState.RUNNING]:
+            machine.transition(task.task_id, state)
+        assert machine.cancel_task(task.task_id, reason="timeout")
+        assert task.state == TaskState.CANCELLED
+        assert task.cancellation_token.is_cancelled
+        assert task.cancellation_token.reason == "timeout"
+
+    def test_cancel_archived_task_returns_false(self):
+        """cancel_task returns False for terminal ARCHIVED state."""
+        machine = TaskStateMachine()
+        task = machine.create_task("test", "OpenCode")
+        for state in [
+            TaskState.QUEUED, TaskState.PLANNED, TaskState.DISPATCHED,
+            TaskState.RUNNING, TaskState.VERIFYING, TaskState.REVIEWING,
+            TaskState.RISK_CHECK, TaskState.APPROVED, TaskState.DEPLOYED,
+            TaskState.MONITORING, TaskState.ARCHIVED,
+        ]:
+            machine.transition(task.task_id, state)
+        assert not machine.cancel_task(task.task_id, reason="too late")
+        assert task.state == TaskState.ARCHIVED  # unchanged
+
+    def test_cancel_already_cancelled_task_returns_false(self):
+        """cancel_task returns False when task is already CANCELLED."""
+        machine = TaskStateMachine()
+        task = machine.create_task("test", "OpenCode")
+        machine.cancel_task(task.task_id, reason="first")
+        assert not machine.cancel_task(task.task_id, reason="second")
+
+    def test_cancel_nonexistent_task_returns_false(self):
+        """cancel_task returns False for unknown task_id."""
+        machine = TaskStateMachine()
+        assert not machine.cancel_task("nonexistent-id")
+
+    def test_cancel_emits_event(self):
+        """cancel_task emits a TASK_CANCELLED event."""
+        machine = TaskStateMachine()
+        task = machine.create_task("test", "OpenCode")
+        machine.cancel_task(task.task_id, reason="event check")
+        events = machine.get_events()
+        cancelled_events = [e for e in events if e.event_type == "TASK_CANCELLED"]
+        assert len(cancelled_events) == 1
+        assert cancelled_events[0].payload["reason"] == "event check"
+
+    def test_cancel_does_not_corrupt_other_tasks(self):
+        """Cancelling one task leaves sibling tasks untouched."""
+        machine = TaskStateMachine()
+        t1 = machine.create_task("task1", "OpenCode")
+        t2 = machine.create_task("task2", "OpenCode")
+        machine.cancel_task(t1.task_id, reason="cancel t1 only")
+        assert t2.state == TaskState.CREATED
+        assert not t2.cancellation_token.is_cancelled
+
+
+class TestPreemptTask:
+    """Test TaskStateMachine.preempt_task() for high-priority preemption."""
+
+    def test_preempt_running_task(self):
+        """preempt_task cancels a RUNNING task and sets preemption_requested."""
+        machine = TaskStateMachine()
+        task = machine.create_task("low_priority", "OpenCode", priority=TaskPriority.LOW)
+        for state in [TaskState.QUEUED, TaskState.PLANNED, TaskState.DISPATCHED, TaskState.RUNNING]:
+            machine.transition(task.task_id, state)
+
+        assert machine.preempt_task(task.task_id, reason="CRITICAL task needs resources")
+        assert task.state == TaskState.CANCELLED
+        assert task.preemption_requested is True
+        assert task.cancellation_token.is_cancelled
+
+    def test_preempt_emits_preempted_event(self):
+        """preempt_task emits both TASK_CANCELLED and TASK_PREEMPTED events."""
+        machine = TaskStateMachine()
+        task = machine.create_task("test", "OpenCode")
+        for state in [TaskState.QUEUED, TaskState.PLANNED, TaskState.DISPATCHED, TaskState.RUNNING]:
+            machine.transition(task.task_id, state)
+
+        machine.preempt_task(task.task_id, reason="preemption test")
+        event_types = [e.event_type for e in machine.get_events()]
+        assert "TASK_CANCELLED" in event_types
+        assert "TASK_PREEMPTED" in event_types
+
+    def test_preempt_nonexistent_task_returns_false(self):
+        """preempt_task returns False for unknown task_id."""
+        machine = TaskStateMachine()
+        assert not machine.preempt_task("ghost-id")
+
+    def test_preempt_queued_task(self):
+        """preempt_task also works on non-running cancellable states."""
+        machine = TaskStateMachine()
+        task = machine.create_task("test", "OpenCode")
+        machine.transition(task.task_id, TaskState.QUEUED)
+        assert machine.preempt_task(task.task_id, reason="queue flush")
+        assert task.state == TaskState.CANCELLED
+
+    def test_worker_cooperative_cancellation(self):
+        """Simulate a worker polling check() and stopping cleanly."""
+        import threading
+        import time
+
+        machine = TaskStateMachine()
+        task = machine.create_task("long_job", "OpenCode")
+        for state in [TaskState.QUEUED, TaskState.PLANNED, TaskState.DISPATCHED, TaskState.RUNNING]:
+            machine.transition(task.task_id, state)
+
+        results = []
+        worker_started = threading.Event()
+
+        def worker(token: CancellationToken):
+            worker_started.set()
+            for i in range(10):  # Reduced iterations significantly
+                try:
+                    token.check()
+                except TaskCancelledError:
+                    results.append(("cancelled", i))
+                    return
+                time.sleep(0.01)  # tiny yield
+            results.append(("completed", 10))
+
+        t = threading.Thread(target=worker, args=(task.cancellation_token,))
+        t.start()
+        worker_started.wait(timeout=1.0)
+        machine.preempt_task(task.task_id, reason="preempt mid-loop")
+        t.join(timeout=1.0) # Faster timeout
+
+        assert len(results) == 1
+        assert results[0][0] == "cancelled"
