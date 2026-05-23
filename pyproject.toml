@@ -19,6 +19,18 @@ dependencies = [
     "pytest-cov>=4.1.0",
 ]
 
+[project.optional-dependencies]
+security-scan = [
+    "bandit[toml]>=1.7.5",
+    "safety>=2.3.5",
+]
+dev = [
+    "bandit[toml]>=1.7.5",
+    "safety>=2.3.5",
+    "pytest>=7.4.0",
+    "pytest-cov>=4.1.0",
+]
+
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests", "packages/*/tests"]
