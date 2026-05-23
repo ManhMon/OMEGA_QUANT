@@ -1,0 +1,13 @@
+[
+  {
+    "id": "codex",
+    "name": "Codex AI",
+    "runtime": {
+      "type": "acp",
+      "acp": {
+        "agent": "codex",
+        "mode": "oneshot"
+      }
+    }
+  }
+]

@@ -1,0 +1,43 @@
+{
+  "project": "OMEGA_QUANT",
+  "phase": "2.4",
+  "task": "Signal Neutralization V2",
+  "decisions": [
+    {
+      "id": "NEUT_V2_001",
+      "subject": "Hierarchical Fallback Strategy",
+      "reason": "V21 logic ensures robust neutralization even with small universe sizes by falling back to coarser groupings (Sector -> Exchange -> Global).",
+      "impact": "Code logic now uses 5-tier fallback: L4(Sec x Prc x Liq), L3(Sec x Prc), L2(Sec), L1(Exch), L0(Global).",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "id": "NEUT_V2_002",
+      "subject": "Fama-French 3-Factor Integration",
+      "reason": "Align with Institutional standards to remove exposure to Market, Size, and Value premiums.",
+      "impact": "Added FactorNeutralizer class supporting rolling/expanding OLS on VNI, SMB, HML factors.",
+      "status": "IMPLEMENTED"
+    },
+    {
+      "id": "NEUT_V2_003",
+      "subject": "Vectorization Enforcement",
+      "reason": "Performance requirement for large-scale backtesting.",
+      "impact": "Replaced loops with pandas transform/groupby operations. 10000 stocks processed in <1s.",
+      "status": "VERIFIED"
+    },
+    {
+      "id": "NORM_V1_001",
+      "subject": "Unified Normalization Engine",
+      "reason": "Standardize signal scaling across all alpha models.",
+      "impact": "Implemented z-score, rank, and robust normalization with PIT-safe temporal windows.",
+      "status": "IMPLEMENTED"
+    }
+  ],
+  "verification": {
+    "test_files": [
+      "OMEGA_QUANT/packages/quant/tests/test_neutralization_v2.py",
+      "OMEGA_QUANT/packages/quant/tests/test_normalization.py"
+    ],
+    "test_status": "All tests PASSED (25/25 + 9/9)",
+    "pit_safety": "VERIFIED"
+  }
+}

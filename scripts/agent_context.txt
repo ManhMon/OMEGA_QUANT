@@ -1,0 +1,6 @@
+﻿V21_QUANT Agent Context (2026-05-05 06:54:10)
+V21_WORKSPACE: C:\Users\GHC\.openclaw\workspace
+V21_AGENTS_RULES: C:\Users\GHC\.openclaw\workspace\AGENTS.md
+V21_PIT_RULES: C:\Users\GHC\.openclaw\workspace\SOUL.md
+V21_TOOLS_CONFIG: C:\Users\GHC\.openclaw\workspace\TOOLS.md
+V21_RAM_LIMIT_MB: 4096

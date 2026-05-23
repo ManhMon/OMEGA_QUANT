@@ -1,0 +1,176 @@
+orders: !!python/object:pandas.DataFrame
+  _flags:
+    allows_duplicate_labels: true
+  _metadata: []
+  _mgr: !!python/object/apply:pandas.core.internals.managers.BlockManager
+  - !!python/tuple
+    - !!python/object/apply:pandas._libs.internals._unpickle_block
+      - !!python/object:pandas.arrays.ArrowStringArray
+        _dtype: !!python/object/apply:pandas.StringDtype
+        - pyarrow
+        - .nan
+        _pa_array: !!python/object/apply:pyarrow.lib._restore_array
+        - !!python/tuple
+          - !!python/object/apply:pyarrow.lib.type_for_alias
+            - large_string
+          - 29
+          - 0
+          - 0
+          - - null
+            - !!python/object/apply:pyarrow.lib.py_buffer
+              - !!python/object/apply:builtins.bytearray
+                - "\0\0\0\0\0\0\0\0\x03\0\0\0\0\0\0\0\x06\0\0\0\0\0\0\0\t\0\0\0\0\0\
+                  \0\0\f\0\0\0\0\0\0\0\x0F\0\0\0\0\0\0\0\x12\0\0\0\0\0\0\0\x15\0\0\
+                  \0\0\0\0\0\x18\0\0\0\0\0\0\0\e\0\0\0\0\0\0\0\x1E\0\0\0\0\0\0\0!\0\
+                  \0\0\0\0\0\0$\0\0\0\0\0\0\0'\0\0\0\0\0\0\0*\0\0\0\0\0\0\0-\0\0\0\
+                  \0\0\0\00\0\0\0\0\0\0\03\0\0\0\0\0\0\06\0\0\0\0\0\0\09\0\0\0\0\0\
+                  \0\0<\0\0\0\0\0\0\0?\0\0\0\0\0\0\0B\0\0\0\0\0\0\0E\0\0\0\0\0\0\0\
+                  H\0\0\0\0\0\0\0K\0\0\0\0\0\0\0N\0\0\0\0\0\0\0Q\0\0\0\0\0\0\0T\0\0\
+                  \0\0\0\0\0W\0\0\0\0\0\0\0"
+                - latin-1
+            - !!python/object/apply:pyarrow.lib.py_buffer
+              - !!python/object/apply:builtins.bytearray
+                - STBNVLVJCVGCHDBSABSHBCTGPDRSSIEIBFPTVNMMSBVCBBIDPNJVHMVICVOSSCSHPGMWGTPBACBVPBREETCBVRE
+                - latin-1
+          - []
+          - null
+      - !!python/object/apply:builtins.slice
+        - 0
+        - 1
+        - 1
+      - 2
+    - !!python/object/apply:pandas._libs.internals._unpickle_block
+      - !!python/object/apply:numpy._core.multiarray._reconstruct
+        args:
+        - &id001 !!python/name:numpy.ndarray ''
+        - !!python/tuple
+          - 0
+        - !!binary |
+          Yg==
+        state: !!python/tuple
+        - 1
+        - !!python/tuple
+          - 1
+          - 29
+        - &id002 !!python/object/apply:numpy.dtype
+          args:
+          - f8
+          - false
+          - true
+          state: !!python/tuple
+          - 3
+          - <
+          - null
+          - null
+          - null
+          - -1
+          - -1
+          - 0
+        - false
+        - !!binary |
+          l3saYbmnoT+XexphuaehP5d7GmG5p6E/l3saYbmnoT+XexphuaehP5d7GmG5p6E/l3saYbmnoT+X
+          exphuaehP5d7GmG5p6E/l3saYbmnoT+XexphuaehP5d7GmG5p6E/l3saYbmnoT+XexphuaehP5d7
+          GmG5p6E/l3saYbmnoT+XexphuaehP5d7GmG5p6E/l3saYbmnoT+XexphuaehP5d7GmG5p6E/l3sa
+          YbmnoT+XexphuaehP5d7GmG5p6E/l3saYbmnoT+XexphuaehP5d7GmG5p6E/l3saYbmnoT+Xexph
+          uaehPw==
+      - !!python/object/apply:builtins.slice
+        - 1
+        - 2
+        - 1
+      - 2
+    - !!python/object/apply:pandas._libs.internals._unpickle_block
+      - !!python/object:pandas.arrays.ArrowStringArray
+        _dtype: !!python/object/apply:pandas.StringDtype
+        - pyarrow
+        - .nan
+        _pa_array: !!python/object/apply:pyarrow.lib._restore_array
+        - !!python/tuple
+          - !!python/object/apply:pyarrow.lib.type_for_alias
+            - large_string
+          - 29
+          - 0
+          - 0
+          - - null
+            - !!python/object/apply:pyarrow.lib.py_buffer
+              - !!python/object/apply:builtins.bytearray
+                - "\0\0\0\0\0\0\0\0\x03\0\0\0\0\0\0\0\x06\0\0\0\0\0\0\0\t\0\0\0\0\0\
+                  \0\0\f\0\0\0\0\0\0\0\x0F\0\0\0\0\0\0\0\x12\0\0\0\0\0\0\0\x15\0\0\
+                  \0\0\0\0\0\x18\0\0\0\0\0\0\0\e\0\0\0\0\0\0\0\x1E\0\0\0\0\0\0\0!\0\
+                  \0\0\0\0\0\0$\0\0\0\0\0\0\0'\0\0\0\0\0\0\0*\0\0\0\0\0\0\0-\0\0\0\
+                  \0\0\0\00\0\0\0\0\0\0\03\0\0\0\0\0\0\06\0\0\0\0\0\0\09\0\0\0\0\0\
+                  \0\0<\0\0\0\0\0\0\0?\0\0\0\0\0\0\0B\0\0\0\0\0\0\0E\0\0\0\0\0\0\0\
+                  H\0\0\0\0\0\0\0K\0\0\0\0\0\0\0N\0\0\0\0\0\0\0Q\0\0\0\0\0\0\0T\0\0\
+                  \0\0\0\0\0W\0\0\0\0\0\0\0"
+                - latin-1
+            - !!python/object/apply:pyarrow.lib.py_buffer
+              - !!python/object/apply:builtins.bytearray
+                - BUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUYBUY
+                - latin-1
+          - []
+          - null
+      - !!python/object/apply:builtins.slice
+        - 2
+        - 3
+        - 1
+      - 2
+    - !!python/object/apply:pandas._libs.internals._unpickle_block
+      - !!python/object/apply:numpy._core.multiarray._reconstruct
+        args:
+        - *id001
+        - !!python/tuple
+          - 0
+        - !!binary |
+          Yg==
+        state: !!python/tuple
+        - 1
+        - !!python/tuple
+          - 1
+          - 29
+        - *id002
+        - false
+        - !!binary |
+          1QjLPY3wqkDVCMs9jfCqQNUIyz2N8KpA1QjLPY3wqkDVCMs9jfCqQNUIyz2N8KpA1QjLPY3wqkDV
+          CMs9jfCqQNUIyz2N8KpA1QjLPY3wqkDVCMs9jfCqQNUIyz2N8KpA1QjLPY3wqkDVCMs9jfCqQNUI
+          yz2N8KpA1QjLPY3wqkDVCMs9jfCqQNUIyz2N8KpA1QjLPY3wqkDVCMs9jfCqQNUIyz2N8KpA1QjL
+          PY3wqkDVCMs9jfCqQNUIyz2N8KpA1QjLPY3wqkDVCMs9jfCqQNUIyz2N8KpA1QjLPY3wqkDVCMs9
+          jfCqQA==
+      - !!python/object/apply:builtins.slice
+        - 3
+        - 4
+        - 1
+      - 2
+  - - !!python/object/apply:pandas.core.indexes.base._new_Index
+      - !!python/name:pandas.Index ''
+      - data: !!python/object:pandas.arrays.ArrowStringArray
+          _dtype: !!python/object/apply:pandas.StringDtype
+          - pyarrow
+          - .nan
+          _pa_array: !!python/object/apply:pyarrow.lib._restore_array
+          - !!python/tuple
+            - !!python/object/apply:pyarrow.lib.type_for_alias
+              - large_string
+            - 4
+            - 0
+            - 0
+            - - null
+              - !!python/object/apply:pyarrow.lib.py_buffer
+                - !!python/object/apply:builtins.bytearray
+                  - "\0\0\0\0\0\0\0\0\x06\0\0\0\0\0\0\0\f\0\0\0\0\0\0\0\x12\0\0\0\0\
+                    \0\0\0\x1A\0\0\0\0\0\0\0"
+                  - latin-1
+              - !!python/object/apply:pyarrow.lib.py_buffer
+                - !!python/object/apply:builtins.bytearray
+                  - tickerweightactionquantity
+                  - latin-1
+            - []
+            - null
+        name: null
+    - !!python/object/apply:pandas.core.indexes.base._new_Index
+      - !!python/name:pandas.RangeIndex ''
+      - name: null
+        start: 0
+        step: 1
+        stop: 29
+  _typ: dataframe
+  attrs: {}
+status: DRY_RUN

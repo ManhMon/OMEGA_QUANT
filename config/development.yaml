@@ -1,0 +1,191 @@
+# OMEGA_QUANT Development Configuration
+# ======================================
+# Development settings for local testing and demo
+#
+# Version: 1.0.0
+# Last Updated: 2026-05-14
+
+environment: "development"
+
+# Data Configuration
+data:
+  source: "vnstock"  # Changed to vnstock (real API)
+  data_dir: "data/market"
+  cache_dir: "data/cache"
+  
+  min_history_days: 50
+  max_missing_pct: 10.0
+  outlier_threshold: 5.0
+  
+  # Universe: Top 50 HOSE + HNX stocks by liquidity
+  universe:
+    - "VNM"    # Vinamilk
+    - "VCB"    # Vietcombank
+    - "ACB"    # ACB Bank
+    - "BID"    # BIDV
+    - "CTG"    # Techcombank
+    - "VJC"    # Vietjet
+    - "FPT"    # FPT
+    - "VHM"    # Vinhomes
+    - "HPG"    # Hoa Phat
+    - "MSB"    # Maritime Bank
+    - "MWG"    # Mobile World
+    - "SAB"    # Sabeco
+    - "SHB"    # SHB
+    - "TCB"    # Techcombank
+    - "TPB"    # TPBank
+    - "VPB"    # VPBank
+    - "HDB"    # HDBank
+    - "EIB"    # Eximbank
+    - "NVL"    # Novaland
+    - "PDR"    # Petro Drilling
+    - "PNJ"    # PNJ
+    - "REE"    # REE
+    - "SCS"    # Saigon Co-op
+    - "SSI"    # SSI
+    - "STB"    # Sacombank
+    - "VGC"    # Viglacera
+    - "VIC"    # Vingroup
+    - "VRE"    # Vincom Retail
+    - "VOS"    # Vincom Services
+    - "AAA"    # AAA
+    - "AGF"    # AGF
+    - "AGR"    # Agribank
+    - "ART"    # Artisan
+    - "ASM"    # Asmeco
+    - "BBC"    # BBC
+    - "BCC"    # BCC
+    - "BVH"    # Bao Viet Holdings
+    - "CAG"    # Cai Lan
+    - "CII"    # Citadel
+    - "CLC"    # Coltech
+    - "CMG"    # Camimex
+    - "CRE"    # Crescent
+    - "CSV"    # Csv
+    - "CTD"    # Citadel
+    - "CTS"    # Citadel
+    - "DBC"    # Duc Bien
+    - "DGC"    # Duc Giang
+    - "DHC"    # Duc Hung
+    - "DPM"    # Dpm
+  
+  pit_safety:
+    enabled: true
+    lag_days: 1
+    strict_mode: false
+  
+  refresh:
+    enabled: false
+    schedule: "0 6 * * *"
+    retry_attempts: 3
+    retry_delay_seconds: 300
+
+# Portfolio Configuration
+portfolio:
+  initial_capital: 100000000.0  # 100M VND for demo
+  max_positions: 50
+  min_position_size: 0.01
+  max_position_size: 0.20
+  
+  rebalance:
+    frequency: "daily"
+    threshold: 0.10
+    method: "equal_weight"
+  
+  signals:
+    momentum_window: 10
+    volatility_window: 20
+    min_signal_strength: 0.2
+  
+  neutralization:
+    enabled: true
+    enable_market_neutral: true
+    enable_sector_neutral: true
+    enable_style_neutral: false
+    market_method: "beta_weighted"
+    sector_method: "demean"
+    style_method: "regression"
+    style_factors: []
+    market_return_col: "market_return"
+    market_cap_col: "market_cap"
+    sector_col: "sector"
+    validation:
+      enabled: true
+      tolerance: 0.15
+  
+  optimization:
+    method: "quadratic"
+    max_iterations: 500
+    tolerance: 1e-5
+  
+  costs:
+    commission_pct: 0.001
+    slippage_pct: 0.0005
+    market_impact_factor: 0.1
+
+# Risk Management Configuration
+risk:
+  max_portfolio_volatility: 0.30
+  max_drawdown: 0.25
+  max_leverage: 1.0
+  
+  position_risk:
+    max_adv_pct: 50.0
+    max_concentration_pct: 30.0
+    max_sector_exposure: 0.40
+  
+  circuit_breakers:
+    enabled: true
+    market_drawdown_pct: 0.10
+    asset_drawdown_pct: 0.08
+    cooldown_minutes: 30
+  
+  contagion:
+    enabled: true
+    correlation_threshold: 0.8
+    beta_jump_threshold: 2.0
+
+# Execution Configuration
+execution:
+  broker: "ssi"
+  order_type: "limit"
+  time_in_force: "day"
+  auto_cancel_minutes: 5
+  dry_run: true  # Always dry-run in development
+  
+  execution_engine:
+    method: "vwap"
+    vwap_participation_rate: 0.10
+    twap_duration_minutes: 30
+
+# Monitoring Configuration
+monitoring:
+  enabled: true
+  metrics_interval_seconds: 60
+  alert_thresholds:
+    drawdown_warning: 0.10
+    drawdown_critical: 0.20
+    volatility_warning: 0.25
+    volatility_critical: 0.40
+  log_level: "DEBUG"
+
+# Security Configuration
+security:
+  vault_enabled: false
+  rbac_enabled: true
+  audit_trail_enabled: true
+  encryption_enabled: false
+
+# Logging Configuration
+logging:
+  level: "DEBUG"
+  format: "json"
+  output: "console"
+  file_path: "logs/omega_dev.log"
+
+# Demo Mode Configuration
+demo:
+  enabled: true
+  simulation_mode: true
+  demo_duration_days: 30
+  demo_start_date: "2015-01-01"  # Changed to 2015 for historical data
