@@ -749,3 +749,147 @@ class ModelRegistry:
         # Promote target version to PRODUCTION
         self.promote_model(model_name, target_version, "VALIDATED")
         self.promote_model(model_name, target_version, "PRODUCTION")
+
+    # ------------------------------------------------------------------
+    # Advanced Metrics API
+    # ------------------------------------------------------------------
+
+    def record_inference_latency(
+        self,
+        model_name: str,
+        version: str,
+        latency_ms: float,
+    ) -> None:
+        """
+        Append an inference latency observation (ms) for a model version.
+
+        Args:
+            model_name: Registered model name.
+            version: Semantic version string (e.g. "v1.0.0").
+            latency_ms: Observed inference latency in milliseconds. Must be >= 0.
+
+        Raises:
+            ValueError: If model/version not found or latency_ms is negative.
+        """
+        if latency_ms < 0:
+            raise ValueError(f"latency_ms must be >= 0, got {latency_ms}")
+
+        version_data = self._get_version_data(model_name, version)
+
+        metrics = version_data.setdefault("advanced_metrics", {})
+        latencies: List[float] = metrics.setdefault("inference_latency_ms", [])
+        latencies.append(float(latency_ms))
+
+        self._save_registry()
+
+    def set_feature_dimensions(
+        self,
+        model_name: str,
+        version: str,
+        feature_dimensions: int,
+    ) -> None:
+        """
+        Record the number of input feature dimensions for a model version.
+
+        Args:
+            model_name: Registered model name.
+            version: Semantic version string.
+            feature_dimensions: Number of input features. Must be > 0.
+
+        Raises:
+            ValueError: If model/version not found or feature_dimensions <= 0.
+        """
+        if feature_dimensions <= 0:
+            raise ValueError(f"feature_dimensions must be > 0, got {feature_dimensions}")
+
+        version_data = self._get_version_data(model_name, version)
+
+        metrics = version_data.setdefault("advanced_metrics", {})
+        metrics["feature_dimensions"] = int(feature_dimensions)
+
+        self._save_registry()
+
+    def set_decay_rate(
+        self,
+        model_name: str,
+        version: str,
+        decay_rate: float,
+    ) -> None:
+        """
+        Record the performance decay rate for a model version.
+
+        Decay rate represents the fractional degradation of model performance
+        per unit time (e.g. per day). A value of 0.01 means 1% decay per day.
+
+        Args:
+            model_name: Registered model name.
+            version: Semantic version string.
+            decay_rate: Decay rate value. Must be in [0.0, 1.0].
+
+        Raises:
+            ValueError: If model/version not found or decay_rate out of range.
+        """
+        if not (0.0 <= decay_rate <= 1.0):
+            raise ValueError(f"decay_rate must be in [0.0, 1.0], got {decay_rate}")
+
+        version_data = self._get_version_data(model_name, version)
+
+        metrics = version_data.setdefault("advanced_metrics", {})
+        metrics["decay_rate"] = float(decay_rate)
+
+        self._save_registry()
+
+    def get_model_metrics(
+        self,
+        model_name: str,
+        version: str,
+    ) -> Dict[str, Any]:
+        """
+        Return a summary of advanced metrics for a model version.
+
+        Returns a dict with:
+            - inference_latency_ms: dict with mean, p50, p95, p99, count (or None if no observations)
+            - feature_dimensions: int or None
+            - decay_rate: float or None
+
+        Args:
+            model_name: Registered model name.
+            version: Semantic version string.
+
+        Returns:
+            Metrics summary dict.
+        """
+        version_data = self._get_version_data(model_name, version)
+        raw = version_data.get("advanced_metrics", {})
+
+        latencies = raw.get("inference_latency_ms", [])
+        if latencies:
+            arr = np.array(latencies, dtype=np.float64)
+            latency_summary: Optional[Dict[str, float]] = {
+                "mean": float(np.mean(arr)),
+                "p50": float(np.percentile(arr, 50)),
+                "p95": float(np.percentile(arr, 95)),
+                "p99": float(np.percentile(arr, 99)),
+                "count": int(arr.size),
+            }
+        else:
+            latency_summary = None
+
+        return {
+            "inference_latency_ms": latency_summary,
+            "feature_dimensions": raw.get("feature_dimensions"),
+            "decay_rate": raw.get("decay_rate"),
+        }
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _get_version_data(self, model_name: str, version: str) -> Dict[str, Any]:
+        """Return the mutable version dict, raising ValueError if not found."""
+        if model_name not in self.registry_data["models"]:
+            raise ValueError(f"Model {model_name} not found.")
+        versions = self.registry_data["models"][model_name]["versions"]
+        if version not in versions:
+            raise ValueError(f"Version {version} not found for model {model_name}.")
+        return versions[version]
