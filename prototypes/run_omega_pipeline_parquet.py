@@ -16,7 +16,7 @@ print("=" * 60)
 print("OMEGA PIPELINE - REAL DATA TEST (PARQUET)")
 print("=" * 60)
 
-parquet_path = Path('OMEGA_QUANT/OMEGA_QUANT/data/market_2015_now_cleaned.parquet')
+parquet_path = Path('OMEGA_QUANT/data/market_2015_now_cleaned.parquet')
 if not parquet_path.exists():
     print(f"ERROR: {parquet_path} not found")
     sys.exit(1)

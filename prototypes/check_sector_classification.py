@@ -2,7 +2,7 @@ import pandas as pd
 from pathlib import Path
 import sys
 
-parquet_path = Path('OMEGA_QUANT/OMEGA_QUANT/data/market_2015_now_cleaned.parquet')
+parquet_path = Path('OMEGA_QUANT/data/market_2015_now_cleaned.parquet')
 df = pd.read_parquet(parquet_path)
 
 print('=== SECTOR CLASSIFICATION ===')

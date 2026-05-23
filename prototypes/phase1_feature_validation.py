@@ -18,7 +18,7 @@ print("=" * 70)
 
 # 1. Load Data
 print("\n[1] Loading Data...")
-parquet_path = Path('OMEGA_QUANT/OMEGA_QUANT/data/market_2015_now_cleaned.parquet')
+parquet_path = Path('OMEGA_QUANT/data/market_2015_now_cleaned.parquet')
 df = pd.read_parquet(parquet_path)
 df = df.rename(columns={'ticker': 'symbol'})
 df['date'] = pd.to_datetime(df['date'])

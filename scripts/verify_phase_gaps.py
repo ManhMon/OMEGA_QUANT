@@ -85,16 +85,16 @@ PHASE_MAP = {
         "gate_keys": ["OMEGA_GAP_PHASE13_MACHINE_LEARNING_ENGINE"]
     },
     14: {
-        "name": "Execution Engine",
-        "code": ["packages/execution/src/"],
-        "tests": ["packages/execution/tests/"],
-        "gate_keys": ["OMEGA_GAP_PHASE14_EXECUTION_ENGINE"]
+        "name": "Market Data Pipeline",
+        "code": ["packages/data/src/omega/data/vnstock_vci.py"],
+        "tests": ["packages/data/tests/"],
+        "gate_keys": ["OMEGA_GAP_PHASE14_MARKET_DATA_PIPELINE"]
     },
     15: {
         "name": "Ensemble & Voting",
         "code": ["packages/quant/src/omega/quant/voting_stacking_ensemble.py"],
         "tests": ["packages/quant/tests/test_voting_stacking_ensemble.py"],
-        "gate_keys": []
+        "gate_keys": ["OMEGA_GAP_PHASE15_ENSEMBLE_VOTING"]
     },
     16: {
         "name": "Live Trading",
@@ -134,13 +134,13 @@ PHASE_MAP = {
         "name": "Performance Attribution",
         "code": ["packages/quant/src/omega/quant/attribution.py"],
         "tests": ["packages/quant/tests/test_attribution.py"],
-        "gate_keys": []
+        "gate_keys": ["OMEGA_GAP_PHASE21_PERFORMANCE_ATTRIBUTION"]
     },
     22: {
         "name": "Gap Analysis",
         "code": [],
         "tests": [],
-        "gate_keys": []
+        "gate_keys": ["OMEGA_GAP_PHASE22_OPERATIONAL_MONITORING"]
     }
 }
 
@@ -179,39 +179,43 @@ def check_phase(phase_num, phase_info, omega_root, gates_data):
 
     # Check gate approved + audit_report_path existence
     gate_keys = phase_info["gate_keys"]
+    found_approved_gate = False
+    found_valid_report = False
+    missing_report_paths = []
     for gate_key in gate_keys:
         matching_gates = [k for k in gates_data.keys() if gate_key in k.upper()]
-        if matching_gates:
-            for gate in matching_gates:
-                gate_entry = gates_data[gate]
-                status = gate_entry.get("status", gate_entry.get("final_verdict", ""))
-                if "APPROVED" in str(status).upper():
-                    results["gate_approved"] = True
-                    results["gate_key"] = gate
-
-                    # Validate audit_report_path field exists and points to a real file
-                    audit_report_path = gate_entry.get("audit_report_path")
-                    results["audit_report_path"] = audit_report_path
-                    if not audit_report_path:
-                        results["audit_report_exists"] = False
-                        results["missing"].append("audit_report_path")
-                    else:
-                        report_file = Path(audit_report_path)
-                        if not report_file.is_absolute():
-                            report_file = omega_root / audit_report_path
-                        if report_file.exists():
-                            results["audit_report_exists"] = True
-                        else:
-                            results["audit_report_exists"] = False
-                            results["missing"].append(
-                                f"audit_report_file_missing:{audit_report_path}"
-                            )
-                    break
-            if results["gate_approved"]:
+        for gate in matching_gates:
+            gate_entry = gates_data[gate]
+            status = gate_entry.get("status", gate_entry.get("final_verdict", ""))
+            if "APPROVED" not in str(status).upper():
+                continue
+            found_approved_gate = True
+            audit_report_path = gate_entry.get("audit_report_path")
+            if not audit_report_path:
+                continue
+            report_file = Path(audit_report_path)
+            if not report_file.is_absolute():
+                report_file = omega_root / audit_report_path
+            if report_file.exists():
+                results["gate_approved"] = True
+                results["gate_key"] = gate
+                results["audit_report_path"] = audit_report_path
+                results["audit_report_exists"] = True
+                found_valid_report = True
                 break
+            missing_report_paths.append(audit_report_path)
+        if found_valid_report:
+            break
 
-    if not results["gate_approved"]:
+    if not found_approved_gate:
         results["missing"].append("gate_approval")
+    elif not found_valid_report:
+        results["gate_approved"] = True
+        if missing_report_paths:
+            results["audit_report_path"] = missing_report_paths[0]
+            results["missing"].append(f"audit_report_file_missing:{missing_report_paths[0]}")
+        else:
+            results["missing"].append("audit_report_path")
 
     return results
 
