@@ -1,89 +1,45 @@
-"""
-Stress testing utilities.
-
-Public API
-----------
-apply_stress_scenario(positions, shocks) -> pd.Series
-scenario_pnl(positions, shocks) -> float
-historical_stress_pnl(returns, weights) -> pd.Series
-worst_historical_stress(returns, weights) -> float
-factor_stress_matrix(exposures, shocks) -> pd.DataFrame
-"""
 from __future__ import annotations
 
 import pandas as pd
 
 
 def apply_stress_scenario(
-    positions: dict[str, float],
-    shocks: dict[str, float],
+    exposures: pd.Series | dict[str, float],
+    shocks: pd.Series | dict[str, float],
 ) -> pd.Series:
-    """
-    Apply shock to each position.  Missing shocks default to 0.
-
-    Returns a Series of PnL per asset (position * shock).
-    """
-    pos = pd.Series(positions)
-    shock_series = pd.Series(shocks).reindex(pos.index).fillna(0.0)
-    return pos * shock_series
+    exposure_series = pd.Series(exposures, dtype="float64")
+    shock_series = pd.Series(shocks, dtype="float64")
+    aligned_shocks = shock_series.reindex(exposure_series.index).fillna(0.0)
+    return exposure_series * aligned_shocks
 
 
 def scenario_pnl(
-    positions: dict[str, float],
-    shocks: dict[str, float],
+    positions: pd.Series | dict[str, float],
+    price_shocks: pd.Series | dict[str, float],
 ) -> float:
-    """Total portfolio PnL under a stress scenario."""
-    return float(apply_stress_scenario(positions, shocks).sum())
+    stressed = apply_stress_scenario(positions, price_shocks)
+    return float(stressed.sum())
 
 
-def historical_stress_pnl(
-    returns: pd.DataFrame,
-    weights: dict[str, float],
-) -> pd.Series:
-    """
-    Weighted portfolio PnL using T-1 lagged returns.
-
-    Row 0 is NaN (no prior bar). Row i uses returns.iloc[i-1].
-    Raises ValueError if weights are missing any asset column.
-    """
-    missing = set(returns.columns) - set(weights.keys())
-    if missing:
-        raise ValueError(f"weights missing assets: {missing}")
-    w = pd.Series(weights).reindex(returns.columns)
-    lagged = returns.shift(1)
-    return lagged.mul(w, axis=1).sum(axis=1, min_count=1)
+def historical_stress_pnl(asset_returns: pd.DataFrame, weights: pd.Series | dict[str, float]) -> pd.Series:
+    if asset_returns.empty:
+        raise ValueError("asset_returns must contain at least 1 row")
+    weight_series = pd.Series(weights, dtype="float64")
+    missing = asset_returns.columns.difference(weight_series.index)
+    if len(missing) > 0:
+        raise ValueError(f"weights missing assets: {list(missing)}")
+    lagged = asset_returns[weight_series.index].shift(1)
+    return lagged.mul(weight_series, axis=1).sum(axis=1, min_count=1)
 
 
-def worst_historical_stress(
-    returns: pd.DataFrame,
-    weights: dict[str, float],
-) -> float:
-    """Worst (most negative) historical stress PnL, returned as positive loss magnitude."""
-    pnl = historical_stress_pnl(returns, weights).dropna()
+def worst_historical_stress(asset_returns: pd.DataFrame, weights: pd.Series | dict[str, float]) -> float:
+    pnl = historical_stress_pnl(asset_returns, weights).dropna()
     if pnl.empty:
-        return 0.0
-    return float(abs(pnl.min()))
+        raise ValueError("historical stress pnl is empty after T-1 lag")
+    return abs(float(pnl.min()))
 
 
-def factor_stress_matrix(
-    exposures: pd.DataFrame,
-    shocks: pd.DataFrame,
-) -> pd.DataFrame:
-    """
-    Compute asset PnL for each scenario via matrix multiply.
-
-    exposures : assets × factors
-    shocks    : scenarios × factors
-    result    : assets × scenarios
-
-    Raises ValueError if factor columns don't match exactly.
-    """
-    if set(exposures.columns) != set(shocks.columns):
-        raise ValueError(
-            "factor columns must match exactly: "
-            f"exposures={set(exposures.columns)}, shocks={set(shocks.columns)}"
-        )
-    shocks_aligned = shocks[exposures.columns]
-    # result[asset, scenario] = exposures[asset, :] · shocks[scenario, :]
-    result = exposures.values @ shocks_aligned.values.T
-    return pd.DataFrame(result, index=exposures.index, columns=shocks.index)
+def factor_stress_matrix(exposures: pd.DataFrame, factor_shocks: pd.DataFrame) -> pd.DataFrame:
+    if list(exposures.columns) != list(factor_shocks.columns):
+        raise ValueError("factor columns must match exactly")
+    return exposures.astype("float64") @ factor_shocks.astype("float64").T

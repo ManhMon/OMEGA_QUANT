@@ -1,148 +1,92 @@
-"""
-Signal Sanitizer - Centralized PIT-safe signal preprocessing.
-
-Purpose: Eliminate look-ahead bias and cross-symbol leakage in signal pipeline.
-Compliance: OMEGA+++ Quant AI Institutional Grade
-"""
+from __future__ import annotations
 
 import pandas as pd
-import numpy as np
-from typing import Union
 
 
-class SignalSanitizer:
-    """
-    Centralizes signal preprocessing: PIT shift, smoothing, weighting.
-    Makes audit trail explicit.
+SIGNAL_COLUMNS = [
+    "signal_mean_reversion",
+    "signal_momentum",
+    "signal_trend",
+]
 
-    Key Principles:
-    - PIT-Safe: All signals use T-1 data only
-    - Symbol-Aware: No cross-symbol contamination
-    - Vectorized: Numpy/pandas operations for performance
-    """
 
-    @staticmethod
-    def sanitize_signal(df: pd.DataFrame, col: str, force_shift: bool = True) -> pd.Series:
-        """
-        Make signal PIT-safe by shifting to T-1.
+def validate_monotonic_time(df: pd.DataFrame, time_col: str = "timestamp") -> None:
+    if time_col not in df.columns:
+        raise ValueError(f"Time column '{time_col}' not found in DataFrame")
+    if not df[time_col].is_monotonic_increasing:
+        raise ValueError(f"Data is not strictly monotonic increasing by {time_col}.")
+    if df[time_col].duplicated().any():
+        raise ValueError(f"Data contains duplicate timestamps in {time_col}; strict monotonicity required.")
 
-        Args:
-            df: DataFrame with MultiIndex (date, symbol) or symbol column
-            col: Column name to sanitize
-            force_shift: If True, always shift(1). If False, assume already shifted.
 
-        Returns:
-            Series with T-1 values, symbol-isolated
-        """
-        if force_shift:
-            if isinstance(df.index, pd.MultiIndex) and 'symbol' in df.index.names:
-                return df.groupby(level='symbol')[col].shift(1)
-            elif 'symbol' in df.columns:
-                return df.groupby('symbol')[col].shift(1)
-            else:
-                # Single symbol case
-                return df[col].shift(1)
-        else:
-            return df[col]
+def enforce_t_minus_1_lag(df: pd.DataFrame, columns: list[str]) -> pd.DataFrame:
+    result = df.copy()
+    result[columns] = result[columns].shift(1)
+    return result
 
-    @staticmethod
-    def smooth_signal(df: pd.DataFrame, col: str, window: int = 5,
-                     symbol_aware: bool = True, method: str = 'rolling') -> pd.Series:
-        """
-        Smooth signal with symbol isolation.
 
-        Args:
-            df: DataFrame with MultiIndex (date, symbol) or symbol column
-            col: Column name to smooth
-            window: Window size for rolling/EWM
-            symbol_aware: If True, apply groupby('symbol') to prevent leakage
-            method: 'rolling' or 'ewm'
+def validate_t_minus_1_lag(
+    df: pd.DataFrame,
+    columns: list[str],
+    source_df: pd.DataFrame | None = None,
+    time_col: str = "timestamp",
+) -> None:
+    if source_df is not None:
+        validate_monotonic_time(source_df, time_col=time_col)
 
-        Returns:
-            Smoothed series, symbol-isolated
-        """
-        if symbol_aware:
-            if isinstance(df.index, pd.MultiIndex) and 'symbol' in df.index.names:
-                grouped = df.groupby(level='symbol')[col]
-            elif 'symbol' in df.columns:
-                grouped = df.groupby('symbol')[col]
-            else:
-                grouped = df[col]
-        else:
-            grouped = df[col]
+    if source_df is not None and len(df.index) != len(source_df.index):
+        raise ValueError("PIT validation requires source and sanitized frames to have identical row counts")
 
-        if method == 'rolling':
-            return grouped.transform(lambda x: x.rolling(window, min_periods=1).mean())
-        elif method == 'ewm':
-            alpha = 2 / (window + 1)
-            return grouped.transform(lambda x: x.ewm(alpha=alpha, adjust=False).mean())
-        else:
-            raise ValueError(f"Unknown method: {method}. Use 'rolling' or 'ewm'")
+    if source_df is not None:
+        if time_col not in df.columns:
+            raise ValueError(f"Time column '{time_col}' not found in DataFrame")
+        if time_col not in source_df.columns:
+            raise ValueError(f"Time column '{time_col}' not found in source DataFrame")
 
-    @staticmethod
-    def apply_midas_smooth(df: pd.DataFrame, col: str, alpha: float = 0.1) -> pd.Series:
-        """
-        Symbol-aware MIDAS smoothing with PIT shift.
-
-        Args:
-            df: DataFrame with MultiIndex (date, symbol) or symbol column
-            col: Column name to smooth
-            alpha: EWM alpha parameter (0.1 = ~19-day half-life)
-
-        Returns:
-            Smoothed series using T-1 data, symbol-isolated
-        """
-        if isinstance(df.index, pd.MultiIndex) and 'symbol' in df.index.names:
-            return df.groupby(level='symbol')[col].transform(
-                lambda x: x.shift(1).ewm(alpha=alpha, adjust=False).mean()
+        timestamp_mismatch = ~df[time_col].eq(source_df[time_col])
+        if timestamp_mismatch.any():
+            first_bad_index = timestamp_mismatch[timestamp_mismatch].index[0]
+            raise ValueError(
+                f"PIT violation: timestamp at row {first_bad_index} does not match source frame exactly"
             )
-        elif 'symbol' in df.columns:
-            return df.groupby('symbol')[col].transform(
-                lambda x: x.shift(1).ewm(alpha=alpha, adjust=False).mean()
+
+    for column in columns:
+        if column not in df.columns:
+            raise ValueError(f"Signal column '{column}' not found in DataFrame")
+        if len(df.index) > 0 and not pd.isna(df[column].iloc[0]):
+            raise ValueError(f"PIT violation: column '{column}' must be T-1 lagged")
+
+        if source_df is None:
+            continue
+        if column not in source_df.columns:
+            raise ValueError(f"Signal column '{column}' not found in source DataFrame")
+
+        expected = source_df[column].shift(1)
+        actual = df[column]
+        mismatch = ~(
+            (actual.isna() & expected.isna())
+            | actual.eq(expected)
+        )
+        if mismatch.any():
+            first_bad_index = mismatch[mismatch].index[0]
+            raise ValueError(
+                f"PIT violation: column '{column}' at row {first_bad_index} does not match exact T-1 source value"
             )
-        else:
-            # Single symbol case
-            return df[col].shift(1).ewm(alpha=alpha, adjust=False).mean()
+def sanitize_signals(
+    df: pd.DataFrame,
+    signal_columns: list[str] | None = None,
+    time_col: str = "timestamp",
+    apply_lag: bool = False,
+    source_df: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    signal_columns = signal_columns or SIGNAL_COLUMNS
+    validate_monotonic_time(df, time_col=time_col)
 
-    @staticmethod
-    def calculate_adaptive_threshold(df: pd.DataFrame, col: str,
-                                    percentile: float = 10, window: int = 20) -> pd.Series:
-        """
-        Calculate adaptive threshold using rolling percentile (PIT-safe).
+    if not apply_lag:
+        if source_df is None:
+            raise ValueError("apply_lag=False is unsafe without source_df for absolute T-1 validation")
+        validate_monotonic_time(source_df, time_col=time_col)
 
-        Args:
-            df: DataFrame with MultiIndex (date, symbol) or symbol column
-            col: Column name to calculate threshold for
-            percentile: Percentile value (0-100), default 10 for 10th percentile
-            window: Rolling window size in days
-
-        Returns:
-            Series with adaptive threshold values (symbol-isolated, T-1 shifted)
-        """
-        if isinstance(df.index, pd.MultiIndex) and 'symbol' in df.index.names:
-            return df.groupby(level='symbol')[col].transform(
-                lambda x: x.shift(1).rolling(window, min_periods=window).quantile(percentile / 100.0)
-            )
-        elif 'symbol' in df.columns:
-            return df.groupby('symbol')[col].transform(
-                lambda x: x.shift(1).rolling(window, min_periods=window).quantile(percentile / 100.0)
-            )
-        else:
-            # Single symbol case
-            return df[col].shift(1).rolling(window, min_periods=window).quantile(percentile / 100.0)
-
-    @staticmethod
-    def calculate_weighted_signal(df: pd.DataFrame, signal_col: str,
-                                  weight_col: str) -> pd.Series:
-        """
-        Combine signal with confidence weight.
-
-        Args:
-            df: DataFrame containing signal and weight columns
-            signal_col: Signal column name
-            weight_col: Weight column name (0-1 range expected)
-
-        Returns:
-            Weighted signal series
-        """
-        return df[signal_col] * df[weight_col]
+    result = enforce_t_minus_1_lag(df, signal_columns) if apply_lag else df.copy()
+    validate_t_minus_1_lag(result, signal_columns, source_df=df if apply_lag else source_df, time_col=time_col)
+    return result

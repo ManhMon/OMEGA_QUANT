@@ -1,171 +1,262 @@
+# OMEGA_QUANT Production Configuration
+# =====================================
+# Locked production settings for institutional-grade deployment
+# 
+# SECURITY: Do NOT commit secrets to this file
+# Use environment variables or .env file for sensitive data
+#
+# Version: 1.0.0
+# Last Updated: 2026-05-11
+
+# Data Configuration
 data:
-  source: local
-  data_dir: data/market
-  cache_dir: data/cache
-  min_history_days: 252
-  max_missing_pct: 5.0
-  outlier_threshold: 5.0
+  # Data source settings
+  source: "local"  # Options: local, api, database
+  data_dir: "data/market"
+  cache_dir: "data/cache"
+  
+  # Data quality settings
+  min_history_days: 252  # Minimum 1 year of history
+  max_missing_pct: 5.0   # Maximum 5% missing data allowed
+  outlier_threshold: 5.0  # Z-score threshold for outliers
+  
+  # PIT safety enforcement
   pit_safety:
     enabled: true
-    lag_days: 1
-    strict_mode: true
+    lag_days: 1  # T-1 lag for all data
+    strict_mode: true  # Reject any future data leaks
+  
+  # Data refresh settings
   refresh:
     enabled: true
-    schedule: 0 6 * * *
+    schedule: "0 6 * * *"  # Daily at 6 AM
     retry_attempts: 3
     retry_delay_seconds: 300
+
+# Portfolio Configuration
 portfolio:
-  initial_capital: 1000000.0
+  # Portfolio construction
+  initial_capital: 1000000.0  # $1M starting capital
   max_positions: 50
-  min_position_size: 0.01
-  max_position_size: 0.1
+  min_position_size: 0.01  # 1% minimum
+  max_position_size: 0.10  # 10% maximum
+  
+  # Rebalancing settings
   rebalance:
-    frequency: daily
-    threshold: 0.05
-    method: mean_variance
+    frequency: "daily"  # Options: daily, weekly, monthly
+    threshold: 0.05  # Rebalance if drift > 5%
+    method: "mean_variance"  # Options: mean_variance, risk_parity, equal_weight
+  
+  # Signal generation
   signals:
-    momentum_window: 20
-    volatility_window: 60
-    min_signal_strength: 0.3
+    momentum_window: 20  # 20-day momentum
+    volatility_window: 60  # 60-day volatility
+    min_signal_strength: 0.3  # Minimum signal threshold
+  
+  # Feature neutralization settings
   neutralization:
-    enabled: true
-    enable_market_neutral: true
-    enable_sector_neutral: true
-    enable_style_neutral: false
-    market_method: beta_weighted
-    sector_method: demean
-    style_method: regression
-    style_factors: []
-    market_return_col: market_return
-    market_cap_col: market_cap
-    sector_col: sector
+    enabled: true  # Enable feature neutralization pipeline stage
+    enable_market_neutral: true  # Remove market beta exposure
+    enable_sector_neutral: true  # Remove sector tilts
+    enable_style_neutral: false  # Remove style factor exposures (disabled by default)
+    
+    # Neutralization methods
+    market_method: "beta_weighted"  # Options: beta_weighted, demean
+    sector_method: "demean"  # Options: demean, cap_weighted
+    style_method: "regression"  # Options: regression, orthogonalize
+    
+    # Style factors for neutralization (if enable_style_neutral = true)
+    style_factors: []  # e.g., ['value', 'momentum', 'quality']
+    
+    # Column mappings
+    market_return_col: "market_return"
+    market_cap_col: "market_cap"
+    sector_col: "sector"
+    
+    # Validation settings
     validation:
       enabled: true
-      tolerance: 0.1
+      tolerance: 0.1  # Maximum allowed exposure after neutralization
+    
+  # Optimization settings
   optimization:
-    method: quadratic
+    method: "quadratic"  # Quadratic programming
     max_iterations: 1000
     tolerance: 1e-6
+    
+  # Transaction costs
   costs:
-    commission_pct: 0.001
-    slippage_pct: 0.0005
+    commission_pct: 0.001  # 0.1% commission
+    slippage_pct: 0.0005   # 0.05% slippage
     market_impact_factor: 0.1
+
+# Risk Management Configuration
 risk:
-  max_portfolio_volatility: 0.2
-  max_drawdown: 0.15
-  max_leverage: 1.0
-  max_position_volatility: 0.4
-  max_sector_exposure: 0.3
-  max_correlation: 0.7
+  # Portfolio risk limits
+  max_portfolio_volatility: 0.20  # 20% annual volatility
+  max_drawdown: 0.15  # 15% maximum drawdown
+  max_leverage: 1.0  # No leverage in production
+  
+  # Position risk limits
+  max_position_volatility: 0.40  # 40% position volatility
+  max_sector_exposure: 0.30  # 30% sector concentration
+  max_correlation: 0.70  # Maximum pairwise correlation
+  
+  # Risk monitoring
   monitoring:
-    var_confidence: 0.95
-    cvar_enabled: true
+    var_confidence: 0.95  # 95% VaR confidence
+    cvar_enabled: true  # Conditional VaR
     stress_test_enabled: true
+    
+  # Stop-loss settings
   stop_loss:
     enabled: true
-    position_level: 0.1
-    portfolio_level: 0.05
+    position_level: 0.10  # 10% position stop-loss
+    portfolio_level: 0.05  # 5% daily portfolio stop-loss
+    
+  # Risk alerts
   alerts:
     enabled: true
-    email_recipients: []
-    slack_webhook: null
+    email_recipients: []  # Set via environment variable
+    slack_webhook: null  # Set via environment variable
+
+# Execution Configuration
 execution:
-  broker: mock
-  dry_run: true
-  paper_trading: true
-  order_type: limit
-  time_in_force: day
-  limit_price_buffer: 0.001
-  market_open: 09:30
-  market_close: '16:00'
-  execution_window: 09:45-15:45
-  max_order_size: 10000
-  order_split_threshold: 5000
+  # Broker settings
+  broker: "mock"  # Options: mock, interactive_brokers, alpaca
+  
+  # Execution mode
+  dry_run: true  # IMPORTANT: Set to false for live trading
+  paper_trading: true  # Use paper trading account
+  
+  # Order settings
+  order_type: "limit"  # Options: market, limit, stop
+  time_in_force: "day"  # Options: day, gtc, ioc
+  limit_price_buffer: 0.001  # 0.1% buffer for limit orders
+  
+  # Execution timing
+  market_open: "09:30"  # Market open time (ET)
+  market_close: "16:00"  # Market close time (ET)
+  execution_window: "09:45-15:45"  # Safe execution window
+  
+  # Order management
+  max_order_size: 10000  # Maximum shares per order
+  order_split_threshold: 5000  # Split orders > 5000 shares
   retry_failed_orders: true
   max_retry_attempts: 3
+
+# Logging Configuration
 logging:
-  level: INFO
-  format: json
+  level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  format: "json"  # Options: json, text
+  
+  # Log destinations
   console:
     enabled: true
-    level: INFO
+    level: "INFO"
+  
   file:
     enabled: true
-    path: logs/omega_quant.log
+    path: "logs/omega_quant.log"
     max_size_mb: 100
     backup_count: 10
-    level: DEBUG
+    level: "DEBUG"
+  
+  # Audit logging
   audit:
     enabled: true
-    path: logs/audit.jsonl
+    path: "logs/audit.jsonl"
     include_pii: false
+
+# Monitoring Configuration
 monitoring:
+  # Health checks
   health_check:
     enabled: true
-    interval_seconds: 300
-    endpoint: /health
+    interval_seconds: 300  # Every 5 minutes
+    endpoint: "/health"
+  
+  # Performance metrics
   metrics:
     enabled: true
     export_interval_seconds: 60
     retention_days: 90
+  
+  # Alerting
   alerts:
     enabled: true
-    channels:
-    - email
-    - slack
-    severity_levels:
-    - critical
-    - warning
+    channels: ["email", "slack"]
+    severity_levels: ["critical", "warning"]
+
+# Backup Configuration
 backup:
   enabled: true
-  schedule: 0 2 * * *
+  schedule: "0 2 * * *"  # Daily at 2 AM
   retention_days: 30
   destinations:
-  - type: local
-    path: data/backups
-  - type: s3
-    bucket: null
-    prefix: omega_quant/backups
+    - type: "local"
+      path: "data/backups"
+    - type: "s3"
+      bucket: null  # Set via environment variable
+      prefix: "omega_quant/backups"
+
+# Performance Configuration
 performance:
-  num_workers: 4
-  chunk_size: 1000
-  max_memory_gb: 8.0
-  cache_size_mb: 512
-  vectorization: true
-  jit_compilation: false
+  # Computation settings
+  num_workers: 4  # Parallel workers
+  chunk_size: 1000  # Data chunk size
+  
+  # Memory management
+  max_memory_gb: 8.0  # Maximum memory usage
+  cache_size_mb: 512  # Cache size
+  
+  # Optimization
+  vectorization: true  # Use vectorized operations
+  jit_compilation: false  # JIT compilation (experimental)
+
+# Security Configuration
 security:
+  # API security
   api_key_required: true
   rate_limiting:
     enabled: true
     requests_per_minute: 60
+  
+  # Data encryption
   encryption:
-    enabled: false
-    algorithm: AES-256
+    enabled: false  # Enable for sensitive data
+    algorithm: "AES-256"
+  
+  # Access control
   access_control:
     enabled: false
-    allowed_ips: []
-environment: production
+    allowed_ips: []  # Whitelist IPs
+
+# Environment-specific overrides
+# These can be overridden via environment variables with prefix OMEGA_
+environment: "production"
+
+# Feature flags
 features:
   advanced_signals: true
-  ml_models: false
+  ml_models: false  # Disable ML in initial production
   options_trading: false
   crypto_trading: false
+  
+# Compliance settings
 compliance:
+  # Regulatory reporting
   reporting:
     enabled: true
-    frequency: daily
-    format: csv
+    frequency: "daily"
+    format: "csv"
+  
+  # Audit trail
   audit_trail:
     enabled: true
-    retention_years: 7
+    retention_years: 7  # SEC requirement
+  
+  # Position limits (regulatory)
   position_limits:
     enabled: true
-    check_frequency: pre_trade
-mode: PAPER
-broker:
-  type: vndirect
-  paper_trading: true
-observability:
-  prometheus:
-    enabled: true
-    port: 9090
+    check_frequency: "pre_trade"

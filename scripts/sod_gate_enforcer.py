@@ -25,7 +25,7 @@ def load_gates() -> dict:
         print(f"ERROR: Gates file not found: {GATES_FILE}")
         sys.exit(1)
     
-    with open(GATES_FILE, 'r') as f:
+    with open(GATES_FILE, 'r', encoding='utf-8-sig') as f:
         return json.load(f)
 
 
@@ -37,18 +37,30 @@ def check_sod_compliance() -> bool:
     non_approved = []
     
     for phase, info in gates.items():
+        # Handle dict wrapping Phase data vs flat file containing single phase
+        if isinstance(info, dict) and "final_verdict" in info:
+            phase_name = phase
+            phase_info = info
+        elif "final_verdict" in gates:
+            # The JSON file is a flat object for a single phase
+            phase_name = "CURRENT_PHASE"
+            phase_info = gates
+            if phase != list(gates.keys())[0]:
+                continue # only process the flat object once
+        else:
+            continue
         # Skip Phase 1 (already approved before SOD enforcement)
-        if phase.startswith("PHASE_1_"):
+        if phase_name.startswith("PHASE_1_"):
             continue
         
         # Check required fields for L3 audit
         required = ["l3_session_id", "l3_session_key", "audit_report_path", "final_verdict"]
-        missing = [f for f in required if f not in info]
+        missing = [f for f in required if f not in phase_info]
         
         if missing:
-            missing_audit.append(f"{phase}: missing {missing}")
-        elif info.get("final_verdict") != "[APPROVED]":
-            non_approved.append(f"{phase}: {info.get('final_verdict', 'NO VERDICT')}")
+            missing_audit.append(f"{phase_name}: missing {missing}")
+        elif phase_info.get("final_verdict") != "[APPROVED]":
+            non_approved.append(f"{phase_name}: {phase_info.get('final_verdict', 'NO VERDICT')}")
     
     if missing_audit:
         print("[FAIL] SOD GATE BLOCKED: Missing L3 audit evidence")

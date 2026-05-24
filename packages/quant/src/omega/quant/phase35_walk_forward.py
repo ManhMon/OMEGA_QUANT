@@ -1,6 +1,6 @@
 """Phase 3.5 Walk-Forward Backtest Engine.
 
-Version: v21.39-Phase35-Stage6.2
+Version: v21.38-Phase35-Stage3
 Date: 2026-05-22
 
 Walk-forward backtest for 7 Phase 3.4 microstructure alphas using real VN market data.
@@ -10,12 +10,6 @@ COMPLIANCE:
   - Vectorization: 100% Pandas/NumPy
   - Error Handling: Graceful degradation
   - Metrics: IC, Sharpe, Max DD per fold
-
-Stage 6.2 (Cost-Aware Alpha Selection):
-  - adjust_alphas_for_cost(): penalises high-turnover alphas via cost-adjusted IC
-  - _estimate_alpha_turnover(): vectorised daily turnover estimation on train data
-  - Integrated into run_fold() between select_top_alphas() and Research Gate
-  - PIT Safety: cost estimation uses train-period data only (T-1 lag preserved)
 """
 from __future__ import annotations
 
@@ -33,7 +27,6 @@ from scipy.stats import spearmanr
 
 from omega.quant.ml_gate_validator import validate_research_gate
 from omega.quant.alpha_ensemble_xgboost import XGBoostAlphaEnsemble
-from omega.quant.transaction_cost_optimizer import TransactionCostOptimizer
 
 warnings.filterwarnings('ignore')
 logger = logging.getLogger(__name__)
@@ -114,8 +107,6 @@ class Phase35WalkForwardEngine:
         rebalance_freq: int = 7,
         sector_cap_pct: float = 0.30,
         use_xgboost: bool = False,
-        drawdown_control: bool = False,
-        drawdown_threshold: float = 0.05,
     ):
         """Initialize walk-forward engine.
         
@@ -144,8 +135,6 @@ class Phase35WalkForwardEngine:
         self.rebalance_freq = rebalance_freq
         self.sector_cap_pct = sector_cap_pct
         self.use_xgboost = use_xgboost
-        self.drawdown_control = drawdown_control
-        self.drawdown_threshold = drawdown_threshold
     
     def compute_alphas(self, df: pd.DataFrame) -> pd.DataFrame:
         """Compute Phase 3.4 alphas on data.
@@ -581,124 +570,6 @@ class Phase35WalkForwardEngine:
         result.index = raw_signal.index
         return result
 
-    # ------------------------------------------------------------------
-    # Stage 6.2: Cost-Aware Alpha Selection
-    # ------------------------------------------------------------------
-
-    def _estimate_alpha_turnover(
-        self,
-        train_df: pd.DataFrame,
-        alpha_col: str,
-    ) -> float:
-        """Estimate average daily turnover rate for an alpha signal.
-
-        Turnover is defined as the mean absolute day-over-day rank change
-        of the alpha signal, normalised to [0, 1] by the number of tickers.
-
-        PIT Safety: uses only train-period data. No future information.
-
-        Parameters
-        ----------
-        train_df : pd.DataFrame
-            Embargoed training data with 'date', 'ticker', and alpha_col.
-        alpha_col : str
-            Alpha column to estimate turnover for.
-
-        Returns
-        -------
-        float
-            Average daily turnover rate in [0.0, 1.0].
-            Returns 0.5 (conservative default) on any error.
-        """
-        try:
-            if alpha_col not in train_df.columns:
-                return 0.5
-
-            # Pivot: rows=date, cols=ticker, values=alpha signal
-            pivot = train_df.pivot_table(
-                index='date', columns='ticker', values=alpha_col, aggfunc='first'
-            )
-            if pivot.shape[0] < 2:
-                return 0.5
-
-            n_tickers = pivot.shape[1]
-            if n_tickers < 2:
-                return 0.5
-
-            # Rank each row (cross-section) — vectorised
-            ranked = pivot.rank(axis=1, method='average', na_option='keep')
-
-            # Day-over-day absolute rank change, normalised by n_tickers
-            rank_diff = ranked.diff().abs()  # shape: (dates, tickers)
-
-            # Mean over all (date, ticker) pairs, ignoring NaN
-            mean_abs_change = rank_diff.values[1:].mean()  # skip first NaN row
-
-            # Normalise: max possible change per ticker per day ≈ n_tickers
-            turnover = float(np.clip(mean_abs_change / n_tickers, 0.0, 1.0))
-            return turnover if not np.isnan(turnover) else 0.5
-
-        except Exception as e:
-            logger.warning(f"_estimate_alpha_turnover({alpha_col}) failed: {e}")
-            return 0.5
-
-    def adjust_alphas_for_cost(
-        self,
-        train_df: pd.DataFrame,
-        alpha_cols: List[str],
-        train_ics: Dict[str, float],
-        cost_per_turnover: float = 0.0025,
-    ) -> Dict[str, float]:
-        """Compute cost-adjusted IC for each alpha candidate.
-
-        Formula (from brief):
-            cost_bps = cost_per_turnover * turnover_rate * 10_000
-            adjusted_ic = raw_ic - (cost_bps / 10_000)
-                        = raw_ic - (cost_per_turnover * turnover_rate)
-
-        The subtracted term is already in IC units (dimensionless fraction),
-        so no unit conversion is needed beyond the formula above.
-
-        PIT Safety:
-          - Turnover estimated from train_df only (T-1 lag preserved upstream).
-          - TransactionCostOptimizer is NOT called here because we have no
-            per-symbol market-data dict available at this stage; instead we
-            use the cost_per_turnover round-trip rate directly (0.25% default,
-            matching the brief's stated assumption).
-
-        Parameters
-        ----------
-        train_df : pd.DataFrame
-            Embargoed training data.
-        alpha_cols : list of str
-            All alpha candidate column names.
-        train_ics : dict
-            Raw IC per alpha from compute_alpha_ics().
-        cost_per_turnover : float
-            Round-trip cost rate (default 0.0025 = 0.25 bps expressed as
-            fraction, matching brief's "0.25% round-trip" assumption).
-
-        Returns
-        -------
-        dict
-            {alpha: adjusted_ic} for every alpha in train_ics.
-        """
-        adjusted: Dict[str, float] = {}
-        for alpha in alpha_cols:
-            raw_ic = train_ics.get(alpha, 0.0)
-            turnover = self._estimate_alpha_turnover(train_df, alpha)
-            # cost penalty in IC units: cost_bps/10000 = cost_per_turnover * turnover
-            cost_penalty = cost_per_turnover * turnover
-            adjusted_ic = raw_ic - cost_penalty
-            adjusted[alpha] = adjusted_ic
-            logger.debug(
-                f"cost_adjust [{alpha}]: raw_ic={raw_ic:.4f}, "
-                f"turnover={turnover:.4f}, penalty={cost_penalty:.6f}, "
-                f"adjusted_ic={adjusted_ic:.4f}"
-            )
-        logger.info(f"Stage 6.2 cost-adjusted ICs: {adjusted}")
-        return adjusted
-
     def run_fold(
         self,
         fold_id: int,
@@ -706,10 +577,9 @@ class Phase35WalkForwardEngine:
         test_df: pd.DataFrame,
         alpha_cols: List[str],
         return_col: str = 'fwd_ret_5',
-        cost_aware: bool = False,
     ) -> FoldMetrics:
         """Run single walk-forward fold.
-
+        
         Parameters
         ----------
         fold_id : int
@@ -722,16 +592,12 @@ class Phase35WalkForwardEngine:
             Alpha column names
         return_col : str
             Forward return column name
-        cost_aware : bool
-            Stage 6.2: if True, re-rank alphas by cost-adjusted IC before
-            passing to the Research Gate. Baseline raw-IC path used when
-            False (default). Baseline path is fully preserved.
-
+        
         Returns
         -------
         FoldMetrics
             Fold results
-
+        
         Notes
         -----
         Embargo logic (PIT Safety): For a return_col of the form 'fwd_ret_N',
@@ -740,11 +606,6 @@ class Phase35WalkForwardEngine:
         the forward return window of the final training rows overlaps with
         the test period. Alpha computation (feature generation) uses the
         full train_df so that indicators at the boundary are not distorted.
-
-        Stage 6.2 integration point: cost adjustment is applied AFTER
-        compute_alpha_ics() and BEFORE select_top_alphas() / Research Gate,
-        so the gate and XGBoost path both operate on cost-adjusted rankings.
-        PIT Safety: adjust_alphas_for_cost() uses train_df_clean only.
         """
         logger.info(f"Running fold {fold_id}")
         
@@ -776,27 +637,11 @@ class Phase35WalkForwardEngine:
         
         # Compute IC on embargoed training set (no label leakage)
         train_ics = self.compute_alpha_ics(train_df_clean, alpha_cols, return_col)
-
+        
         logger.info(f"Fold {fold_id} train ICs: {train_ics}")
-
-        # ------------------------------------------------------------------
-        # Stage 6.2: Cost-Aware Alpha Selection (optional, PIT safe)
-        # Adjusts raw ICs by subtracting cost penalty before ranking.
-        # Baseline path (cost_aware=False) is fully preserved — no change.
-        # PIT Safety: adjust_alphas_for_cost() uses train_df_clean only.
-        # ------------------------------------------------------------------
-        if cost_aware:
-            selection_ics = self.adjust_alphas_for_cost(
-                train_df=train_df_clean,
-                alpha_cols=alpha_cols,
-                train_ics=train_ics,
-            )
-            logger.info(f"Fold {fold_id} [Stage6.2] cost-adjusted ICs: {selection_ics}")
-        else:
-            selection_ics = train_ics
-
-        # Select top alphas based on (cost-adjusted or raw) IC
-        top_alphas = self.select_top_alphas(selection_ics)
+        
+        # Select top alphas based on train IC
+        top_alphas = self.select_top_alphas(train_ics)
 
         # ------------------------------------------------------------------
         # Stage 3 ML Gate: filter top_alphas through Research Gate
@@ -885,33 +730,6 @@ class Phase35WalkForwardEngine:
             top_alphas=gated_alphas,
         )
 
-        # Stage 6.3: Active Drawdown Control (optional)
-        # Monitor daily portfolio NAV inside each fold and stop out to cash
-        # after first drawdown breach. Breach-day return is preserved; weights
-        # are zeroed from the following date onward.
-        if self.drawdown_control:
-            raw_portfolio_returns = portfolio_signal * test_df[return_col]
-            daily_portfolio_returns = (
-                raw_portfolio_returns
-                .groupby(test_df['date'])
-                .sum()
-                .sort_index()
-            )
-            if not daily_portfolio_returns.empty:
-                nav = (1.0 + daily_portfolio_returns).cumprod()
-                running_peak = nav.cummax()
-                drawdowns = (nav - running_peak) / running_peak
-                breached_dates = drawdowns[drawdowns <= -self.drawdown_threshold].index
-                if len(breached_dates) > 0:
-                    first_breach_date = breached_dates[0]
-                    logger.info(
-                        f"Fold {fold_id} [Stage6.3]: drawdown breach on "
-                        f"{pd.Timestamp(first_breach_date).date()} at "
-                        f"{drawdowns.loc[first_breach_date]:.2%}; stop-out to cash"
-                    )
-                    portfolio_signal = portfolio_signal.copy()
-                    portfolio_signal.loc[test_df['date'] > first_breach_date] = 0.0
-
         # Compute test IC for each alpha
         test_ics = self.compute_alpha_ics(test_df, alpha_cols, return_col)
         
@@ -921,20 +739,10 @@ class Phase35WalkForwardEngine:
         # Compute portfolio returns (signal * forward return)
         portfolio_returns = portfolio_signal * test_df[return_col]
         portfolio_returns = portfolio_returns.dropna()
-
-        # Aggregate to daily portfolio returns before computing risk metrics.
-        # Raw portfolio_returns is row-level (one row per date×ticker); Sharpe
-        # and Max DD must operate on one observation per calendar day.
-        daily_returns = (
-            portfolio_returns
-            .groupby(test_df.loc[portfolio_returns.index, 'date'])
-            .sum()
-            .sort_index()
-        )
-
+        
         # Compute Sharpe and Max DD
-        sharpe = self.compute_sharpe_ratio(daily_returns)
-        max_dd = self.compute_max_drawdown(daily_returns)
+        sharpe = self.compute_sharpe_ratio(portfolio_returns)
+        max_dd = self.compute_max_drawdown(portfolio_returns)
         total_return = portfolio_returns.sum()
         
         # Create metrics object
@@ -964,10 +772,9 @@ class Phase35WalkForwardEngine:
         splits: List[Tuple[pd.DataFrame, pd.DataFrame]],
         alpha_cols: List[str],
         return_col: str = 'fwd_ret_5',
-        cost_aware: bool = False,
     ) -> WalkForwardResult:
         """Run complete walk-forward backtest.
-
+        
         Parameters
         ----------
         splits : list of tuple
@@ -976,29 +783,18 @@ class Phase35WalkForwardEngine:
             Alpha column names
         return_col : str
             Forward return column name
-        cost_aware : bool
-            Stage 6.2: if True, enable cost-aware alpha selection in every
-            fold. Baseline raw-IC path used when False (default).
-
+        
         Returns
         -------
         WalkForwardResult
             Complete backtest results
-
-        Notes
-        -----
-        Stage 6.3 drawdown control is enabled via engine init parameter
-        (self.drawdown_control), not as a run-time flag.
         """
         logger.info(f"Starting walk-forward backtest with {len(splits)} folds")
-
+        
         fold_metrics = []
-
+        
         for fold_id, (train_df, test_df) in enumerate(splits, start=1):
-            metrics = self.run_fold(
-                fold_id, train_df, test_df, alpha_cols, return_col,
-                cost_aware=cost_aware,
-            )
+            metrics = self.run_fold(fold_id, train_df, test_df, alpha_cols, return_col)
             fold_metrics.append(metrics)
         
         # Aggregate results

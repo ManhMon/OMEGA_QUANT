@@ -8,7 +8,7 @@ import numpy as np
 from pathlib import Path
 import sys
 
-sys.path.insert(0, str((Path(__file__).parent.parent / 'src').resolve()))
+sys.path.insert(0, str(Path('OMEGA_QUANT/packages/core/src').resolve()))
 
 from omega.core.structure_features import (
     get_sector_features,

@@ -1,88 +1,90 @@
-"""
-CVaR / VaR — functional API, PIT-safe (T-1 lag on rolling/portfolio variants).
-
-Public API
-----------
-var_historical(returns, confidence) -> float
-cvar_historical(returns, confidence) -> float
-rolling_cvar(returns, window, confidence, min_periods) -> pd.Series
-portfolio_cvar(asset_returns, weights, confidence) -> float
-"""
 from __future__ import annotations
 
 import numpy as np
 import pandas as pd
 
 
+def _to_series(returns: pd.Series | np.ndarray | list[float], name: str = "returns") -> pd.Series:
+    series = pd.Series(returns, copy=True, dtype="float64")
+    if series.empty:
+        raise ValueError(f"{name} must contain at least 1 value")
+    return series
+
+
 def _validate_confidence(confidence: float) -> None:
-    if not (0.0 < confidence < 1.0):
-        raise ValueError(f"confidence must be in (0, 1), got {confidence}")
+    if confidence <= 0.0 or confidence >= 1.0:
+        raise ValueError("confidence must be between 0 and 1")
 
 
-def var_historical(returns: pd.Series, confidence: float = 0.95) -> float:
-    """Historical VaR (positive = loss magnitude). Uses lower interpolation (no smoothing)."""
+def _tail_count(length: int, confidence: float) -> int:
+    return max(1, int(np.ceil((1.0 - confidence) * length)))
+
+
+def var_historical(returns: pd.Series | np.ndarray | list[float], confidence: float = 0.95) -> float:
     _validate_confidence(confidence)
-    clean = returns.dropna()
-    if clean.empty:
-        return 0.0
-    q = np.quantile(clean.values, 1.0 - confidence, method="lower")
-    return float(abs(q))
+    series = _to_series(returns).dropna()
+    if series.empty:
+        raise ValueError("returns must contain at least 1 non-null value")
+    sorted_returns = np.sort(series.to_numpy())
+    tail_count = _tail_count(len(sorted_returns), confidence)
+    return abs(float(sorted_returns[tail_count - 1]))
 
 
-def cvar_historical(returns: pd.Series, confidence: float = 0.95) -> float:
-    """Historical CVaR / Expected Shortfall (positive = loss magnitude)."""
+def cvar_historical(returns: pd.Series | np.ndarray | list[float], confidence: float = 0.95) -> float:
     _validate_confidence(confidence)
-    clean = returns.dropna()
-    if clean.empty:
-        return 0.0
-    threshold = np.quantile(clean.values, 1.0 - confidence)
-    tail = clean[clean <= threshold]
-    if tail.empty:
-        return float(abs(threshold))
-    return float(abs(tail.mean()))
+    series = _to_series(returns).dropna()
+    if series.empty:
+        raise ValueError("returns must contain at least 1 non-null value")
+    sorted_returns = np.sort(series.to_numpy())
+    tail_count = _tail_count(len(sorted_returns), confidence)
+    return abs(float(sorted_returns[:tail_count].mean()))
+
+
+def _rolling_window_cvar(values: np.ndarray, confidence: float) -> float:
+    if len(values) == 0:
+        return float(np.nan)
+    sorted_values = np.sort(values)
+    tail_count = _tail_count(len(sorted_values), confidence)
+    return abs(float(sorted_values[:tail_count].mean()))
 
 
 def rolling_cvar(
     returns: pd.Series,
-    window: int = 20,
+    window: int,
     confidence: float = 0.95,
     min_periods: int | None = None,
 ) -> pd.Series:
-    """
-    Rolling CVaR with T-1 lag (each position i uses returns[i-window : i]).
-
-    Position i is computed from the window ending at i-1 (exclusive of i),
-    so there is no look-ahead.
-    """
-    if window < 1:
-        raise ValueError(f"window must be >= 1, got {window}")
     _validate_confidence(confidence)
-    mp = min_periods if min_periods is not None else window
+    if window < 1:
+        raise ValueError("window must be >= 1")
+    if min_periods is None:
+        min_periods = window
+    if min_periods < 1 or min_periods > window:
+        raise ValueError("min_periods must be between 1 and window")
 
-    result = pd.Series(np.nan, index=returns.index, dtype="float64")
-    for i in range(len(returns)):
-        start = i - window
-        if start < 0:
-            start = 0
-        slice_ = returns.iloc[start:i]  # excludes index i → T-1 lag
-        if len(slice_) >= mp:
-            result.iloc[i] = cvar_historical(slice_, confidence)
-    return result
+    series = _to_series(returns)
+    lagged = series.shift(1)
+    return lagged.rolling(window=window, min_periods=min_periods).apply(
+        _rolling_window_cvar,
+        args=(confidence,),
+        raw=True,
+    )
 
 
 def portfolio_cvar(
     asset_returns: pd.DataFrame,
-    weights: dict[str, float],
+    weights: pd.Series | dict[str, float],
     confidence: float = 0.95,
 ) -> float:
-    """
-    Portfolio CVaR using T-1 lagged asset returns.
-
-    Shifts asset_returns by 1 row before computing weighted portfolio returns,
-    ensuring no look-ahead.
-    """
     _validate_confidence(confidence)
-    w = pd.Series(weights)
-    lagged = asset_returns.shift(1)
-    portfolio_ret = lagged.mul(w, axis=1).sum(axis=1).dropna()
-    return cvar_historical(portfolio_ret, confidence)
+    if asset_returns.empty:
+        raise ValueError("asset_returns must contain at least 1 row")
+    weight_series = pd.Series(weights, dtype="float64")
+    missing = asset_returns.columns.difference(weight_series.index)
+    if len(missing) > 0:
+        raise ValueError(f"weights missing assets: {list(missing)}")
+    lagged_returns = asset_returns[weight_series.index].shift(1)
+    portfolio_returns = lagged_returns.mul(weight_series, axis=1).sum(axis=1, min_count=1).dropna()
+    if portfolio_returns.empty:
+        raise ValueError("portfolio_returns is empty after T-1 lag")
+    return cvar_historical(portfolio_returns, confidence=confidence)

@@ -2,7 +2,7 @@
 
 from .neural_memory import NeuralMemory
 from .logger import StructuredLogger
-from .metrics import MetricsRegistry, registry, PrometheusExporter, PrometheusExporterConfig
+from .metrics import MetricsRegistry, registry
 from .monitor import SystemMonitor, AlertRule
 
 __all__ = [
@@ -12,6 +12,4 @@ __all__ = [
     "registry",
     "SystemMonitor",
     "AlertRule",
-    "PrometheusExporter",
-    "PrometheusExporterConfig",
 ]

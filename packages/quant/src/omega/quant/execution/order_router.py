@@ -173,10 +173,9 @@ class OrderRouter:
     
     def switch_mode(self, new_mode: TradingMode):
         """
-        Switch trading mode and keep config.mode in sync.
-
+        Switch trading mode.
+        
         Args:
             new_mode: New trading mode to switch to
         """
         self.mode = new_mode
-        self.config.mode = new_mode

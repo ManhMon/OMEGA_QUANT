@@ -7,6 +7,3 @@ name = "omega-observability"
 version = "0.1.0"
 description = "OMEGA_QUANT Observability Module"
 authors = [{ name = "OMEGA Engineering" }]
-
-[project.optional-dependencies]
-prometheus = ["prometheus-client==0.20.0"]

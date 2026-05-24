@@ -33,18 +33,6 @@ def main():
         action="store_true",
         help="Disable Stage 4 optional XGBoost signal path",
     )
-    parser.add_argument(
-        "--cost-aware",
-        action="store_true",
-        default=False,
-        help="Stage 6.2: enable cost-aware alpha selection (penalises high-turnover alphas)",
-    )
-    parser.add_argument(
-        "--drawdown-control",
-        action="store_true",
-        default=False,
-        help="Stage 6.3: enable active drawdown control (5% stop-out to cash)",
-    )
     args = parser.parse_args()
     args.use_xgboost = not args.no_xgboost
 
@@ -80,8 +68,6 @@ def main():
     logger.info(f"  [Stage2] Rebalance Freq: every {STAGE2_REBALANCE_FREQ} days")
     logger.info(f"  [Stage2] Sector Cap: {STAGE2_SECTOR_CAP_PCT:.0%}")
     logger.info(f"  [Stage4] Use XGBoost: {args.use_xgboost}")
-    logger.info(f"  [Stage6.2] Cost-Aware: {args.cost_aware}")
-    logger.info(f"  [Stage6.3] Drawdown Control: {args.drawdown_control}")
     logger.info("")
     
     # Step 1: Load and prepare data
@@ -125,14 +111,12 @@ def main():
         rebalance_freq=STAGE2_REBALANCE_FREQ,
         sector_cap_pct=STAGE2_SECTOR_CAP_PCT,
         use_xgboost=args.use_xgboost,
-        drawdown_control=args.drawdown_control,
-        drawdown_threshold=0.05,
     )
     
     alpha_cols = list(phase34_microstructure_alphas.PHASE34_ALPHA_COLUMNS)
     return_col = f'fwd_ret_{RETURN_HORIZON}'
     
-    result = engine.run_walk_forward(splits, alpha_cols, return_col=return_col, cost_aware=args.cost_aware)
+    result = engine.run_walk_forward(splits, alpha_cols, return_col=return_col)
     
     logger.info("")
     logger.info("=" * 80)
@@ -163,7 +147,6 @@ def main():
             "stage2_rebalance_freq": STAGE2_REBALANCE_FREQ,
             "stage2_sector_cap_pct": STAGE2_SECTOR_CAP_PCT,
             "use_xgboost": args.use_xgboost,
-            "cost_aware": args.cost_aware,
         },
         "summary": {
             "avg_portfolio_ic": result.avg_portfolio_ic,
@@ -192,16 +175,7 @@ def main():
         "timestamp": datetime.now().isoformat(),
     }
     
-    if args.cost_aware and args.drawdown_control:
-        result_suffix = "cost_aware_drawdown_control"
-    elif args.cost_aware:
-        result_suffix = "cost_aware"
-    elif args.drawdown_control:
-        result_suffix = "drawdown_control"
-    elif args.use_xgboost:
-        result_suffix = "xgboost"
-    else:
-        result_suffix = "baseline"
+    result_suffix = "xgboost" if args.use_xgboost else "baseline"
     json_path = output_dir / f"phase35_backtest_results_{result_suffix}.json"
     with open(json_path, 'w') as f:
         json.dump(results_dict, f, indent=2)

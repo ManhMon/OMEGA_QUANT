@@ -310,3 +310,483 @@ class TestExecutionEngine:
             assert response.success is False
             assert response.status == OrderStatus.REJECTED
             assert response.error_code == "MISSING_PRICE"
+
+
+class TestPhase16LiquidationAndLatency:
+    """
+    Phase 16: Tests for V21 liquidation/defense concepts and latency simulation
+    integrated into ExecutionEngine.
+    """
+
+    @pytest.fixture
+    def prices_envelope(self):
+        return {
+            "data": {"VNM": 50.0, "HPG": 25.0},
+            "timestamp": 1716000000.0,
+            "provenance": "unit-test-prices",
+        }
+
+    @pytest.fixture
+    def no_latency_engine(self):
+        """ExecutionEngine in PAPER mode with latency simulation disabled."""
+        from omega.execution import OrderRouterConfig, LatencyConfig
+        router_cfg = OrderRouterConfig(
+            mode=TradingMode.PAPER,
+            simulate_latency=False,
+        )
+        cfg = ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+        )
+        return ExecutionEngine(cfg)
+
+    # ------------------------------------------------------------------
+    # Liquidation priority ordering
+    # ------------------------------------------------------------------
+
+    def test_liquidation_orders_execute_before_buys(self, prices_envelope):
+        """
+        Liquidation (SELL to zero) orders must appear first in the results list
+        regardless of the order they appear in target_portfolio.
+        """
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        engine = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+        ))
+
+        # VNM: BUY (increase), HPG: liquidate (target=0)
+        summary = engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 1000}, "HPG": {"quantity": 0}},
+            current_portfolio={"VNM": {"quantity": 500}, "HPG": {"quantity": 400}},
+            current_prices=prices_envelope,
+            allow_odd_lot=True,
+        )
+
+        assert summary["success"] is True
+        orders = summary["orders"]
+        assert len(orders) == 2
+        # Liquidation order must come first
+        assert orders[0]["symbol"] == "HPG"
+        assert orders[0]["is_liquidation"] is True
+        assert orders[1]["symbol"] == "VNM"
+        assert orders[1]["is_liquidation"] is False
+
+    def test_liquidation_order_flagged_in_metrics(self, prices_envelope):
+        """total_liquidation_orders metric increments for each liquidation order."""
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        engine = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+        ))
+
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 0}, "HPG": {"quantity": 0}},
+            current_portfolio={"VNM": {"quantity": 500}, "HPG": {"quantity": 400}},
+            current_prices=prices_envelope,
+            allow_odd_lot=True,
+        )
+
+        metrics = engine.get_execution_metrics()
+        assert metrics["total_liquidation_orders"] == 2
+
+    def test_liquidation_exposure_registered_on_router(self, prices_envelope):
+        """
+        After executing a liquidation order, the router's liquidation_exposure
+        registry must contain an entry for the liquidated symbol.
+        """
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        engine = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+        ))
+
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 0}},
+            current_portfolio={"VNM": {"quantity": 300}},
+            current_prices=prices_envelope,
+            allow_odd_lot=True,
+        )
+
+        exp = engine.router.get_liquidation_exposure("VNM")
+        assert exp is not None
+        assert exp.submitted_qty == 300
+
+    def test_liquidation_exposure_cleared_when_fully_submitted(self, prices_envelope):
+        """
+        When remaining_qty reaches 0 after submission, is_liquidating is set False.
+        """
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        engine = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+        ))
+
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 0}},
+            current_portfolio={"VNM": {"quantity": 300}},
+            current_prices=prices_envelope,
+            allow_odd_lot=True,
+        )
+
+        exp = engine.router.get_liquidation_exposure("VNM")
+        assert exp is not None
+        assert exp.is_liquidating is False
+
+    # ------------------------------------------------------------------
+    # Defense cap (V21 defense mode)
+    # ------------------------------------------------------------------
+
+    def test_defense_cap_halts_buy_when_gross_exposure_exceeded(self, prices_envelope):
+        """
+        When defense_gross_exposure_cap is set and gross liquidation exposure
+        exceeds it, new BUY orders are rejected with DEFENSE_CAP_BREACH.
+        """
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        # Cap = 1 VND — will be breached by any real liquidation notional
+        engine = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+            defense_gross_exposure_cap=1.0,
+        ))
+
+        # Pre-seed a large liquidation exposure so cap is already breached
+        engine.router.update_liquidation_exposure(
+            symbol="HPG",
+            is_liquidating=True,
+            remaining_qty=1000,
+            current_price=25.0,
+        )
+
+        summary = engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 1000}},
+            current_portfolio={"VNM": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+
+        assert summary["success"] is False
+        order = summary["orders"][0]
+        assert order["error_code"] == "DEFENSE_CAP_BREACH"
+        assert order["success"] is False
+
+    def test_defense_cap_zero_means_no_cap(self, prices_envelope):
+        """defense_gross_exposure_cap=0.0 disables the cap entirely."""
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        engine = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+            defense_gross_exposure_cap=0.0,
+        ))
+
+        # Pre-seed enormous exposure — should NOT block buys
+        engine.router.update_liquidation_exposure(
+            symbol="HPG",
+            is_liquidating=True,
+            remaining_qty=999999,
+            current_price=999999.0,
+        )
+
+        summary = engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 100}},
+            current_portfolio={"VNM": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+
+        assert summary["success"] is True
+        assert summary["orders"][0]["error_code"] != "DEFENSE_CAP_BREACH"
+
+    def test_defense_mode_active_reflected_in_metrics(self, prices_envelope):
+        """defense_mode_active flag in metrics is True when cap is breached."""
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        engine = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+            defense_gross_exposure_cap=1.0,
+        ))
+        engine.router.update_liquidation_exposure("HPG", True, 1000, 25.0)
+
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 100}},
+            current_portfolio={"VNM": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+
+        metrics = engine.get_execution_metrics()
+        assert metrics["defense_mode_active"] is True
+        assert metrics["total_defense_halted"] == 1
+
+    def test_gross_liquidation_exposure_in_metrics(self, prices_envelope):
+        """get_execution_metrics includes gross_liquidation_exposure from router."""
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        engine = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+        ))
+
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 0}},
+            current_portfolio={"VNM": {"quantity": 200}},
+            current_prices=prices_envelope,
+            allow_odd_lot=True,
+        )
+
+        metrics = engine.get_execution_metrics()
+        # After full liquidation, is_liquidating=False → gross = 0
+        assert metrics["gross_liquidation_exposure"] == 0.0
+
+    # ------------------------------------------------------------------
+    # Latency metrics surfaced through engine
+    # ------------------------------------------------------------------
+
+    def test_router_average_latency_ms_in_metrics(self, prices_envelope):
+        """get_execution_metrics includes router_average_latency_ms."""
+        from omega.execution import OrderRouterConfig, LatencyConfig
+        router_cfg = OrderRouterConfig(
+            mode=TradingMode.PAPER,
+            simulate_latency=True,
+            latency_config=LatencyConfig(
+                paper_base_ms=3.0,
+                paper_std_ms=0.0,
+                rng_seed=7,
+            ),
+        )
+        engine = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+        ))
+
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 100}},
+            current_portfolio={"VNM": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+
+        metrics = engine.get_execution_metrics()
+        # std=0 so every sample ≈ 3 ms
+        assert abs(metrics["router_average_latency_ms"] - 3.0) < 0.5
+
+
+class TestHaltResumeAndCancelAll:
+    """Fix 2: halt(), resume(), cancel_all_active_orders() on ExecutionEngine."""
+
+    @pytest.fixture
+    def engine(self):
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        return ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+        ))
+
+    @pytest.fixture
+    def prices_envelope(self):
+        return {
+            "data": {"VNM": 50.0, "HPG": 25.0},
+            "timestamp": 1716000000.0,
+            "provenance": "unit-test-prices",
+        }
+
+    # ------------------------------------------------------------------
+    # halt / resume
+    # ------------------------------------------------------------------
+
+    def test_halt_blocks_execute_workflow(self, engine, prices_envelope):
+        """execute_workflow returns HALTED error_code when engine is halted."""
+        engine.halt()
+        result = engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 100}},
+            current_portfolio={"VNM": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+        assert result["success"] is False
+        assert result["error_code"] == "HALTED"
+        assert result["orders"] == []
+
+    def test_halt_sets_internal_flag(self, engine):
+        """halt() sets _halted to True."""
+        assert engine._halted is False
+        engine.halt()
+        assert engine._halted is True
+
+    def test_resume_clears_halt_flag(self, engine):
+        """resume() clears _halted so workflow proceeds normally."""
+        engine.halt()
+        engine.resume()
+        assert engine._halted is False
+
+    def test_resume_allows_workflow_after_halt(self, engine, prices_envelope):
+        """After halt then resume, execute_workflow succeeds again."""
+        engine.halt()
+        engine.resume()
+        result = engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 100}},
+            current_portfolio={"VNM": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+        assert result["success"] is True
+        assert result.get("error_code") != "HALTED"
+
+    def test_halt_does_not_cancel_active_orders(self, engine, prices_envelope):
+        """halt() does not touch already-submitted active_orders."""
+        # Submit an order first
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 100}},
+            current_portfolio={"VNM": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+        assert len(engine.active_orders) == 1
+        engine.halt()
+        # Active orders still present
+        assert len(engine.active_orders) == 1
+
+    # ------------------------------------------------------------------
+    # cancel_all_active_orders
+    # ------------------------------------------------------------------
+
+    def test_cancel_all_active_orders_empty(self, engine):
+        """cancel_all_active_orders on empty registry returns zero totals."""
+        result = engine.cancel_all_active_orders()
+        assert result["total"] == 0
+        assert result["cancelled"] == 0
+        assert result["failed"] == 0
+        assert result["results"] == []
+
+    def test_cancel_all_active_orders_cancels_submitted_orders(self, engine, prices_envelope):
+        """cancel_all_active_orders cancels every active order."""
+        # Submit two orders
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 100}, "HPG": {"quantity": 200}},
+            current_portfolio={"VNM": {"quantity": 0}, "HPG": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+        # Paper engine fills immediately; force status back to SUBMITTED so cancel works
+        for broker_id in engine.active_orders:
+            engine.router.paper_engine.orders[broker_id]["status"] = OrderStatus.SUBMITTED
+
+        result = engine.cancel_all_active_orders()
+        assert result["total"] == 2
+        assert result["cancelled"] == 2
+        assert result["failed"] == 0
+
+    def test_cancel_all_active_orders_returns_per_order_results(self, engine, prices_envelope):
+        """cancel_all_active_orders result list contains one entry per active order."""
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 100}},
+            current_portfolio={"VNM": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+        for broker_id in engine.active_orders:
+            engine.router.paper_engine.orders[broker_id]["status"] = OrderStatus.SUBMITTED
+
+        result = engine.cancel_all_active_orders()
+        assert len(result["results"]) == 1
+        entry = result["results"][0]
+        assert "broker_order_id" in entry
+        assert "success" in entry
+        assert "message" in entry
+
+    def test_cancel_all_updates_metrics(self, engine, prices_envelope):
+        """cancel_all_active_orders increments total_cancelled metric."""
+        engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 100}},
+            current_portfolio={"VNM": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+        for broker_id in engine.active_orders:
+            engine.router.paper_engine.orders[broker_id]["status"] = OrderStatus.SUBMITTED
+
+        engine.cancel_all_active_orders()
+        metrics = engine.get_execution_metrics()
+        assert metrics["total_cancelled"] >= 1
+
+
+class TestLiquidationMode:
+    """Fix 3: liquidation_mode flag forces ALL SELLs before ALL BUYs."""
+
+    @pytest.fixture
+    def prices_envelope(self):
+        return {
+            "data": {"VNM": 50.0, "HPG": 25.0, "FPT": 80.0},
+            "timestamp": 1716000000.0,
+            "provenance": "unit-test-prices",
+        }
+
+    def _engine(self, liquidation_mode: bool) -> ExecutionEngine:
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        return ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+            liquidation_mode=liquidation_mode,
+        ))
+
+    def test_liquidation_mode_false_partial_sell_not_prioritised(self, prices_envelope):
+        """Without liquidation_mode, a partial SELL (target>0) is NOT moved before BUYs."""
+        engine = self._engine(liquidation_mode=False)
+        # HPG: reduce (SELL, target>0) — should NOT be prioritised over VNM BUY
+        summary = engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 500}, "HPG": {"quantity": 100}},
+            current_portfolio={"VNM": {"quantity": 0}, "HPG": {"quantity": 400}},
+            current_prices=prices_envelope,
+        )
+        assert summary["success"] is True
+        orders = summary["orders"]
+        symbols = [o["symbol"] for o in orders]
+        # VNM BUY may appear before HPG SELL — no strict ordering guarantee
+        assert set(symbols) == {"VNM", "HPG"}
+
+    def test_liquidation_mode_true_all_sells_before_buys(self, prices_envelope):
+        """With liquidation_mode=True, ALL SELLs appear before ALL BUYs."""
+        engine = self._engine(liquidation_mode=True)
+        # VNM: BUY, HPG: partial SELL (target>0), FPT: BUY
+        summary = engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 500}, "HPG": {"quantity": 100}, "FPT": {"quantity": 200}},
+            current_portfolio={"VNM": {"quantity": 0}, "HPG": {"quantity": 400}, "FPT": {"quantity": 0}},
+            current_prices=prices_envelope,
+        )
+        assert summary["success"] is True
+        orders = summary["orders"]
+        # Find the index of the first BUY and last SELL
+        sell_indices = [i for i, o in enumerate(orders) if o["symbol"] == "HPG"]
+        buy_indices  = [i for i, o in enumerate(orders) if o["symbol"] in ("VNM", "FPT")]
+        assert sell_indices, "Expected at least one SELL order"
+        assert buy_indices,  "Expected at least one BUY order"
+        assert max(sell_indices) < min(buy_indices), (
+            f"All SELLs must precede all BUYs. orders={[o['symbol'] for o in orders]}"
+        )
+
+    def test_liquidation_mode_config_flag_stored(self):
+        """liquidation_mode is stored on config and defaults to False."""
+        engine_default = ExecutionEngine(ExecutionEngineConfig())
+        assert engine_default.config.liquidation_mode is False
+
+        from omega.execution import OrderRouterConfig
+        router_cfg = OrderRouterConfig(mode=TradingMode.PAPER, simulate_latency=False)
+        engine_liq = ExecutionEngine(ExecutionEngineConfig(
+            mode=TradingMode.PAPER,
+            router_config=router_cfg,
+            liquidation_mode=True,
+        ))
+        assert engine_liq.config.liquidation_mode is True
+
+    def test_liquidation_mode_full_liquidation_still_first(self, prices_envelope):
+        """Full liquidation (target=0) SELLs are still first under liquidation_mode=True."""
+        engine = self._engine(liquidation_mode=True)
+        summary = engine.execute_workflow(
+            target_portfolio={"VNM": {"quantity": 500}, "HPG": {"quantity": 0}},
+            current_portfolio={"VNM": {"quantity": 0}, "HPG": {"quantity": 400}},
+            current_prices=prices_envelope,
+            allow_odd_lot=True,
+        )
+        assert summary["success"] is True
+        orders = summary["orders"]
+        assert orders[0]["symbol"] == "HPG"
+        assert orders[0]["is_liquidation"] is True

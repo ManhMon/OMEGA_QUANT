@@ -159,6 +159,11 @@ execution:
     twap_duration_minutes: 30
 
 # Monitoring Configuration
+mlflow:
+  tracking_uri: "sqlite:///mlflow.db"
+  experiment_name: "omega_quant_models"
+  artifact_location: "mlruns"
+
 monitoring:
   enabled: true
   metrics_interval_seconds: 60

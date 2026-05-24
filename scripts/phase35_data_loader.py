@@ -30,7 +30,7 @@ class Phase35DataLoader:
     
     def __init__(
         self,
-        warehouse_path: Optional[str] = None,
+        warehouse_path: str = r"C:\Users\GHC\.openclaw\workspace\OMEGA_QUANT\data\market_2015_now.parquet",
         min_price: float = 1.0,
         min_volume: float = 1000.0,
         min_history_days: int = 60,
@@ -48,17 +48,7 @@ class Phase35DataLoader:
         min_history_days : int
             Minimum history required per symbol
         """
-        if warehouse_path is None:
-            script_root = Path(__file__).resolve().parent.parent
-            candidate_paths = [
-                script_root / "data" / "market_2015_now.parquet",
-                script_root / "OMEGA_QUANT" / "data" / "market_2015_now.parquet",
-            ]
-            resolved_path = next((p for p in candidate_paths if p.exists()), candidate_paths[0])
-        else:
-            resolved_path = Path(warehouse_path)
-
-        self.warehouse_path = resolved_path
+        self.warehouse_path = Path(warehouse_path)
         self.min_price = min_price
         self.min_volume = min_volume
         self.min_history_days = min_history_days

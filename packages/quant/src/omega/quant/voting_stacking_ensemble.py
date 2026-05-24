@@ -643,85 +643,27 @@ def create_stacking_ensemble(
     base_oos_predictions: Dict[str, pd.Series],
     actuals: pd.Series,
     data: Optional[pd.DataFrame] = None,
-    config: Optional[EnsembleConfig] = None,
-    provenance: Optional[Dict[str, "BaseModelPrediction"]] = None,
+    config: Optional[EnsembleConfig] = None
 ) -> EnsembleResult:
     """
     Convenience function to create, fit, and predict stacking ensemble using Out-of-Sample (OOS) predictions
     with strict PIT safety partitioning.
-
-    CRITICAL: To prevent meta-learner leakage, the data is partitioned using `config.train_cutoff`
-    and `config.validation_start`. The meta-learner is fit ONLY on the training partition, and
+    
+    CRITICAL: To prevent meta-learner leakage, the data is partitioned using `config.train_cutoff` 
+    and `config.validation_start`. The meta-learner is fit ONLY on the training partition, and 
     predictions are generated ONLY on the validation (OOS) partition.
-
-    OOS PROVENANCE REQUIREMENT: Callers MUST supply the `provenance` argument — a dict mapping
-    each model name to its BaseModelPrediction metadata. Each entry must have:
-      - is_oos=True  (confirms predictions were generated out-of-sample)
-      - train_end set (non-None timestamp marking the training cutoff)
-      - prediction_start set (non-None timestamp confirming no look-ahead)
-      - generator_id set (non-empty string identifying the generating pipeline)
-
-    Passing raw pd.Series without provenance is rejected to prevent silent in-sample leakage.
-
+    
     Args:
         base_oos_predictions: Dict mapping model_name -> Out-of-Sample predictions (OOS)
         actuals: Actual returns
         data: Optional data for regime features
         config: Optional ensemble config
-        provenance: Required dict mapping model_name -> BaseModelPrediction with OOS metadata.
-                    Raises ValueError if None or if any entry fails provenance checks.
-
+        
     Returns:
         EnsembleResult with meta-learner predictions on the validation (OOS) partition.
     """
     cfg = config or EnsembleConfig()
-
-    # --- OOS Provenance Gate (P1 audit fix) ---
-    # Reject raw series that arrive without verified OOS provenance metadata.
-    if provenance is None:
-        raise ValueError(
-            "OOS provenance required: pass `provenance` dict mapping each model name to its "
-            "BaseModelPrediction metadata (is_oos=True, train_end, prediction_start, generator_id). "
-            "Raw pd.Series without provenance are rejected to prevent silent in-sample leakage."
-        )
-
-    missing_models = set(base_oos_predictions.keys()) - set(provenance.keys())
-    if missing_models:
-        raise ValueError(
-            f"OOS provenance missing for models: {sorted(missing_models)}. "
-            "Every model in base_oos_predictions must have a corresponding provenance entry."
-        )
-
-    for name, prov in provenance.items():
-        if name not in base_oos_predictions:
-            continue  # extra provenance entries are harmless
-        errors: List[str] = []
-        if not prov.is_oos:
-            errors.append("is_oos must be True")
-        if prov.train_end is None:
-            errors.append("train_end must be set (non-None)")
-        if prov.prediction_start is None:
-            errors.append("prediction_start must be set (non-None)")
-        if not prov.generator_id:
-            errors.append("generator_id must be a non-empty string")
-        if prov.train_end is not None and prov.prediction_start is not None:
-            if prov.prediction_start <= prov.train_end:
-                errors.append(
-                    f"prediction_start ({prov.prediction_start}) must be strictly after "
-                    f"train_end ({prov.train_end}) to prevent look-ahead"
-                )
-        if errors:
-            raise ValueError(
-                f"OOS provenance check FAILED for model '{name}': {'; '.join(errors)}"
-            )
-
-    logger.info(
-        "OOS provenance validated for %d models: %s",
-        len(provenance),
-        sorted(provenance.keys()),
-    )
-    # --- end provenance gate ---
-
+    
     # Enforce OOS contract via input validation
     for name, pred in base_oos_predictions.items():
         if not isinstance(pred, pd.Series):

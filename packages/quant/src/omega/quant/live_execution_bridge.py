@@ -75,8 +75,6 @@ class ExecutionOrder:
     order_type: OrderType
     price: Optional[float]
     state: ExecutionState
-    broker: Optional[str] = None
-    venue: Optional[str] = None
     broker_order_id: Optional[str] = None
     filled_quantity: int = 0
     average_fill_price: float = 0.0
@@ -161,9 +159,7 @@ class LiveExecutionBridge:
         quantity: int,
         order_type: OrderType = OrderType.MARKET,
         price: Optional[float] = None,
-        current_price: Optional[float] = None,
-        broker: Optional[str] = None,
-        venue: Optional[str] = None,
+        current_price: Optional[float] = None
     ) -> ExecutionOrder:
         """
         Submit order to broker with retry logic.
@@ -175,8 +171,6 @@ class LiveExecutionBridge:
             order_type: Order type (MARKET or LIMIT)
             price: Limit price (required for LIMIT orders)
             current_price: Current market price (for paper trading)
-            broker: Resolved broker route for audit trail
-            venue: Resolved venue string for audit trail
 
         Returns:
             ExecutionOrder with current state
@@ -204,9 +198,7 @@ class LiveExecutionBridge:
             quantity=broker_order.quantity,  # Use rounded quantity
             order_type=order_type,
             price=price,
-            state=ExecutionState.PENDING,
-            broker=broker,
-            venue=venue,
+            state=ExecutionState.PENDING
         )
 
         if execution_order.quantity <= 0:

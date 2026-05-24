@@ -1,6 +1,6 @@
 """
 OMEGA_QUANT Execution Package (Layer 03)
-Phase 4.3: Order Routing & Broker Integration
+Phase 4.3 / Phase 16: Order Routing, Latency Simulation & Liquidation Exposure
 
 Vectorized/Event-based | Institutional Grade | PIT-Safe
 """
@@ -15,7 +15,6 @@ from .broker_gateway import (
     BrokerCredentials,
     BrokerGateway,
     PaperTradingEngine,
-    VNDirectBroker,
 )
 
 from .order_router import (
@@ -23,6 +22,8 @@ from .order_router import (
     SSIBrokerGateway,
     OrderRouterConfig,
     OrderRouter,
+    LatencyConfig,
+    LiquidationExposure,
 )
 
 from .order_generator import (
@@ -62,12 +63,13 @@ __all__ = [
     "BrokerCredentials",
     "BrokerGateway",
     "PaperTradingEngine",
-    "VNDirectBroker",
     # order_router
     "TradingMode",
     "SSIBrokerGateway",
     "OrderRouterConfig",
     "OrderRouter",
+    "LatencyConfig",
+    "LiquidationExposure",
     # order_generator
     "PositionSizingConfig",
     "OrderGenerator",

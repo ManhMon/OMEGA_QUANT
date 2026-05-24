@@ -259,7 +259,55 @@ OMEGA+++ is an **Institutional Grade Quant AI System** designed to achieve:
 
 ---
 
-## SUMMARY: PHASES 1-13
+### Phase 24: MLOps Cloud (Open Source / Kubernetes) ⭐ NEW
+**Status**: ⏳ **PENDING**
+**Weeks**: 23-25
+
+**Objective**: Deploy OMEGA_QUANT MLOps infrastructure on Kubernetes using fully open-source tooling (MLflow, MinIO, PostgreSQL, Seldon Core). No vendor lock-in. Production-grade model lifecycle management on self-hosted k8s cluster.
+
+**Spec Requirements** (Section 8.3, 13.1-13.4):
+- **MLflow Tracking Server**: Experiment tracking, run logging, metric/artifact storage
+- **MLflow Model Registry**: Centralized model versioning, stage transitions (Staging → Production → Archived)
+- **MinIO Object Store**: S3-compatible artifact backend for MLflow (replaces cloud S3)
+- **PostgreSQL Backend**: MLflow metadata store (replaces SQLite for production)
+- **Seldon Core**: Model serving on Kubernetes (REST + gRPC inference endpoints)
+- **Kubernetes Manifests**: Namespace isolation, resource limits, health probes, PVC for persistence
+- **CI/CD Integration**: Automated model promotion pipeline via GitHub Actions / ArgoCD
+
+**Deliverables**:
+- [ ] `infra/kubernetes/mlops/namespace.yaml` — Dedicated `mlops` namespace with resource quotas
+- [ ] `infra/kubernetes/mlops/mlflow/deployment.yaml` — MLflow tracking server (image: `ghcr.io/mlflow/mlflow`)
+- [ ] `infra/kubernetes/mlops/mlflow/service.yaml` — ClusterIP + optional Ingress
+- [ ] `infra/kubernetes/mlops/mlflow/configmap.yaml` — Backend URI, artifact root config
+- [ ] `infra/kubernetes/mlops/minio/deployment.yaml` — MinIO object store (S3-compatible)
+- [ ] `infra/kubernetes/mlops/minio/service.yaml` — MinIO API (:9000) + Console (:9001)
+- [ ] `infra/kubernetes/mlops/minio/pvc.yaml` — PersistentVolumeClaim for artifact storage
+- [ ] `infra/kubernetes/mlops/postgres/deployment.yaml` — PostgreSQL metadata backend
+- [ ] `infra/kubernetes/mlops/postgres/service.yaml` — PostgreSQL ClusterIP service
+- [ ] `infra/kubernetes/mlops/postgres/pvc.yaml` — PersistentVolumeClaim for DB storage
+- [ ] `infra/kubernetes/mlops/postgres/secret.yaml` — DB credentials (base64, RBAC-gated)
+- [ ] `infra/kubernetes/mlops/seldon/seldondeployment.yaml` — Seldon model serving template
+- [ ] `infra/kubernetes/mlops/kustomization.yaml` — Kustomize overlay for environment promotion
+
+**Acceptance Criteria**:
+- [ ] MLflow UI accessible at `http://mlflow.mlops.svc.cluster.local:5000` (health probe PASS)
+- [ ] Experiments logged and retrievable via MLflow Python client (tested with 10 runs)
+- [ ] Artifacts stored in MinIO, not local filesystem (verified via MinIO console)
+- [ ] Model Registry stage transitions work: `None → Staging → Production → Archived`
+- [ ] PostgreSQL persists metadata across pod restarts (tested with pod kill + restart)
+- [ ] MinIO data persists across pod restarts (PVC bound, tested with pod kill + restart)
+- [ ] Seldon deployment serves predictions via REST endpoint (tested with dummy model)
+- [ ] All pods reach `Running` state with 0 CrashLoopBackOff (verified via `kubectl get pods -n mlops`)
+- [ ] Resource limits enforced: MLflow ≤ 1CPU/2Gi, MinIO ≤ 1CPU/2Gi, Postgres ≤ 500m/1Gi
+- [ ] Kustomize overlay applies cleanly for `dev` and `prod` environments
+
+**Estimated Effort**: 35 hours (OpenCode L2 — Role 12 Cloud Infra)
+**Risk**: Medium (k8s networking, PVC provisioner dependency on cluster setup)
+**Dependencies**: Phase 13 (ML Engine), Phase 12 (Model Registry) — artifacts to be stored in MLflow
+
+---
+
+## SUMMARY: PHASES 1-24
 
 | Phase | Name | Status | Tests | Effort |
 |:------|:-----|:-------|:------|:-------|
@@ -273,23 +321,27 @@ OMEGA+++ is an **Institutional Grade Quant AI System** designed to achieve:
 | 8 | Security & Governance | ✅ COMPLETE | 5 | 35h |
 | 9 | Integration & Testing | ✅ COMPLETE | 2 | 30h |
 | 10 | Deployment & Go-Live | ✅ COMPLETE | 4 | 25h |
-| **11** | **Task State Machine (Institutional)** | ⏳ PENDING | - | 30h |
-| **12** | **Model Registry & Context Assembly** | ⏳ PENDING | - | 40h |
-| **13** | **Machine Learning Engine (MLOps)** | ⏳ PENDING | - | 50h |
-| | **TOTAL (1-10)** | ✅ COMPLETE | **407** | **415h** |
-| | **TOTAL (11-13)** | ⏳ PENDING | - | **120h** |
-| | **GRAND TOTAL** | - | - | **535h** |
+| 11 | Task State Machine (Institutional) | ✅ COMPLETE | 12 | 30h |
+| 12 | Model Registry & Context Assembly | ✅ COMPLETE | 9 | 40h |
+| 13 | Machine Learning Engine (MLOps) | ✅ COMPLETE | 7 | 50h |
+| 19 | Market Impact + VN Constraints | ✅ COMPLETE | 66 | 40h |
+| 20 | Constraint Solver VN Hardening | ✅ COMPLETE | 61 | 30h |
+| 21 | Performance Attribution | ✅ COMPLETE | 77 | 35h |
+| 22 | Gap Analysis & Integration Verification | ✅ COMPLETE | - | 20h |
+| **24** | **MLOps Cloud (Open Source / Kubernetes)** | ⏳ PENDING | - | **35h** |
+| | **TOTAL (1-22)** | ✅ COMPLETE | **699+** | **535h** |
+| | **TOTAL (24)** | ⏳ PENDING | - | **35h** |
+| | **GRAND TOTAL** | - | - | **570h** |
 
 ---
 
 ## NEXT STEPS
 
-1. **Approve Phases 11-13** (anh confirm)
-2. **Implement Phase 11**: Task State Machine (Institutional)
-3. **Implement Phase 12**: Model Registry & Context Assembly
-4. **Implement Phase 13**: Machine Learning Engine (MLOps)
+1. **Implement Phase 24**: MLOps Cloud (Open Source / Kubernetes) — Role 12 Cloud Infra
+2. **L3 Audit Phase 24**: Codex verifies k8s manifests, resource limits, PIT safety of model serving
+3. **Integration Test**: Phase 13 ML Engine → MLflow tracking → MinIO artifact store → Seldon serving
+4. **Production Deployment**: OMEGA v2.0 + MLOps Cloud stack
 5. **Final Audit**: Codex verifies all phases against spec
-6. **Production Deployment**: OMEGA v2.0 (Spec-Aligned)
 
 ---
 
