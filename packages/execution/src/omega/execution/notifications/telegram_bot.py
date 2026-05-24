@@ -45,6 +45,35 @@ class TelegramAlertBot:
             logger.error(f"Failed to send Telegram alert: {e}")
             return False
 
+    def send_daily_signal_batch(self, date: str, target_portfolio: Dict[str, Dict[str, Any]], current_prices: Dict[str, float]) -> bool:
+        """Format and send a batched daily signal oracle message."""
+        if not target_portfolio:
+            return self.send_message(f"🧠 *OMEGA ORACLE* [{date}]\n\nNo trading signals today. Portfolio unchanged.")
+            
+        lines = [f"🧠 *OMEGA ORACLE* [{date}]", ""]
+        lines.append("`[MÃ]    [LỆNH]    [KHỐI LƯỢNG]    [TẠM TÍNH (M)]`")
+        lines.append("--------------------------------------------------")
+        
+        total_value = 0.0
+        for sym, data in target_portfolio.items():
+            qty = data.get("quantity", 0)
+            if qty == 0:
+                continue
+            side = "MUA" if qty > 0 else "BÁN"
+            abs_qty = abs(qty)
+            price = current_prices.get(sym, 0.0)
+            notional = (abs_qty * price) / 1_000_000
+            total_value += notional if side == "MUA" else -notional
+            
+            # Format row fixed width
+            lines.append(f"`{sym:<7} {side:<9} {abs_qty:<14,} {notional:,.1f}`")
+            
+        lines.append("--------------------------------------------------")
+        action_word = "MUA" if total_value >= 0 else "BÁN RÒNG"
+        lines.append(f"**Tổng Net:** {action_word} `{abs(total_value):,.1f}` Triệu VND")
+        
+        return self.send_message("\n".join(lines))
+
     def send_trade_alert(self, symbol: str, side: str, qty: int, price: float, mode: str = "PAPER") -> bool:
         """Format and send a trade execution alert."""
         icon = "🟢" if side.upper() == "BUY" else "🔴"

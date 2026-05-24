@@ -56,6 +56,9 @@ class ExecutionEngineConfig:
     # Liquidation mode: when True ALL SELL orders execute before ANY BUY order,
     # regardless of whether target_qty == 0.  Superset of the per-order sort.
     liquidation_mode: bool = False
+    
+    # Oracle Mode: If true, suppresses single trade Telegram alerts (relies on batch reporting)
+    signal_oracle_mode: bool = False
 
 
 class ExecutionEngine:
@@ -300,14 +303,15 @@ class ExecutionEngine:
                     self.execution_metrics["total_filled"] += 1
                     
                 # Send Telegram Alert
-                self.telegram.send_trade_alert(
-                    symbol=symbol,
-                    side=side.name,
-                    qty=qty,
-                    price=price or prices.get(symbol) or 0.0,
-                    mode=self.config.mode.name
-                )
-                if is_liq:
+                if not self.config.signal_oracle_mode:
+                    self.telegram.send_trade_alert(
+                        symbol=symbol,
+                        side=side.name,
+                        qty=qty,
+                        price=price or prices.get(symbol) or 0.0,
+                        mode=self.config.mode.name
+                    )
+                if is_liq and not self.config.signal_oracle_mode:
                     self.telegram.send_liquidation_alert(symbol=symbol, qty=qty)
 
                 # Clear liquidation exposure when fully submitted

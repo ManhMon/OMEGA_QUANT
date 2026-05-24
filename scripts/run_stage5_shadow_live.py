@@ -236,6 +236,7 @@ def simulate_execution(
         mode=TradingMode.PAPER,
         router_config=router_cfg,
         liquidation_mode=True,
+        signal_oracle_mode=True
     )
     engine = ExecutionEngine(engine_cfg)
 
@@ -245,6 +246,9 @@ def simulate_execution(
         current_prices=prices_envelope,
         allow_odd_lot=False
     )
+    
+    # Trigger Telegram Daily Batch
+    engine.telegram.send_daily_signal_batch(date, target_portfolio, current_prices)
 
     metrics = engine.get_execution_metrics()
     
