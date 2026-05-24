@@ -113,6 +113,15 @@ class Task:
     audit_ref: str = ""
     retry_count: int = 0
     last_error: Optional[str] = None
+    _cancel_event: Any = field(default_factory=threading.Event, repr=False, compare=False)
+
+    def is_cancelled(self) -> bool:
+        """Check if the task has been preempted/cancelled."""
+        return self._cancel_event.is_set()
+
+    def cancel(self):
+        """Signal the cancellation event."""
+        self._cancel_event.set()
     
     def can_transition_to(self, new_state: TaskState) -> bool:
         """Validate state transition (Spec Section 4.2)."""
@@ -351,6 +360,17 @@ class TaskStateMachine:
         
         return True
     
+    def preempt_task(self, task_id: str, reason: str = "Preempted by higher priority or user request"):
+        """Preempt (cancel) a running task via Threading Event."""
+        with self._lock:
+            task = self.tasks.get(task_id)
+            if not task:
+                raise ValueError(f"Task {task_id} not found")
+            
+            task.cancel()
+            self._transition(task_id, TaskState.ABORTED, reason=reason)
+            logger.info(f"Task {task_id} preempted/cancelled. Reason: {reason}")
+
     def _emit_event(
         self,
         event_type: str,

@@ -251,6 +251,57 @@ class OrderRouter:
         return sum(self._latency_samples) / len(self._latency_samples)
 
     # ------------------------------------------------------------------
+    # Implementation Shortfall (IS) Routing
+    # ------------------------------------------------------------------
+    def apply_is_routing(
+        self, order: BrokerOrder, arrival_price: float, current_price: float, alpha_decay_rate: float
+    ) -> int:
+        """
+        Implementation Shortfall (IS) routing algorithm.
+        Dynamically adjusts participation rate based on alpha decay and price drift.
+
+        Args:
+            order: The broker order
+            arrival_price: The price at the time the decision was made
+            current_price: The current market price
+            alpha_decay_rate: Estimated half-life decay of the alpha signal (0.0 to 1.0)
+
+        Returns:
+            int: The chunk size to execute in the current slice.
+        """
+        if order.quantity < self.minimum_lot_size * 2:
+            return order.quantity
+
+        # IS Logic: If price moves against us (shortfall), and alpha decays slowly, we slow down execution to save spread.
+        # If alpha decays fast, we execute aggressively regardless of shortfall.
+        drift = (current_price - arrival_price) / arrival_price
+        if order.side.name == "SELL":
+            drift = -drift  # Flip sign for sells: lower price = negative drift = adverse
+            
+        base_participation_rate = 0.10  # Base POV equivalent (10%)
+        
+        if drift < -0.01:
+            # Adverse movement > 1%
+            if alpha_decay_rate > 0.5:
+                # Fast decay -> panic execute
+                participation_rate = 0.30
+            else:
+                # Slow decay -> wait it out
+                participation_rate = 0.05
+        elif drift > 0.01:
+            # Favorable movement > 1%
+            participation_rate = 0.20
+        else:
+            # Flat
+            participation_rate = base_participation_rate + (alpha_decay_rate * 0.10)
+
+        chunk_size = int(order.quantity * participation_rate)
+        
+        # Round to board lot
+        chunk_size = max(self.minimum_lot_size, (chunk_size // self.minimum_lot_size) * self.minimum_lot_size)
+        return min(chunk_size, order.quantity)
+
+    # ------------------------------------------------------------------
     # Liquidation exposure tracking (V21 defense concepts)
     # ------------------------------------------------------------------
 
@@ -368,8 +419,19 @@ class OrderRouter:
         Returns:
             Response from broker
         """
-        # --- Advanced Routing: POV (Percentage of Volume) ---
-        if self.volume_profile_enabled and order.quantity >= self.minimum_lot_size * 10:
+        # --- Advanced Routing: Implementation Shortfall (IS) ---
+        alpha_decay_rate = 0.5  # placeholder default for IS
+        arrival_price = order.price if order.price > 0 else (current_price or 0.0)
+        
+        if self.is_routing_enabled and arrival_price > 0 and current_price and order.quantity >= self.minimum_lot_size * 10:
+            logger.info(f"Applying IS routing for {order.symbol} size {order.quantity}")
+            target_chunk = self.apply_is_routing(order, arrival_price, current_price, alpha_decay_rate)
+            logger.info(f"IS routing chunk size calculated: {target_chunk}")
+            order.quantity = target_chunk
+            logger.info(f"Modifying initial submission size to {target_chunk} from original based on IS")
+            
+        # --- Advanced Routing: POV (Percentage of Volume) - Fallback ---
+        elif self.volume_profile_enabled and order.quantity >= self.minimum_lot_size * 10:
             logger.info(f"Applying POV routing for {order.symbol} size {order.quantity}")
             # Placeholder for POV routing logic: just log that we are splitting the order
             # In a real implementation, we would return a composite response or submit the first chunk
