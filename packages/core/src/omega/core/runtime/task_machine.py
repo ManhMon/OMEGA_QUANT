@@ -156,7 +156,7 @@ class DeadLetterQueue:
     def __init__(self, max_retries: int = 3):
         self.max_retries = max_retries
         self.queue: deque = deque()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # RLock allows reentrant acquisition (handle_failure -> _emit_event)
     
     def add(self, task: Task, error: str):
         """Add failed task to DLQ."""
@@ -194,7 +194,7 @@ class TaskStateMachine:
         self.tasks: Dict[str, Task] = {}
         self.events: List[TaskEvent] = []
         self.dlq = DeadLetterQueue()
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()  # RLock: handle_failure holds lock then calls _emit_event which re-acquires it
         self._dependency_graph: Dict[str, Set[str]] = defaultdict(set)
     
     def create_task(
