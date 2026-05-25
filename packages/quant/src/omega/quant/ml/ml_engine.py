@@ -231,9 +231,12 @@ class TrainedModel:
     def predict(self, X: pd.DataFrame) -> np.ndarray:
         """Predict using the artifact if available."""
         if self.model_artifact and hasattr(self.model_artifact, "predict"):
-            import xgboost as xgb
-            if isinstance(self.model_artifact, xgb.Booster):
-                return self.model_artifact.predict(xgb.DMatrix(X))
+            try:
+                import xgboost as xgb
+                if isinstance(self.model_artifact, xgb.Booster):
+                    return self.model_artifact.predict(xgb.DMatrix(X))
+            except (ImportError, TypeError):
+                pass
             return self.model_artifact.predict(X)
         
         # Mock prediction
@@ -614,6 +617,155 @@ class MLEngine:
         ensemble = sum(predictions) if predictions else pd.Series(dtype=float)
         return ensemble
     
+    def train_lightgbm(
+        self,
+        model_id: str,
+        X_train: pd.DataFrame,
+        y_train: pd.Series,
+        X_val: Optional[pd.DataFrame] = None,
+        y_val: Optional[pd.Series] = None,
+        config: Optional[ModelConfig] = None,
+        pit_safe: bool = True,
+    ) -> TrainedModel:
+        """
+        Train LightGBM model with PIT safety, mirroring train_xgboost() contract.
+
+        Args:
+            model_id: Unique model ID
+            X_train: Training features (DatetimeIndex recommended)
+            y_train: Training labels
+            X_val: Validation features (optional)
+            y_val: Validation labels (optional)
+            config: Model configuration
+            pit_safe: Enforce T-1 lag in metrics
+        Returns:
+            TrainedModel with MLModelType.LIGHTGBM
+        """
+        config = config or ModelConfig(model_type=MLModelType.LIGHTGBM)
+        self._validate_chronological_split(X_train, X_val)
+
+        try:
+            import lightgbm as lgb
+        except (ImportError, TypeError):
+            logger.warning("LightGBM not available, using mock training")
+            m = self._mock_train(model_id, X_train, y_train, MLModelType.LIGHTGBM, config, pit_safe)
+            return m
+
+        dtrain = lgb.Dataset(X_train, label=y_train)
+        dval = lgb.Dataset(X_val, label=y_val, reference=dtrain) if X_val is not None else None
+
+        params = {
+            "objective": "regression",
+            "metric": "rmse",
+            "max_depth": config.max_depth,
+            "learning_rate": config.learning_rate,
+            "min_child_weight": config.min_child_weight,
+            "subsample": config.subsample,
+            "colsample_bytree": config.colsample_bytree,
+            "reg_alpha": config.reg_alpha,
+            "reg_lambda": config.reg_lambda,
+            "verbose": -1,
+        }
+
+        callbacks = [
+            lgb.early_stopping(config.early_stopping_rounds, verbose=False),
+            lgb.log_evaluation(period=-1),
+        ]
+        valid_sets = [dtrain] if dval is None else [dtrain, dval]
+        valid_names = ["train"] if dval is None else ["train", "val"]
+
+        model = lgb.train(
+            params,
+            dtrain,
+            num_boost_round=config.n_estimators,
+            valid_sets=valid_sets,
+            valid_names=valid_names,
+            callbacks=callbacks,
+        )
+
+        # Predictions for metrics
+        train_pred = pd.Series(model.predict(X_train), index=X_train.index)
+        val_pred = pd.Series(model.predict(X_val), index=X_val.index) if X_val is not None else None
+
+        # Compute metrics
+        train_metrics = AlphaMetrics.from_predictions(train_pred, y_train)
+        train_metrics = self._attach_pit_metrics(train_metrics, train_pred, y_train, pit_safe)
+
+        if val_pred is not None:
+            val_metrics = AlphaMetrics.from_predictions(val_pred, y_val)
+            val_metrics = self._attach_pit_metrics(val_metrics, val_pred, y_val, pit_safe)
+        else:
+            val_metrics = train_metrics
+
+        # Feature importance
+        raw_importance = model.feature_importance(importance_type="gain")
+        feature_importance = pd.Series(raw_importance, index=X_train.columns)
+
+        model_obj = TrainedModel(
+            model_id=model_id,
+            model_type=MLModelType.LIGHTGBM,
+            config=config,
+            metrics=val_metrics,
+            feature_names=list(X_train.columns),
+            model_artifact=model,
+            feature_importance=feature_importance,
+        )
+
+        self.models[model_id] = model_obj
+        logger.info(f"LightGBM model {model_id} trained. IC={val_metrics.ic:.4f}")
+        return model_obj
+
+    def train_lightgbm_with_walk_forward(
+        self,
+        model_id: str,
+        X: pd.DataFrame,
+        y: pd.Series,
+        config: Optional[ModelConfig] = None,
+        walk_forward_config=None,
+        pit_safe: bool = True,
+    ) -> TrainedModel:
+        """Train fold models via walk-forward, then final champion on full data (LightGBM)."""
+        config = config or ModelConfig(model_type=MLModelType.LIGHTGBM)
+        walk_forward_engine = WalkForwardEnsemble(walk_forward_config)
+        walk_forward_data = self._build_walk_forward_frame(X, y)
+        feature_names = [col for col in X.columns if col != "date"]
+        walk_forward_result = walk_forward_engine.run(walk_forward_data, feature_names)
+
+        fold_models: List[TrainedModel] = []
+        for fold in walk_forward_result.folds:
+            train_mask = (walk_forward_data.index.get_level_values("date") >= fold.train_start) &                          (walk_forward_data.index.get_level_values("date") < fold.train_end)
+            val_mask = (walk_forward_data.index.get_level_values("date") >= fold.val_start) &                        (walk_forward_data.index.get_level_values("date") < fold.val_end)
+
+            train_data = walk_forward_data[train_mask]
+            val_data = walk_forward_data[val_mask]
+            if train_data.empty or val_data.empty:
+                continue
+
+            X_train = train_data[feature_names]
+            y_train = train_data["forward_return"]
+            X_val = val_data[feature_names]
+            y_val = val_data["forward_return"]
+            fold_model = self.train_lightgbm(
+                model_id=f"{model_id}_fold_{fold.fold_id}",
+                X_train=X_train,
+                y_train=y_train,
+                X_val=X_val,
+                y_val=y_val,
+                config=config,
+                pit_safe=pit_safe,
+            )
+            fold_models.append(fold_model)
+
+        champion = self.train_lightgbm(
+            model_id=model_id,
+            X_train=X[feature_names],
+            y_train=y,
+            config=config,
+            pit_safe=pit_safe,
+        )
+        champion.walk_forward_metrics = self._aggregate_walk_forward_metrics(fold_models, walk_forward_result)
+        return champion
+
     def get_feature_importance(self, model_id: str, top_k: int = 20) -> pd.Series:
         """Get top-k feature importance."""
         if model_id not in self.models:

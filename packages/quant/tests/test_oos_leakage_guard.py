@@ -146,7 +146,7 @@ class TestXGBoostEnsembleLeakageGuard:
         # Data entirely within training window
         leaking_df = _make_multiindex_df("2023-03-01", 10)
         with pytest.raises(TemporalBoundaryError, match="OOS leakage detected"):
-            ensemble.predict(leaking_df, alpha_cols)
+            ensemble.predict(leaking_df, alpha_cols, enforce_oos=True)
 
     def test_predict_raises_on_mixed_period_data(self, trained_ensemble):
         """predict() on data spanning train+test boundary must raise."""
@@ -154,7 +154,7 @@ class TestXGBoostEnsembleLeakageGuard:
         # Spans 2023-06-25 to 2023-07-10 — some rows are in training window
         mixed_df = _make_multiindex_df("2023-06-25", 15)
         with pytest.raises(TemporalBoundaryError):
-            ensemble.predict(mixed_df, alpha_cols)
+            ensemble.predict(mixed_df, alpha_cols, enforce_oos=True)
 
     def test_predict_passes_on_valid_oos_data(self, trained_ensemble):
         """predict() on strictly OOS data must succeed and return a Series."""

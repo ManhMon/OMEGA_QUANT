@@ -183,6 +183,7 @@ class OrderRouter:
 
         # Initialize volume profile configuration for POV routing
         self.volume_profile_enabled = True
+        self.is_routing_enabled = False  # IS routing disabled by default
         self.minimum_lot_size = 100  # Standard minimum lot size
         self.historical_volume_profiles: Dict[str, list] = {
             # Dummy historical volume profile logic
@@ -421,7 +422,7 @@ class OrderRouter:
         """
         # --- Advanced Routing: Implementation Shortfall (IS) ---
         alpha_decay_rate = 0.5  # placeholder default for IS
-        arrival_price = order.price if order.price > 0 else (current_price or 0.0)
+        arrival_price = order.price if (order.price is not None and order.price > 0) else (current_price or 0.0)
         
         if self.is_routing_enabled and arrival_price > 0 and current_price and order.quantity >= self.minimum_lot_size * 10:
             logger.info(f"Applying IS routing for {order.symbol} size {order.quantity}")

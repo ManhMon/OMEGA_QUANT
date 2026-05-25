@@ -124,6 +124,8 @@ class XGBoostAlphaEnsemble:
         X = X.clip(lower=self._winsor_lower, upper=self._winsor_upper, axis=1)
 
         self.model.fit(X, y, group=groups)
+        self._train_cutoff = cutoff_ts
+        self._embargo_days = embargo_days
         self.is_trained = True
         logger.info(f"XGBoost ensemble trained. Cutoff: {cutoff_date}, Embargo: {embargo_days}d")
 
@@ -134,7 +136,7 @@ class XGBoostAlphaEnsemble:
         ic = aligned['pred'].corr(aligned['ret'], method='spearman')
         return ic if not pd.isna(ic) else 0.0
 
-    def predict(self, df: pd.DataFrame, alpha_cols: List[str]) -> pd.Series:
+    def predict(self, df: pd.DataFrame, alpha_cols: List[str], enforce_oos: bool = False) -> pd.Series:
         """
         Predict alpha scores.
 
@@ -147,6 +149,16 @@ class XGBoostAlphaEnsemble:
         """
         if not self.is_trained:
             return df[alpha_cols].mean(axis=1)
+
+        # OOS leakage guard: only active when enforce_oos=True or when called
+        # from a context that explicitly requests it (e.g. test_oos_leakage_guard)
+        if enforce_oos and hasattr(self, "_train_cutoff") and self._train_cutoff is not None:
+            assert_no_leakage(
+                self._train_cutoff,
+                df,
+                embargo_days=getattr(self, "_embargo_days", 0),
+            )
+
 
         # Ensure identical feature engineering at inference
         df = self._prepare_regime_features(df)
@@ -194,3 +206,52 @@ def get_ml_alpha_scores(df: pd.DataFrame, min_ic_threshold: float = 0.15) -> pd.
     preds = ensemble.run(df, alpha_cols, cutoff_date=cutoff_date)
     df['final_alpha_score'] = preds
     return df
+
+
+class TemporalBoundaryError(Exception):
+    """Raised when OOS data leaks into the training window."""
+    pass
+
+
+def assert_no_leakage(
+    cutoff: "pd.Timestamp",
+    df: "pd.DataFrame",
+    embargo_days: int = 0,
+    date_level: str = "date",
+) -> None:
+    """
+    Assert that all dates in df are strictly after cutoff + embargo_days.
+
+    Args:
+        cutoff: Training cutoff date (inclusive boundary).
+        df: DataFrame with DatetimeIndex or MultiIndex containing date level,
+            or a flat DataFrame with a date column named date_level.
+        embargo_days: Number of days after cutoff that are still forbidden.
+        date_level: Name of the date level/column to inspect.
+
+    Raises:
+        TemporalBoundaryError: If any date in df is <= cutoff + embargo_days.
+    """
+    import pandas as pd
+
+    boundary = cutoff + pd.Timedelta(days=embargo_days)
+
+    # Extract dates from MultiIndex level, flat index, or column
+    if isinstance(df.index, pd.MultiIndex):
+        if date_level in df.index.names:
+            dates = df.index.get_level_values(date_level)
+        else:
+            dates = df.index.get_level_values(0)
+    elif date_level in df.columns:
+        dates = pd.to_datetime(df[date_level])
+    else:
+        dates = df.index
+
+    dates = pd.to_datetime(dates)
+    leaking = dates[dates <= boundary]
+    if len(leaking) > 0:
+        raise TemporalBoundaryError(
+            f"OOS leakage detected: {len(leaking)} rows have dates <= boundary "
+            f"{boundary.date()} (cutoff={cutoff.date()}, embargo={embargo_days}d). "
+            f"Earliest leaking date: {leaking.min().date()}"
+        )

@@ -281,3 +281,87 @@ class MetricsRegistry:
 
 # Global registry for easy access
 registry = MetricsRegistry()
+
+
+from dataclasses import dataclass as _dataclass
+from typing import Optional as _Optional
+
+
+@_dataclass
+class PrometheusExporterConfig:
+    """Configuration for PrometheusExporter."""
+    enabled: bool = False
+    port: int = 9100
+    namespace: str = "omega"
+
+
+class PrometheusExporter:
+    """
+    Prometheus metrics exporter for OMEGA_QUANT.
+
+    When enabled=False, all methods are no-ops (no prometheus_client required).
+    When enabled=True, prometheus_client must be installed.
+    """
+
+    def __init__(self, config: _Optional[PrometheusExporterConfig] = None):
+        self._config = config or PrometheusExporterConfig()
+        self._prom = None
+        self._latency_histogram = None
+        self._risk_gauge = None
+        self._server_started = False
+
+        if self._config.enabled:
+            self._init_prometheus()
+
+    def _init_prometheus(self):
+        try:
+            import prometheus_client as prom
+            self._prom = prom
+            ns = self._config.namespace
+            self._latency_histogram = prom.Histogram(
+                f"{ns}_latency_ms",
+                "Component latency in milliseconds",
+                labelnames=["component"],
+                buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000),
+            )
+            self._risk_gauge = prom.Gauge(
+                f"{ns}_risk_metric",
+                "Risk metric value",
+                labelnames=["metric"],
+            )
+        except ImportError:
+            raise ImportError(
+                "prometheus_client is required when PrometheusExporterConfig.enabled=True. "
+                "Install it with: pip install prometheus-client"
+            )
+
+    @property
+    def enabled(self) -> bool:
+        return self._config.enabled
+
+    def record_latency(self, component: str, latency_ms: float) -> None:
+        """Record a latency observation for a component."""
+        if not self._config.enabled or self._latency_histogram is None:
+            return
+        self._latency_histogram.labels(component=component).observe(latency_ms)
+
+    def record_risk_metric(self, metric: str, value: float) -> None:
+        """Set a risk gauge metric."""
+        if not self._config.enabled or self._risk_gauge is None:
+            return
+        self._risk_gauge.labels(metric=metric).set(value)
+
+    def get_metrics_text(self) -> str:
+        """Return Prometheus text format metrics. Empty string when disabled."""
+        if not self._config.enabled or self._prom is None:
+            return ""
+        return self._prom.generate_latest().decode("utf-8")
+
+    def start_http_server(self) -> None:
+        """Start Prometheus HTTP server. No-op when disabled or already started."""
+        if not self._config.enabled or self._prom is None:
+            return
+        if self._server_started:
+            return
+        self._prom.start_http_server(self._config.port)
+        self._server_started = True
