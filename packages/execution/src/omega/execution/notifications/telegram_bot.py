@@ -62,7 +62,7 @@ class TelegramAlertBot:
             side = "MUA" if qty > 0 else "BÁN"
             abs_qty = abs(qty)
             price = current_prices.get(sym, 0.0)
-            notional = (abs_qty * price) / 1_000_000
+            notional = (abs_qty * price * 1000.0) / 1_000_000
             total_value += notional if side == "MUA" else -notional
             
             # Format row fixed width
@@ -77,13 +77,14 @@ class TelegramAlertBot:
     def send_trade_alert(self, symbol: str, side: str, qty: int, price: float, mode: str = "PAPER") -> bool:
         """Format and send a trade execution alert."""
         icon = "🟢" if side.upper() == "BUY" else "🔴"
-        notional = (qty * price) / 1_000_000  # Convert to Millions VND
-        
+        notional = (qty * price * 1000.0) / 1_000_000  # Convert to Millions VND (price_scale=1000.0)
+        price_vnd = price * 1000.0  # Raw price unit -> VND
+
         text = (
             f"{icon} *OMEGA EXECUTION* [{mode}]\n"
             f"**{symbol}** | {side.upper()}\n"
             f"Volume: `{qty:,}`\n"
-            f"Price: `{price:,.0f}` VND\n"
+            f"Price: `{price_vnd:,.0f}` VND\n"
             f"Value: `{notional:,.1f}` M VND"
         )
         return self.send_message(text)

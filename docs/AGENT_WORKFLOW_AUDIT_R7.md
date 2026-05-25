@@ -215,7 +215,16 @@ sod_compliant:      true (confirmed in audit_log.jsonl)                   ✅
 ```
 All four mandatory fields present. Gate contract is VALID.
 
-**Verdict**: ✅ **PASS**
+> **STALE — HISTORICAL RECORD ONLY** (corrected 2026-05-25 per FINAL_L3_AUDIT_PHASE11_24.md):
+> The Phase 24 `[APPROVED]` gate evidence above reflects the state as of 2026-05-24.
+> Current repo evidence contradicts approval:
+> - `infra/kubernetes/mlops` is missing (`Test-Path` → false)
+> - `.ly_state/session/phase_gates.json` has Phase 11-24 gap gates as `PENDING_AUDIT`
+> - `scripts/verify_phase_gaps.py` reports 0/22 complete
+> This CHECK 6 verdict is superseded by `docs/FINAL_L3_AUDIT_PHASE11_24.md` verdict `[NEEDS_FIX]`.
+> Do not treat this section as current gate approval.
+
+**Verdict**: ⚠️ **STALE — SEE FINAL_L3_AUDIT_PHASE11_24.md**
 
 ---
 

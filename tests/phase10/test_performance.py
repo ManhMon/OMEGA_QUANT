@@ -244,7 +244,7 @@ class TestPerformanceBenchmarks:
         metrics = grouped.agg({
             'close': ['mean', 'std', 'min', 'max'],
             'volume': ['sum', 'mean'],
-            'returns': ['mean', 'std', 'skew', 'kurt']
+            'returns': ['mean', 'std', 'skew', pd.Series.kurt]
         })
         
         # Rolling calculations (vectorized)

@@ -1,0 +1,35 @@
+# Prometheus configuration — OMEGA_QUANT
+# Scrapes the omega_quant metrics endpoint every 15s.
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    environment: production
+    project: omega_quant
+
+# Alerting rules
+rule_files:
+  - "rules/omega_quant_alerts.yml"
+
+# Alertmanager
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ["alertmanager:9093"]
+
+scrape_configs:
+
+  # OMEGA_QUANT application metrics
+  - job_name: "omega_quant"
+    static_configs:
+      - targets: ["omega_quant:9090"]
+    metrics_path: /metrics
+    scrape_interval: 15s
+    scrape_timeout: 10s
+
+  # Prometheus self-monitoring
+  - job_name: "prometheus"
+    static_configs:
+      - targets: ["localhost:9090"]
+    scrape_interval: 30s

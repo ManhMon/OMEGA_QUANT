@@ -646,10 +646,11 @@ class MLEngine:
 
         try:
             import lightgbm as lgb
-        except (ImportError, TypeError):
-            logger.warning("LightGBM not available, using mock training")
-            m = self._mock_train(model_id, X_train, y_train, MLModelType.LIGHTGBM, config, pit_safe)
-            return m
+        except (ImportError, TypeError) as exc:
+            raise ImportError(
+                "LightGBM is required for train_lightgbm() but is not installed. "
+                "Install it with: pip install lightgbm"
+            ) from exc
 
         dtrain = lgb.Dataset(X_train, label=y_train)
         dval = lgb.Dataset(X_val, label=y_val, reference=dtrain) if X_val is not None else None

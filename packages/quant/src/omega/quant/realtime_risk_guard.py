@@ -34,6 +34,10 @@ class RealtimeRiskGuard:
 
     def set_portfolio_state(self, total_equity: float, exposures: Dict[str, float]):
         """Update current portfolio state for concentration checks."""
+        if total_equity <= 0:
+            raise ValueError(
+                f"Invalid total_equity={total_equity}: must be > 0 (audit P2-C fix)"
+            )
         self._total_equity = total_equity
         self._exposure = exposures
 
@@ -60,6 +64,13 @@ class RealtimeRiskGuard:
         Returns:
             RiskVerdict: PASS or failure reason
         """
+        # Guard: equity must be positive before any equity-relative math
+        if self._total_equity <= 0:
+            raise ValueError(
+                f"Invalid total_equity={self._total_equity}: must be > 0. "
+                "Call set_portfolio_state() with valid equity before check_order()."
+            )
+
         notional = quantity * price
         
         # 0. Cost check (from TransactionCostOptimizer handoff)
@@ -90,7 +101,7 @@ class RealtimeRiskGuard:
             logger.warning(f"Risk Reject {symbol}: Concentration {concentration:.1%} > Limit {self.limits.max_concentration_pct:.1%}")
             return RiskVerdict.FAIL_CONCENTRATION
 
-        # 4. Circuit Breaker (Drawdown)
+        # 4. Circuit Breaker (Drawdown) — equity > 0 guaranteed by guard above
         if self._daily_pnl / self._total_equity < -self.limits.circuit_breaker_drawdown:
             return RiskVerdict.FAIL_CIRCUIT_BREAKER
 

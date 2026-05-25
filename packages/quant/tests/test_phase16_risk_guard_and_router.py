@@ -96,6 +96,24 @@ def test_realtime_risk_guard_updates_exposure_after_fill() -> None:
     assert guard._exposure["VNM"] == 72_000_000.0
 
 
+def test_realtime_risk_guard_rejects_zero_equity() -> None:
+    """P2.3 regression: check_order() must raise on zero equity, not divide by zero."""
+    guard = RealtimeRiskGuard()
+    guard._total_equity = 0.0
+
+    with pytest.raises(ValueError, match="Invalid total_equity"):
+        guard.check_order(symbol="VNM", quantity=100, price=100.0, adv_20d=1_000_000)
+
+
+def test_realtime_risk_guard_rejects_negative_equity() -> None:
+    """P2.3 regression: check_order() must raise on negative equity."""
+    guard = RealtimeRiskGuard()
+    guard._total_equity = -1.0
+
+    with pytest.raises(ValueError, match="Invalid total_equity"):
+        guard.check_order(symbol="VNM", quantity=100, price=100.0, adv_20d=1_000_000)
+
+
 def test_order_router_paper_requires_current_price(broker_order: BrokerOrder) -> None:
     router = OrderRouter(OrderRouterConfig(mode=TradingMode.PAPER))
 

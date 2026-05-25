@@ -10,13 +10,13 @@ PHASE_MAP = {
         "name": "Foundation & Infrastructure",
         "code": ["packages/core/src/omega/core/worker.py"],
         "tests": ["packages/core/tests/test_db_models.py"],
-        "gate_keys": ["OMEGA_GAP_PHASE10", "OMEGA_GAP_PHASE11", "OMEGA_GAP_PHASE16_LIVE_TRADING"]
+        "gate_keys": ["OMEGA_GAP_PHASE1_FOUNDATION"]
     },
     2: {
         "name": "Data & Storage Layer",
         "code": ["packages/data/src/omega/data/loader.py"],
         "tests": ["packages/data/tests/test_sanitizer.py"],
-        "gate_keys": ["OMEGA_GAP_PHASE9_INTEGRATION_TESTING", "PHASE_4_SIGNAL_MIGRATION_20260522"]
+        "gate_keys": ["OMEGA_GAP_PHASE2_DATA_STORAGE"]
     },
     3: {
         "name": "Quant Math Engine",
@@ -183,27 +183,30 @@ def check_phase(phase_num, phase_info, omega_root, gates_data):
     found_valid_report = False
     missing_report_paths = []
     for gate_key in gate_keys:
-        matching_gates = [k for k in gates_data.keys() if gate_key in k.upper()]
-        for gate in matching_gates:
-            gate_entry = gates_data[gate]
-            status = gate_entry.get("status", gate_entry.get("final_verdict", ""))
-            if "APPROVED" not in str(status).upper():
-                continue
-            found_approved_gate = True
-            audit_report_path = gate_entry.get("audit_report_path")
-            if not audit_report_path:
-                continue
-            report_file = Path(audit_report_path)
-            if not report_file.is_absolute():
-                report_file = omega_root / audit_report_path
-            if report_file.exists():
-                results["gate_approved"] = True
-                results["gate_key"] = gate
-                results["audit_report_path"] = audit_report_path
-                results["audit_report_exists"] = True
-                found_valid_report = True
-                break
-            missing_report_paths.append(audit_report_path)
+        gate_entry = gates_data.get(gate_key)
+        if gate_entry is None:
+            continue
+
+        status = gate_entry.get("status", gate_entry.get("final_verdict", ""))
+        if "APPROVED" not in str(status).upper():
+            continue
+
+        found_approved_gate = True
+        audit_report_path = gate_entry.get("audit_report_path")
+        if not audit_report_path:
+            continue
+
+        report_file = Path(audit_report_path)
+        if not report_file.is_absolute():
+            report_file = omega_root / audit_report_path
+        if report_file.exists():
+            results["gate_approved"] = True
+            results["gate_key"] = gate_key
+            results["audit_report_path"] = audit_report_path
+            results["audit_report_exists"] = True
+            found_valid_report = True
+            break
+        missing_report_paths.append(audit_report_path)
         if found_valid_report:
             break
 
@@ -223,7 +226,7 @@ def main():
     omega_root = Path(__file__).parent.parent
     gates_file = omega_root / ".ly_state" / "session" / "phase_gates.json"
     
-    with open(gates_file, 'r', encoding='utf-8') as f:
+    with open(gates_file, 'r', encoding='utf-8-sig') as f:
         gates_data = json.load(f)
     
     all_results = []

@@ -260,7 +260,8 @@ class ProductionMonitor:
         max_drawdown_threshold: float,
         max_consecutive_losses: int,
         slack_webhook_url: Optional[str] = None,
-        alert_cooldown_seconds: float = 60.0
+        alert_cooldown_seconds: float = 60.0,
+        export_path: Optional[str] = None,
     ):
         self.dashboard_manager = dashboard_manager
         self.var_breach_threshold = var_breach_threshold
@@ -272,7 +273,23 @@ class ProductionMonitor:
         self.state = SystemState.RUNNING
         self.last_alert_time: Optional[datetime] = None
         self.alert_history: List[Dict[str, Any]] = []
-        self.export_path = r"C:\Users\GHC\.openclaw\workspace\OMEGA_QUANT\OMEGA_QUANT\.ly_state\session\risk_status.json"
+
+        # Derive repo-relative path at runtime; accept override via constructor (audit P2-D fix).
+        if export_path is not None:
+            self.export_path = export_path
+        else:
+            _repo_root = os.path.dirname(
+                os.path.dirname(
+                    os.path.dirname(
+                        os.path.dirname(
+                            os.path.dirname(os.path.abspath(__file__))
+                        )
+                    )
+                )
+            )
+            self.export_path = os.path.join(
+                _repo_root, ".ly_state", "session", "risk_status.json"
+            )
 
     def evaluate_circuit_breakers(self, current_time: datetime) -> SystemState:
         """

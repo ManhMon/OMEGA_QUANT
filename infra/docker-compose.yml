@@ -1,0 +1,110 @@
+# OMEGA_QUANT Observability Stack
+# Role 11 - DevOps Engineer
+# Services: omega_quant app + Prometheus + Grafana
+
+version: "3.9"
+
+networks:
+  omega_net:
+    driver: bridge
+
+volumes:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+
+services:
+
+  # ------------------------------------------------------------------
+  # OMEGA_QUANT application (metrics on :9090/metrics)
+  # ------------------------------------------------------------------
+  omega_quant:
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    container_name: omega_quant
+    restart: unless-stopped
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OMEGA_ENV=production
+    ports:
+      - "9090:9090"   # Prometheus metrics endpoint
+      - "5000:5000"   # Flask API
+    volumes:
+      - ../data:/app/data
+      - ../.ly_state:/app/.ly_state:ro
+    networks:
+      - omega_net
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:9090/metrics')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 15s
+
+  # ------------------------------------------------------------------
+  # Prometheus — scrapes omega_quant:9090/metrics every 15s
+  # ------------------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:v2.52.0
+    container_name: prometheus
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9091:9090"   # host:9091 -> container:9090 (localhost only)
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/rules:/etc/prometheus/rules:ro
+      - prometheus_data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
+      - "--web.enable-lifecycle"
+      - "--web.console.libraries=/usr/share/prometheus/console_libraries"
+      - "--web.console.templates=/usr/share/prometheus/consoles"
+    networks:
+      - omega_net
+    depends_on:
+      - omega_quant
+
+  # ------------------------------------------------------------------
+  # Grafana — dashboards on :3000
+  # ------------------------------------------------------------------
+  grafana:
+    image: grafana/grafana:10.4.2
+    container_name: grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GF_SECURITY_ADMIN_PASSWORD}
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH=/etc/grafana/provisioning/dashboards/omega_quant.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana_data:/var/lib/grafana
+    networks:
+      - omega_net
+    depends_on:
+      - prometheus
+
+  # ------------------------------------------------------------------
+  # Alertmanager — receives alerts from Prometheus on :9093
+  # ------------------------------------------------------------------
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: alertmanager
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:9093:9093"
+    volumes:
+      - ./alertmanager/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - "--config.file=/etc/alertmanager/alertmanager.yml"
+      - "--storage.path=/alertmanager"
+    networks:
+      - omega_net
+    depends_on:
+      - prometheus

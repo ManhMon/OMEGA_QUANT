@@ -1,0 +1,70 @@
+groups:
+  - name: omega_quant_alerts
+    interval: 30s
+    rules:
+
+      # Latency alerts
+      - alert: HighDataLoadingLatency
+        expr: histogram_quantile(0.95, rate(omega_quant_latency_ms_bucket{component="data_loading"}[5m])) > 500
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High data_loading latency (p95 > 500ms)"
+          description: "p95 latency for data_loading is {{ $value | humanize }}ms over the last 5m."
+
+      - alert: CriticalOrderRouterLatency
+        expr: histogram_quantile(0.95, rate(omega_quant_latency_ms_bucket{component="order_router"}[5m])) > 1000
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Critical order_router latency (p95 > 1000ms)"
+          description: "p95 latency for order_router is {{ $value | humanize }}ms."
+
+      # Risk metric alerts
+      - alert: DrawdownExceedsThreshold
+        expr: omega_quant_risk_metric{metric="drawdown"} > 0.10
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Portfolio drawdown > 10%"
+          description: "Current drawdown is {{ $value | humanizePercentage }}."
+
+      - alert: DrawdownCritical
+        expr: omega_quant_risk_metric{metric="drawdown"} > 0.15
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Portfolio drawdown > 15% — stop-loss threshold"
+          description: "Current drawdown is {{ $value | humanizePercentage }}. Immediate review required."
+
+      - alert: VaR95Elevated
+        expr: omega_quant_risk_metric{metric="var_95"} > 0.05
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "VaR 95 elevated (> 5%)"
+          description: "Current VaR 95 is {{ $value | humanizePercentage }}."
+
+      - alert: LeverageExceedsLimit
+        expr: omega_quant_risk_metric{metric="leverage"} > 1.0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Leverage exceeds 1.0x limit"
+          description: "Current leverage is {{ $value }}x."
+
+      # Scrape health
+      - alert: OmegaQuantMetricsDown
+        expr: up{job="omega_quant"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "OMEGA_QUANT metrics endpoint is down"
+          description: "Prometheus cannot scrape omega_quant:9090/metrics."
