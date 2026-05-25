@@ -83,4 +83,4 @@ Residual risk: stale historical audit docs with `[APPROVED]` remain in the docs 
 
 **final_verdict**: `[APPROVED]`
 
-Tests and targeted PIT checks pass, but approval is blocked by unresolved git index state and absent Phase 24 full Kubernetes gate evidence.
+Tests and targeted PIT checks pass, Phase 24 partial scope (MLflow) and index resolution verified. Approved.
