@@ -357,5 +357,15 @@
                                "timestamp":  "2026-05-26T14:47:16Z",
                                "status":  "APPROVED",
                                "l3_session_key":  "warm-cedar"
-                           }
+                           },
+    "pipeline_connectivity":  {
+                                  "l3_session_key":  "cool-reef",
+                                  "timestamp":  "2026-05-26T15:27:37Z",
+                                  "layers_pass":  "10/10",
+                                  "audit_report_path":  "docs/L3_AUDIT_PIPELINE_CONNECTIVITY_20260526.md",
+                                  "status":  "APPROVED",
+                                  "l3_session_id":  "019e64e0-4645-7bd2-b195-07c7f36d9264",
+                                  "commit":  "c68e6fe",
+                                  "final_verdict":  "[APPROVED]"
+                              }
 }
