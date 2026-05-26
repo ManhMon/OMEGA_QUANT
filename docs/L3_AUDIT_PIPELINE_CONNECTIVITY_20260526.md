@@ -1,74 +1,71 @@
-# L3 Audit Report: Pipeline Connectivity (10 Layers)
-**Date**: 2026-05-26T15:27:37Z
-**Role**: Code Reviewer (Role 21) — L3 Independent Audit
-**Session**: cool-reef (019e64e0-4645-7bd2-b195-07c7f36d9264)
-**Auditor**: Ly manual evidence (SOD-compliant, Codex CLI blocked by reasoning timeout)
-
----
-
-## Executive Summary
-
-| Check | Result |
-|---|---|
-| Pipeline connectivity (10 layers) | **10/10 PASS** |
-| py_compile (5 fixed files) | **PASS** |
-| v19_system refs | **STUBBED** (not live import) |
-| v21_system refs in src/ | **0** (clean) |
-| MemoryModule facade | **PASS** |
-
----
-
-## Pipeline Connectivity Results
-
-| Layer | Module | Status |
-|---|---|---|
-| data | omega.data.production_data_pipeline, vnstock_live, loader | ✅ PASS |
-| strategy | omega.quant.quant_engine, omega.quant.strategy | ✅ PASS |
-| risk | omega.risk.liquidity_filter | ✅ PASS |
-| execution | omega.execution (ExecutionEngine, OrderRouter, TradeBlotter) | ✅ PASS |
-| portfolio | omega.quant.portfolio, performance_tracker | ✅ PASS |
-| governance | omega.governance.online_model_updater, validate_ly_state | ✅ PASS |
-| observability | omega.observability (StructuredLogger, MetricsRegistry, SystemMonitor) | ✅ PASS |
-| infra | omega.infra.task_queue, worker_pool, resource_manager | ✅ PASS |
-| memory | omega.memory.episodic_memory, memory_module, context_assembler | ✅ PASS |
-| security | omega.security.sandbox | ✅ PASS |
-
----
-
-## Files Audited
-
-| File | py_compile | Notes |
-|---|---|---|
-| src/omega/data/production_data_pipeline.py | PASS | DataModule removed, FeatureFactory wired |
-| src/omega/governance/validate_ly_state.py | PASS | validate_ly_state alias added |
-| src/omega/quant/quant_engine.py | PASS | All import names corrected |
-| src/omega/infra/task_queue.py | PASS | TaskQueue = PriorityTaskQueue alias |
-| src/omega/memory/memory_module.py | PASS | MemoryModule facade + v19_system stub |
-
----
+# L3 Audit Report: Pipeline Connectivity
+**Date**: 2026-05-26
+**Role**: `[L3-Audit:Role21-Review]`
+**Scope**: Requested 10-layer import sweep via `python tmp_pipeline_audit.py`
+**MCP Usage**: None
 
 ## Findings
 
-### P0 — None
-### P1 — None
-### P2 (Non-blocking)
-- `memory_module.py`: v19_system stubbed with empty classes — acceptable for compatibility
-- `validate_ly_state.py`: runs `sys.exit(1)` when imported as script — expected behavior, not a bug
+### P2 - Circular-import warning on quant package import path
+- Requested check `from omega.quant.quant_engine import QuantEngine` reported `PASS`, but runtime also emitted:
+  `WARNING:root:Failed to import QuantEngine: cannot import name 'ProductionDataPipeline' from partially initialized module 'omega.data.production_data_pipeline' ...`
+- Warning comes from package bootstrap in [src/omega/quant/__init__.py](/C:/Users/GHC/.openclaw/workspace/OMEGA_QUANT/src/omega/quant/__init__.py:43) and logged at [src/omega/quant/__init__.py](/C:/Users/GHC/.openclaw/workspace/OMEGA_QUANT/src/omega/quant/__init__.py:50).
+- Dependency edge involved in warning is visible in [src/omega/quant/quant_engine.py](/C:/Users/GHC/.openclaw/workspace/OMEGA_QUANT/src/omega/quant/quant_engine.py:72).
+- Impact: direct submodule import finishes, but package import path is not clean and can hide initialization-order defects.
 
-### P3
-- Codex CLI blocked by MCP tool hang (`get_minimal_context_tool`) — workaround: skip MCP in audit prompts
+### P3 - Import-time side effects in audit sweep
+- Governance import printed `Validation successful: All files present and accounted for in .ly_state/` because [src/omega/governance/validate_ly_state.py](/C:/Users/GHC/.openclaw/workspace/OMEGA_QUANT/src/omega/governance/validate_ly_state.py:20) executes validation at import time.
+- Data-layer import also printed `Vnstock 4.0.4 is available ...` update banner.
+- Impact: non-fatal noise in audit/runtime logs.
 
----
+## Command Run
 
-## Evidence
-- Runtime verification: `python pipeline_check.py` → **OVERALL: ALL PASS** (10/10)
-- Commit: `c68e6fe` — pipeline connectivity 10/10 PASS
-- Zero v21_system refs in src/ (verified via PowerShell grep)
+```powershell
+python tmp_pipeline_audit.py
+```
 
----
+**Exit Code**: `0`
+
+## Layer Results
+
+| Layer | Status |
+|---|---|
+| data | PASS |
+| strategy | PASS |
+| risk | PASS |
+| execution | PASS |
+| portfolio | PASS |
+| governance | PASS |
+| observability | PASS |
+| infra | PASS |
+| memory | PASS |
+| security | PASS |
+
+## Raw Output
+
+```text
+Validation successful: All files present and accounted for in .ly_state/
+[PASS] data
+[PASS] strategy
+[PASS] risk
+[PASS] execution
+[PASS] portfolio
+[PASS] governance
+[PASS] observability
+[PASS] infra
+[PASS] memory
+[PASS] security
+📦 Vnstock 4.0.4 is available
+Current: 4.0.2 (Python 3.14)
+Update: pip install vnstock --upgrade
+Release: https://vnstocks.com/docs/tai-lieu/lich-su-phien-ban
+WARNING:root:Failed to import QuantEngine: cannot import name 'ProductionDataPipeline' from partially initialized module 'omega.data.production_data_pipeline' (most likely due to a circular import) (C:\Users\GHC\.openclaw\workspace\OMEGA_QUANT\src\omega\data\production_data_pipeline.py)
+```
 
 ## Verdict
 
-**[APPROVED]**
+**Connectivity Result**: `10/10 PASS`
 
-All 10 pipeline layers import cleanly. No P0/P1 issues. Commit `c68e6fe` approved.
+**Final Verdict**: `[NEEDS_FIX]`
+
+Reason: requested import sweep completed, but audit found non-fatal circular-import warning on `omega.quant` package bootstrap plus import-time side effects. Clean import path not yet audit-clean.
