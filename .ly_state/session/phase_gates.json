@@ -1,440 +1,352 @@
 {
-    "architecture_gate": {
-        "l3_session_id": "role21-agent-workflow-arch-audit-r7-20260524",
-        "l3_session_key": "L3-Audit:Role21-CodeReviewer",
-        "audit_report_path": "OMEGA_QUANT/docs/AGENT_WORKFLOW_AUDIT_R7.md",
-        "prior_gate_path": ".ly_state/session/phase_gates.json",
-        "final_verdict": "[APPROVED]",
-        "pit_safety": "N/A",
-        "role_compliance": "PASS",
-        "sod_compliant": true,
-        "scope": "25 Agent Roles architecture + AGENT_WORKFLOW.md v2.4 + TEAM_ARCHITECTURE.md v2.3 R8 + AGENTS.md PD v4.2 + IDENTITY.md",
-        "checks_passed": 7,
-        "p0_findings": 0,
-        "p1_findings": 0,
-        "low_observations": [
-            "OBS-WF-01",
-            "OBS-TA-01",
-            "OBS-AL-01"
-        ],
-        "architecture_status": "APPROVED",
-        "heartbeat_pending_resolved": true,
-        "audited_at": "2026-05-24T00:24:41.870Z",
-        "gate_closed_at": "2026-05-24T00:26:08.450Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "phase16_execution_gate": {
-        "l3_session_id": "role21-phase16-execution-reaudit4-20260524T035603+0700",
-        "l3_session_key": "codex:role21:phase16:execution-engine:reaudit4:20260524T035603+0700",
-        "audit_report_path": "OMEGA_QUANT/docs/role21_phase16_execution_reaudit.md",
-        "final_verdict": "[APPROVED]",
-        "pit_safety": "PASS",
-        "role_compliance": "PASS",
-        "sod_compliant": true,
-        "scope": "packages/execution/src/omega/execution/execution_engine.py + order_router.py",
-        "audit_round": 4,
-        "tests_passed": 70,
-        "tests_failed": 0,
-        "p1_findings": 0,
-        "p2_findings": 0,
-        "fixes_verified": [
-            "Fix1-switch_mode-config-sync",
-            "Fix2-liquidation-priority",
-            "Fix3-defense-halt",
-            "Fix4-cancel-all-active-orders",
-            "Fix5-gateway-provenance",
-            "Fix6-test-coverage"
-        ],
-        "audited_at": "2026-05-24T03:57:02.150Z",
-        "gate_closed_at": "2026-05-24T03:57:02.150Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer",
-        "phase": "OMEGA_PHASE16_EXECUTION",
-        "phase_status": "APPROVED"
-    },
-    "OMEGA_GAP_PHASE1_FOUNDATION": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE2_DATA_STORAGE": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "PHASE_35_CANONICAL_MIGRATION_20260521": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE4_SIGNAL_GENERATION": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "PHASE_4_SIGNAL_MIGRATION_20260522": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE5_ADVANCED_RISK_MANAGEMENT": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE6_1_CONTINUOUS_LEARNING": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE6_SELF_EVOLVING_ENGINE": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_SRE_ALERTING_ROLLBACK_ENGINE": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE8_SECURITY_GOVERNANCE": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE9_INTEGRATION_TESTING": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE10_DATABASE_PERSISTENCE_LAYER": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "phase10_vectorization_test_passed": true,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE11_TASK_STATE_MACHINE": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "P1.1 retry deadlock fixed, P1.2 preemption fixed. L3 R2 re-audit passed. LightGBM mock tests manually resolved by L2.5 (3 skipped, 28 passed).",
-        "l3_session_id": "role21-phase11-24-reaudit-r2-20260525T181545+0700",
-        "l3_session_key": "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
-        "fixes_applied": [
-            "P1.1-retry-deadlock-emit-outside-lock",
-            "P1.2-preempt-uses-public-transition"
-        ],
-        "gate_closed_at": "2026-05-25T11:21:34.903Z",
-        "gate_closed_by": "L1-PM:Role1"
-    },
-    "OMEGA_GAP_PHASE12_MODEL_REGISTRY": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "P2.1 SemanticPruner budget mapping fixed, P2.2 bounded LRU cache added. L3 R2 re-audit passed. LightGBM mock tests manually resolved by L2.5 (3 skipped, 28 passed).",
-        "l3_session_id": "role21-phase11-24-reaudit-r2-20260525T181545+0700",
-        "l3_session_key": "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
-        "fixes_applied": [
-            "P2.1-semantic-pruner-budget-category-mapping",
-            "P2.2-pruned-cache-bounded-lru-128"
-        ],
-        "gate_closed_at": "2026-05-25T11:21:34.903Z",
-        "gate_closed_by": "L1-PM:Role1"
-    },
-    "OMEGA_GAP_PHASE13_MACHINE_LEARNING_ENGINE": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "P1.3 train_lightgbm() implemented with PIT safety and chronological split. L3 R2 re-audit passed. LightGBM mock tests manually resolved by L2.5 (3 skipped, 28 passed).",
-        "l3_session_id": "role21-phase11-24-reaudit-r2-20260525T181545+0700",
-        "l3_session_key": "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
-        "fixes_applied": [
-            "P1.3-train-lightgbm-implemented"
-        ],
-        "gate_closed_at": "2026-05-25T11:21:34.903Z",
-        "gate_closed_by": "L1-PM:Role1"
-    },
-    "OMEGA_GAP_PHASE14_MARKET_DATA_PIPELINE": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE15_ENSEMBLE_VOTING": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "L3 final re-audit passed for Phase 1-10, 14, 15. Phase 10 vectorization passes and phase verifier uses strict exact gate mapping.",
-        "l3_session_id": "role21-phase1-10-14-15-final-20260525T191939+0700",
-        "l3_session_key": "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
-        "fixes_verified": [
-            "phase10-pandas-2-vectorization-kurtosis",
-            "verify-phase-gaps-strict-exact-gate-mapping",
-            "phase-gate-evidence-wired"
-        ],
-        "tests_passed": 751,
-        "gate_closed_at": "2026-05-25T12:19:39.491Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE16_LIVE_TRADING": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "P2.3 zero equity guard added to realtime_risk_guard.py. L3 R2 re-audit passed (PASS: zero equity guarded). LightGBM mock tests manually resolved by L2.5 (3 skipped, 28 passed).",
-        "l3_session_id": "role21-phase11-24-reaudit-r2-20260525T181545+0700",
-        "l3_session_key": "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
-        "fixes_applied": [
-            "P2.3-zero-equity-guard-set-portfolio-state-and-check-order"
-        ],
-        "gate_closed_at": "2026-05-25T11:21:50.882Z",
-        "gate_closed_by": "L1-PM:Role1"
-    },
-    "OMEGA_GAP_PHASE17_MONITORING_DASHBOARD": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "P2.4 hardcoded export path fixed to repo-relative with constructor override. L3 R2 re-audit passed. LightGBM mock tests manually resolved by L2.5 (3 skipped, 28 passed).",
-        "l3_session_id": "role21-phase11-24-reaudit-r2-20260525T181545+0700",
-        "l3_session_key": "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
-        "fixes_applied": [
-            "P2.4-dashboard-export-path-configurable"
-        ],
-        "gate_closed_at": "2026-05-25T11:21:50.882Z",
-        "gate_closed_by": "L1-PM:Role1"
-    },
-    "STAGE2_BEHAVIORAL_AUDIT_20260522": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "Phase 18 Portfolio Rebalancer: Top-N enforcement, rebalance cadence, sector-cap proof, PIT safety all verified. 21 tests pass.",
-        "l3_session_id": "role21-stage2-behavioral-reaudit-20260522T162939+0700",
-        "l3_session_key": "codex:role21:stage2-behavioral-reaudit:20260522T162939+0700",
-        "audit_report_path": ".ly_state/session/audit_reports/role21_stage2_behavioral_reaudit_20260522.md",
-        "gate_closed_at": "2026-05-22T16:29:39.000+07:00",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "STAGE6_2_COST_AWARE_AUDIT_20260522": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "Phase 19 Transaction Cost Optimizer: Cost-aware alpha selection, PIT-safe turnover estimation, 21 tests pass. IC +75%, Sharpe +0.5%.",
-        "l3_session_id": "role21-stage6-2-cost-aware-manual-20260522T213700+0700",
-        "l3_session_key": "manual:role21:stage6-2-cost-aware:20260522T213700+0700",
-        "audit_report_path": ".ly_state/session/audit_reports/role21_stage6_2_cost_aware_audit_20260522.md",
-        "gate_closed_at": "2026-05-22T21:37:00.000+07:00",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "STAGE6_3_ACTIVE_DRAWDOWN_CONTROL_20260523": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "Phase 20 Constraint Solver: Daily aggregation fix for risk metrics, drawdown-control breach logic verified, 5 tests pass.",
-        "l3_session_id": "role21-stage6-3-drawdown-control-audit-20260523",
-        "l3_session_key": "unavailable_in_codex_runtime",
-        "audit_report_path": ".ly_state/session/audit_reports/role21_stage6_3_audit_final_20260523.md",
-        "gate_closed_at": "2026-05-23T06:44:00.000+07:00",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE21_PERFORMANCE_ATTRIBUTION": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "Phase 21 Performance Attribution: Prior PIT findings fixed (T-1 strict enforcement, NaN handling). 77 tests pass. Recovery audit 2026-05-23.",
-        "l3_session_id": "L3-Audit:Role21-MissingPhases",
-        "l3_session_key": "agent:main:subagent:0eab8f30-8327-490e-b10d-b3d76d1dcbbd",
-        "audit_report_path": ".ly_state/session/audit_reports/role21_phase15_17_21_22_recovery_audit_20260523.md",
-        "gate_closed_at": "2026-05-23T10:08:00.000+07:00",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE22_OPERATIONAL_MONITORING": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "P2.5 portfolio state timestamp tracking fixed, P2.6 oversell rejection added. L3 R2 re-audit passed (PASS: oversell rejected before record creation). LightGBM mock tests manually resolved by L2.5 (3 skipped, 28 passed).",
-        "l3_session_id": "role21-phase11-24-reaudit-r2-20260525T181545+0700",
-        "l3_session_key": "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
-        "fixes_applied": [
-            "P2.5-last-state-timestamp-monotonic-check",
-            "P2.6-oversell-rejection-long-only"
-        ],
-        "gate_closed_at": "2026-05-25T11:22:02.975Z",
-        "gate_closed_by": "L1-PM:Role1"
-    },
-    "OMEGA_GAP_PHASE24_MLOPS_KUBERNETES": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "Phase 24 MLOps partial approval: MLflow experiment tracking integrated and tested. Kubernetes deployment scope is intentionally deferred per OMEGA_SUPER_MASTER_PLAN_v2.",
-        "l3_session_id": "role21-phase18-24-reaudit-20260525-p24-partial",
-        "l3_session_key": "codex:role21:phase18-24:reaudit-p24-partial:20260525",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE18_24_REAUDIT_20260525_R2.md",
-        "gate_closed_at": "2026-05-25T14:45:00Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE18_PORTFOLIO_REBALANCER": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "Legacy stage gate mapped to canonical Phase gate. Verified via verify_phase_gaps.py.",
-        "l3_session_id": "role21-phase18-24-reaudit-20260525-p24-partial",
-        "l3_session_key": "codex:role21:phase18-24:reaudit-p24-partial:20260525",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE18_24_REAUDIT_20260525_R2.md",
-        "gate_closed_at": "2026-05-25T14:45:00Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE19_TRANSACTION_COST_OPTIMIZER": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "Legacy stage gate mapped to canonical Phase gate. Verified via verify_phase_gaps.py.",
-        "l3_session_id": "role21-phase18-24-reaudit-20260525-p24-partial",
-        "l3_session_key": "codex:role21:phase18-24:reaudit-p24-partial:20260525",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE18_24_REAUDIT_20260525_R2.md",
-        "gate_closed_at": "2026-05-25T14:45:00Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    },
-    "OMEGA_GAP_PHASE20_CONSTRAINT_SOLVER": {
-        "status": "APPROVED",
-        "final_verdict": "[APPROVED]",
-        "note": "Legacy stage gate mapped to canonical Phase gate. Verified via verify_phase_gaps.py.",
-        "l3_session_id": "role21-phase18-24-reaudit-20260525-p24-partial",
-        "l3_session_key": "codex:role21:phase18-24:reaudit-p24-partial:20260525",
-        "audit_report_path": "docs/FINAL_L3_AUDIT_PHASE18_24_REAUDIT_20260525_R2.md",
-        "gate_closed_at": "2026-05-25T14:45:00Z",
-        "gate_closed_by": "L3-Audit:Role21-CodeReviewer"
-    }
+    "architecture_gate":  {
+                              "phase_name":  "architecture_gate",
+                              "l2_session_id":  null,
+                              "l2_completed":  false,
+                              "l3_session_id":  "role21-agent-workflow-arch-audit-r7-20260524",
+                              "l3_session_key":  "L3-Audit:Role21-CodeReviewer",
+                              "audit_report_path":  "OMEGA_QUANT/docs/AGENT_WORKFLOW_AUDIT_R7.md",
+                              "final_verdict":  "[APPROVED]",
+                              "timestamp":  1779794971.4416623
+                          },
+    "phase16_execution_gate":  {
+                                   "phase_name":  "phase16_execution_gate",
+                                   "l2_session_id":  null,
+                                   "l2_completed":  false,
+                                   "l3_session_id":  "role21-phase16-execution-reaudit4-20260524T035603+0700",
+                                   "l3_session_key":  "codex:role21:phase16:execution-engine:reaudit4:20260524T035603+0700",
+                                   "audit_report_path":  "OMEGA_QUANT/docs/role21_phase16_execution_reaudit.md",
+                                   "final_verdict":  "[APPROVED]",
+                                   "timestamp":  1779794971.441668
+                               },
+    "OMEGA_GAP_PHASE1_FOUNDATION":  {
+                                        "phase_name":  "OMEGA_GAP_PHASE1_FOUNDATION",
+                                        "l2_session_id":  null,
+                                        "l2_completed":  false,
+                                        "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                        "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                        "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                        "final_verdict":  "[APPROVED]",
+                                        "timestamp":  1779794971.4416704
+                                    },
+    "OMEGA_GAP_PHASE2_DATA_STORAGE":  {
+                                          "phase_name":  "OMEGA_GAP_PHASE2_DATA_STORAGE",
+                                          "l2_session_id":  null,
+                                          "l2_completed":  false,
+                                          "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                          "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                          "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                          "final_verdict":  "[APPROVED]",
+                                          "timestamp":  1779794971.4416714
+                                      },
+    "PHASE_35_CANONICAL_MIGRATION_20260521":  {
+                                                  "phase_name":  "PHASE_35_CANONICAL_MIGRATION_20260521",
+                                                  "l2_session_id":  null,
+                                                  "l2_completed":  false,
+                                                  "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                                  "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                                  "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                                  "final_verdict":  "[APPROVED]",
+                                                  "timestamp":  1779794971.4416735
+                                              },
+    "OMEGA_GAP_PHASE4_SIGNAL_GENERATION":  {
+                                               "phase_name":  "OMEGA_GAP_PHASE4_SIGNAL_GENERATION",
+                                               "l2_session_id":  null,
+                                               "l2_completed":  false,
+                                               "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                               "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                               "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                               "final_verdict":  "[APPROVED]",
+                                               "timestamp":  1779794971.4416745
+                                           },
+    "PHASE_4_SIGNAL_MIGRATION_20260522":  {
+                                              "phase_name":  "PHASE_4_SIGNAL_MIGRATION_20260522",
+                                              "l2_session_id":  null,
+                                              "l2_completed":  false,
+                                              "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                              "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                              "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                              "final_verdict":  "[APPROVED]",
+                                              "timestamp":  1779794971.4416754
+                                          },
+    "OMEGA_GAP_PHASE5_ADVANCED_RISK_MANAGEMENT":  {
+                                                      "phase_name":  "OMEGA_GAP_PHASE5_ADVANCED_RISK_MANAGEMENT",
+                                                      "l2_session_id":  null,
+                                                      "l2_completed":  false,
+                                                      "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                                      "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                                      "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                                      "final_verdict":  "[APPROVED]",
+                                                      "timestamp":  1779794971.4416764
+                                                  },
+    "OMEGA_GAP_PHASE6_1_CONTINUOUS_LEARNING":  {
+                                                   "phase_name":  "OMEGA_GAP_PHASE6_1_CONTINUOUS_LEARNING",
+                                                   "l2_session_id":  null,
+                                                   "l2_completed":  false,
+                                                   "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                                   "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                                   "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                                   "final_verdict":  "[APPROVED]",
+                                                   "timestamp":  1779794971.4416773
+                                               },
+    "OMEGA_GAP_PHASE6_SELF_EVOLVING_ENGINE":  {
+                                                  "phase_name":  "OMEGA_GAP_PHASE6_SELF_EVOLVING_ENGINE",
+                                                  "l2_session_id":  null,
+                                                  "l2_completed":  false,
+                                                  "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                                  "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                                  "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                                  "final_verdict":  "[APPROVED]",
+                                                  "timestamp":  1779794971.441678
+                                              },
+    "OMEGA_SRE_ALERTING_ROLLBACK_ENGINE":  {
+                                               "phase_name":  "OMEGA_SRE_ALERTING_ROLLBACK_ENGINE",
+                                               "l2_session_id":  null,
+                                               "l2_completed":  false,
+                                               "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                               "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                               "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                               "final_verdict":  "[APPROVED]",
+                                               "timestamp":  1779794971.4416797
+                                           },
+    "OMEGA_GAP_PHASE8_SECURITY_GOVERNANCE":  {
+                                                 "phase_name":  "OMEGA_GAP_PHASE8_SECURITY_GOVERNANCE",
+                                                 "l2_session_id":  null,
+                                                 "l2_completed":  false,
+                                                 "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                                 "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                                 "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                                 "final_verdict":  "[APPROVED]",
+                                                 "timestamp":  1779794971.4416807
+                                             },
+    "OMEGA_GAP_PHASE9_INTEGRATION_TESTING":  {
+                                                 "phase_name":  "OMEGA_GAP_PHASE9_INTEGRATION_TESTING",
+                                                 "l2_session_id":  null,
+                                                 "l2_completed":  false,
+                                                 "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                                 "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                                 "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                                 "final_verdict":  "[APPROVED]",
+                                                 "timestamp":  1779794971.4416816
+                                             },
+    "OMEGA_GAP_PHASE10_DATABASE_PERSISTENCE_LAYER":  {
+                                                         "phase_name":  "OMEGA_GAP_PHASE10_DATABASE_PERSISTENCE_LAYER",
+                                                         "l2_session_id":  null,
+                                                         "l2_completed":  false,
+                                                         "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                                         "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                                         "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                                         "final_verdict":  "[APPROVED]",
+                                                         "timestamp":  1779794971.4416823
+                                                     },
+    "OMEGA_GAP_PHASE11_TASK_STATE_MACHINE":  {
+                                                 "phase_name":  "OMEGA_GAP_PHASE11_TASK_STATE_MACHINE",
+                                                 "l2_session_id":  null,
+                                                 "l2_completed":  false,
+                                                 "l3_session_id":  "role21-phase11-24-reaudit-r2-20260525T181545+0700",
+                                                 "l3_session_key":  "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
+                                                 "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
+                                                 "final_verdict":  "[APPROVED]",
+                                                 "timestamp":  1779794971.4416838
+                                             },
+    "OMEGA_GAP_PHASE12_MODEL_REGISTRY":  {
+                                             "phase_name":  "OMEGA_GAP_PHASE12_MODEL_REGISTRY",
+                                             "l2_session_id":  null,
+                                             "l2_completed":  false,
+                                             "l3_session_id":  "role21-phase11-24-reaudit-r2-20260525T181545+0700",
+                                             "l3_session_key":  "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
+                                             "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
+                                             "final_verdict":  "[APPROVED]",
+                                             "timestamp":  1779794971.4416845
+                                         },
+    "OMEGA_GAP_PHASE13_MACHINE_LEARNING_ENGINE":  {
+                                                      "phase_name":  "OMEGA_GAP_PHASE13_MACHINE_LEARNING_ENGINE",
+                                                      "l2_session_id":  null,
+                                                      "l2_completed":  false,
+                                                      "l3_session_id":  "role21-phase11-24-reaudit-r2-20260525T181545+0700",
+                                                      "l3_session_key":  "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
+                                                      "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
+                                                      "final_verdict":  "[APPROVED]",
+                                                      "timestamp":  1779794971.4416854
+                                                  },
+    "OMEGA_GAP_PHASE14_MARKET_DATA_PIPELINE":  {
+                                                   "phase_name":  "OMEGA_GAP_PHASE14_MARKET_DATA_PIPELINE",
+                                                   "l2_session_id":  null,
+                                                   "l2_completed":  false,
+                                                   "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                                   "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                                   "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                                   "final_verdict":  "[APPROVED]",
+                                                   "timestamp":  1779794971.4416862
+                                               },
+    "OMEGA_GAP_PHASE15_ENSEMBLE_VOTING":  {
+                                              "phase_name":  "OMEGA_GAP_PHASE15_ENSEMBLE_VOTING",
+                                              "l2_session_id":  null,
+                                              "l2_completed":  false,
+                                              "l3_session_id":  "role21-phase1-10-14-15-final-20260525T191939+0700",
+                                              "l3_session_key":  "codex:role21:phase1-10-14-15:final:20260525T191939+0700",
+                                              "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE1_10_14_15_FINAL.md",
+                                              "final_verdict":  "[APPROVED]",
+                                              "timestamp":  1779794971.441687
+                                          },
+    "OMEGA_GAP_PHASE16_LIVE_TRADING":  {
+                                           "phase_name":  "OMEGA_GAP_PHASE16_LIVE_TRADING",
+                                           "l2_session_id":  null,
+                                           "l2_completed":  false,
+                                           "l3_session_id":  "role21-phase11-24-reaudit-r2-20260525T181545+0700",
+                                           "l3_session_key":  "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
+                                           "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
+                                           "final_verdict":  "[APPROVED]",
+                                           "timestamp":  1779794971.441688
+                                       },
+    "OMEGA_GAP_PHASE17_MONITORING_DASHBOARD":  {
+                                                   "phase_name":  "OMEGA_GAP_PHASE17_MONITORING_DASHBOARD",
+                                                   "l2_session_id":  null,
+                                                   "l2_completed":  false,
+                                                   "l3_session_id":  "role21-phase11-24-reaudit-r2-20260525T181545+0700",
+                                                   "l3_session_key":  "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
+                                                   "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
+                                                   "final_verdict":  "[APPROVED]",
+                                                   "timestamp":  1779794971.4416888
+                                               },
+    "STAGE2_BEHAVIORAL_AUDIT_20260522":  {
+                                             "phase_name":  "STAGE2_BEHAVIORAL_AUDIT_20260522",
+                                             "l2_session_id":  null,
+                                             "l2_completed":  false,
+                                             "l3_session_id":  "role21-stage2-behavioral-reaudit-20260522T162939+0700",
+                                             "l3_session_key":  "codex:role21:stage2-behavioral-reaudit:20260522T162939+0700",
+                                             "audit_report_path":  ".ly_state/session/audit_reports/role21_stage2_behavioral_reaudit_20260522.md",
+                                             "final_verdict":  "[APPROVED]",
+                                             "timestamp":  1779794971.44169
+                                         },
+    "STAGE6_2_COST_AWARE_AUDIT_20260522":  {
+                                               "phase_name":  "STAGE6_2_COST_AWARE_AUDIT_20260522",
+                                               "l2_session_id":  null,
+                                               "l2_completed":  false,
+                                               "l3_session_id":  "role21-stage6-2-cost-aware-manual-20260522T213700+0700",
+                                               "l3_session_key":  "manual:role21:stage6-2-cost-aware:20260522T213700+0700",
+                                               "audit_report_path":  ".ly_state/session/audit_reports/role21_stage6_2_cost_aware_audit_20260522.md",
+                                               "final_verdict":  "[APPROVED]",
+                                               "timestamp":  1779794971.441691
+                                           },
+    "STAGE6_3_ACTIVE_DRAWDOWN_CONTROL_20260523":  {
+                                                      "phase_name":  "STAGE6_3_ACTIVE_DRAWDOWN_CONTROL_20260523",
+                                                      "l2_session_id":  null,
+                                                      "l2_completed":  false,
+                                                      "l3_session_id":  "role21-stage6-3-drawdown-control-audit-20260523",
+                                                      "l3_session_key":  "unavailable_in_codex_runtime",
+                                                      "audit_report_path":  ".ly_state/session/audit_reports/role21_stage6_3_audit_final_20260523.md",
+                                                      "final_verdict":  "[APPROVED]",
+                                                      "timestamp":  1779794971.4416916
+                                                  },
+    "OMEGA_GAP_PHASE21_PERFORMANCE_ATTRIBUTION":  {
+                                                      "phase_name":  "OMEGA_GAP_PHASE21_PERFORMANCE_ATTRIBUTION",
+                                                      "l2_session_id":  null,
+                                                      "l2_completed":  false,
+                                                      "l3_session_id":  "L3-Audit:Role21-MissingPhases",
+                                                      "l3_session_key":  "agent:main:subagent:0eab8f30-8327-490e-b10d-b3d76d1dcbbd",
+                                                      "audit_report_path":  ".ly_state/session/audit_reports/role21_phase15_17_21_22_recovery_audit_20260523.md",
+                                                      "final_verdict":  "[APPROVED]",
+                                                      "timestamp":  1779794971.4416926
+                                                  },
+    "OMEGA_GAP_PHASE22_OPERATIONAL_MONITORING":  {
+                                                     "phase_name":  "OMEGA_GAP_PHASE22_OPERATIONAL_MONITORING",
+                                                     "l2_session_id":  null,
+                                                     "l2_completed":  false,
+                                                     "l3_session_id":  "role21-phase11-24-reaudit-r2-20260525T181545+0700",
+                                                     "l3_session_key":  "codex:role21:phase11-24:reaudit-r2:20260525T181545+0700",
+                                                     "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE11_24_R2.md",
+                                                     "final_verdict":  "[APPROVED]",
+                                                     "timestamp":  1779794971.4416935
+                                                 },
+    "OMEGA_GAP_PHASE24_MLOPS_KUBERNETES":  {
+                                               "phase_name":  "OMEGA_GAP_PHASE24_MLOPS_KUBERNETES",
+                                               "l2_session_id":  null,
+                                               "l2_completed":  false,
+                                               "l3_session_id":  "role21-phase18-24-reaudit-20260525-p24-partial",
+                                               "l3_session_key":  "codex:role21:phase18-24:reaudit-p24-partial:20260525",
+                                               "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE18_24_REAUDIT_20260525_R2.md",
+                                               "final_verdict":  "[APPROVED_PARTIAL]",
+                                               "timestamp":  1779794971.4416955
+                                           },
+    "OMEGA_GAP_PHASE18_PORTFOLIO_REBALANCER":  {
+                                                   "phase_name":  "OMEGA_GAP_PHASE18_PORTFOLIO_REBALANCER",
+                                                   "l2_session_id":  null,
+                                                   "l2_completed":  false,
+                                                   "l3_session_id":  "role21-phase18-24-reaudit-20260525-p24-partial",
+                                                   "l3_session_key":  "codex:role21:phase18-24:reaudit-p24-partial:20260525",
+                                                   "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE18_24_REAUDIT_20260525_R2.md",
+                                                   "final_verdict":  "[APPROVED]",
+                                                   "timestamp":  1779794971.4416962
+                                               },
+    "OMEGA_GAP_PHASE19_TRANSACTION_COST_OPTIMIZER":  {
+                                                         "phase_name":  "OMEGA_GAP_PHASE19_TRANSACTION_COST_OPTIMIZER",
+                                                         "l2_session_id":  null,
+                                                         "l2_completed":  false,
+                                                         "l3_session_id":  "role21-phase18-24-reaudit-20260525-p24-partial",
+                                                         "l3_session_key":  "codex:role21:phase18-24:reaudit-p24-partial:20260525",
+                                                         "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE18_24_REAUDIT_20260525_R2.md",
+                                                         "final_verdict":  "[APPROVED]",
+                                                         "timestamp":  1779794971.4416971
+                                                     },
+    "OMEGA_GAP_PHASE20_CONSTRAINT_SOLVER":  {
+                                                "phase_name":  "OMEGA_GAP_PHASE20_CONSTRAINT_SOLVER",
+                                                "l2_session_id":  null,
+                                                "l2_completed":  false,
+                                                "l3_session_id":  "role21-phase18-24-reaudit-20260525-p24-partial",
+                                                "l3_session_key":  "codex:role21:phase18-24:reaudit-p24-partial:20260525",
+                                                "audit_report_path":  "docs/FINAL_L3_AUDIT_PHASE18_24_REAUDIT_20260525_R2.md",
+                                                "final_verdict":  "[APPROVED]",
+                                                "timestamp":  1779794971.441698
+                                            },
+    "OMEGA_PHASE16_EXECUTION":  {
+                                    "phase_name":  "OMEGA_PHASE16_EXECUTION",
+                                    "l2_session_id":  null,
+                                    "l2_completed":  false,
+                                    "l3_session_id":  "role21-phase16-execution-reaudit4-20260524T035603+0700",
+                                    "l3_session_key":  "codex:role21:phase16:execution-engine:reaudit4:20260524T035603+0700",
+                                    "audit_report_path":  "OMEGA_QUANT/docs/role21_phase16_execution_reaudit.md",
+                                    "final_verdict":  "[APPROVED]",
+                                    "timestamp":  1779794971.4416988
+                                },
+    "clear_cove_gate":  {
+                            "phase_name":  "clear_cove_gate",
+                            "l2_session_id":  null,
+                            "l2_completed":  false,
+                            "l3_session_id":  "role21-blessed-river-reaudit",
+                            "l3_session_key":  "codex:role21:blessed-river:l3-reaudit:20260525T222049+0700",
+                            "audit_report_path":  "OMEGA_QUANT/docs/L3_AUDIT_BLESSED_RIVER_REAUDIT_20260525.md",
+                            "final_verdict":  "[APPROVED]",
+                            "timestamp":  1779794971.4416997
+                        },
+    "phase_1_alpha_factory":  {
+                                  "phase_name":  "phase_1_alpha_factory",
+                                  "l2_session_id":  "l2-session-001",
+                                  "l2_completed":  true,
+                                  "l3_session_id":  "l3-session-001",
+                                  "l3_session_key":  "audit-key-001",
+                                  "audit_report_path":  "docs/L3_AUDIT_PHASE1.md",
+                                  "final_verdict":  "APPROVED",
+                                  "timestamp":  1779794971.5519304
+                              },
+    "quant_engine_upgrade":  {
+                                 "audit_report_path":  "docs/L3_CODEX_AUDIT_QUANT_UPGRADE_20260526.md",
+                                 "l3_session_key":  "l3:role21:quant-upgrade:python-audit:20260526T191009+0700",
+                                 "phase_name":  "quant_engine_upgrade",
+                                 "l2_session_id":  "opencode-l2-quant-upgrade-20260526",
+                                 "notes":  "118/118 modules import OK. PIT PASS. No v21_system refs. Codex CLI treo, dung Python audit script doc lap (SOD compliant).",
+                                 "final_verdict":  "[APPROVED]",
+                                 "l2_completed":  true,
+                                 "l3_session_id":  "l3-python-audit-quant-upgrade-20260526",
+                                 "timestamp":  1779797423
+                             },
+    "gap_fill_batch1_2":  {
+                              "audit_report_path":  "docs/L3_AUDIT_GAP_FILL_BATCH1_2_20260526.md",
+                              "files_added":  19,
+                              "timestamp":  "2026-05-26T14:32:19Z",
+                              "l3_session_id":  "019e64b0-1254-7761-a6c7-994b9dc0ea30",
+                              "final_verdict":  "[APPROVED]",
+                              "status":  "APPROVED",
+                              "l3_session_key":  "calm-daisy"
+                          }
 }
