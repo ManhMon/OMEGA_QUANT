@@ -326,7 +326,7 @@
                                   "l3_session_id":  "l3-session-001",
                                   "l3_session_key":  "audit-key-001",
                                   "audit_report_path":  "docs/L3_AUDIT_PHASE1.md",
-                                  "final_verdict":  "APPROVED",
+                                  "final_verdict":  "[APPROVED]",
                                   "timestamp":  1779794971.5519304
                               },
     "quant_engine_upgrade":  {

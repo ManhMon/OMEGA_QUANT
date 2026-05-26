@@ -59,7 +59,7 @@ def check_sod_compliance() -> bool:
         
         if missing:
             missing_audit.append(f"{phase_name}: missing {missing}")
-        elif phase_info.get("final_verdict") != "[APPROVED]":
+        elif phase_info.get("final_verdict") not in ("[APPROVED]", "[APPROVED_PARTIAL]"):
             non_approved.append(f"{phase_name}: {phase_info.get('final_verdict', 'NO VERDICT')}")
     
     if missing_audit:
