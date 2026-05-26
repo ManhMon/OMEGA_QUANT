@@ -1,7 +1,15 @@
 from __future__ import annotations
 
 from typing import Any
-from v19_system.core import ExecutionContext, ModuleResult
+# v19_system stub (scaffold only - not production code)
+from typing import Any
+try:
+    from v19_system.core import ExecutionContext, ModuleResult
+except ImportError:
+    class ExecutionContext:  # type: ignore
+        pass
+    class ModuleResult:  # type: ignore
+        pass
 
 LAYER_ID = 'layer_06_execution_reality'
 MODULE_ID = 'broker_adapter_module'
