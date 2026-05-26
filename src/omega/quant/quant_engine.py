@@ -64,12 +64,8 @@ from .strategy.transaction_cost_analyzer import TransactionCostAnalyzer, VNSlipp
 # Portfolio & Governance (upgraded from V21 layer_05/06)
 from .performance_tracker import PerformanceTracker
 from .portfolio import PortfolioOptimizer
-from ..governance.online_model_updater import OnlineModelUpdater
-from ..governance.validate_ly_state import validate_ly_state
-
-# Data (upgraded from V21 data_feed/pipeline)
-from ..data.vnstock_live import VnStockLiveDataProvider
-from ..data.production_data_pipeline import ProductionDataPipeline
+# NOTE: OnlineModelUpdater, validate_ly_state moved to lazy imports (circular import fix)
+# NOTE: VnStockLiveDataProvider, ProductionDataPipeline moved to lazy imports (circular import fix)
 
 logger = logging.getLogger(__name__)
 
@@ -654,3 +650,29 @@ class QuantEngine:
                     "signal": signal_dict.get("signal", "HOLD"),
                 })
         return pd.DataFrame(rows)
+
+    # --- Lazy import accessors (circular import fix) ---
+
+    @staticmethod
+    def get_online_model_updater():
+        """Lazy import for OnlineModelUpdater (avoids circular import at package bootstrap)."""
+        from ..governance.online_model_updater import OnlineModelUpdater
+        return OnlineModelUpdater
+
+    @staticmethod
+    def get_validate_ly_state():
+        """Lazy import for validate_ly_state (avoids circular import at package bootstrap)."""
+        from ..governance.validate_ly_state import validate_ly_state
+        return validate_ly_state
+
+    @staticmethod
+    def get_vnstock_live_provider():
+        """Lazy import for VnStockLiveDataProvider (avoids circular import at package bootstrap)."""
+        from ..data.vnstock_live import VnStockLiveDataProvider
+        return VnStockLiveDataProvider
+
+    @staticmethod
+    def get_production_data_pipeline():
+        """Lazy import for ProductionDataPipeline (avoids circular import at package bootstrap)."""
+        from ..data.production_data_pipeline import ProductionDataPipeline
+        return ProductionDataPipeline
