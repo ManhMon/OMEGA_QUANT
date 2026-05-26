@@ -1,4 +1,4 @@
-﻿# CALENDAR JSON Audit R2
+# CALENDAR JSON Audit R2
 
 ## Scope
 - `OMEGA_QUANT/config/vn_holidays.json`

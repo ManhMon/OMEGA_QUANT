@@ -241,6 +241,102 @@ class BrokerGateway(ABC):
         return {}
 
 
+class VNDirectBroker(BrokerGateway):
+    """
+    VNDirect broker gateway implementation.
+
+    Simulates VNDirect API for paper/test environments.
+    Production use requires real VNDirect API credentials and endpoints.
+    """
+
+    def __init__(self, credentials: BrokerCredentials):
+        super().__init__(credentials)
+        self._session_token: Optional[str] = None
+        self._order_counter: int = int(time.time() * 1000) % 10_000_000
+
+    def authenticate(self) -> bool:
+        """Authenticate with VNDirect API (simulated)."""
+        if not self.credentials.api_key or not self.credentials.api_secret:
+            logger.error("VNDirectBroker: missing api_key or api_secret")
+            self.authenticated = False
+            return False
+        self._session_token = (
+            f"VNDIRECT_TOKEN_{self.credentials.account_id}_{int(time.time())}"
+        )
+        self.authenticated = True
+        logger.info(f"VNDirectBroker authenticated: account={self.credentials.account_id}")
+        return True
+
+    def submit_order(self, order: BrokerOrder) -> BrokerOrderResponse:
+        """Submit order to VNDirect (simulated)."""
+        # Lazy auth
+        if not self.authenticated:
+            ok = self.authenticate()
+            if not ok:
+                return BrokerOrderResponse(
+                    success=False,
+                    client_order_id=order.client_order_id,
+                    status=OrderStatus.REJECTED,
+                    message="Authentication failed",
+                    error_code="NOT_AUTHENTICATED",
+                    timestamp=time.time(),
+                )
+
+        # Compliance check
+        compliant, reason = self.validate_order_compliance(order)
+        if not compliant:
+            return BrokerOrderResponse(
+                success=False,
+                client_order_id=order.client_order_id,
+                status=OrderStatus.REJECTED,
+                message=reason,
+                error_code="COMPLIANCE_VIOLATION",
+                timestamp=time.time(),
+            )
+
+        self._order_counter += 1
+        broker_order_id = f"VNDIRECT_{self._order_counter}"
+
+        logger.info(
+            f"VNDirectBroker submitted: {broker_order_id} "
+            f"{order.symbol} {order.side.value} {order.quantity}"
+        )
+
+        return BrokerOrderResponse(
+            success=True,
+            broker_order_id=broker_order_id,
+            client_order_id=order.client_order_id,
+            status=OrderStatus.SUBMITTED,
+            message="Order submitted to VNDirect",
+            timestamp=time.time(),
+        )
+
+    def get_order_status(self, broker_order_id: str) -> BrokerOrderStatus:
+        """Get order status from VNDirect (simulated — returns SUBMITTED)."""
+        return BrokerOrderStatus(
+            broker_order_id=broker_order_id,
+            client_order_id=broker_order_id,
+            symbol="UNKNOWN",
+            side=OrderSide.BUY,
+            status=OrderStatus.SUBMITTED,
+            quantity=100,
+            filled_quantity=0,
+            remaining_quantity=100,
+            last_update_time=time.time(),
+        )
+
+    def cancel_order(self, broker_order_id: str) -> BrokerOrderResponse:
+        """Cancel order on VNDirect (simulated)."""
+        return BrokerOrderResponse(
+            success=True,
+            broker_order_id=broker_order_id,
+            client_order_id=broker_order_id,
+            status=OrderStatus.CANCELLED,
+            message=f"Order {broker_order_id} cancelled on VNDirect",
+            timestamp=time.time(),
+        )
+
+
 class PaperTradingEngine(BrokerGateway):
     """
     Paper trading engine for simulation.
@@ -369,96 +465,3 @@ class PaperTradingEngine(BrokerGateway):
             "positions": {},
             "total_equity": 1_000_000_000.0,
         }
-
-
-class VNDirectBroker(BrokerGateway):
-    """
-    VNDirect broker gateway (simulated/mock implementation).
-
-    Provides the same interface as SSIBrokerGateway but with VNDIRECT_ prefixed
-    broker order IDs. Lazy authentication on first submit_order call.
-    """
-
-    def __init__(self, credentials: BrokerCredentials):
-        super().__init__(credentials)
-        self._session_token: str = ""
-        self._order_counter: int = int(time.time() * 1000) % 10_000_000_000
-
-    def authenticate(self) -> bool:
-        """Authenticate with VNDirect API (simulated)."""
-        if not self.credentials.api_key or not self.credentials.api_secret:
-            logger.error("VNDirectBroker: missing api_key or api_secret")
-            self.authenticated = False
-            return False
-        self._session_token = f"VNDIRECT_TOKEN_{self.credentials.account_id}_{int(time.time())}"
-        self.authenticated = True
-        logger.info(f"VNDirectBroker authenticated for account {self.credentials.account_id}")
-        return True
-
-    def submit_order(self, order: BrokerOrder) -> BrokerOrderResponse:
-        """Submit order to VNDirect (simulated)."""
-        # Lazy auth
-        if not self.authenticated:
-            ok = self.authenticate()
-            if not ok:
-                return BrokerOrderResponse(
-                    success=False,
-                    client_order_id=order.client_order_id,
-                    status=OrderStatus.REJECTED,
-                    message="Authentication failed",
-                    error_code="NOT_AUTHENTICATED",
-                    timestamp=time.time(),
-                )
-
-        # Compliance check
-        compliant, reason = self.validate_order_compliance(order)
-        if not compliant:
-            return BrokerOrderResponse(
-                success=False,
-                client_order_id=order.client_order_id,
-                status=OrderStatus.REJECTED,
-                message=reason,
-                error_code="COMPLIANCE_VIOLATION",
-                timestamp=time.time(),
-            )
-
-        broker_order_id = f"VNDIRECT_{self._order_counter}"
-        self._order_counter += 1
-
-        logger.info(
-            f"VNDirectBroker order submitted: {broker_order_id} "
-            f"{order.symbol} {order.side.value} {order.quantity}"
-        )
-        return BrokerOrderResponse(
-            success=True,
-            broker_order_id=broker_order_id,
-            client_order_id=order.client_order_id,
-            status=OrderStatus.SUBMITTED,
-            message="Order submitted to VNDirect",
-            timestamp=time.time(),
-        )
-
-    def get_order_status(self, broker_order_id: str) -> BrokerOrderStatus:
-        """Get order status from VNDirect (simulated — always SUBMITTED)."""
-        return BrokerOrderStatus(
-            broker_order_id=broker_order_id,
-            client_order_id=broker_order_id,
-            symbol="UNKNOWN",
-            side=OrderSide.BUY,
-            status=OrderStatus.SUBMITTED,
-            quantity=100,
-            filled_quantity=0,
-            remaining_quantity=100,
-            last_update_time=time.time(),
-        )
-
-    def cancel_order(self, broker_order_id: str) -> BrokerOrderResponse:
-        """Cancel order on VNDirect (simulated)."""
-        return BrokerOrderResponse(
-            success=True,
-            broker_order_id=broker_order_id,
-            client_order_id=broker_order_id,
-            status=OrderStatus.CANCELLED,
-            message=f"Order {broker_order_id} cancelled on VNDirect",
-            timestamp=time.time(),
-        )

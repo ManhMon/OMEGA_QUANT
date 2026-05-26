@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import logging
 import re
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, Any, List, Optional, Tuple
 from enum import Enum
@@ -191,16 +190,6 @@ class SemanticPruner:
         
         return min(1.0, max(0.0, relevance))
     
-    # Maps ContextPriority -> TokenBudget category (mirrors ContextAssembler._priority_budget_category).
-    # Using priority.name.lower() produces "critical/high/medium/low" which are not valid
-    # TokenBudget keys — fix for audit P2-A.
-    _PRIORITY_TO_BUDGET: Dict[ContextPriority, str] = {
-        ContextPriority.CRITICAL: "system",
-        ContextPriority.HIGH: "task",
-        ContextPriority.MEDIUM: "history",
-        ContextPriority.LOW: "scratch",
-    }
-
     def prune(
         self,
         chunks: List[ContextChunk],
@@ -221,13 +210,13 @@ class SemanticPruner:
         # Sort by relevance descending
         scored_chunks.sort(key=lambda x: x[1], reverse=True)
         
-        # Allocate chunks within budget using correct category mapping (audit P2-A fix)
+        # Allocate chunks within budget
         kept_chunks = []
         dropped_chunks = 0
         
         for chunk, relevance in scored_chunks:
-            budget_category = self._PRIORITY_TO_BUDGET.get(chunk.priority, "scratch")
-            if budget.allocate(budget_category, chunk.token_count):
+            # Try to allocate
+            if budget.allocate(chunk.priority.name.lower(), chunk.token_count):
                 kept_chunks.append(chunk)
             else:
                 dropped_chunks += 1
@@ -257,9 +246,6 @@ class ContextAssembler:
     - Using chunking for efficient assembly
     """
     
-    # Maximum number of entries in _pruned_cache (audit P2-B fix: bounded LRU).
-    _PRUNED_CACHE_MAX_SIZE: int = 128
-
     def __init__(
         self,
         total_budget: int = 8000,
@@ -269,16 +255,7 @@ class ContextAssembler:
         self.budget = TokenBudget(total_budget, budget_pct)
         self.pruner = SemanticPruner(domain_keywords)
         self._relevance_cache: Dict[Tuple[str, str], float] = {}
-        # OrderedDict used as a bounded LRU: oldest entry evicted when cap is reached.
-        self._pruned_cache: OrderedDict = OrderedDict()
-
-    def _pruned_cache_set(self, key: tuple, value: List[ContextChunk]) -> None:
-        """Insert into _pruned_cache, evicting the oldest entry when at capacity."""
-        if key in self._pruned_cache:
-            self._pruned_cache.move_to_end(key)
-        self._pruned_cache[key] = value
-        if len(self._pruned_cache) > self._PRUNED_CACHE_MAX_SIZE:
-            self._pruned_cache.popitem(last=False)
+        self._pruned_cache: Dict[Tuple[Tuple[str, ...], str, int], List[ContextChunk]] = {}
 
     def _get_relevance(self, chunk: ContextChunk, query: str) -> float:
         """Get cached relevance score for chunk-query pair."""
@@ -380,7 +357,7 @@ class ContextAssembler:
                 f"Kept {len(kept_chunks)} chunks. "
                 f"Remaining tokens: {self.budget.get_total_remaining()}"
             )
-            self._pruned_cache_set(pruned_cache_key, kept_chunks)
+            self._pruned_cache[pruned_cache_key] = kept_chunks
         else:
             actual_kept = []
             for chunk in kept_chunks:

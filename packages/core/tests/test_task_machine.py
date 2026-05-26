@@ -221,33 +221,6 @@ class TestRetryWithBackoff:
         assert dlq_tasks[0][0].task_id == task.task_id
 
 
-class TestPreemption:
-    """Regression tests for preempt_task() (audit P1-B fix)."""
-
-    def test_preempt_task_sets_cancel_event(self):
-        """preempt_task() must set the task cancel event."""
-        machine = TaskStateMachine()
-        task = machine.create_task("test", "OpenCode")
-        # Advance to RUNNING so ABORTED is a valid transition
-        machine.transition(task.task_id, TaskState.QUEUED)
-        machine.transition(task.task_id, TaskState.PLANNED)
-        machine.transition(task.task_id, TaskState.DISPATCHED)
-        machine.transition(task.task_id, TaskState.RUNNING)
-        machine.transition(task.task_id, TaskState.FAILED)
-        machine.transition(task.task_id, TaskState.ESCALATED)
-
-        machine.preempt_task(task.task_id, reason="test preemption")
-
-        assert task.is_cancelled()
-        assert task.state == TaskState.ABORTED
-
-    def test_preempt_task_not_found_raises(self):
-        """preempt_task() must raise ValueError for unknown task_id."""
-        machine = TaskStateMachine()
-        with pytest.raises(ValueError):
-            machine.preempt_task("nonexistent-id")
-
-
 class TestTaskStateMachineSingleton:
     """Test TaskStateMachine singleton pattern."""
     

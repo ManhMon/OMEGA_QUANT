@@ -160,4 +160,5 @@ else:
 print(f"Risk checks: {'PASS' if risk_passed else 'FAIL'}")
 print()
 
-sys.exit(exit_code)
+if __name__ == "__main__":
+    sys.exit(exit_code)

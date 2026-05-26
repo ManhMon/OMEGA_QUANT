@@ -1,0 +1,6 @@
+2026-05-26 18:29:00,427 - __main__ - INFO - ================================================================================
+2026-05-26 18:29:00,427 - __main__ - INFO - OMEGA_QUANT Worker Process Starting
+2026-05-26 18:29:00,427 - __main__ - INFO - ================================================================================
+2026-05-26 18:29:00,427 - omega.infra.task_queue - INFO - PriorityTaskQueue initialized: max_workers=4, max_retries=3
+2026-05-26 18:29:00,427 - __main__ - INFO - WorkerMain initialized: worker_id=worker-18712, heartbeat_interval=5.0s
+2026-05-26 18:29:00,427 - __main__ - INFO - Worker worker-18712 starting main loop

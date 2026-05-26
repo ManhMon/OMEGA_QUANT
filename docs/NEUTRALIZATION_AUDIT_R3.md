@@ -1,4 +1,4 @@
-﻿# NEUTRALIZATION AUDIT R3 (Role 21 - Code Reviewer)
+# NEUTRALIZATION AUDIT R3 (Role 21 - Code Reviewer)
 
 ## Verdict
 [APPROVED]

@@ -1,0 +1,2 @@
+avg_sharpe,avg_dd,avg_ret,pct_positive,worst_dd,score,config,top_n_stocks,rebalance_freq,top_n_alphas,return_horizon,weighting
+-1.3428,-4.72,-6.24,0.5,-11.5,-0.2855,top12_rebal5_alpha3_fwd_ret_5_equal,12,5,3,fwd_ret_5,equal

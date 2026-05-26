@@ -1,4 +1,4 @@
-﻿# CALENDAR JSON Audit R1
+# CALENDAR JSON Audit R1
 
 - Role: `L3-Audit:Role20-Compliance`
 - Scope (only):

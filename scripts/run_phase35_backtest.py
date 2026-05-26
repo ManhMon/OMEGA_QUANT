@@ -41,8 +41,8 @@ def main():
     logger.info("=" * 80)
     
     # Configuration
-    START_DATE = "2015-01-01"
-    END_DATE = "2026-05-08"
+    START_DATE = "2015-01-05"
+    END_DATE = "2026-05-14"
     TOP_N_SYMBOLS = 30
     N_FOLDS = 8
     TRAIN_YEARS = 3

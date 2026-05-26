@@ -36,7 +36,7 @@ class RealtimeRiskGuard:
         """Update current portfolio state for concentration checks."""
         if total_equity <= 0:
             raise ValueError(
-                f"Invalid total_equity={total_equity}: must be > 0 (audit P2-C fix)"
+                f"Invalid total_equity={total_equity}: must be > 0"
             )
         self._total_equity = total_equity
         self._exposure = exposures
@@ -101,7 +101,7 @@ class RealtimeRiskGuard:
             logger.warning(f"Risk Reject {symbol}: Concentration {concentration:.1%} > Limit {self.limits.max_concentration_pct:.1%}")
             return RiskVerdict.FAIL_CONCENTRATION
 
-        # 4. Circuit Breaker (Drawdown) — equity > 0 guaranteed by guard above
+        # 4. Circuit Breaker (Drawdown)
         if self._daily_pnl / self._total_equity < -self.limits.circuit_breaker_drawdown:
             return RiskVerdict.FAIL_CIRCUIT_BREAKER
 

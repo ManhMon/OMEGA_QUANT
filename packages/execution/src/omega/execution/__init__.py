@@ -14,8 +14,8 @@ from .broker_gateway import (
     BrokerOrderStatus,
     BrokerCredentials,
     BrokerGateway,
-    PaperTradingEngine,
     VNDirectBroker,
+    PaperTradingEngine,
 )
 
 from .order_router import (
@@ -64,7 +64,6 @@ __all__ = [
     "BrokerCredentials",
     "BrokerGateway",
     "PaperTradingEngine",
-    "VNDirectBroker",
     # order_router
     "TradingMode",
     "SSIBrokerGateway",

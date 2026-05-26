@@ -269,7 +269,7 @@ class ProductionMonitor:
         self.max_consecutive_losses = max_consecutive_losses
         self.slack_webhook_url = slack_webhook_url
         self.alert_cooldown_seconds = alert_cooldown_seconds
-        
+
         self.state = SystemState.RUNNING
         self.last_alert_time: Optional[datetime] = None
         self.alert_history: List[Dict[str, Any]] = []

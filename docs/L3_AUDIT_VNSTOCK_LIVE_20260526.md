@@ -75,3 +75,4 @@ validate_ly_state: success
 
 All P0/P1/P2/P3 issues fixed. Runtime clean. PIT safe. Fully vectorized.
 Commits: `639777b` (vnstock_live + import fixes)
+- Background mode test PASS (2026-05-26T14:50Z)

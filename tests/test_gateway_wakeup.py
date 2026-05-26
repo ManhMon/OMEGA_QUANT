@@ -2,7 +2,15 @@ import json
 import logging
 from pathlib import Path
 
-from scripts import gateway_wakeup_server
+import sys
+import os
+
+# Ensure scripts directory is in path
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
+
+import gateway_wakeup_server
 
 
 def _write_active_tasks(workspace: Path, payload):

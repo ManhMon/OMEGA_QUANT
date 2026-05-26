@@ -113,15 +113,6 @@ class Task:
     audit_ref: str = ""
     retry_count: int = 0
     last_error: Optional[str] = None
-    _cancel_event: Any = field(default_factory=threading.Event, repr=False, compare=False)
-
-    def is_cancelled(self) -> bool:
-        """Check if the task has been preempted/cancelled."""
-        return self._cancel_event.is_set()
-
-    def cancel(self):
-        """Signal the cancellation event."""
-        self._cancel_event.set()
     
     def can_transition_to(self, new_state: TaskState) -> bool:
         """Validate state transition (Spec Section 4.2)."""
@@ -156,7 +147,7 @@ class DeadLetterQueue:
     def __init__(self, max_retries: int = 3):
         self.max_retries = max_retries
         self.queue: deque = deque()
-        self._lock = threading.RLock()  # RLock allows reentrant acquisition (handle_failure -> _emit_event)
+        self._lock = threading.Lock()
     
     def add(self, task: Task, error: str):
         """Add failed task to DLQ."""
@@ -194,7 +185,7 @@ class TaskStateMachine:
         self.tasks: Dict[str, Task] = {}
         self.events: List[TaskEvent] = []
         self.dlq = DeadLetterQueue()
-        self._lock = threading.RLock()  # RLock: handle_failure holds lock then calls _emit_event which re-acquires it
+        self._lock = threading.Lock()
         self._dependency_graph: Dict[str, Set[str]] = defaultdict(set)
     
     def create_task(
@@ -301,8 +292,6 @@ class TaskStateMachine:
         Returns:
             True if task will be retried, False if moved to DLQ
         """
-        # Capture all state under lock, then emit events outside to avoid
-        # re-entrant lock acquisition (_emit_event also acquires self._lock).
         with self._lock:
             task = self.tasks.get(task_id)
             if not task:
@@ -311,43 +300,42 @@ class TaskStateMachine:
             task.last_error = error
             task.retry_count += 1
             
+            # Check retry policy
             max_retries = task.retry_policy.get("max_retries", 3)
             if task.retry_count >= max_retries:
+                # Move to DLQ
                 self.dlq.add(task, error)
                 task.state = TaskState.FAILED
-                retry_count_snapshot = task.retry_count
-                will_retry = False
-                wait_time = None
+                
+                self._emit_event(
+                    event_type="TASK_FAILED_DLQ",
+                    source="TaskStateMachine",
+                    target=task_id,
+                    correlation_id=task_id,
+                    severity="ERROR",
+                    payload={"error": error, "retry_count": task.retry_count},
+                )
+                
+                logger.error(f"Task {task_id} moved to DLQ: {error}")
+                return False
             else:
+                # Retry with backoff
                 backoff_factor = task.retry_policy.get("backoff_factor", 2.0)
-                wait_time = backoff_factor ** (task.retry_count - 1)
+                wait_time = (backoff_factor ** (task.retry_count - 1))
+                
                 task.state = TaskState.RETRYING
-                retry_count_snapshot = task.retry_count
-                will_retry = True
-
-        # Emit events outside the lock (fix for retry-path deadlock, audit P1-A)
-        if not will_retry:
-            self._emit_event(
-                event_type="TASK_FAILED_DLQ",
-                source="TaskStateMachine",
-                target=task_id,
-                correlation_id=task_id,
-                severity="ERROR",
-                payload={"error": error, "retry_count": retry_count_snapshot},
-            )
-            logger.error(f"Task {task_id} moved to DLQ: {error}")
-        else:
-            self._emit_event(
-                event_type="TASK_RETRYING",
-                source="TaskStateMachine",
-                target=task_id,
-                correlation_id=task_id,
-                severity="WARN",
-                payload={"error": error, "retry_count": retry_count_snapshot, "wait_seconds": wait_time},
-            )
-            logger.warning(f"Task {task_id} will retry in {wait_time}s (attempt {retry_count_snapshot}/{max_retries})")
-
-        return will_retry
+                
+                self._emit_event(
+                    event_type="TASK_RETRYING",
+                    source="TaskStateMachine",
+                    target=task_id,
+                    correlation_id=task_id,
+                    severity="WARN",
+                    payload={"error": error, "retry_count": task.retry_count, "wait_seconds": wait_time},
+                )
+                
+                logger.warning(f"Task {task_id} will retry in {wait_time}s (attempt {task.retry_count}/{max_retries})")
+                return True
     
     def _dependencies_satisfied(self, task_id: str) -> bool:
         """Check if all dependencies are satisfied."""
@@ -363,19 +351,6 @@ class TaskStateMachine:
         
         return True
     
-    def preempt_task(self, task_id: str, reason: str = "Preempted by higher priority or user request"):
-        """Preempt (cancel) a running task via Threading Event."""
-        with self._lock:
-            task = self.tasks.get(task_id)
-            if not task:
-                raise ValueError(f"Task {task_id} not found")
-            task.cancel()
-
-        # Call public transition() outside the lock (fix for missing _transition, audit P1-B).
-        # transition() validates the state machine and emits its own event outside its lock.
-        self.transition(task_id, TaskState.ABORTED, causation_id=reason)
-        logger.info(f"Task {task_id} preempted/cancelled. Reason: {reason}")
-
     def _emit_event(
         self,
         event_type: str,

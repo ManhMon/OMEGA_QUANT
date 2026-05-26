@@ -8,6 +8,11 @@ import pandas as pd
 import numpy as np
 import pytest
 
+# Ensure src is in pythonpath
+import sys
+import os
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from src.pipeline.alpha_discovery_pipeline import run_alpha_discovery_pipeline
 from src.features.pit_guard import verify_no_lookahead, enforce_t_minus_1_lag
 

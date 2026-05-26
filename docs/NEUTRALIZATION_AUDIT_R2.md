@@ -1,4 +1,4 @@
-﻿# NEUTRALIZATION Audit R2
+# NEUTRALIZATION Audit R2
 
 - Role: `[L3-Audit:Role21-Review]`
 - Date: `2026-05-12`

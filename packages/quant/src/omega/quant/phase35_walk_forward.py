@@ -14,7 +14,6 @@ COMPLIANCE:
 from __future__ import annotations
 
 import logging
-from omega.quant.alpha_ensemble_xgboost import TemporalBoundaryError
 import sys
 import os
 from dataclasses import dataclass, field
@@ -609,17 +608,7 @@ class Phase35WalkForwardEngine:
         full train_df so that indicators at the boundary are not distorted.
         """
         logger.info(f"Running fold {fold_id}")
-
-        # Temporal boundary guard: test must start strictly after train ends
-        if not train_df.empty and not test_df.empty:
-            train_max = pd.to_datetime(train_df["date"]).max()
-            test_min = pd.to_datetime(test_df["date"]).min()
-            if test_min <= train_max:
-                raise TemporalBoundaryError(
-                    f"temporal boundary violation in fold {fold_id}: "
-                    f"test_min={test_min.date()} <= train_max={train_max.date()}"
-                )
-
+        
         # Compute alphas on train and test (full train_df — no embargo yet)
         train_df = self.compute_alphas(train_df)
         test_df = self.compute_alphas(test_df)

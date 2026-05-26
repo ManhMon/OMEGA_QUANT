@@ -1,0 +1,8 @@
+{
+    "dataset_id":  "vn_market_2015_now",
+    "dataset_sha256":  "20e7948a1192c5428aaf4b0d7f37a7ebd04c6409972175de76995035e82d81cc",
+    "source":  "local",
+    "size_bytes":  35332314,
+    "dataset_path":  "data/market_2015_now.parquet",
+    "created_at":  "2026-05-26T06:45:45Z"
+}

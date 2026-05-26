@@ -17,19 +17,24 @@ import threading
 WORKSPACE = Path("C:/Users/GHC/.openclaw/workspace/omega")
 sys.path.insert(0, str(WORKSPACE))
 
-LOG_DIR = WORKSPACE / ".ly_state" / "logs"
-LOG_DIR.mkdir(parents=True, exist_ok=True)
+def _setup_logger():
+    logger = logging.getLogger(__name__)
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+        # Avoid file handler issues in tests by only creating it if running as main
+        handlers = [logging.StreamHandler()]
+        if __name__ == "__main__":
+            LOG_DIR = WORKSPACE / ".ly_state" / "logs"
+            LOG_DIR.mkdir(parents=True, exist_ok=True)
+            handlers.append(logging.FileHandler(LOG_DIR / "gateway_server.log"))
+            
+        formatter = logging.Formatter('[%(asctime)s] %(levelname)s: %(message)s')
+        for h in handlers:
+            h.setFormatter(formatter)
+            logger.addHandler(h)
+    return logger
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    handlers=[
-        logging.FileHandler(LOG_DIR / "gateway_server.log"),
-        logging.StreamHandler()
-    ]
-)
-logger = logging.getLogger(__name__)
+logger = _setup_logger()
 
 
 class WakeupHandler(BaseHTTPRequestHandler):

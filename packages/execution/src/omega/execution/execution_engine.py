@@ -29,7 +29,6 @@ from .broker_gateway import (
 from .order_router import OrderRouter, OrderRouterConfig, TradingMode
 from .order_generator import OrderGenerator, PositionSizingConfig
 from .order_book_analyzer import OrderBookAnalyzer
-from .notifications.telegram_bot import TelegramAlertBot
 
 logger = logging.getLogger(__name__)
 
@@ -56,9 +55,6 @@ class ExecutionEngineConfig:
     # Liquidation mode: when True ALL SELL orders execute before ANY BUY order,
     # regardless of whether target_qty == 0.  Superset of the per-order sort.
     liquidation_mode: bool = False
-    
-    # Oracle Mode: If true, suppresses single trade Telegram alerts (relies on batch reporting)
-    signal_oracle_mode: bool = False
 
 
 class ExecutionEngine:
@@ -89,7 +85,6 @@ class ExecutionEngine:
         self.order_generator = OrderGenerator(sizing_cfg)
 
         self.order_book_analyzer = OrderBookAnalyzer()
-        self.telegram = TelegramAlertBot()
 
         # State tracking
         self.active_orders: Dict[str, BrokerOrder] = {}
@@ -301,18 +296,6 @@ class ExecutionEngine:
                 self.execution_metrics["total_submitted"] += 1
                 if submission_response.status == OrderStatus.FILLED:
                     self.execution_metrics["total_filled"] += 1
-                    
-                # Send Telegram Alert
-                if not self.config.signal_oracle_mode:
-                    self.telegram.send_trade_alert(
-                        symbol=symbol,
-                        side=side.name,
-                        qty=qty,
-                        price=price or prices.get(symbol) or 0.0,
-                        mode=self.config.mode.name
-                    )
-                if is_liq and not self.config.signal_oracle_mode:
-                    self.telegram.send_liquidation_alert(symbol=symbol, qty=qty)
 
                 # Clear liquidation exposure when fully submitted
                 if is_liq:

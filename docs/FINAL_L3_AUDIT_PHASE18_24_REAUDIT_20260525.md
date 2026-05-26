@@ -24,7 +24,7 @@ Re-audit Phase 18-24 evidence:
 |---|---:|
 | `python -m pytest packages/quant/tests/test_rebalancer.py packages/quant/tests/test_transaction_cost_optimizer.py packages/quant/tests/test_transaction_cost_optimizer_integration.py packages/quant/tests/test_constraint_solver.py packages/quant/tests/test_attribution.py packages/quant/tests/test_pnl_monitor.py packages/quant/tests/test_stress_testing.py packages/quant/tests/test_sentiment_alpha.py packages/quant/tests/test_ml_engine.py tests/phase24/test_mlops_integration.py -q -o addopts=""` | 182 passed, 8 warnings |
 | `python -m pytest packages/quant/tests/test_lightgbm_engine.py packages/quant/tests/test_ml_engine.py tests/phase24/test_mlops_integration.py -q -o addopts=""` | 28 passed, 3 skipped, 34 warnings |
-| `python scripts\verify_phase_gaps.py` | exit 0; 22/22 complete |
+| `python scripts\verify_phase_gaps.py` | exit 0; 22/22 complete — scope is Phase 1-22 only; NOT Phase 24 Kubernetes evidence (see P2) |
 | JSON/BOM probe on `.ly_state/session/phase_gates.json` | no BOM; `json.loads(...decode("utf-8"))` OK |
 | `rg "^(<<<<<<< |=======$|>>>>>>> )" OMEGA_QUANT` | no conflict markers |
 | `git diff --cached --name-status -- OMEGA_QUANT` | 67 unmerged paths |

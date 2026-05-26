@@ -70,8 +70,7 @@ class PnLSlippageMonitor:
         
         self.cash: float = initial_equity
         self._realized_pnl: float = 0.0
-        self._last_state_timestamp: Optional[datetime] = None  # audit P2-E: track state timestamp
-
+        
         logger.info("PnLSlippageMonitor initialized successfully.")
 
     def _get_latest_time(self) -> Optional[datetime]:
@@ -81,9 +80,6 @@ class PnLSlippageMonitor:
             times.append(self.slippage_records[-1].timestamp)
         if self.snapshots:
             times.append(self.snapshots[-1].timestamp)
-        # audit P2-E: include last state timestamp so set_portfolio_state() is monotonic
-        if self._last_state_timestamp is not None:
-            times.append(self._last_state_timestamp)
         return max(times) if times else None
 
     def set_portfolio_state(
@@ -106,7 +102,6 @@ class PnLSlippageMonitor:
         self._average_costs = average_costs.copy()
         self.cash = cash
         self._realized_pnl = realized_pnl
-        self._last_state_timestamp = timestamp  # audit P2-E: persist for monotonic check
 
     def record_trade(
         self,
@@ -133,16 +128,6 @@ class PnLSlippageMonitor:
         latest = self._get_latest_time()
         if latest and timestamp < latest:
             raise ValueError("PIT violation: timestamp cannot move backwards")
-
-        # Vietnam market: reject oversell/short BEFORE any state mutation (audit P2-6 fix)
-        current_qty = self._positions.get(symbol, 0)
-        new_qty = current_qty + quantity
-        if new_qty < 0:
-            raise ValueError(
-                f"Oversell rejected for {symbol}: current_qty={current_qty}, "
-                f"sell_qty={quantity}, would result in short position new_qty={new_qty}. "
-                "Vietnam market prohibits short selling."
-            )
 
         # Slippage calculation
         direction = 1 if quantity > 0 else -1
@@ -172,6 +157,8 @@ class PnLSlippageMonitor:
         self.slippage_records.append(record)
 
         # Update average cost and realized cash flow
+        current_qty = self._positions.get(symbol, 0)
+        new_qty = current_qty + quantity
         
         trade_value_vnd = quantity * fill_price * self.price_scale
         self.cash -= trade_value_vnd

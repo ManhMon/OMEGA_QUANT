@@ -279,61 +279,130 @@ class MetricsRegistry:
             "histograms": hist_stats
         }
 
+from dataclasses import dataclass
+
+@dataclass
+class PrometheusExporterConfig:
+    """Configuration for Prometheus metric export."""
+    enabled: bool = False
+    port: int = 9090
+    namespace: str = "omega"
+
+class PrometheusExporter:
+    """Exports metrics to Prometheus when enabled."""
+    
+    def __init__(self, config: PrometheusExporterConfig):
+        self._config = config
+        self._server_started = False
+        self._prom = None
+        self._latency_histogram = None
+        self._risk_gauge = None
+        
+        if config.enabled:
+            self._init_prometheus()
+            
+    def _init_prometheus(self):
+        try:
+            import prometheus_client
+            self._prom = prometheus_client
+            self._latency_histogram = prometheus_client.Histogram(
+                f"{self._config.namespace}_latency_ms",
+                "Component latency in milliseconds",
+                labelnames=["component"],
+                buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000),
+            )
+            self._risk_gauge = prometheus_client.Gauge(
+                f"{self._config.namespace}_risk_metric",
+                "Risk metric value",
+                labelnames=["metric"],
+            )
+        except ImportError:
+            raise ImportError("prometheus_client is required when exporter is enabled")
+
+    @property
+    def enabled(self) -> bool:
+        return self._config.enabled
+
+    def record_latency(self, component: str, latency_ms: float) -> None:
+        """Record component latency in milliseconds."""
+        if not self._config.enabled or not self._latency_histogram:
+            return
+        self._latency_histogram.labels(component=component).observe(latency_ms)
+
+    def record_risk_metric(self, metric: str, value: float) -> None:
+        """Record a risk-related metric value."""
+        if not self._config.enabled or not self._risk_gauge:
+            return
+        self._risk_gauge.labels(metric=metric).set(value)
+
+    def get_metrics_text(self) -> str:
+        """Get metrics in Prometheus text format."""
+        if not self._config.enabled or not self._prom:
+            return ""
+        return self._prom.generate_latest().decode('utf-8')
+
+    def start_http_server(self) -> None:
+        """Start the Prometheus HTTP server."""
+        if not self._config.enabled or not self._prom or self._server_started:
+            return
+        self._prom.start_http_server(self._config.port)
+        self._server_started = True
+
 # Global registry for easy access
 registry = MetricsRegistry()
 
 
 from dataclasses import dataclass as _dataclass
-from typing import Optional as _Optional
 
 
 @_dataclass
 class PrometheusExporterConfig:
     """Configuration for PrometheusExporter."""
-    enabled: bool = False
+    enabled: bool = True
     port: int = 9100
     namespace: str = "omega"
 
 
 class PrometheusExporter:
     """
-    Prometheus metrics exporter for OMEGA_QUANT.
+    Prometheus metrics exporter for OMEGA_QUANT Phase 7 observability.
 
-    When enabled=False, all methods are no-ops (no prometheus_client required).
-    When enabled=True, prometheus_client must be installed.
+    When enabled=False, all methods are no-ops and prometheus_client is
+    not required. When enabled=True, prometheus_client must be installed.
     """
 
-    def __init__(self, config: _Optional[PrometheusExporterConfig] = None):
-        self._config = config or PrometheusExporterConfig()
+    def __init__(self, config: PrometheusExporterConfig):
+        self._config = config
         self._prom = None
         self._latency_histogram = None
         self._risk_gauge = None
         self._server_started = False
 
-        if self._config.enabled:
+        if config.enabled:
             self._init_prometheus()
 
-    def _init_prometheus(self):
+    def _init_prometheus(self) -> None:
+        """Import and initialise prometheus_client metrics."""
         try:
             import prometheus_client as prom
-            self._prom = prom
-            ns = self._config.namespace
-            self._latency_histogram = prom.Histogram(
-                f"{ns}_latency_ms",
-                "Component latency in milliseconds",
-                labelnames=["component"],
-                buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000),
-            )
-            self._risk_gauge = prom.Gauge(
-                f"{ns}_risk_metric",
-                "Risk metric value",
-                labelnames=["metric"],
-            )
         except ImportError:
             raise ImportError(
                 "prometheus_client is required when PrometheusExporterConfig.enabled=True. "
                 "Install it with: pip install prometheus-client"
             )
+        self._prom = prom
+        ns = self._config.namespace
+        self._latency_histogram = prom.Histogram(
+            f"{ns}_latency_ms",
+            "Component latency in milliseconds",
+            labelnames=["component"],
+            buckets=(1, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000),
+        )
+        self._risk_gauge = prom.Gauge(
+            f"{ns}_risk_metric",
+            "Risk metric value",
+            labelnames=["metric"],
+        )
 
     @property
     def enabled(self) -> bool:
@@ -346,19 +415,19 @@ class PrometheusExporter:
         self._latency_histogram.labels(component=component).observe(latency_ms)
 
     def record_risk_metric(self, metric: str, value: float) -> None:
-        """Set a risk gauge metric."""
+        """Set a risk gauge value."""
         if not self._config.enabled or self._risk_gauge is None:
             return
         self._risk_gauge.labels(metric=metric).set(value)
 
     def get_metrics_text(self) -> str:
-        """Return Prometheus text format metrics. Empty string when disabled."""
+        """Return current metrics in Prometheus text exposition format."""
         if not self._config.enabled or self._prom is None:
             return ""
         return self._prom.generate_latest().decode("utf-8")
 
     def start_http_server(self) -> None:
-        """Start Prometheus HTTP server. No-op when disabled or already started."""
+        """Start the Prometheus HTTP server (idempotent)."""
         if not self._config.enabled or self._prom is None:
             return
         if self._server_started:

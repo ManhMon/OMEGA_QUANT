@@ -18,7 +18,6 @@ import argparse
 import json
 import logging
 import sys
-import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -36,8 +35,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "packages" / "quant" / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "packages" / "execution" / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
-from omega.execution.execution_engine import ExecutionEngine, ExecutionEngineConfig
-from omega.execution.order_router import OrderRouterConfig, TradingMode, LatencyConfig
+from omega.quant.execution_sim import ExecutionSimulator, ExecutionConfig, ExecutionResult
 from phase35_data_loader import Phase35DataLoader
 
 logging.basicConfig(
@@ -51,7 +49,7 @@ logger = logging.getLogger("stage5_shadow_live")
 # ---------------------------------------------------------------------------
 SHADOW_LIVE_DIR = PROJECT_ROOT / ".ly_state" / "shadow_live"
 WAREHOUSE_PATH = PROJECT_ROOT / "data" / "market_2015_now.parquet"
-PORTFOLIO_VALUE = 5_000_000_000.0  # 5B VND notional
+PORTFOLIO_VALUE = 10_000_000.0  # 10M VND notional
 TOP_N_SYMBOLS = 20
 LOOKBACK_DAYS = 252  # 1 year of history for weight generation
 
@@ -163,7 +161,7 @@ def simulate_execution(
     weights: pd.Series,
     data: pd.DataFrame,
     date: str,
-) -> Dict[str, Any]:
+) -> ExecutionResult:
     """Simulate execution using T-1 close prices as reference.
 
     Parameters
@@ -177,8 +175,8 @@ def simulate_execution(
 
     Returns
     -------
-    dict
-        Execution result summary
+    ExecutionResult
+        Execution result with slippage, cost, and trade details
     """
     pit_cutoff = pd.Timestamp(date) - pd.Timedelta(days=1)
 
@@ -198,73 +196,55 @@ def simulate_execution(
     common = weights.index.intersection(latest.index)
     if common.empty:
         logger.warning(f"No common symbols between weights and prices for {date}")
-        return {"success": False, "orders": [], "metrics": {}}
+        # Return empty result
+        return ExecutionResult(
+            timestamp=pd.Timestamp(date).to_pydatetime(),
+            trades=[],
+            num_trades=0,
+            total_volume=0.0,
+            total_slippage_bps=0.0,
+            total_commission_bps=0.0,
+            total_cost_bps=0.0,
+            total_pnl=0.0,
+            execution_time_ms=0.0,
+        )
 
     target_weights = weights[common]
     target_weights = target_weights / target_weights.sum()  # renormalize
+    current_weights = pd.Series(0.0, index=common)
     current_prices = latest[common]
 
-    # Convert weights to target portfolio quantities based on PORTFOLIO_VALUE
-    target_portfolio = {}
-    for sym, w in target_weights.items():
-        price = current_prices[sym]
-        qty = int((PORTFOLIO_VALUE * w) // price)
-        # Ensure minimum odd-lot/board-lot if needed (assuming 100 lot size for VN)
-        qty = (qty // 100) * 100
-        target_portfolio[sym] = {"quantity": qty}
-        
-    logger.info(f"Target portfolio quantities generated: {target_portfolio}")
-
-    # Shadow Live assumes starting from cash daily for the sake of simulation, or could persist state.
-    # For this simulation, we start empty and execute the target portfolio.
-    current_portfolio = {sym: {"quantity": 0} for sym in target_portfolio.keys()}
-
-    # Envelope
-    prices_envelope = {
-        "data": current_prices.to_dict(),
-        "timestamp": time.time(),
-        "provenance": "vnstock-shadow-live"
-    }
-
-    # Initialize Phase 16 Execution Engine
-    router_cfg = OrderRouterConfig(
-        mode=TradingMode.PAPER, 
-        simulate_latency=True, 
-        latency_config=LatencyConfig(paper_base_ms=12.0)
+    config = ExecutionConfig(
+        latency_ms=50.0,
+        slippage_bps=5.0,
+        commission_bps=1.5,
+        market_impact_coeff=0.1,
+        min_trade_size=0.001,
     )
-    engine_cfg = ExecutionEngineConfig(
-        mode=TradingMode.PAPER,
-        router_config=router_cfg,
-        liquidation_mode=True,
-        signal_oracle_mode=True
-    )
-    engine = ExecutionEngine(engine_cfg)
+    sim = ExecutionSimulator(config=config)
 
-    result = engine.execute_workflow(
-        target_portfolio=target_portfolio,
-        current_portfolio=current_portfolio,
-        current_prices=prices_envelope,
-        allow_odd_lot=False
+    result = sim.execute_trades(
+        target_weights=target_weights,
+        current_weights=current_weights,
+        current_prices=current_prices,
+        timestamp=pd.Timestamp(date).to_pydatetime(),
+        portfolio_value=PORTFOLIO_VALUE,
     )
-    
-    # Trigger Telegram Daily Batch
-    engine.telegram.send_daily_signal_batch(date, target_portfolio, current_prices)
 
-    metrics = engine.get_execution_metrics()
-    
     logger.info(
-        f"Execution simulated for {date}: {metrics.get('total_filled', 0)} orders filled, "
-        f"latency={metrics.get('router_average_latency_ms', 0):.2f}ms"
+        f"Execution simulated for {date}: {result.num_trades} trades, "
+        f"slippage={result.total_slippage_bps:.2f}bps, "
+        f"cost={result.total_cost_bps:.2f}bps"
     )
     return result
 
 
-def log_execution_metrics(result: Dict[str, Any], date: str) -> Path:
+def log_execution_metrics(result: ExecutionResult, date: str) -> Path:
     """Persist execution metrics to .ly_state/shadow_live/YYYY-MM-DD.json.
 
     Parameters
     ----------
-    result : dict
+    result : ExecutionResult
         Execution result from simulate_execution
     date : str
         Target date YYYY-MM-DD
@@ -277,27 +257,36 @@ def log_execution_metrics(result: Dict[str, Any], date: str) -> Path:
     SHADOW_LIVE_DIR.mkdir(parents=True, exist_ok=True)
     log_path = SHADOW_LIVE_DIR / f"{date}.json"
 
-    metrics = result.get("metrics", {})
+    # Serialize trades (exclude non-serializable datetime objects)
+    trades_data = []
+    for t in result.trades:
+        trades_data.append({
+            "symbol": t.symbol,
+            "trade_size": float(t.trade_size),
+            "execution_price": float(t.execution_price),
+            "slippage_bps": float(t.slippage_bps),
+            "commission_bps": float(t.commission_bps),
+            "total_cost_bps": float(t.total_cost_bps),
+            "pnl": float(t.pnl),
+        })
+
     payload: Dict[str, Any] = {
         "date": date,
         "logged_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
         "pit_cutoff": (pd.Timestamp(date) - pd.Timedelta(days=1)).strftime("%Y-%m-%d"),
-        "status": "OK" if result.get("success") else "FAILED",
-        "num_trades": metrics.get("total_filled", 0),
-        "total_volume": 0.0, # Not tracking volume per share directly in top level metrics yet
-        "total_slippage_bps": metrics.get("estimated_slippage_bps", 0.0),
-        "execution_time_ms": metrics.get("router_average_latency_ms", 0.0),
-        "trades": result.get("orders", []),
+        "status": "OK",
+        "num_trades": result.num_trades,
+        "total_volume": float(result.total_volume),
+        "total_slippage_bps": float(result.total_slippage_bps),
+        "total_commission_bps": float(result.total_commission_bps),
+        "total_cost_bps": float(result.total_cost_bps),
+        "total_pnl": float(result.total_pnl),
+        "execution_time_ms": float(result.execution_time_ms),
+        "trades": trades_data,
     }
 
-    class EnumEncoder(json.JSONEncoder):
-        def default(self, obj):
-            if hasattr(obj, "name"):
-                return obj.name
-            return super().default(obj)
-
     with open(log_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, cls=EnumEncoder)
+        json.dump(payload, f, indent=2)
 
     logger.info(f"Execution metrics logged to {log_path}")
     return log_path
@@ -329,14 +318,13 @@ def run_shadow_day(date: str) -> Dict[str, Any]:
 
         result = simulate_execution(weights, data, date)
         log_path = log_execution_metrics(result, date)
-        metrics = result.get("metrics", {})
 
         return {
             "date": date,
-            "status": "OK" if result.get("success") else "FAILED",
-            "num_trades": metrics.get("total_filled", 0),
-            "slippage_bps": metrics.get("estimated_slippage_bps", 0),
-            "latency_ms": metrics.get("router_average_latency_ms", 0),
+            "status": "OK",
+            "num_trades": result.num_trades,
+            "slippage_bps": result.total_slippage_bps,
+            "cost_bps": result.total_cost_bps,
             "log_path": str(log_path),
         }
 

@@ -275,19 +275,19 @@ OMEGA+++ is an **Institutional Grade Quant AI System** designed to achieve:
 - **CI/CD Integration**: Automated model promotion pipeline via GitHub Actions / ArgoCD
 
 **Deliverables**:
-- [ ] `infra/kubernetes/mlops/namespace.yaml` — Dedicated `mlops` namespace with resource quotas
-- [ ] `infra/kubernetes/mlops/mlflow/deployment.yaml` — MLflow tracking server (image: `ghcr.io/mlflow/mlflow`)
-- [ ] `infra/kubernetes/mlops/mlflow/service.yaml` — ClusterIP + optional Ingress
-- [ ] `infra/kubernetes/mlops/mlflow/configmap.yaml` — Backend URI, artifact root config
-- [ ] `infra/kubernetes/mlops/minio/deployment.yaml` — MinIO object store (S3-compatible)
-- [ ] `infra/kubernetes/mlops/minio/service.yaml` — MinIO API (:9000) + Console (:9001)
-- [ ] `infra/kubernetes/mlops/minio/pvc.yaml` — PersistentVolumeClaim for artifact storage
-- [ ] `infra/kubernetes/mlops/postgres/deployment.yaml` — PostgreSQL metadata backend
-- [ ] `infra/kubernetes/mlops/postgres/service.yaml` — PostgreSQL ClusterIP service
-- [ ] `infra/kubernetes/mlops/postgres/pvc.yaml` — PersistentVolumeClaim for DB storage
-- [ ] `infra/kubernetes/mlops/postgres/secret.yaml` — DB credentials (base64, RBAC-gated)
-- [ ] `infra/kubernetes/mlops/seldon/seldondeployment.yaml` — Seldon model serving template
-- [ ] `infra/kubernetes/mlops/kustomization.yaml` — Kustomize overlay for environment promotion
+- [x] `infra/kubernetes/mlops/namespace.yaml` — Dedicated `mlops` namespace with resource quotas
+- [x] `infra/kubernetes/mlops/mlflow/deployment.yaml` — MLflow tracking server (image: `ghcr.io/mlflow/mlflow`)
+- [x] `infra/kubernetes/mlops/mlflow/service.yaml` — ClusterIP + optional Ingress
+- [x] `infra/kubernetes/mlops/mlflow/configmap.yaml` — Backend URI, artifact root config
+- [x] `infra/kubernetes/mlops/minio/deployment.yaml` — MinIO object store (S3-compatible)
+- [x] `infra/kubernetes/mlops/minio/service.yaml` — MinIO API (:9000) + Console (:9001)
+- [x] `infra/kubernetes/mlops/minio/pvc.yaml` — PersistentVolumeClaim for artifact storage
+- [x] `infra/kubernetes/mlops/postgres/deployment.yaml` — PostgreSQL metadata backend
+- [x] `infra/kubernetes/mlops/postgres/service.yaml` — PostgreSQL ClusterIP service
+- [x] `infra/kubernetes/mlops/postgres/pvc.yaml` — PersistentVolumeClaim for DB storage
+- [x] `infra/kubernetes/mlops/postgres/secret.yaml` — DB credentials (base64, RBAC-gated)
+- [x] `infra/kubernetes/mlops/seldon/seldondeployment.yaml` — Seldon model serving template
+- [x] `infra/kubernetes/mlops/kustomization.yaml` — Kustomize overlay for environment promotion
 
 **Acceptance Criteria**:
 - [ ] MLflow UI accessible at `http://mlflow.mlops.svc.cluster.local:5000` (health probe PASS)
@@ -331,7 +331,7 @@ OMEGA+++ is an **Institutional Grade Quant AI System** designed to achieve:
 | **24** | **MLOps Cloud (Open Source / Kubernetes)** | ⏳ PENDING | - | **35h** |
 | | **TOTAL (1-22)** | ✅ COMPLETE | **699+** | **535h** |
 | | **TOTAL (24)** | ⏳ PENDING | - | **35h** |
-| | **GRAND TOTAL** | - | - | **570h** |
+| | **GRAND TOTAL** | ⏳ IN PROGRESS | **699+ tests** | **570h** |
 
 ---
 

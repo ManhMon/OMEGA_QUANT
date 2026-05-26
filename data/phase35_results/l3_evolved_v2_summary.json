@@ -1,0 +1,7 @@
+{
+  "avg_net_sharpe": 0.0333,
+  "avg_total_return": 0.15,
+  "avg_max_drawdown": -3.23,
+  "n_alphas": 5,
+  "best_test_ic": 0.0237
+}

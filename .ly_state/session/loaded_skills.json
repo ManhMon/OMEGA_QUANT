@@ -1,0 +1,21 @@
+{
+  "session_id": "538d09ae-30e4-42cf-a8bc-95823d74ddb0",
+  "loaded_at": "2026-05-26T12:25:58Z",
+  "skills": [
+    {
+      "name": "team",
+      "version": "2.4",
+      "path": "C:/Users/GHC/.codex/skills/team/SKILL.md"
+    },
+    {
+      "name": "audit-cycle",
+      "version": "1.0.0",
+      "path": "C:/Users/GHC/.codex/skills/audit-cycle/SKILL.md"
+    },
+    {
+      "name": "karpathy-auditor",
+      "version": "2.1",
+      "path": "C:/Users/GHC/.codex/skills/karpathy-auditor/SKILL.md"
+    }
+  ]
+}

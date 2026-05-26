@@ -1,0 +1,8 @@
+alpha,IC,RankIC,HitRate,Turnover
+alpha_p34_micro_momentum_5_20,0.0033,0.0026,0.2345,0.0114
+alpha_p34_close_auction_drift_10,0.0047,0.0017,0.4474,0.0028
+alpha_p34_kyle_lambda_20,-0.0013,0.0015,0.2873,0.0471
+alpha_p34_volatility_compression_5,-0.0084,-0.0039,0.4438,0.2514
+alpha_p34_liquidity_provision_ratio_10,-0.0054,-0.0057,0.4431,1.0326
+alpha_p34_tick_signed_volume_imbalance_5,0.0056,-0.0061,0.4424,0.4387
+alpha_p34_volume_clock_acceleration_10,-0.008,-0.0156,0.438,1.2201
