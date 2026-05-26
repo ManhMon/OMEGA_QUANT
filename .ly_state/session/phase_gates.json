@@ -348,5 +348,14 @@
                               "final_verdict":  "[APPROVED]",
                               "status":  "APPROVED",
                               "l3_session_key":  "calm-daisy"
-                          }
+                          },
+    "vnstock_live_fixes":  {
+                               "audit_report_path":  "docs/L3_AUDIT_VNSTOCK_LIVE_20260526.md",
+                               "commit":  "639777b",
+                               "l3_session_id":  "019e64b0-1254-7761-a6c7-994b9dc0ea30",
+                               "final_verdict":  "[APPROVED]",
+                               "timestamp":  "2026-05-26T14:47:16Z",
+                               "status":  "APPROVED",
+                               "l3_session_key":  "warm-cedar"
+                           }
 }
