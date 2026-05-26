@@ -1,6 +1,6 @@
 {
-  "session_id": "538d09ae-30e4-42cf-a8bc-95823d74ddb0",
-  "loaded_at": "2026-05-26T12:25:58Z",
+  "session_id": "role21-p1p2-pytest-fix-audit-20260527",
+  "loaded_at": "2026-05-27T05:55:57.8733521+07:00",
   "skills": [
     {
       "name": "team",
@@ -9,13 +9,13 @@
     },
     {
       "name": "audit-cycle",
-      "version": "1.0.0",
-      "path": "C:/Users/GHC/.codex/skills/audit-cycle/SKILL.md"
+      "version": "2.4",
+      "path": "C:/Users/GHC/.agents/skills/audit-cycle/SKILL.md"
     },
     {
       "name": "karpathy-auditor",
       "version": "2.1",
-      "path": "C:/Users/GHC/.codex/skills/karpathy-auditor/SKILL.md"
+      "path": "C:/Users/GHC/.openclaw/skills/elite_karpathy/karpathy-auditor/SKILL.md"
     }
   ]
 }

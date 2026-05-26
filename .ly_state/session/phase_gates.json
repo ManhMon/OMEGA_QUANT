@@ -385,5 +385,15 @@
                                 "timestamp":  "2026-05-26T16:27:58Z",
                                 "status":  "APPROVED",
                                 "l3_session_key":  "glow-valley"
-                            }
+                            },
+    "p1p2_pytest_fix_20260527":  {
+                                     "l3_session_key":  "codex:role21:p1p2-pytest-fix:20260527T055557+0700",
+                                     "timestamp":  "2026-05-27T05:57:32Z",
+                                     "audit_report_path":  "docs/L3_AUDIT_P1P2_PYTEST_FIX_20260527.md",
+                                     "l2_session_id":  "l2-ly-direct-20260527",
+                                     "phase_name":  "p1p2_pytest_fix_20260527",
+                                     "l3_session_id":  "role21-p1p2-pytest-fix-audit-20260527",
+                                     "l2_completed":  true,
+                                     "final_verdict":  "[APPROVED]"
+                                 }
 }
