@@ -122,7 +122,7 @@ class VnStockLiveDataProvider:
             raise ImportError("vnstock package required. Install with: pip install vnstock")
         
         # Initialize rate limiter
-        from omega.layer_01_core_intelligence.vnstock_datasource import RateLimiter
+        from omega.quant.vnstock_datasource import RateLimiter
         self.rate_limiter = RateLimiter(
             max_requests=self.config.rate_limit_requests,
             period_seconds=self.config.rate_limit_period
@@ -222,29 +222,17 @@ class VnStockLiveDataProvider:
         if price_data.empty:
             return pd.DataFrame(columns=['ticker', 'adv_volume', 'adv_value'])
         
-        # Group by ticker and compute rolling mean
-        adv_list = []
-        
-        for ticker, group in price_data.groupby('ticker'):
-            # Sort by date
-            group = group.sort_values('date')
-            
-            # Compute rolling mean (last 'window' days)
-            if len(group) >= window:
-                adv_volume = group['volume'].tail(window).mean()
-                adv_value = group['value'].tail(window).mean()
-            else:
-                # Use all available data if less than window
-                adv_volume = group['volume'].mean()
-                adv_value = group['value'].mean()
-            
-            adv_list.append({
-                'ticker': ticker,
-                'adv_volume': adv_volume,
-                'adv_value': adv_value
-            })
-        
-        return pd.DataFrame(adv_list)
+        # Vectorized: sort once, then groupby tail-mean via rank
+        df = price_data.sort_values(['ticker', 'date'])
+        # Keep only last `window` rows per ticker
+        df = df.groupby('ticker').tail(window)
+        adv = (
+            df.groupby('ticker')[['volume', 'value']]
+            .mean()
+            .rename(columns={'volume': 'adv_volume', 'value': 'adv_value'})
+            .reset_index()
+        )
+        return adv
     
     def _compute_volatility_vectorized(
         self,
@@ -264,29 +252,20 @@ class VnStockLiveDataProvider:
         if price_data.empty:
             return pd.DataFrame(columns=['ticker', 'volatility'])
         
-        # Group by ticker and compute rolling volatility
-        vol_list = []
-        
-        for ticker, group in price_data.groupby('ticker'):
-            # Sort by date
-            group = group.sort_values('date')
-            
-            # Compute returns
-            returns = group['close'].pct_change().dropna()
-            
-            # Compute volatility (annualized)
-            if len(returns) >= window:
-                vol = returns.tail(window).std() * np.sqrt(252)
-            else:
-                # Use all available data if less than window
-                vol = returns.std() * np.sqrt(252) if len(returns) > 1 else 0.0
-            
-            vol_list.append({
-                'ticker': ticker,
-                'volatility': vol
-            })
-        
-        return pd.DataFrame(vol_list)
+        # Vectorized: pct_change per ticker, tail window, then std
+        df = price_data.sort_values(['ticker', 'date'])
+        df = df.copy()
+        df['returns'] = df.groupby('ticker')['close'].pct_change()
+        df = df.dropna(subset=['returns'])
+        df = df.groupby('ticker').tail(window)
+        vol = (
+            df.groupby('ticker')['returns']
+            .std()
+            .mul(np.sqrt(252))
+            .rename('volatility')
+            .reset_index()
+        )
+        return vol
     
     def fetch_live_data(
         self,

@@ -52,23 +52,23 @@ from .pit_manager import PITManager
 # Strategy Logic (upgraded from V21 layer_02)
 from .strategy.alpha_ensemble import AlphaEnsemble
 from .strategy.black_litterman import BlackLittermanOptimizer
-from .strategy.ml_models import XGBModel, LGBModel
-from .strategy.model_trainer import ModelTrainer
+from .strategy.ml_models import XGBEstimator, LGBEstimator, CatBoostEstimator
+from .strategy.model_trainer import TrainerConfig, WalkForwardOptunaTrainer
 from .strategy.multi_model_ensemble import MultiModelEnsemble, EnsembleConfig as StrategyEnsembleConfig
 from .strategy.oos_walk_forward_validator import OOSWalkForwardValidator, WalkForwardConfig
-from .strategy.purged_cv import PurgedTimeSeriesCV
-from .strategy.regime_conditional import RegimeConditionalStrategy, GaussianHMM
-from .strategy.rl_agent import RLAgent
+from .strategy.purged_cv import PurgedTimeSeriesSplit
+from .strategy.regime_conditional import RegimeConditionalStrategy, GaussianHMM, HMMConfig
+from .strategy.rl_agent import RLPortfolioAgent, RLConfig
 from .strategy.transaction_cost_analyzer import TransactionCostAnalyzer, VNSlippageModel
 
 # Portfolio & Governance (upgraded from V21 layer_05/06)
 from .performance_tracker import PerformanceTracker
-from .portfolio import Portfolio
+from .portfolio import PortfolioOptimizer
 from ..governance.online_model_updater import OnlineModelUpdater
 from ..governance.validate_ly_state import validate_ly_state
 
 # Data (upgraded from V21 data_feed/pipeline)
-from ..data.vnstock_live import VNStockLive
+from ..data.vnstock_live import VnStockLiveDataProvider
 from ..data.production_data_pipeline import ProductionDataPipeline
 
 logger = logging.getLogger(__name__)
