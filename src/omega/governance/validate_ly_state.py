@@ -27,3 +27,6 @@ if result["status"] == "success":
 else:
     print("Error: " + result["message"])
     sys.exit(1)
+
+# Alias for import compatibility
+validate_ly_state = validate_ly_state_integrity

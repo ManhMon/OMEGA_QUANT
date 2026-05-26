@@ -8,10 +8,9 @@ from datetime import datetime, date
 from typing import Dict, List, Any, Optional, Tuple
 
 from omega.data.data_validator import DataValidator, ValidationIssue
-from omega.quant.feature_factory import FeatureModule, FeatureModuleConfig
+from omega.quant.feature_factory import FeatureFactory
 from omega.quant.neutralization_engine import NeutralizationEngine
 from omega.data.corporate_action import CorporateActionAdjuster, CorporateAction
-from omega.data.data_module import DataModule
 
 warnings.filterwarnings('ignore')
 
@@ -84,7 +83,7 @@ class ProductionDataPipeline:
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.sanitizer = DataSanitizer()
         self.validator = DataValidator()
-        self.feature_module = FeatureModule(FeatureModuleConfig())
+        self.feature_module = FeatureFactory()
         self.neutralizer = NeutralizationEngine()
         self.corp_action_adjuster = CorporateActionAdjuster()
         self.pipeline_stats, self.validation_issues = {}, []
@@ -117,7 +116,7 @@ class ProductionDataPipeline:
         df = self.sanitizer.apply(df, symbol_col='symbol')
         self.validation_issues = self.validator.validate(df, symbol_col='symbol')
         self.pipeline_stats['l4_validation_issues'] = len(self.validation_issues)
-        df = self.feature_module.compute_features(df, symbol_col='symbol')
+        df = self.feature_module.generate(df, symbol_col='symbol')
         df_neutralized = df.copy()
         sector_map = {s: f"sector_{hash(s)%10}" for s in df['symbol'].unique()}
         df_neutralized['sector'] = df_neutralized['symbol'].map(sector_map)
