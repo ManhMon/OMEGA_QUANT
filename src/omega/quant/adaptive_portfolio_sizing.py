@@ -18,6 +18,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from omega.core.vn_market_rules import VnMarketRules
+from omega.quant.constraint_solver import ConstraintConfig
+from omega.quant.portfolio_optimizer import OptimizerConfig
 
 
 @dataclass
@@ -53,6 +55,73 @@ class AdaptiveConfig:
     expected_sharpe: float = 0.0
     benchmark_threshold: float = 0.0
     expected_return: float = 0.0
+
+    def to_constraint_config(
+        self, as_of: datetime, available_at: datetime
+    ) -> ConstraintConfig:
+        """
+        Convert AdaptiveConfig to ConstraintConfig for ConstraintSolver.
+
+        Mapping:
+            max_asset_cap -> max_asset_concentration
+            max_sector_cap -> max_industry_concentration
+            max_position_size -> max_notional_per_asset
+            board_lot_size from VnMarketRules (default 100)
+            Sensible defaults: max_leverage=2.0, min_cash_balance=10_000.0
+
+        Args:
+            as_of: Point-in-time date (T-1 lag enforcement).
+            available_at: Date when data becomes available (PIT safety).
+
+        Returns:
+            ConstraintConfig ready for ConstraintSolver.validate_weights().
+        """
+        return ConstraintConfig(
+            max_notional_per_asset=self.max_position_size,
+            max_leverage=2.0,
+            max_industry_concentration=self.max_sector_cap,
+            max_asset_concentration=self.max_asset_cap,
+            as_of=as_of,
+            available_at=available_at,
+            long_only=True,
+            board_lot_size=VnMarketRules.BOARD_LOT,
+            min_cash_balance=10_000.0,
+        )
+
+    def to_optimizer_config(self) -> OptimizerConfig:
+        """
+        Convert AdaptiveConfig to OptimizerConfig for PortfolioOptimizer.
+
+        Mapping:
+            max_asset_cap -> max_concentration
+            min_position_size / max_position_size -> min_weight (as fraction)
+            max_asset_cap -> max_weight
+            target_turnover -> max_turnover
+            max_sector_cap -> sector_limits (uniform across sectors)
+
+        Returns:
+            OptimizerConfig ready for PortfolioOptimizer.optimize().
+        """
+        # min_weight as fraction: min_position_size relative to a notional capital
+        # Use the ratio min_position_size / max_position_size * max_asset_cap
+        # which gives the minimum meaningful weight
+        min_weight = self.min_position_size / self.max_position_size * self.max_asset_cap if self.max_position_size > 0 else 0.0
+
+        return OptimizerConfig(
+            max_leverage=1.0,
+            max_concentration=self.max_asset_cap,
+            min_weight=min_weight,
+            max_weight=self.max_asset_cap,
+            max_turnover=self.target_turnover,
+            turnover_penalty=0.0,
+            transaction_cost_bps=30.0,  # 0.3% one-way = 30 bps
+            sector_limits=None,
+            liquidity_limits=None,
+            method="mean_variance",
+            rebalance_threshold=None,
+            allow_short=False,
+            sector_neutral=False,
+        )
 
 
 class AdaptivePortfolioSizingEngine:

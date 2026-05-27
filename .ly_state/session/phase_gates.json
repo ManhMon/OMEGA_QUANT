@@ -435,5 +435,15 @@
                                       "l3_session_id":  "role21-apse-integration-audit-20260527",
                                       "l2_completed":  true,
                                       "final_verdict":  "[APPROVED]"
-                                  }
+                                  },
+    "apse_optimizer_wiring_20260527":  {
+                                           "l3_session_key":  "codex:role21:apse-optimizer-wiring:20260527T134200+0700",
+                                           "timestamp":  "2026-05-27T20:45:32Z",
+                                           "audit_report_path":  "docs/L3_AUDIT_APSE_OPTIMIZER_INTEGRATION_20260527.md",
+                                           "l2_session_id":  "l2-opencode-task3-20260527",
+                                           "phase_name":  "apse_optimizer_wiring_20260527",
+                                           "l3_session_id":  "role21-apse-optimizer-wiring-audit-20260527",
+                                           "l2_completed":  true,
+                                           "final_verdict":  "[APPROVED]"
+                                       }
 }
