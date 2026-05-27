@@ -97,9 +97,13 @@ class VCIDataIntegration:
     
     def fetch_features_for_pruning(
         self,
+        as_of_time: datetime,
         symbols: Optional[List[str]] = None,
         lookback_days: Optional[int] = None
     ) -> Tuple[pd.DataFrame, pd.DataFrame, VCIDataQualityMetrics]:
+        if as_of_time is None:
+            raise ValueError("as_of_time is mandatory for PIT safety")
+            
         start_time = time.perf_counter()
         
         ohlcv_data = self.fetch_mock_vci_data(symbols, lookback_days)
@@ -117,11 +121,17 @@ class VCIDataIntegration:
     def wire_to_feature_pruning(
         self,
         pruner,
+        as_of_time: datetime,
         symbols: Optional[List[str]] = None,
         lookback_days: Optional[int] = None,
         forward_return_period: int = 5
     ) -> Dict:
-        features, ohlcv_data, quality_metrics = self.fetch_features_for_pruning(symbols, lookback_days)
+        if as_of_time is None:
+            raise ValueError("as_of_time is mandatory for PIT safety")
+            
+        features, ohlcv_data, quality_metrics = self.fetch_features_for_pruning(
+            as_of_time, symbols, lookback_days
+        )
         
         if not quality_metrics.validation_passed:
             return {

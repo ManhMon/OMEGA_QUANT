@@ -128,22 +128,29 @@ class PortfolioManager:
             orders['quantity'] = orders['weight'] * 100000  # Assume $100k portfolio
             return orders
         
-        # Merge target and current
-        current_dict = dict(zip(current_holdings['ticker'], current_holdings.get('weight', 0)))
+        # Vectorized merge & difference computation
+        merged = pd.merge(
+            target_portfolio[['ticker', 'weight']],
+            current_holdings[['ticker', 'weight']],
+            on='ticker',
+            how='outer',
+            suffixes=('_target', '_current')
+        )
         
-        orders = []
-        for _, row in target_portfolio.iterrows():
-            ticker = row['ticker']
-            target_weight = row['weight']
-            current_weight = current_dict.get(ticker, 0)
+        merged['weight_target'] = merged['weight_target'].fillna(0.0)
+        merged['weight_current'] = merged['weight_current'].fillna(0.0)
+        
+        merged['diff'] = merged['weight_target'] - merged['weight_current']
+        
+        # Filter for rebalancing threshold
+        violating = merged[merged['diff'].abs() > 0.001].copy()
+        
+        if violating.empty:
+            return pd.DataFrame(columns=['ticker', 'action', 'weight_change', 'quantity'])
             
-            diff = target_weight - current_weight
-            if abs(diff) > 0.001:  # Threshold for rebalancing
-                orders.append({
-                    'ticker': ticker,
-                    'action': 'BUY' if diff > 0 else 'SELL',
-                    'weight_change': abs(diff),
-                    'quantity': abs(diff) * 100000
-                })
+        import numpy as np
+        violating['action'] = np.where(violating['diff'] > 0, 'BUY', 'SELL')
+        violating['weight_change'] = violating['diff'].abs()
+        violating['quantity'] = violating['weight_change'] * 100000
         
-        return pd.DataFrame(orders)
+        return violating[['ticker', 'action', 'weight_change', 'quantity']].reset_index(drop=True)

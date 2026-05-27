@@ -270,7 +270,7 @@ class VnStockLiveDataProvider:
     def fetch_live_data(
         self,
         tickers: List[str],
-        reference_date: Optional[datetime] = None,
+        reference_date: datetime,
         lookback_days: int = 60
     ) -> VnStockLiveData:
         """
@@ -278,7 +278,7 @@ class VnStockLiveDataProvider:
         
         Args:
             tickers: List of stock tickers
-            reference_date: Reference date (default: today)
+            reference_date: Reference date (mandatory for PIT safety)
             lookback_days: Number of days to look back for historical data
             
         Returns:
@@ -289,6 +289,9 @@ class VnStockLiveDataProvider:
         """
         if not tickers:
             raise ValueError("Empty tickers list provided")
+        
+        if reference_date is None:
+            raise ValueError("reference_date is mandatory for PIT safety")
         
         # Get PIT-compliant date (T-1)
         pit_date = self._get_pit_date(reference_date)
@@ -363,18 +366,21 @@ class VnStockLiveDataProvider:
     def get_latest_prices(
         self,
         tickers: List[str],
-        reference_date: Optional[datetime] = None
+        reference_date: datetime
     ) -> pd.DataFrame:
         """
         Get latest prices (T-1 lagged) for tickers.
         
         Args:
             tickers: List of stock tickers
-            reference_date: Reference date (default: today)
+            reference_date: Reference date (mandatory for PIT safety)
             
         Returns:
             DataFrame with columns [ticker, date, price]
         """
+        if reference_date is None:
+            raise ValueError("reference_date is mandatory for PIT safety")
+            
         # Fetch live data with minimal lookback
         live_data = self.fetch_live_data(tickers, reference_date, lookback_days=5)
         
@@ -397,18 +403,21 @@ class VnStockLiveDataProvider:
     def get_market_data_for_risk_guard(
         self,
         tickers: List[str],
-        reference_date: Optional[datetime] = None
+        reference_date: datetime
     ) -> pd.DataFrame:
         """
         Get market data formatted for IndividualRiskGuard.
         
         Args:
             tickers: List of stock tickers
-            reference_date: Reference date (default: today)
+            reference_date: Reference date (mandatory for PIT safety)
             
         Returns:
             DataFrame with columns [ticker, price, adv, volatility]
         """
+        if reference_date is None:
+            raise ValueError("reference_date is mandatory for PIT safety")
+            
         # Fetch live data
         live_data = self.fetch_live_data(tickers, reference_date, lookback_days=30)
         
