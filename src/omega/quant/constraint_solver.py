@@ -142,15 +142,16 @@ class ConstraintSolver:
         mask = portfolio['abs_notional'] > self.config.max_notional_per_asset
         violating = portfolio[mask]
         
-        for _, row in violating.iterrows():
-            violations.append(ConstraintViolation(
+        violations = [
+            ConstraintViolation(
                 constraint_type="max_notional_per_asset",
-                asset=row['asset'],
-                current_value=row['abs_notional'],
+                asset=row.asset,
+                current_value=row.abs_notional,
                 limit_value=self.config.max_notional_per_asset,
-                excess=row['abs_notional'] - self.config.max_notional_per_asset
-            ))
-        
+                excess=row.abs_notional - self.config.max_notional_per_asset,
+            )
+            for row in violating.itertuples(index=False)
+        ]
         return violations
     
     def _check_leverage(self, portfolio: pd.DataFrame) -> List[ConstraintViolation]:
@@ -192,14 +193,16 @@ class ConstraintSolver:
             mask = portfolio['concentration'] > self.config.max_asset_concentration
             violating = portfolio[mask]
             
-            for _, row in violating.iterrows():
-                violations.append(ConstraintViolation(
+            violations = [
+                ConstraintViolation(
                     constraint_type="max_asset_concentration",
-                    asset=row['asset'],
-                    current_value=row['concentration'],
+                    asset=row.asset,
+                    current_value=row.concentration,
                     limit_value=self.config.max_asset_concentration,
-                    excess=row['concentration'] - self.config.max_asset_concentration
-                ))
+                    excess=row.concentration - self.config.max_asset_concentration,
+                )
+                for row in violating.itertuples(index=False)
+            ]
         
         return violations
     
@@ -248,14 +251,16 @@ class ConstraintSolver:
         mask = portfolio['quantity'] < 0
         violating = portfolio[mask]
         
-        for _, row in violating.iterrows():
-            violations.append(ConstraintViolation(
+        violations = [
+            ConstraintViolation(
                 constraint_type="long_only",
-                asset=row['asset'],
-                current_value=row['quantity'],
+                asset=row.asset,
+                current_value=row.quantity,
                 limit_value=0.0,
-                excess=abs(row['quantity'])
-            ))
+                excess=abs(row.quantity),
+            )
+            for row in violating.itertuples(index=False)
+        ]
         
         return violations
     
@@ -271,14 +276,16 @@ class ConstraintSolver:
         mask = (portfolio['remainder'] > 1e-9) & (np.abs(portfolio['quantity']) > 1e-9)
         violating = portfolio[mask]
         
-        for _, row in violating.iterrows():
-            violations.append(ConstraintViolation(
+        violations = [
+            ConstraintViolation(
                 constraint_type="board_lot",
-                asset=row['asset'],
-                current_value=row['quantity'],
+                asset=row.asset,
+                current_value=row.quantity,
                 limit_value=self.config.board_lot_size,
-                excess=row['remainder']
-            ))
+                excess=row.remainder,
+            )
+            for row in violating.itertuples(index=False)
+        ]
         
         return violations
     

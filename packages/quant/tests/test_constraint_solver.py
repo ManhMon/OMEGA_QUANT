@@ -124,6 +124,40 @@ def test_constraint_config_negative_cash():
         )
 
 
+# Test 4.5: Max notional per asset violation
+def test_max_notional_per_asset_violation(base_config, sample_prices, industry_map):
+    """Test that position exceeding max_notional_per_asset triggers violation."""
+    # Override config with small max_notional for easier violation triggering
+    config = ConstraintConfig(
+        max_notional_per_asset=10000.0,  # 10k max notional
+        max_leverage=2.0,
+        max_industry_concentration=0.4,
+        max_asset_concentration=0.3,
+        as_of=datetime(2026, 1, 1),
+        available_at=datetime(2026, 1, 1),
+        long_only=True,
+        board_lot_size=100,
+        min_cash_balance=1000.0
+    )
+    solver = ConstraintSolver(config)
+    
+    # AAPL price is 150. Quantity 100 -> notional 15000 (exceeds 10k limit)
+    positions = pd.DataFrame([
+        {'asset': 'AAPL', 'quantity': 100},
+    ])
+    
+    is_valid, violations = solver.validate_constraints(
+        positions, sample_prices, industry_map, datetime(2026, 1, 1)
+    )
+    
+    notional_violations = [v for v in violations if v.constraint_type == 'max_notional_per_asset']
+    assert len(notional_violations) == 1
+    assert notional_violations[0].asset == 'AAPL'
+    assert notional_violations[0].current_value == 15000.0
+    assert notional_violations[0].limit_value == 10000.0
+    assert notional_violations[0].excess == 5000.0
+
+
 # Test 5: Long-only constraint - no violations
 def test_long_only_no_violations(base_config, sample_prices, industry_map):
     """Test that long-only positions pass validation."""
