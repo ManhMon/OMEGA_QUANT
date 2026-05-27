@@ -54,7 +54,7 @@ def test_apse_to_solver_and_optimizer(sample_market_data, industry_map) -> None:
         market_regime="neutral",
         alpha_quality=0.05
     )
-    adaptive_config = apse.optimize()
+    adaptive_config = apse.optimize(as_of=as_of)
     
     # 2. Convert to ConstraintConfig
     constraint_config = adaptive_config.to_constraint_config(as_of=as_of, available_at=as_of)

@@ -14,10 +14,17 @@ from omega.quant.adaptive_portfolio_sizing.benchmark_provider import (
     get_benchmark_summary,
 )
 
+from omega.quant.adaptive_portfolio_sizing.engine import (
+    AdaptiveConfig,
+    AdaptivePortfolioSizingEngine,
+)
+
 __all__ = [
     "get_bank_interest_rate",
     "get_vnindex_return",
     "get_inflation_rate",
     "get_risk_free_rate",
     "get_benchmark_summary",
+    "AdaptiveConfig",
+    "AdaptivePortfolioSizingEngine",
 ]

@@ -28,12 +28,13 @@ def test_determine_capital_tier() -> None:
 
 
 def test_optimize_micro_tier() -> None:
+    as_of = datetime(2026, 1, 1)
     apse = AdaptivePortfolioSizingEngine(
         capital=2_000_000_000,
         market_regime="neutral",
         alpha_quality=0.05
     )
-    config = apse.optimize()
+    config = apse.optimize(as_of=as_of)
     
     assert isinstance(config, AdaptiveConfig)
     assert config.capital_tier == "micro"
@@ -45,12 +46,13 @@ def test_optimize_micro_tier() -> None:
 
 
 def test_optimize_large_tier() -> None:
+    as_of = datetime(2026, 1, 1)
     apse = AdaptivePortfolioSizingEngine(
         capital=150_000_000_000,
         market_regime="bull",
         alpha_quality=0.08
     )
-    config = apse.optimize()
+    config = apse.optimize(as_of=as_of)
     
     assert config.capital_tier == "large"
     # Large holdings: 40 to 80
