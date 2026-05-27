@@ -425,5 +425,15 @@
                                                  "l3_session_id":  "role21-vn-market-rules-audit-20260527",
                                                  "l2_completed":  true,
                                                  "final_verdict":  "[APPROVED]"
-                                             }
+                                             },
+    "apse_integration_20260527":  {
+                                      "l3_session_key":  "codex:role21:apse-integration:20260527T131800+0700",
+                                      "timestamp":  "2026-05-27T20:20:45Z",
+                                      "audit_report_path":  "docs/L3_AUDIT_ADAPTIVE_PORTFOLIO_SIZING_20260527.md",
+                                      "l2_session_id":  "l2-opencode-task2-20260527",
+                                      "phase_name":  "apse_integration_20260527",
+                                      "l3_session_id":  "role21-apse-integration-audit-20260527",
+                                      "l2_completed":  true,
+                                      "final_verdict":  "[APPROVED]"
+                                  }
 }
