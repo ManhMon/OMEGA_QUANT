@@ -31,7 +31,7 @@ logger = logging.getLogger("e2e_backtest")
 CONFIG = {
     "data_path": "data/market_2015_now.parquet",
     "top_n_symbols": 20,
-    "start_date": "2020-01-01",
+    "start_date": "2015-01-05",
     "end_date": "2026-05-14",
     "rebalance_freq_days": 5,
     "max_positions": 10,
@@ -43,7 +43,9 @@ CONFIG = {
     "initial_capital_vnd": 2_000_000_000,
     "drawdown_threshold": 0.15,
     "kill_switch_threshold": 0.20,
-    "train_ratio": 0.7,
+    "train_ratio": 0.60,
+    "val_ratio": 0.15,
+    "embargo_days": 10,
     "n_folds": 6,
 }
 
@@ -163,6 +165,58 @@ def phase_3_5_ml_gate(df, alpha_cols):
         passed = alpha_cols
 
     return passed, ics
+
+
+# ============================================================
+# PHASE 3.5b: VALIDATION (Val IC Filter)
+# ============================================================
+def phase_3_5_validate(df, alpha_cols, passed_alphas, ics, config):
+    """Validate passed alphas on validation set. Reject if val IC < 0."""
+    logger.info("=" * 70)
+    logger.info("PHASE 3.5b: VALIDATION (Val IC Filter)")
+    logger.info("=" * 70)
+
+    dates = sorted(df["date"].unique())
+    n_dates = len(dates)
+
+    train_end = int(n_dates * config["train_ratio"])
+    val_end = train_end + int(n_dates * config["val_ratio"])
+    embargo_end = val_end + config["embargo_days"]
+
+    train_dates = dates[:train_end]
+    val_dates = dates[train_end:val_end]
+    embargo_dates = dates[val_end:embargo_end]
+    test_dates = dates[embargo_end:]
+
+    logger.info(f"  Date splits:")
+    logger.info(f"    Train:   {pd.Timestamp(train_dates[0]).date()} to {pd.Timestamp(train_dates[-1]).date()} ({len(train_dates)} days)")
+    logger.info(f"    Val:     {pd.Timestamp(val_dates[0]).date()} to {pd.Timestamp(val_dates[-1]).date()} ({len(val_dates)} days)")
+    logger.info(f"    Embargo: {pd.Timestamp(embargo_dates[0]).date()} to {pd.Timestamp(embargo_dates[-1]).date()} ({len(embargo_dates)} days)")
+    logger.info(f"    Test:    {pd.Timestamp(test_dates[0]).date()} to {pd.Timestamp(test_dates[-1]).date()} ({len(test_dates)} days)")
+
+    # Compute IC on validation set for passed alphas
+    val_df = df[df["date"].isin(val_dates)].dropna(subset=passed_alphas + ["fwd_ret_5"])
+
+    val_ics = {}
+    for col in passed_alphas:
+        val_ic = val_df.groupby("date").apply(
+            lambda g: g[col].corr(g["fwd_ret_5"])
+        ).mean()
+        val_ics[col] = val_ic
+
+    # Reject alphas with val IC < 0 (unstable)
+    validated = [col for col, ic in val_ics.items() if ic >= 0]
+    rejected = [col for col in passed_alphas if col not in validated]
+
+    logger.info(f"  Val IC scores: {json.dumps({k: round(v, 4) for k, v in val_ics.items()}, indent=2)}")
+    logger.info(f"  Validated (val IC >= 0): {validated}")
+    logger.info(f"  Rejected (val IC < 0, unstable): {rejected}")
+
+    if not validated:
+        logger.warning("  No alphas survived validation! Using all passed as fallback.")
+        validated = passed_alphas
+
+    return validated, val_ics, test_dates
 
 
 # ============================================================
@@ -309,6 +363,9 @@ def run_e2e_backtest():
     # Phase 3.5: ML Gate
     passed_alphas, ics = phase_3_5_ml_gate(df, alpha_cols)
 
+    # Phase 3.5b: Validation
+    passed_alphas, val_ics, test_dates = phase_3_5_validate(df, alpha_cols, passed_alphas, ics, config)
+
     # Phase 4: Portfolio Construction
     df = phase_4_portfolio_construction(df, passed_alphas, config)
 
@@ -317,9 +374,8 @@ def run_e2e_backtest():
     logger.info("WALK-FORWARD EXECUTION (Phases 4-5-19-16-21)")
     logger.info("=" * 70)
 
-    dates = sorted(df["date"].unique())
-    split_idx = int(len(dates) * config["train_ratio"])
-    test_dates = dates[split_idx:]
+    # test_dates already computed by phase_3_5_validate (after embargo)
+    logger.info(f"  Test period: {pd.Timestamp(test_dates[0]).date()} to {pd.Timestamp(test_dates[-1]).date()} ({len(test_dates)} days)")
     rebal_dates = test_dates[::config["rebalance_freq_days"]]
 
     prev_weights = pd.Series(dtype=float)
