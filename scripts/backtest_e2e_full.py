@@ -39,6 +39,7 @@ CONFIG = {
     "max_adv_pct": 0.40,
     "slippage_bps": 10,
     "commission_bps": 15,
+    "sell_tax_bps": 10,
     "board_lot": 100,
     "initial_capital_vnd": 2_000_000_000,
     "drawdown_threshold": 0.15,
@@ -279,18 +280,86 @@ def phase_5_risk_guard(weights, adv_data, capital, config):
 # PHASE 19: EXECUTION SIMULATION (VN Costs)
 # ============================================================
 def phase_19_execution_sim(new_weights, prev_weights, prices, config):
-    """Simulate execution with VN market costs."""
-    turnover = (new_weights.subtract(prev_weights, fill_value=0)).abs().sum()
+    """Simulate execution with VN market costs (realistic share-level).
 
-    # Board-lot check (conceptual - weights already normalized)
-    # In real execution, shares = weight * capital / price, rounded to 100
+    Computes actual share quantities rounded to board_lot, calculates turnover
+    in shares, and applies VN-specific costs: slippage + commission on both
+    sides, sell_tax on sell side only.
 
-    # Transaction costs
-    slippage_cost = turnover * config["slippage_bps"] / 10000
-    commission_cost = turnover * config["commission_bps"] / 10000
-    total_cost = slippage_cost + commission_cost
+    Args:
+        new_weights: pd.Series of target weights (ticker -> weight)
+        prev_weights: pd.Series of previous weights (ticker -> weight)
+        prices: pd.Series of current close prices (ticker -> price)
+        config: dict with slippage_bps, commission_bps, sell_tax_bps, board_lot,
+                initial_capital_vnd
 
-    return total_cost, turnover
+    Returns:
+        (total_cost_as_fraction, turnover_weight, board_lot_violations)
+        - total_cost_as_fraction: total transaction cost as fraction of capital
+        - turnover_weight: sum of absolute weight changes (for reporting)
+        - board_lot_violations: number of positions where shares < board_lot
+    """
+    capital = config["initial_capital_vnd"]
+    board_lot = config["board_lot"]
+    slippage_bps = config["slippage_bps"]
+    commission_bps = config["commission_bps"]
+    sell_tax_bps = config.get("sell_tax_bps", 10)
+
+    # All tickers involved in either new or prev portfolio
+    all_tickers = new_weights.index.union(prev_weights.index)
+
+    # Align weights to full ticker universe
+    w_new = new_weights.reindex(all_tickers, fill_value=0.0)
+    w_prev = prev_weights.reindex(all_tickers, fill_value=0.0)
+
+    # Weight-level turnover (for reporting)
+    turnover_weight = (w_new - w_prev).abs().sum()
+
+    # Compute share quantities (new and prev)
+    # shares = weight * capital / price, rounded down to board_lot
+    prices_aligned = prices.reindex(all_tickers)
+
+    # Guard against missing prices (use NaN -> skip those tickers)
+    valid_mask = prices_aligned.notna() & (prices_aligned > 0)
+
+    shares_new = pd.Series(0.0, index=all_tickers)
+    shares_prev = pd.Series(0.0, index=all_tickers)
+
+    shares_new[valid_mask] = (
+        (w_new[valid_mask] * capital / prices_aligned[valid_mask])
+        .apply(lambda s: int(s / board_lot) * board_lot)
+    )
+    shares_prev[valid_mask] = (
+        (w_prev[valid_mask] * capital / prices_aligned[valid_mask])
+        .apply(lambda s: int(s / board_lot) * board_lot)
+    )
+
+    # Turnover in shares (delta)
+    delta_shares = shares_new - shares_prev
+    buy_shares = delta_shares.clip(lower=0)
+    sell_shares = (-delta_shares).clip(lower=0)
+
+    # Notional values
+    buy_notional = (buy_shares * prices_aligned[valid_mask]).sum()
+    sell_notional = (sell_shares * prices_aligned[valid_mask]).sum()
+
+    # Costs (as absolute VND)
+    # Slippage: both sides
+    slippage_cost = (buy_notional + sell_notional) * slippage_bps / 10000
+    # Commission: both sides
+    commission_cost = (buy_notional + sell_notional) * commission_bps / 10000
+    # Sell tax (VN STT): sell side only
+    sell_tax_cost = sell_notional * sell_tax_bps / 10000
+
+    total_cost_vnd = slippage_cost + commission_cost + sell_tax_cost
+    total_cost_frac = total_cost_vnd / capital if capital > 0 else 0.0
+
+    # Board-lot violations: positions where target shares > 0 but < board_lot
+    board_lot_violations = int(
+        ((w_new > 0) & valid_mask & (shares_new < board_lot)).sum()
+    )
+
+    return total_cost_frac, turnover_weight, board_lot_violations
 
 
 # ============================================================
@@ -431,7 +500,8 @@ def run_e2e_backtest():
         weights = phase_5_risk_guard(weights, adv_data, capital, config)
 
         # Phase 19: Execution Sim
-        cost, turnover = phase_19_execution_sim(weights, prev_weights, None, config)
+        prices = positions.set_index('ticker')['close']
+        cost, turnover, bl_violations = phase_19_execution_sim(weights, prev_weights, prices, config)
         total_turnover += turnover
         total_costs_bps += cost * 10000
         n_rebalances += 1
