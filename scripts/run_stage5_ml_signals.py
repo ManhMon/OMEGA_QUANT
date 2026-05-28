@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 Stage 5 ML Signals: Daily signal generation using Ridge ML model.
 Replaces inverse-vol weighting with 142-feature Ridge combination.
@@ -54,6 +54,19 @@ def compute_fundamental_features(df):
 
 def run_ml_signals(date_str: str):
     logger.info(f"=== ML SIGNAL GENERATION FOR {date_str} ===")
+    try:
+        _run_ml_signals_inner(date_str)
+    except Exception as e:
+        logger.error(f"ML Signal generation FAILED: {e}")
+        # Write error to shadow_live for alerting
+        SHADOW_DIR.mkdir(parents=True, exist_ok=True)
+        error_result = {"date": date_str, "status": "ERROR", "error": str(e), "num_trades": 0}
+        with open(SHADOW_DIR / f"{date_str}.json", "w") as f:
+            json.dump(error_result, f, indent=2)
+        print(f"STAGE 5 ML SIGNALS - {date_str} - ERROR: {e}")
+        sys.exit(1)
+
+def _run_ml_signals_inner(date_str: str):
     run_date = pd.Timestamp(date_str)
     pit_cutoff = run_date - pd.Timedelta(days=1)
 
