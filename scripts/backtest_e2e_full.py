@@ -118,7 +118,23 @@ def phase_3_alpha_generation(df):
         df.groupby("ticker")["volume"].transform(lambda x: x.pct_change(5).rolling(5).mean())
     ).groupby(df["ticker"]).shift(1)
 
-    alpha_cols = ["alpha_mom_20", "alpha_rev_5", "alpha_vol_surprise", "alpha_low_vol", "alpha_pv_div"]
+    # Alpha 6: Liquidity Premium - Amihud illiquidity measure (lagged T-1)
+    df["alpha_liquidity"] = df.groupby("ticker").apply(
+        lambda g: (g["returns"].abs() / (g["volume"] * g["close"] + 1e-10)).rolling(20).mean()
+    ).reset_index(level=0, drop=True).groupby(df["ticker"]).shift(1)
+
+    # Alpha 7: Sector Momentum - relative strength vs universe mean (lagged T-1)
+    df["ret_20"] = df.groupby("ticker")["close"].transform(lambda x: x.pct_change(20))
+    df["universe_ret_20"] = df.groupby("date")["ret_20"].transform("mean")
+    df["alpha_sector_mom"] = (df["ret_20"] - df["universe_ret_20"]).groupby(df["ticker"]).shift(1)
+
+    # Alpha 8: Mean Reversion 20d - longer-term reversion (lagged T-1)
+    df["alpha_rev_20"] = df.groupby("ticker")["close"].transform(
+        lambda x: -x.pct_change(20)
+    ).groupby(df["ticker"]).shift(1)
+
+    alpha_cols = ["alpha_mom_20", "alpha_rev_5", "alpha_vol_surprise", "alpha_low_vol", "alpha_pv_div",
+                  "alpha_liquidity", "alpha_sector_mom", "alpha_rev_20"]
 
     # Cross-sectional z-score per date
     for col in alpha_cols:

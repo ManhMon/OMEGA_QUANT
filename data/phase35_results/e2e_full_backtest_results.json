@@ -14,13 +14,18 @@
   "circuit_breaker_triggers": 0,
   "pit_safety": "PASS",
   "alphas_used": [
-    "alpha_mom_20"
+    "alpha_mom_20",
+    "alpha_liquidity",
+    "alpha_sector_mom"
   ],
   "alpha_ics": {
     "alpha_mom_20": 0.0514,
     "alpha_rev_5": -0.0156,
     "alpha_vol_surprise": -0.0112,
     "alpha_low_vol": -0.0102,
-    "alpha_pv_div": 0.0272
+    "alpha_pv_div": 0.0272,
+    "alpha_liquidity": 0.0253,
+    "alpha_sector_mom": 0.0513,
+    "alpha_rev_20": -0.0514
   }
 }
