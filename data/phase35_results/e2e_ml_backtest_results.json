@@ -1,13 +1,13 @@
 {
-  "sharpe": 2.3525201424140096,
-  "max_drawdown": -0.05317241724382698,
+  "sharpe": 2.8784855923014834,
+  "max_drawdown": -0.041942687800101734,
   "information_ratio": NaN,
   "tracking_error": 0.01,
-  "total_return": 0.14459760295473512,
-  "annual_return": 0.04982042867798486,
-  "annual_volatility": 0.10574650599332139,
-  "total_turnover": 108.19999999999989,
-  "avg_cost_per_rebal_bps": 9.704578839285718,
+  "total_return": 0.17559430313140822,
+  "annual_return": 0.059967843629855855,
+  "annual_volatility": 0.10305386220038268,
+  "total_turnover": 107.79999999999995,
+  "avg_cost_per_rebal_bps": 9.669098392857137,
   "n_rebalances": 140,
   "circuit_breaker_triggers": 0,
   "active_alphas_count": 20,
@@ -17,10 +17,10 @@
     "alpha_dist_ma_60",
     "alpha_bb_dist_120",
     "alpha_bb_dist_20",
+    "alpha_hist_vol_20",
+    "feat_size_proxy",
+    "feat_leverage_proxy",
     "alpha_dist_ma_50",
-    "alpha_dist_ma_5",
-    "alpha_vwap_deviation",
-    "alpha_ret_5d",
-    "alpha_garman_klass_vol_20"
+    "alpha_dist_ma_5"
   ]
 }

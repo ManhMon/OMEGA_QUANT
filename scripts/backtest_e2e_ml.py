@@ -73,6 +73,75 @@ def phase_1_2_load_data(config):
     return df, top_tickers
 
 # ============================================================
+# PHASE 2b: FUNDAMENTAL PROXY FEATURES
+# ============================================================
+def phase_2b_fundamental_features(df):
+    """Compute fundamental-proxy features from price/volume data."""
+    logger.info("=" * 70)
+    logger.info("PHASE 2b: FUNDAMENTAL PROXY FEATURES")
+    logger.info("=" * 70)
+
+    # 1. Earnings Proxy: 20-day price acceleration (earnings surprise proxy)
+    df["feat_earnings_proxy"] = df.groupby("ticker")["close"].transform(
+        lambda x: x.pct_change(20) - x.pct_change(60)
+    ).groupby(df["ticker"]).shift(1)
+
+    # 2. Value Proxy: Distance from 252-day high (cheap = far from high)
+    df["feat_value_proxy"] = df.groupby("ticker")["close"].transform(
+        lambda x: x / x.rolling(252).max() - 1
+    ).groupby(df["ticker"]).shift(1)
+
+    # 3. Quality Proxy: Sharpe ratio trailing 60d (high quality = consistent returns)
+    df["feat_quality_proxy"] = df.groupby("ticker")["returns"].transform(
+        lambda x: x.rolling(60).mean() / (x.rolling(60).std() + 1e-10)
+    ).groupby(df["ticker"]).shift(1)
+
+    # 4. Growth Proxy: Volume growth 60d vs 252d (growing interest)
+    df["feat_growth_proxy"] = df.groupby("ticker")["volume"].transform(
+        lambda x: x.rolling(60).mean() / (x.rolling(252).mean() + 1)
+    ).groupby(df["ticker"]).shift(1)
+
+    # 5. Size Proxy: Log market cap proxy (price * volume as proxy)
+    df["feat_size_proxy"] = np.log1p(df["close"] * df["volume"]).groupby(df["ticker"]).shift(1)
+
+    # 6. Leverage Proxy: Volatility relative to market (high vol = high leverage)
+    market_vol = df.groupby("date")["returns"].transform("std")
+    df["feat_leverage_proxy"] = (
+        df.groupby("ticker")["returns"].transform(lambda x: x.rolling(20).std()) / (market_vol + 1e-10)
+    ).groupby(df["ticker"]).shift(1)
+
+    # 7. Dividend Proxy: Low volatility + positive drift (dividend stocks pattern)
+    df["feat_dividend_proxy"] = (
+        df.groupby("ticker")["returns"].transform(lambda x: x.rolling(60).mean()) /
+        (df.groupby("ticker")["returns"].transform(lambda x: x.rolling(60).std()) + 1e-10)
+    ).groupby(df["ticker"]).shift(1)
+
+    # 8. Turnover Ratio: Volume / 252-day avg volume (activity level)
+    df["feat_turnover_ratio"] = (
+        df["volume"] / df.groupby("ticker")["volume"].transform(lambda x: x.rolling(252).mean() + 1)
+    ).groupby(df["ticker"]).shift(1)
+
+    # 9. Beta Proxy: Correlation with market returns * vol ratio
+    df["market_ret"] = df.groupby("date")["returns"].transform("mean")
+    df["feat_beta_proxy"] = df.groupby("ticker").apply(
+        lambda g: g["returns"].rolling(60).corr(g["market_ret"])
+    ).reset_index(level=0, drop=True).groupby(df["ticker"]).shift(1)
+
+    # 10. Momentum Quality: IC of momentum signal (is momentum working for this stock?)
+    df["feat_mom_quality"] = df.groupby("ticker")["returns"].transform(
+        lambda x: x.rolling(20).mean().rolling(20).corr(x.shift(-5).rolling(5).mean())
+    ).groupby(df["ticker"]).shift(1)
+
+    feat_cols = [c for c in df.columns if c.startswith("feat_")]
+
+    # Cross-sectional z-score
+    for col in feat_cols:
+        df[col] = df.groupby("date")[col].transform(lambda x: (x - x.mean()) / (x.std() + 1e-9))
+
+    logger.info(f"  Added {len(feat_cols)} fundamental proxy features (all T-1 lagged)")
+    return df, feat_cols
+
+# ============================================================
 # PHASE 3: ALL ALPHAS (ultimate_alpha_arsenal)
 # ============================================================
 def phase_3_all_alphas(df):
@@ -234,8 +303,12 @@ def run_e2e_ml_backtest():
     # Phase 1-2: Load Data
     df, top_tickers = phase_1_2_load_data(config)
 
+    # Phase 2b: Fundamental Proxy Features
+    df, feat_cols = phase_2b_fundamental_features(df)
+
     # Phase 3: Compute ALL alphas
     df, alpha_cols = phase_3_all_alphas(df)
+    alpha_cols = alpha_cols + feat_cols
 
     # Phase 3.5: ML Combination (Ridge)
     df, weights, active_alphas, test_dates = phase_3_5_ml_combination(df, alpha_cols, config)
