@@ -134,8 +134,22 @@ def phase_3_alpha_generation(df):
         lambda x: -x.pct_change(20)
     ).groupby(df["ticker"]).shift(1)
 
+    # Alpha 9-10: Macro Alphas (only momentum + RSI which have positive IC)
+    try:
+        from omega.quant.macro_alphas import compute_macro_alphas
+        macro_df = compute_macro_alphas(df)
+        # Only wire the 2 with proven positive IC
+        df["alpha_macro_mom"] = macro_df["alpha_macro_momentum_20_60"].groupby(df["ticker"]).shift(1)
+        df["alpha_macro_rsi"] = macro_df["alpha_macro_rsi_mean_reversion_14"].groupby(df["ticker"]).shift(1)
+        logger.info("  Added 2 macro alphas (momentum_20_60, rsi_mean_reversion_14)")
+    except Exception as e:
+        logger.warning(f"  Macro alphas skipped: {e}")
+        df["alpha_macro_mom"] = np.nan
+        df["alpha_macro_rsi"] = np.nan
+
     alpha_cols = ["alpha_mom_20", "alpha_rev_5", "alpha_vol_surprise", "alpha_low_vol", "alpha_pv_div",
-                  "alpha_liquidity", "alpha_sector_mom", "alpha_rev_20"]
+                  "alpha_liquidity", "alpha_sector_mom", "alpha_rev_20",
+                  "alpha_macro_mom", "alpha_macro_rsi"]
 
     # Cross-sectional z-score per date
     for col in alpha_cols:
@@ -160,15 +174,19 @@ def phase_3_5_ml_gate(df, alpha_cols):
     split_idx = int(len(dates) * CONFIG["train_ratio"])
     train_dates = dates[:split_idx]
 
-    train_df = df[df["date"].isin(train_dates)].dropna(subset=alpha_cols + ["fwd_ret_5"])
+    train_df = df[df["date"].isin(train_dates)].copy()
 
-    # Compute IC per alpha on training set
+    # Compute IC per alpha on training set (dropna per-alpha to avoid losing rows)
     ics = {}
     for col in alpha_cols:
-        ic = train_df.groupby("date").apply(
-            lambda g: g[col].corr(g["fwd_ret_5"])
-        ).mean()
-        ics[col] = ic
+        col_df = train_df[[col, "fwd_ret_5", "date"]].dropna()
+        daily_ics = []
+        for dt, grp in col_df.groupby("date"):
+            if len(grp) >= 5:  # need minimum stocks for meaningful correlation
+                c = grp[col].corr(grp["fwd_ret_5"])
+                if pd.notna(c):
+                    daily_ics.append(c)
+        ics[col] = float(np.mean(daily_ics)) if daily_ics else 0.0
 
     # Gate: keep alphas with positive IC
     passed = [col for col, ic in ics.items() if ic > 0]
@@ -212,14 +230,18 @@ def phase_3_5_validate(df, alpha_cols, passed_alphas, ics, config):
     logger.info(f"    Test:    {pd.Timestamp(test_dates[0]).date()} to {pd.Timestamp(test_dates[-1]).date()} ({len(test_dates)} days)")
 
     # Compute IC on validation set for passed alphas
-    val_df = df[df["date"].isin(val_dates)].dropna(subset=passed_alphas + ["fwd_ret_5"])
+    val_df = df[df["date"].isin(val_dates)].copy()
 
     val_ics = {}
     for col in passed_alphas:
-        val_ic = val_df.groupby("date").apply(
-            lambda g: g[col].corr(g["fwd_ret_5"])
-        ).mean()
-        val_ics[col] = val_ic
+        col_df = val_df[[col, "fwd_ret_5", "date"]].dropna()
+        daily_ics = []
+        for dt, grp in col_df.groupby("date"):
+            if len(grp) >= 5:
+                c = grp[col].corr(grp["fwd_ret_5"])
+                if pd.notna(c):
+                    daily_ics.append(c)
+        val_ics[col] = float(np.mean(daily_ics)) if daily_ics else 0.0
 
     # Reject alphas with val IC < 0 (unstable)
     validated = [col for col, ic in val_ics.items() if ic >= 0]
