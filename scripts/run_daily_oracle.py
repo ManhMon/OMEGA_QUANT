@@ -101,7 +101,9 @@ def run_daily_oracle():
         else:
             logger.warning(f'  Reconciliation WARN: 0 trades generated')
     else:
-        logger.warning(f'  Reconciliation SKIP: No shadow file for {target_date}')
+        logger.error(f'  Reconciliation FAIL: No shadow file for {target_date}')
+        send_alert('reconciliation', f'Shadow file missing for {target_date} - signal generation may have failed silently')
+        sys.exit(1)
 
     logger.info("=== ORACLE WORKFLOW COMPLETE ===")
     logger.info(f'All steps completed successfully. No alerts fired.')
