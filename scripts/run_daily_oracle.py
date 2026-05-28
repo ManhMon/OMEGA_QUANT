@@ -85,6 +85,24 @@ def run_daily_oracle():
         send_alert('ml_signals', 'ML signal generation failed')
         sys.exit(1)
 
+    # 4. Position Reconciliation Check
+    logger.info("--> STEP 4: Position Reconciliation")
+    shadow_file = Path(__file__).parent.parent / '.ly_state' / 'shadow_live' / f'{target_date}.json'
+    if shadow_file.exists():
+        import json as _json
+        with open(shadow_file) as f:
+            signals = _json.load(f)
+        if signals.get('status') == 'OK' and signals.get('num_trades', 0) > 0:
+            logger.info(f'  Reconciliation PASS: {signals["num_trades"]} trades generated, status OK')
+        elif signals.get('status') == 'ERROR':
+            logger.error(f'  Reconciliation FAIL: Signal generation reported ERROR')
+            send_alert('reconciliation', f'Signal file reports ERROR: {signals.get("error", "unknown")}')
+            sys.exit(1)
+        else:
+            logger.warning(f'  Reconciliation WARN: 0 trades generated')
+    else:
+        logger.warning(f'  Reconciliation SKIP: No shadow file for {target_date}')
+
     logger.info("=== ORACLE WORKFLOW COMPLETE ===")
     logger.info(f'All steps completed successfully. No alerts fired.')
     sys.exit(0)
