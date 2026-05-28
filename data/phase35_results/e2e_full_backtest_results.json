@@ -1,0 +1,28 @@
+{
+  "sharpe": 1.3626763740946397,
+  "max_drawdown": -0.05659748961829,
+  "information_ratio": NaN,
+  "tracking_error": 0.01,
+  "total_return": 0.06269456725900335,
+  "annual_return": 0.03278609749102057,
+  "annual_volatility": 0.12400125191185328,
+  "total_turnover": 75.99999999999999,
+  "avg_turnover_per_rebal": 0.7999999999999998,
+  "total_cost_bps": 1900.0,
+  "avg_cost_per_rebal_bps": 20.0,
+  "n_rebalances": 95,
+  "circuit_breaker_triggers": 0,
+  "pit_safety": "PASS",
+  "alphas_used": [
+    "alpha_mom_20",
+    "alpha_vol_surprise",
+    "alpha_pv_div"
+  ],
+  "alpha_ics": {
+    "alpha_mom_20": 0.0378,
+    "alpha_rev_5": -0.0415,
+    "alpha_vol_surprise": 0.0077,
+    "alpha_low_vol": -0.0416,
+    "alpha_pv_div": 0.0062
+  }
+}
