@@ -107,6 +107,10 @@ class Phase35WalkForwardEngine:
         rebalance_freq: int = 7,
         sector_cap_pct: float = 0.30,
         use_xgboost: bool = False,
+        cost_aware: bool = False,
+        cost_per_turnover: float = 0.0025,
+        drawdown_control: bool = False,
+        drawdown_threshold: float = 0.05,
     ):
         """Initialize walk-forward engine.
         
@@ -127,6 +131,14 @@ class Phase35WalkForwardEngine:
         use_xgboost : bool
             Stage 4: if True, replace IC-weighted signal with XGBoostAlphaEnsemble
             predictions. Baseline raw-alpha path is used when False (default).
+        cost_aware : bool
+            Stage 6.2: if True, penalise high-turnover alphas in selection
+        cost_per_turnover : float
+            Stage 6.2: cost penalty multiplier per unit of turnover (default 0.0025)
+        drawdown_control : bool
+            Stage 6.3: if True, stop out to cash if max drawdown threshold is breached
+        drawdown_threshold : float
+            Stage 6.3: drawdown threshold to trigger stop-out (default 0.05)
         """
         self.alpha_module = alpha_module
         self.min_ic_threshold = min_ic_threshold
@@ -135,6 +147,10 @@ class Phase35WalkForwardEngine:
         self.rebalance_freq = rebalance_freq
         self.sector_cap_pct = sector_cap_pct
         self.use_xgboost = use_xgboost
+        self.cost_aware = cost_aware
+        self.cost_per_turnover = cost_per_turnover
+        self.drawdown_control = drawdown_control
+        self.drawdown_threshold = drawdown_threshold
     
     def compute_alphas(self, df: pd.DataFrame) -> pd.DataFrame:
         """Compute Phase 3.4 alphas on data.
@@ -229,6 +245,61 @@ class Phase35WalkForwardEngine:
         
         return ics
     
+    def _estimate_alpha_turnover(self, df: pd.DataFrame, alpha_col: str) -> float:
+        """Estimate day-over-day rank turnover of alpha_col in [0, 1].
+
+        If column missing or single-date DataFrame, return conservative fallback 0.5.
+        Turnover = mean( abs( rank_t - rank_{t-1} ) ) / (N_assets - 1)
+        """
+        if alpha_col not in df.columns:
+            return 0.5
+
+        # Check unique dates
+        dates = sorted(df['date'].unique())
+        if len(dates) < 2:
+            return 0.5
+
+        # Pivoting date x ticker to compute rank turnover
+        pivot = df.pivot(index='date', columns='ticker', values=alpha_col)
+        
+        # Rank cross-sectionally per day, normalized to [0, 1]
+        # method='average' is stable, pct=True maps rank to [0, 1]
+        ranks = pivot.rank(axis=1, pct=True)
+        
+        # Day-over-day absolute change in rank pct
+        diffs = ranks.diff(axis=0).abs()
+        
+        # Mean absolute change over time and assets
+        # If there are NaN values we drop them
+        mean_diff = diffs.mean(axis=1).mean()
+        if pd.isna(mean_diff):
+            return 0.5
+            
+        # Clip to ensure in [0, 1]
+        return float(np.clip(mean_diff, 0.0, 1.0))
+
+    def adjust_alphas_for_cost(
+        self,
+        df: pd.DataFrame,
+        alpha_cols: List[str],
+        train_ics: Dict[str, float],
+        cost_per_turnover: float | None = None,
+    ) -> Dict[str, float]:
+        """Compute cost-adjusted IC for each alpha.
+
+        adjusted_ic = raw_ic - cost * turnover
+        """
+        if cost_per_turnover is None:
+            cost_per_turnover = self.cost_per_turnover
+
+        adjusted_ics = {}
+        for col in alpha_cols:
+            raw_ic = train_ics.get(col, 0.0)
+            turnover = self._estimate_alpha_turnover(df, col)
+            adjusted_ics[col] = raw_ic - cost_per_turnover * turnover
+
+        return adjusted_ics
+
     def select_top_alphas(
         self,
         alpha_ics: Dict[str, float],
@@ -577,6 +648,7 @@ class Phase35WalkForwardEngine:
         test_df: pd.DataFrame,
         alpha_cols: List[str],
         return_col: str = 'fwd_ret_5',
+        cost_aware: bool | None = None,
     ) -> FoldMetrics:
         """Run single walk-forward fold.
         
@@ -592,6 +664,9 @@ class Phase35WalkForwardEngine:
             Alpha column names
         return_col : str
             Forward return column name
+        cost_aware : bool, optional
+            If True, cost-aware alpha selection is enabled for this fold.
+            If None, uses self.cost_aware.
         
         Returns
         -------
@@ -608,6 +683,9 @@ class Phase35WalkForwardEngine:
         full train_df so that indicators at the boundary are not distorted.
         """
         logger.info(f"Running fold {fold_id}")
+
+        if cost_aware is None:
+            cost_aware = self.cost_aware
         
         # Compute alphas on train and test (full train_df — no embargo yet)
         train_df = self.compute_alphas(train_df)
@@ -639,9 +717,16 @@ class Phase35WalkForwardEngine:
         train_ics = self.compute_alpha_ics(train_df_clean, alpha_cols, return_col)
         
         logger.info(f"Fold {fold_id} train ICs: {train_ics}")
-        
-        # Select top alphas based on train IC
-        top_alphas = self.select_top_alphas(train_ics)
+
+        # Stage 6.2: Cost-aware alpha selection
+        if cost_aware:
+            adjusted_ics = self.adjust_alphas_for_cost(
+                train_df_clean, alpha_cols, train_ics
+            )
+            top_alphas = self.select_top_alphas(adjusted_ics)
+        else:
+            # Select top alphas based on train IC
+            top_alphas = self.select_top_alphas(train_ics)
 
         # ------------------------------------------------------------------
         # Stage 3 ML Gate: filter top_alphas through Research Gate
@@ -739,10 +824,51 @@ class Phase35WalkForwardEngine:
         # Compute portfolio returns (signal * forward return)
         portfolio_returns = portfolio_signal * test_df[return_col]
         portfolio_returns = portfolio_returns.dropna()
-        
-        # Compute Sharpe and Max DD
-        sharpe = self.compute_sharpe_ratio(portfolio_returns)
-        max_dd = self.compute_max_drawdown(portfolio_returns)
+
+        # Build daily aggregated returns (sum over assets on each date)
+        # We must align portfolio_returns with date and group/sum.
+        # Ensure PIT Safety: date aggregation is done on test_df date series.
+        # Since portfolio_returns might have dropped NaNs, we align with test_df index first.
+        aligned_df = pd.DataFrame({
+            'date': test_df.loc[portfolio_returns.index, 'date'],
+            'p_ret': portfolio_returns
+        })
+        daily_series = aligned_df.groupby('date')['p_ret'].sum().sort_index()
+
+        # Stage 6.3: Active Drawdown Control
+        if self.drawdown_control and len(daily_series) > 0:
+            # We track cumulative NAV/drawdowns strictly sequentially
+            cum_rets = (1 + daily_series).cumprod()
+            running_max = cum_rets.expanding().max()
+            drawdowns = (cum_rets - running_max) / running_max
+            
+            # Find the first date where drawdown breaches the threshold
+            # Drawdowns are <= 0. Threshold is positive e.g. 0.05. Breach is drawdown < -drawdown_threshold
+            breaches = drawdowns < -self.drawdown_threshold
+            
+            if breaches.any():
+                breach_date = breaches.idxmax() # First date where True
+                
+                # Daily return = 0.0 strictly after the first breach day, preserving the breach day return
+                # So for dates > breach_date, daily return is 0
+                dates_after = daily_series.index > breach_date
+                daily_series.loc[dates_after] = 0.0
+                
+                # Update row-level portfolio_returns to be zeroed out as well, aligning with daily returns
+                # Every row in portfolio_returns whose date is > breach_date should be 0.0
+                # Let's map date back to aligned_df
+                aligned_df['date_dt'] = pd.to_datetime(aligned_df['date'])
+                breach_dt = pd.to_datetime(breach_date)
+                
+                # Find indices where date > breach_date
+                indices_after = aligned_df[aligned_df['date_dt'] > breach_dt].index
+                portfolio_returns.loc[indices_after] = 0.0
+                
+                logger.info(f"Fold {fold_id}: Drawdown control stop-out triggered at {breach_date}")
+
+        # Compute Sharpe and Max DD from daily aggregated returns series
+        sharpe = self.compute_sharpe_ratio(daily_series)
+        max_dd = self.compute_max_drawdown(daily_series)
         total_return = portfolio_returns.sum()
         
         # Create metrics object
