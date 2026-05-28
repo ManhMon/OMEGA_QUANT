@@ -78,11 +78,11 @@ def run_daily_oracle():
         send_alert('continuous_learning', 'Model retraining failed')
         sys.exit(1)
 
-    # 3. Signal Generation & Telegram Batch (Shadow Live)
-    logger.info("--> STEP 3: Generating Signals & Sending Telegram (Stage 5)")
-    if not run_step("run_stage5_shadow_live.py", ["--date", target_date]):
+    # 3. Signal Generation (ML Ridge 142 features)
+    logger.info("--> STEP 3: Generating ML Signals (Ridge 142 features)")
+    if not run_step("run_stage5_ml_signals.py", ["--date", target_date]):
         logger.error("Halted at Step 3.")
-        send_alert('shadow_live', 'Signal generation failed')
+        send_alert('ml_signals', 'ML signal generation failed')
         sys.exit(1)
 
     logger.info("=== ORACLE WORKFLOW COMPLETE ===")
