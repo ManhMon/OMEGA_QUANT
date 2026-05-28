@@ -13,13 +13,32 @@ Date: 2026-05-24
 import subprocess
 import sys
 import logging
+import json
 from pathlib import Path
 from datetime import datetime
+
+ALERT_LOG = Path(__file__).parent.parent / '.ly_state' / 'session' / 'oracle_alerts.jsonl'
 
 PROJECT_ROOT = Path(__file__).parent.parent
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] ORACLE: %(message)s")
 logger = logging.getLogger("daily_oracle")
+
+def send_alert(step_name: str, error_msg: str):
+    """Log alert to JSONL file. In production, this would send Telegram/email."""
+    alert = {
+        'timestamp': datetime.now().isoformat(),
+        'severity': 'CRITICAL',
+        'pipeline': 'daily_oracle',
+        'failed_step': step_name,
+        'error': error_msg,
+        'status': 'UNRESOLVED'
+    }
+    ALERT_LOG.parent.mkdir(parents=True, exist_ok=True)
+    with open(ALERT_LOG, 'a') as f:
+        f.write(json.dumps(alert) + '\n')
+    logger.critical(f'ALERT FIRED: {step_name} failed - {error_msg}')
+
 
 def run_step(script_name: str, args: list = None) -> bool:
     script_path = PROJECT_ROOT / "scripts" / script_name
@@ -48,6 +67,7 @@ def run_daily_oracle():
     logger.info("--> STEP 1: Updating Market Data")
     if not run_step("update_market_data.py"):
         logger.error("Halted at Step 1.")
+        send_alert('update_market_data', 'Data ingestion failed')
         sys.exit(1)
 
     # 2. Continuous Learning (Train Model)
@@ -55,15 +75,18 @@ def run_daily_oracle():
     target_date = today_str
     if not run_step("run_phase6_continuous_learning.py", ["--date", target_date]):
         logger.error("Halted at Step 2.")
+        send_alert('continuous_learning', 'Model retraining failed')
         sys.exit(1)
 
     # 3. Signal Generation & Telegram Batch (Shadow Live)
     logger.info("--> STEP 3: Generating Signals & Sending Telegram (Stage 5)")
     if not run_step("run_stage5_shadow_live.py", ["--date", target_date]):
         logger.error("Halted at Step 3.")
+        send_alert('shadow_live', 'Signal generation failed')
         sys.exit(1)
 
     logger.info("=== ORACLE WORKFLOW COMPLETE ===")
+    logger.info(f'All steps completed successfully. No alerts fired.')
     sys.exit(0)
 
 if __name__ == "__main__":
