@@ -127,9 +127,9 @@ def phase_2b_fundamental_features(df):
         lambda g: g["returns"].rolling(60).corr(g["market_ret"])
     ).reset_index(level=0, drop=True).groupby(df["ticker"]).shift(1)
 
-    # 10. Momentum Quality: IC of momentum signal (is momentum working for this stock?)
+    # 10. Momentum Quality: Autocorrelation of momentum (is momentum persistent for this stock?)
     df["feat_mom_quality"] = df.groupby("ticker")["returns"].transform(
-        lambda x: x.rolling(20).mean().rolling(20).corr(x.shift(-5).rolling(5).mean())
+        lambda x: x.rolling(20).mean().rolling(20).corr(x.shift(5).rolling(5).mean())
     ).groupby(df["ticker"]).shift(1)
 
     feat_cols = [c for c in df.columns if c.startswith("feat_")]
