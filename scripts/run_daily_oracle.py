@@ -48,23 +48,23 @@ def run_daily_oracle():
     logger.info("--> STEP 1: Updating Market Data")
     if not run_step("update_market_data.py"):
         logger.error("Halted at Step 1.")
-        return
+        sys.exit(1)
 
     # 2. Continuous Learning (Train Model)
     logger.info("--> STEP 2: Retraining XGBoost Model (Phase 6)")
-    # Normally today_str, but we mock "2026-05-15" to match our mock data limit in the parquet
-    target_date = "2026-05-15" 
+    target_date = today_str
     if not run_step("run_phase6_continuous_learning.py", ["--date", target_date]):
         logger.error("Halted at Step 2.")
-        return
+        sys.exit(1)
 
     # 3. Signal Generation & Telegram Batch (Shadow Live)
     logger.info("--> STEP 3: Generating Signals & Sending Telegram (Stage 5)")
     if not run_step("run_stage5_shadow_live.py", ["--date", target_date]):
         logger.error("Halted at Step 3.")
-        return
+        sys.exit(1)
 
     logger.info("=== ORACLE WORKFLOW COMPLETE ===")
+    sys.exit(0)
 
 if __name__ == "__main__":
     run_daily_oracle()
