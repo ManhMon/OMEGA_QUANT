@@ -77,11 +77,18 @@ class DSRResult:
 
 def annualized_sharpe(returns: np.ndarray, periods_per_year: int = 252) -> float:
     """Annualize per-bar Sharpe by sqrt(periods_per_year). Caller must
-    pass per-bar excess returns. Bias-corrected std (ddof=1)."""
+    pass per-bar excess returns. Bias-corrected std (ddof=1).
+
+    Uses the same near-zero std tolerance as deflated_sharpe_ratio to
+    avoid catastrophic-cancellation blow-ups on near-constant series.
+    """
     r = np.asarray(returns, dtype=float)
-    if len(r) < 2 or np.std(r, ddof=1) == 0:
+    if len(r) < 2:
         return 0.0
-    return float(np.mean(r) / np.std(r, ddof=1) * sqrt(periods_per_year))
+    std = float(np.std(r, ddof=1))
+    if std < 1e-12 * max(abs(float(np.mean(r))), 1.0):
+        return 0.0
+    return float(np.mean(r) / std * sqrt(periods_per_year))
 
 
 def _expected_max_sharpe(n_trials: int, trial_sr_var: float) -> float:
@@ -102,6 +109,7 @@ def deflated_sharpe_ratio(
     trial_sharpes: Optional[Sequence[float]] = None,
     sr_benchmark: float = 0.0,
     periods_per_year: int = 252,
+    benchmark_is_annualized: bool = False,
 ) -> DSRResult:
     """
     Compute the Deflated Sharpe Ratio.
@@ -112,10 +120,16 @@ def deflated_sharpe_ratio(
             during research. ≥ 1. Larger N deflates DSR more (correct).
         trial_sharpes: optional iterable of all trial Sharpes; if given,
             V[{SRₙ}] is computed empirically. Default V=1 (conservative).
-        sr_benchmark: the SR null hypothesis to test against. 0 = "is the
-            strategy profitable at all?". Higher (e.g. 1.0) tests
-            "is it institutional grade?".
-        periods_per_year: 252 for daily, 12 for monthly, etc.
+        sr_benchmark: SR null hypothesis. By default interpreted as
+            PER-BAR SR (matches Bailey-LdP formulas). Pass
+            `benchmark_is_annualized=True` if you want to specify the
+            benchmark in annualized SR units (1.0 = institutional grade).
+            Internally converts via /sqrt(periods_per_year).
+        periods_per_year: 252 for daily, 12 for monthly, etc. Used for
+            annualized SR output and benchmark conversion.
+        benchmark_is_annualized: if True, treat `sr_benchmark` as
+            annualized SR and divide by sqrt(periods_per_year) before
+            applying the test.
 
     Returns:
         DSRResult dataclass.
@@ -151,11 +165,18 @@ def deflated_sharpe_ratio(
         trial_var = 1.0  # conservative default
     e_max_sr = _expected_max_sharpe(n_trials, trial_var)
 
+    # Convert annualized benchmark to per-bar units for eq.(3).
+    bench_per_bar = (
+        sr_benchmark / sqrt(periods_per_year)
+        if benchmark_is_annualized
+        else sr_benchmark
+    )
+
     # DSR — eq. (3): Φ((SR - E[max] - benchmark) / σ(SR))
     if sr_std == 0:
-        dsr = 1.0 if sr > e_max_sr + sr_benchmark else 0.0
+        dsr = 1.0 if sr > e_max_sr + bench_per_bar else 0.0
     else:
-        z = (sr - e_max_sr - sr_benchmark) / sr_std
+        z = (sr - e_max_sr - bench_per_bar) / sr_std
         dsr = float(norm.cdf(z))
 
     return DSRResult(

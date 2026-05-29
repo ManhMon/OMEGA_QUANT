@@ -56,21 +56,36 @@ def purge_train_indices(
 ) -> np.ndarray:
     """
     Remove train samples whose [t, t+label_horizon] window overlaps with
-    any contiguous test block. Vectorized per block to avoid spuriously
-    purging the entire train when test groups are non-contiguous.
+    any contiguous test block (bidirectional purge per AFML §7.4).
 
     Args:
         train_idx: candidate train integer indices
         test_idx:  test integer indices (any order)
-        timestamps: pandas Series of bar timestamps (must be sorted);
-            kept for API stability, position-based purge below.
+        timestamps: pandas Series of bar timestamps; MUST be sorted
+            ascending and uniformly spaced. Validated below; raises
+            ValueError if irregular sampling is detected.
         label_horizon: forward bars used by label (e.g. 5 for 5-day return)
 
     Returns:
         purged train_idx (subset of input, original order preserved)
+
+    Notes:
+        Position-based purge assumes one bar = one label step. If your
+        bars have gaps (missing days, holidays inside a daily series) you
+        must pre-fill or pass a uniformly-spaced index.
     """
     if len(train_idx) == 0 or len(test_idx) == 0:
         return train_idx
+
+    # Validate timestamps are monotonically non-decreasing.
+    # We do NOT require uniform calendar spacing because business-day
+    # series naturally have weekend gaps. Position-based purge treats
+    # one row = one bar, which is the standard quant convention.
+    if hasattr(timestamps, 'is_monotonic_increasing'):
+        if not timestamps.is_monotonic_increasing:
+            raise ValueError(
+                "timestamps must be sorted ascending for purge to work."
+            )
 
     _ = timestamps  # position-based; kept for API
     # Identify contiguous blocks in test_idx.
@@ -80,10 +95,17 @@ def purge_train_indices(
     block_ends = np.concatenate([test_sorted[breaks], [test_sorted[-1]]])
 
     # Drop train samples that overlap with ANY contiguous test block.
+    # Bidirectional purge per AFML §7.4: train sample at i has label
+    # window [i, i+h]; test block [lo, hi] occupies label windows
+    # [lo, hi+h]. They intersect iff i ≤ hi+h AND i+h ≥ lo,
+    # i.e. i ∈ [lo - h, hi + h]. The previous condition only handled
+    # the pre-test side and missed train samples in (hi, hi+h].
     drop_mask = np.zeros(len(train_idx), dtype=bool)
     for lo, hi in zip(block_starts, block_ends):
-        # train at i leaks if i <= hi AND i + horizon >= lo
-        block_mask = (train_idx <= hi) & (train_idx + label_horizon >= lo)
+        block_mask = (
+            (train_idx <= hi + label_horizon)
+            & (train_idx + label_horizon >= lo)
+        )
         drop_mask |= block_mask
 
     return train_idx[~drop_mask]

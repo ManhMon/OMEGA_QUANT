@@ -99,3 +99,35 @@ def test_trial_sharpes_used():
     low_var_trials = np.random.normal(0, 0.01, size=100).tolist()
     res_low_var = deflated_sharpe_ratio(r, n_trials=100, trial_sharpes=low_var_trials)
     assert res_low_var.expected_max_sr < res_default.expected_max_sr
+
+
+# ---------------------------------------------------------------------
+# Audit P2 fixes
+# ---------------------------------------------------------------------
+def test_negative_sr_gives_low_dsr():
+    """Strategy that loses money should have DSR < 0.5."""
+    np.random.seed(7)
+    r = np.random.normal(loc=-0.001, scale=0.01, size=500)
+    res = deflated_sharpe_ratio(r, n_trials=10)
+    assert res.sr < 0
+    assert res.dsr < 0.5
+
+
+def test_annualized_benchmark_lowers_dsr():
+    """Annualized SR=1.0 benchmark deflates DSR vs zero benchmark."""
+    np.random.seed(42)
+    r = np.random.normal(0.0015, 0.01, size=500)
+    dsr_zero = deflated_sharpe_ratio(
+        r, n_trials=10, sr_benchmark=0.0, benchmark_is_annualized=True
+    ).dsr
+    dsr_one_ann = deflated_sharpe_ratio(
+        r, n_trials=10, sr_benchmark=1.0, benchmark_is_annualized=True
+    ).dsr
+    assert dsr_zero > dsr_one_ann, "annualized benchmark must lower DSR"
+
+
+def test_annualized_sharpe_near_constant_returns():
+    """P2-A regression: near-zero std must not blow up the SR."""
+    r = np.ones(252) * 0.001
+    sr = annualized_sharpe(r)
+    assert sr == 0.0

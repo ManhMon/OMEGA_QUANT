@@ -149,3 +149,31 @@ def test_integer_timestamps_supported():
     )
     folds = list(cpcv.split(ts))
     assert len(folds) == 5
+
+
+# ---------------------------------------------------------------------
+# Bidirectional purge regression (audit P1-A fix)
+# ---------------------------------------------------------------------
+def test_purge_bidirectional_post_test_block():
+    """After AFML fix: train at i in (hi, hi+horizon] must be purged
+    because its label window [i, i+h] overlaps test labels [hi, hi+h]."""
+    ts = _ts(200)
+    train_idx = np.arange(100, 200, dtype=np.int64)  # all train AFTER test
+    test_idx = np.arange(50, 100, dtype=np.int64)    # test = [50, 99]
+
+    purged = purge_train_indices(train_idx, test_idx, ts, label_horizon=5)
+    # Train at 100, 101, 102, 103, 104 has label window touching
+    # the same forward-return regime as test sample 99 (window [99, 104]).
+    # All five MUST be purged.
+    for forbidden in (100, 101, 102, 103, 104):
+        assert forbidden not in purged, f"P1-A leak at {forbidden}"
+    # Train at 105 has label window [105, 110] — safe.
+    assert 105 in purged
+
+
+def test_purge_rejects_unsorted_timestamps():
+    ts_unsorted = pd.Series(pd.date_range("2020-01-01", periods=100, freq="B")[::-1])
+    train_idx = np.arange(0, 50, dtype=np.int64)
+    test_idx = np.arange(60, 70, dtype=np.int64)
+    with pytest.raises(ValueError, match="sorted"):
+        purge_train_indices(train_idx, test_idx, ts_unsorted, label_horizon=5)
