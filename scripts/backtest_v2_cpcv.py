@@ -222,7 +222,8 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
 def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  tickers=None, tail_mod=None, n_alphas=4,
                  exec_mod_param=None, capital_vnd_param=1e9,
-                 top_k_param=0, rebal_threshold_param=0.0):
+                 top_k_param=0, rebal_threshold_param=0.0,
+                 signal_ema_param=0):
     cpcv = cpcv_mod.CombinatorialPurgedKFold(n_splits=10, n_test_splits=2, embargo_pct=0.01, label_horizon=label_horizon)
     folds, daily_rets, trial_srs = [], [], []
     for fid, (tr, te) in enumerate(cpcv.split(ts)):
@@ -234,6 +235,24 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         X_tr = (X_tr - mu) / sd
         X_te = (X_te - mu) / sd
         r = evaluate_fold(X_tr, y[tr], X_te, y[te])
+        # Phase 3.7: per-ticker EMA smoothing of predictions
+        # Note: previous attempt with sort_index() returned to feat_df-row index
+        # (NOT te-position index) -> shuffled predictions and inverted alpha sign.
+        # Fix: keep original te positions, smooth in (ticker, date) sorted view,
+        # then map back via stable position index.
+        if signal_ema_param > 0 and tickers is not None:
+            te_tickers = tickers[te]
+            te_dates = dates[te]
+            df_pred = pd.DataFrame({
+                "pred": r["pred"], "ticker": te_tickers, "date": te_dates,
+                "pos": np.arange(len(r["pred"]))
+            })
+            df_pred = df_pred.sort_values(["ticker", "date"]).reset_index(drop=True)
+            df_pred["pred_ema"] = df_pred.groupby("ticker")["pred"].transform(
+                lambda s: s.ewm(span=signal_ema_param, adjust=False).mean()
+            )
+            df_pred = df_pred.sort_values("pos").reset_index(drop=True)
+            r["pred"] = df_pred["pred_ema"].to_numpy()
         # BT-2 fix: seed tail-control vol history with TRAIN-fold portfolio rets
         train_warmup = None
         if tail_mod is not None and tickers is not None:
@@ -293,6 +312,8 @@ def main():
     p.add_argument("--capital-vnd", type=float, default=1e9, help="Portfolio capital VND for slippage scaling (default 1B)")
     p.add_argument("--top-k", type=int, default=0, help="Sparse positions: long top-K, short bottom-K (0 = full demedian)")
     p.add_argument("--rebal-threshold", type=float, default=0.0, help="Rebalance only when sum |delta_w| > threshold (0 = always)")
+    p.add_argument("--label-horizon", type=int, default=5, help="Forward return label horizon in days (default 5)")
+    p.add_argument("--signal-ema", type=int, default=0, help="EMA span for prediction smoothing per ticker (0=disabled)")
     p.add_argument("--year-start", type=int, default=2020)
     p.add_argument("--year-end", type=int, default=2024)
     p.add_argument("--out", default=".ly_state/session/phase3_3_v2.json")
@@ -316,7 +337,7 @@ def main():
         panel = load_panel(tickers, args.year_start, args.year_end)
     if panel.empty:
         logger.error("Empty panel"); return 1
-    target = compute_target(panel, horizon=5)
+    target = compute_target(panel, horizon=args.label_horizon)
     feat_dict = feat_mod.GPFeatureAdapter().compute_all(panel, top_n_features=125)
     feat_names = list(feat_dict.keys())
     feat_df = pd.DataFrame(feat_dict, index=panel.index)
@@ -334,10 +355,13 @@ def main():
     dates = feat_df["date"].to_numpy()
     logger.info("Drop NaN: %d samples, %d feats, max_per_date=%d, bar_horizon=%d", len(y), X.shape[1], max_per_date, bar_horizon)
     tickers_arr = feat_df["ticker"].to_numpy() if args.tail_controls else None
+    # bar_horizon = args.label_horizon * max_per_date
     summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
-                            label_horizon=bar_horizon, tickers=tickers_arr, tail_mod=tail_mod,
+                            label_horizon=args.label_horizon * max_per_date,
+                            tickers=tickers_arr, tail_mod=tail_mod,
                             exec_mod_param=exec_mod, capital_vnd_param=args.capital_vnd,
-                            top_k_param=args.top_k, rebal_threshold_param=args.rebal_threshold)
+                            top_k_param=args.top_k, rebal_threshold_param=args.rebal_threshold,
+                            signal_ema_param=args.signal_ema)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
