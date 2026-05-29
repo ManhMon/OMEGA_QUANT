@@ -1,0 +1,172 @@
+﻿==============================================================
+L3 AUDIT REPORT - Phase 1 Step 2 (UniverseClassifier Pipeline)
+==============================================================
+Role           : 21 - Code Reviewer (L3 / Codex)
+Audited Files  : scripts/train_universe_classifier.py
+                 scripts/select_universe_dynamic.py
+Audit Date     : 2026-05-29 (Asia/Saigon)
+Audit Scope    : PIT safety, look-ahead, vectorization,
+                 error handling, CLI argparse correctness.
+
+--------------------------------------------------------------
+FINAL VERDICT  : [APPROVED] (with non-blocking follow-up notes)
+--------------------------------------------------------------
+PIT Safety        : PASS
+Look-ahead Check  : PASS
+Vectorization     : PASS
+Error Handling    : PASS (acceptable, minor gaps)
+CLI / argparse    : PASS
+Role Compliance   : PASS (Reviewer role; no implementation done)
+
+==============================================================
+1. PIT SAFETY IN LABEL GENERATION
+==============================================================
+Verdict: PASS
+
+- Features are produced by UniverseFeatureComputer.compute(df,
+  snap_date) which (per docstring contract) enforces
+  `date < as_of_date`, so the feature window ends strictly
+  before the snapshot timestamp.
+- Labels are derived from `future_data = df[(date >= snap_date)
+  & (date <= snap_date + label_horizon days)]`. The label
+  window is strictly disjoint from the feature window, so no
+  forward information leaks into X.
+- The cross-sectional threshold
+  `forward_ret.loc[common].quantile(top_percentile)` is computed
+  per snapshot using only that snapshot's forward returns; it
+  does not pool across dates, so no future-snapshot info leaks
+  into earlier labels.
+- Inference path (select_universe_dynamic.py) calls
+  fc.compute(df, target_date) only; no label computation, no
+  future data referenced. Safe for live use provided the
+  caller treats `target_date` as the as-of marker (entry at
+  close of target_date is the implicit convention).
+
+==============================================================
+2. NO LOOK-AHEAD IN MONTHLY SNAPSHOTS
+==============================================================
+Verdict: PASS
+
+- Snapshot grid: `pd.date_range("2017-01-01", train_end,
+  freq=args.rebalance_freq)` with default freq="M" yields
+  month-end timestamps; each is fed to fc.compute as the
+  as-of cutoff -> strictly causal feature construction.
+- The training loop never references snapshots later than the
+  current `snap_date` when building X or y; no cross-snapshot
+  bleeding.
+- The skip guards (`features.empty`, `future_data.empty`,
+  `len(common) < 30`) prevent degenerate snapshots from
+  polluting the training set.
+
+==============================================================
+3. VECTORIZATION
+==============================================================
+Verdict: PASS
+
+- Per-snapshot loop is unavoidable because the as-of date
+  changes each iteration; this is the standard PIT pattern.
+- Inside each snapshot, label generation uses pandas vectorized
+  ops: boolean mask filter, groupby().first()/last(), Series
+  arithmetic, quantile, and astype. No Python-level row loops.
+- Concatenation is deferred to a single `pd.concat(..., ignore_
+  index=True)` call after the loop, which is the recommended
+  shape (avoids O(n^2) repeated concat).
+- select_universe_dynamic.py is a single-shot computation;
+  no loops, fully vectorized via the feature computer + model.
+
+==============================================================
+4. ERROR HANDLING
+==============================================================
+Verdict: PASS (with minor gaps noted)
+
+Strengths:
+- Validates existence of --data and --model before use
+  (returns 1, logs error).
+- Handles empty feature frames, empty future windows, and
+  too-few common tickers (<30) with explicit skip + counter.
+- Aborts cleanly with non-zero exit if no training rows were
+  produced.
+- Uses logging at INFO level with structured messages; exit
+  codes propagate through `sys.exit(main())`.
+
+Gaps (non-blocking, recommended for follow-up):
+- No range validation on --top-percentile (should be in (0,1))
+  or positivity check on --label-horizon (>0).
+- pd.read_parquet / pd.to_datetime are uncaught; a malformed
+  parquet would raise a bare exception. Acceptable for an
+  internal training script but worth a try/except + clear
+  error message.
+- select_universe_dynamic.py writes the output file using the
+  raw `args.date` string; an input like "2026/05/29" parses via
+  pd.Timestamp but produces an invalid Windows filename. A
+  `target_date.strftime('%Y-%m-%d')`-based filename would be
+  more robust.
+
+==============================================================
+5. CLI / ARGPARSE CORRECTNESS
+==============================================================
+Verdict: PASS
+
+- All arguments have sensible defaults; types are explicit
+  for numeric args (`type=int`, `type=float`).
+- Help strings present on the non-trivial flags.
+- No conflicting flags, no misuse of nargs.
+- `--rebalance-freq` is forwarded directly to pandas as a
+  freq alias; pandas raises a clear error on bad aliases.
+- The `%%` escape in the help string for --top-percentile is
+  correct for argparse formatting.
+
+==============================================================
+6. NON-BLOCKING FOLLOW-UP NOTES (FOR ROLE 9 / NEXT ITERATION)
+==============================================================
+N1. Truncated forward window near train_end:
+    For snap_date close to train_end (or to df["date"].max()),
+    `future_data` may not span the full label_horizon, so
+    `last_close` is the last *available* close, not the close
+    63 calendar days out. This biases late-snapshot labels.
+    Recommend guarding with:
+        if snap_date + pd.Timedelta(days=label_horizon)
+           > df["date"].max(): skip
+    or by truncating `snapshots` to `df["date"].max() -
+    label_horizon`. Not a PIT leak, but a label-quality issue
+    worth fixing for institutional grade.
+
+N2. Calendar vs trading days:
+    Help text says "63 ~ 3 months" while the implementation
+    uses pd.Timedelta(days=...) (calendar days). 63 calendar
+    days ~= 2 months, 63 trading days ~= 3 months. Either
+    update the help text to "~2 months" or convert the
+    horizon to business days
+    (e.g., snap_date + BusinessDay(label_horizon)).
+
+N3. Survivorship / delisting:
+    `groupby("ticker")["close"].last()` for a ticker that
+    delists mid-window returns its last traded close, biasing
+    forward returns up/down depending on circumstance.
+    Consider requiring a minimum number of trading days in the
+    window (e.g., >= 0.8 * expected) before keeping the row.
+
+N4. Reproducibility:
+    UniverseClassifier is instantiated with fixed
+    hyperparameters but no explicit `random_state` is passed
+    here. If the underlying XGBoost wrapper does not pin a
+    seed by default, training is non-deterministic. Recommend
+    threading `--seed` through to the classifier.
+
+N5. Dead import:
+    `import numpy as np  # noqa: F401` is unused. Either
+    remove or document the future-use intent (current comment
+    is fine but consider dropping if no near-term use).
+
+==============================================================
+EVIDENCE
+==============================================================
+- scripts/train_universe_classifier.py : reviewed full source
+  (114 lines), all branches traced.
+- scripts/select_universe_dynamic.py   : reviewed full source
+  ( 95 lines), all branches traced.
+- No execution performed (review-only audit per Role 21
+  segregation of duties; Reviewer must not run/modify code).
+
+Auditor : L3 / Codex / Role 21 (Code Reviewer)
+Result  : [APPROVED]
