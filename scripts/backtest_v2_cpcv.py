@@ -19,6 +19,25 @@ def _import(name, rel):
     spec.loader.exec_module(mod)
     return mod
 
+def load_universe_walk_forward(year_start: int, year_end: int) -> dict:
+    """Walk-forward: load yearly universe files {year: [tickers]} for OOS years.
+
+    For year Y, uses universe_<Y>-01-02.json (trained on data <= Y-1).
+    No look-ahead at universe level.
+    """
+    base = REPO_ROOT / ".ly_state/session/universe"
+    out = {}
+    for year in range(year_start, year_end + 1):
+        f = base / f"universe_{year}-01-02.json"
+        if not f.exists():
+            raise FileNotFoundError(f"Walk-forward file missing: {f}")
+        with open(f) as fh:
+            data = json.load(fh)
+        tickers = [u["ticker"] for u in data["universe"]]
+        out[year] = tickers
+        logger.info("Year %d universe: %d tickers (top=%s)", year, len(tickers), tickers[:5])
+    return out
+
 def load_universe():
     files = sorted((REPO_ROOT / ".ly_state/session/universe").glob("universe_*.json"), reverse=True)
     if not files:
@@ -39,6 +58,22 @@ def load_panel(tickers, year_start, year_end):
     panel = df[(df["ticker"].isin(tickers)) & (df["date"].dt.year >= year_start) & (df["date"].dt.year <= year_end)].copy()
     panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
     logger.info("Panel: %d rows, %d tickers, %s..%s", len(panel), panel["ticker"].nunique(), panel["date"].min().date(), panel["date"].max().date())
+    return panel
+
+def load_panel_walk_forward(yearly_universes: dict, year_start: int, year_end: int) -> pd.DataFrame:
+    """Load panel with year-aware universe filter (PIT walk-forward)."""
+    df = pd.read_parquet(REPO_ROOT / "data/market_2015_now.parquet")
+    df["date"] = pd.to_datetime(df["date"])
+    frames = []
+    for year, tickers in yearly_universes.items():
+        chunk = df[(df["ticker"].isin(tickers))
+                   & (df["date"].dt.year == year)].copy()
+        frames.append(chunk)
+    panel = pd.concat(frames, ignore_index=True)
+    panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
+    logger.info("WF Panel: %d rows, %d unique tickers, %s..%s",
+                len(panel), panel["ticker"].nunique(),
+                panel["date"].min().date(), panel["date"].max().date())
     return panel
 
 def compute_target(panel, horizon=5):
@@ -114,6 +149,7 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon, n_alp
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--smoke", action="store_true")
+    p.add_argument("--walk-forward", action="store_true", help="Use per-year walk-forward universe (Phase 1.5 v2 fix)")
     p.add_argument("--year-start", type=int, default=2020)
     p.add_argument("--year-end", type=int, default=2024)
     p.add_argument("--out", default=".ly_state/session/phase3_3_v2.json")
@@ -121,11 +157,18 @@ def main():
     cpcv_mod = _import("_cpcv", "omega/quant/validation/cpcv.py")
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
     feat_mod = _import("_feat", "omega/quant/evolution/feature_adapter.py")
-    tickers = load_universe()
-    if args.smoke:
-        tickers = tickers[:5]
-        logger.info("SMOKE: 5 tickers")
-    panel = load_panel(tickers, args.year_start, args.year_end)
+    if args.walk_forward:
+        wf = load_universe_walk_forward(args.year_start, args.year_end)
+        if args.smoke:
+            wf = {y: t[:5] for y, t in wf.items()}
+            logger.info("SMOKE WF: 5 tickers/year")
+        panel = load_panel_walk_forward(wf, args.year_start, args.year_end)
+    else:
+        tickers = load_universe()
+        if args.smoke:
+            tickers = tickers[:5]
+            logger.info("SMOKE: 5 tickers")
+        panel = load_panel(tickers, args.year_start, args.year_end)
     if panel.empty:
         logger.error("Empty panel"); return 1
     target = compute_target(panel, horizon=5)

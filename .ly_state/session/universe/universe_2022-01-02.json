@@ -1,0 +1,264 @@
+{
+  "date": "2022-01-02",
+  "method": "ml_classifier_xgb",
+  "n_eligible": 220,
+  "n_selected": 50,
+  "filter": {
+    "min_adv_vnd": 5000000000.0,
+    "min_price": 5000,
+    "min_listing_days": 365,
+    "quality_lookback_days": 365
+  },
+  "universe": [
+    {
+      "ticker": "BSR",
+      "score": 0.6036556363105774,
+      "rank": 1
+    },
+    {
+      "ticker": "HAX",
+      "score": 0.5986557602882385,
+      "rank": 2
+    },
+    {
+      "ticker": "AGG",
+      "score": 0.5433254241943359,
+      "rank": 3
+    },
+    {
+      "ticker": "D2D",
+      "score": 0.5399012565612793,
+      "rank": 4
+    },
+    {
+      "ticker": "TGG",
+      "score": 0.5063136219978333,
+      "rank": 5
+    },
+    {
+      "ticker": "ASM",
+      "score": 0.505986213684082,
+      "rank": 6
+    },
+    {
+      "ticker": "APG",
+      "score": 0.5055857300758362,
+      "rank": 7
+    },
+    {
+      "ticker": "PVC",
+      "score": 0.49673956632614136,
+      "rank": 8
+    },
+    {
+      "ticker": "SBT",
+      "score": 0.489651620388031,
+      "rank": 9
+    },
+    {
+      "ticker": "BMI",
+      "score": 0.48094698786735535,
+      "rank": 10
+    },
+    {
+      "ticker": "SBS",
+      "score": 0.47691914439201355,
+      "rank": 11
+    },
+    {
+      "ticker": "SHI",
+      "score": 0.4717724323272705,
+      "rank": 12
+    },
+    {
+      "ticker": "AAS",
+      "score": 0.4645124077796936,
+      "rank": 13
+    },
+    {
+      "ticker": "NTL",
+      "score": 0.45603206753730774,
+      "rank": 14
+    },
+    {
+      "ticker": "MST",
+      "score": 0.45172882080078125,
+      "rank": 15
+    },
+    {
+      "ticker": "BCG",
+      "score": 0.4468550682067871,
+      "rank": 16
+    },
+    {
+      "ticker": "LPB",
+      "score": 0.443240761756897,
+      "rank": 17
+    },
+    {
+      "ticker": "PHC",
+      "score": 0.4393841028213501,
+      "rank": 18
+    },
+    {
+      "ticker": "NKG",
+      "score": 0.43852749466896057,
+      "rank": 19
+    },
+    {
+      "ticker": "PVD",
+      "score": 0.4173482358455658,
+      "rank": 20
+    },
+    {
+      "ticker": "TTA",
+      "score": 0.41223880648612976,
+      "rank": 21
+    },
+    {
+      "ticker": "ART",
+      "score": 0.40881016850471497,
+      "rank": 22
+    },
+    {
+      "ticker": "AGR",
+      "score": 0.4013465642929077,
+      "rank": 23
+    },
+    {
+      "ticker": "PET",
+      "score": 0.39891552925109863,
+      "rank": 24
+    },
+    {
+      "ticker": "THD",
+      "score": 0.3941175639629364,
+      "rank": 25
+    },
+    {
+      "ticker": "EVF",
+      "score": 0.387768030166626,
+      "rank": 26
+    },
+    {
+      "ticker": "TTB",
+      "score": 0.38591495156288147,
+      "rank": 27
+    },
+    {
+      "ticker": "FTS",
+      "score": 0.38527750968933105,
+      "rank": 28
+    },
+    {
+      "ticker": "VIB",
+      "score": 0.38517245650291443,
+      "rank": 29
+    },
+    {
+      "ticker": "CRE",
+      "score": 0.38451287150382996,
+      "rank": 30
+    },
+    {
+      "ticker": "BSI",
+      "score": 0.38134682178497314,
+      "rank": 31
+    },
+    {
+      "ticker": "TVC",
+      "score": 0.37973737716674805,
+      "rank": 32
+    },
+    {
+      "ticker": "TNG",
+      "score": 0.37753725051879883,
+      "rank": 33
+    },
+    {
+      "ticker": "TPB",
+      "score": 0.3742351233959198,
+      "rank": 34
+    },
+    {
+      "ticker": "HCM",
+      "score": 0.3731629550457001,
+      "rank": 35
+    },
+    {
+      "ticker": "KOS",
+      "score": 0.3717343807220459,
+      "rank": 36
+    },
+    {
+      "ticker": "PHR",
+      "score": 0.3664797842502594,
+      "rank": 37
+    },
+    {
+      "ticker": "PLP",
+      "score": 0.3646499812602997,
+      "rank": 38
+    },
+    {
+      "ticker": "AAV",
+      "score": 0.3584389388561249,
+      "rank": 39
+    },
+    {
+      "ticker": "MBS",
+      "score": 0.3574777841567993,
+      "rank": 40
+    },
+    {
+      "ticker": "HUT",
+      "score": 0.35554441809654236,
+      "rank": 41
+    },
+    {
+      "ticker": "BVS",
+      "score": 0.35302841663360596,
+      "rank": 42
+    },
+    {
+      "ticker": "TDH",
+      "score": 0.34321731328964233,
+      "rank": 43
+    },
+    {
+      "ticker": "ELC",
+      "score": 0.341490775346756,
+      "rank": 44
+    },
+    {
+      "ticker": "PSH",
+      "score": 0.33733412623405457,
+      "rank": 45
+    },
+    {
+      "ticker": "S99",
+      "score": 0.32860368490219116,
+      "rank": 46
+    },
+    {
+      "ticker": "STB",
+      "score": 0.32435622811317444,
+      "rank": 47
+    },
+    {
+      "ticker": "CTD",
+      "score": 0.3227740526199341,
+      "rank": 48
+    },
+    {
+      "ticker": "DAH",
+      "score": 0.3203331232070923,
+      "rank": 49
+    },
+    {
+      "ticker": "IJC",
+      "score": 0.319644570350647,
+      "rank": 50
+    }
+  ]
+}

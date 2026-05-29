@@ -1,0 +1,264 @@
+{
+  "date": "2021-01-02",
+  "method": "ml_classifier_xgb",
+  "n_eligible": 82,
+  "n_selected": 50,
+  "filter": {
+    "min_adv_vnd": 5000000000.0,
+    "min_price": 5000,
+    "min_listing_days": 365,
+    "quality_lookback_days": 365
+  },
+  "universe": [
+    {
+      "ticker": "VPB",
+      "score": 0.6561412215232849,
+      "rank": 1
+    },
+    {
+      "ticker": "PVD",
+      "score": 0.5935574173927307,
+      "rank": 2
+    },
+    {
+      "ticker": "KOS",
+      "score": 0.5733277201652527,
+      "rank": 3
+    },
+    {
+      "ticker": "HSG",
+      "score": 0.5376481413841248,
+      "rank": 4
+    },
+    {
+      "ticker": "TCB",
+      "score": 0.5283471345901489,
+      "rank": 5
+    },
+    {
+      "ticker": "PVS",
+      "score": 0.5240896940231323,
+      "rank": 6
+    },
+    {
+      "ticker": "HCM",
+      "score": 0.5127713084220886,
+      "rank": 7
+    },
+    {
+      "ticker": "DCM",
+      "score": 0.5061129331588745,
+      "rank": 8
+    },
+    {
+      "ticker": "DXG",
+      "score": 0.4981452226638794,
+      "rank": 9
+    },
+    {
+      "ticker": "PVT",
+      "score": 0.47935566306114197,
+      "rank": 10
+    },
+    {
+      "ticker": "SHB",
+      "score": 0.47557151317596436,
+      "rank": 11
+    },
+    {
+      "ticker": "POW",
+      "score": 0.4533303678035736,
+      "rank": 12
+    },
+    {
+      "ticker": "PDR",
+      "score": 0.44192373752593994,
+      "rank": 13
+    },
+    {
+      "ticker": "TCM",
+      "score": 0.42655590176582336,
+      "rank": 14
+    },
+    {
+      "ticker": "TAR",
+      "score": 0.4044351577758789,
+      "rank": 15
+    },
+    {
+      "ticker": "AAA",
+      "score": 0.3932642340660095,
+      "rank": 16
+    },
+    {
+      "ticker": "HPG",
+      "score": 0.39259782433509827,
+      "rank": 17
+    },
+    {
+      "ticker": "GEG",
+      "score": 0.3862936794757843,
+      "rank": 18
+    },
+    {
+      "ticker": "SAB",
+      "score": 0.38390639424324036,
+      "rank": 19
+    },
+    {
+      "ticker": "KBC",
+      "score": 0.3811270296573639,
+      "rank": 20
+    },
+    {
+      "ticker": "CTR",
+      "score": 0.3808462619781494,
+      "rank": 21
+    },
+    {
+      "ticker": "MBB",
+      "score": 0.3792620003223419,
+      "rank": 22
+    },
+    {
+      "ticker": "ACV",
+      "score": 0.37837526202201843,
+      "rank": 23
+    },
+    {
+      "ticker": "FPT",
+      "score": 0.3775911033153534,
+      "rank": 24
+    },
+    {
+      "ticker": "KDC",
+      "score": 0.3592549264431,
+      "rank": 25
+    },
+    {
+      "ticker": "KDH",
+      "score": 0.3318173587322235,
+      "rank": 26
+    },
+    {
+      "ticker": "SBT",
+      "score": 0.32298004627227783,
+      "rank": 27
+    },
+    {
+      "ticker": "NVL",
+      "score": 0.31311216950416565,
+      "rank": 28
+    },
+    {
+      "ticker": "HNG",
+      "score": 0.31100890040397644,
+      "rank": 29
+    },
+    {
+      "ticker": "VRE",
+      "score": 0.3060516119003296,
+      "rank": 30
+    },
+    {
+      "ticker": "LDG",
+      "score": 0.30319643020629883,
+      "rank": 31
+    },
+    {
+      "ticker": "ACB",
+      "score": 0.3008470833301544,
+      "rank": 32
+    },
+    {
+      "ticker": "CEO",
+      "score": 0.2986251711845398,
+      "rank": 33
+    },
+    {
+      "ticker": "DRH",
+      "score": 0.2976361811161041,
+      "rank": 34
+    },
+    {
+      "ticker": "REE",
+      "score": 0.2946637272834778,
+      "rank": 35
+    },
+    {
+      "ticker": "DIG",
+      "score": 0.29308822751045227,
+      "rank": 36
+    },
+    {
+      "ticker": "NVB",
+      "score": 0.28227001428604126,
+      "rank": 37
+    },
+    {
+      "ticker": "GVR",
+      "score": 0.2688576579093933,
+      "rank": 38
+    },
+    {
+      "ticker": "DRC",
+      "score": 0.2624644637107849,
+      "rank": 39
+    },
+    {
+      "ticker": "HVN",
+      "score": 0.25868502259254456,
+      "rank": 40
+    },
+    {
+      "ticker": "FCN",
+      "score": 0.2559749484062195,
+      "rank": 41
+    },
+    {
+      "ticker": "BID",
+      "score": 0.2552109360694885,
+      "rank": 42
+    },
+    {
+      "ticker": "MWG",
+      "score": 0.25448524951934814,
+      "rank": 43
+    },
+    {
+      "ticker": "DHC",
+      "score": 0.24681541323661804,
+      "rank": 44
+    },
+    {
+      "ticker": "HPX",
+      "score": 0.24142251908779144,
+      "rank": 45
+    },
+    {
+      "ticker": "TNG",
+      "score": 0.2402331382036209,
+      "rank": 46
+    },
+    {
+      "ticker": "PLX",
+      "score": 0.23425589501857758,
+      "rank": 47
+    },
+    {
+      "ticker": "BVH",
+      "score": 0.22528637945652008,
+      "rank": 48
+    },
+    {
+      "ticker": "DBC",
+      "score": 0.22078867256641388,
+      "rank": 49
+    },
+    {
+      "ticker": "STB",
+      "score": 0.21933051943778992,
+      "rank": 50
+    }
+  ]
+}
