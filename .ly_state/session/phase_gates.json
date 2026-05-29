@@ -492,6 +492,18 @@
     "l2_completed": true,
     "final_verdict": "[APPROVED]"
   },
+  "phase_3_9_fold_level_dsr": {
+    "phase_name": "phase_3_9_fold_level_dsr",
+    "l2_session_id": "l2-ly-direct-20260530-phase39",
+    "l2_completed": true,
+    "l3_session_id": "019e75df-8554-74f0-8bba-b87839f6e7cc",
+    "l3_session_key": "codex:role21:phase3_9-fold-dsr:20260530T053403+0700",
+    "audit_report_path": ".ly_state/session/phase3_9_l3_audit_codex.md",
+    "final_verdict": "[APPROVED]",
+    "timestamp": "2026-05-30T05:36:00+07:00",
+    "status": "APPROVED",
+    "notes": "Codex CLI audit (~2min, multi-file + pytest 21/21 pass, task_complete event). 5 P2 findings, no P0/P1 blockers. Implementation: Bailey-LdP eq.1 at fold level (T=n_folds), additive integration in run_pipeline, edge cases handled. fold_DSR sensible across 1B/10B/100B (0.44/0.41/0.10). Codex invocation followed SOUL.md Rule 9.1."
+  },
   "phase_3_8_slippage_adv": {
     "phase_name": "phase_3_8_slippage_adv",
     "l2_session_id": "l2-ly-direct-20260530-phase38",

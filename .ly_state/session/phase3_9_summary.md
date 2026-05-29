@@ -40,21 +40,22 @@ Pipeline integration in `scripts/backtest_v2_cpcv.py`:
 | 100B | 1.11e-104 | -0.183 | **0.100** | -0.084 | 0.74 | 3.30 |
 
 Observations:
-- **fold_SR_ann ≈ pool_SR_ann** (within 0.7%) — the location estimate is the same; only uncertainty differs.
+- **fold_SR_ann ≈ pool_SR_ann** at 1B/10B (within ~0.7%); diverges to ~54% at 100B because pooled SR is `mean(pooled_returns)/std(pooled_returns)` while fold SR is `mean_of(fold_SR)`, and pooled std differs from per-fold std when fold-level variance is heterogeneous (heavy-slippage tail dominates at 100B). Both are valid Sharpe estimators; they only coincide when fold volatilities are identical.
 - **fold_DSR is sensible**: 0.44 at 1B (suggestive but not significant), 0.41 at 10B (degrading), 0.10 at 100B (clearly negative-expectancy).
 - **fold_DSR < 0.95 across all 3 capitals** — confirms the strategy is real but not statistically deflation-proof at this fold count. To pass DSR=0.95 we'd need either more independent folds (longer history) or much tighter fold-Sharpe variance.
 - **Capacity ranking unchanged**: 1B > 10B >> 100B. The fix only affects how we interpret confidence, not the strategy ordering.
 
 ## Tests added (`packages/quant/tests/test_dsr.py`)
 
-7 new tests, all PASS (21/21 total green):
+8 new tests, all PASS (21/21 total green = 13 pre-existing + 8 new):
 1. `test_fold_level_dsr_basic_positive` — 45 IID Gaussian folds, DSR ∈ (0, 1).
 2. `test_fold_level_dsr_independent_of_bars_per_fold` — `bars_per_fold` arg does not affect dsr/sr (only annualisation).
 3. `test_fold_level_dsr_does_not_inflate_with_oversampled_pooled_bars` — fold-level only sees fold Sharpes, not raw bars.
 4. `test_fold_level_dsr_pure_noise` — folds centred at 0 → DSR < 0.6.
 5. `test_fold_level_dsr_strong_signal_passes` — folds centred at 0.5 with low spread → DSR > 0.95.
 6. `test_fold_level_dsr_n_trials_deflates` — larger n_trials lowers DSR (selection bias).
-7. `test_fold_level_dsr_short_series` / `test_fold_level_dsr_zero_variance` — degenerate inputs handled.
+7. `test_fold_level_dsr_short_series` — <2 folds returns zero.
+8. `test_fold_level_dsr_zero_variance` — degenerate inputs (all identical fold Sharpes) handled.
 
 ## Conclusion
 
