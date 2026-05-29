@@ -52,28 +52,58 @@ def load_universe():
     logger.info("Universe: %d tickers from %s", len(tickers), files[0].name)
     return tickers
 
+def _attach_adv(panel: pd.DataFrame, window: int = 20) -> pd.DataFrame:
+    """Phase 3.8: Add per-ticker ADV (VND) with T-1 PIT lag.
+
+    ADV_t = rolling_<window>(volume_t * close_t).mean().shift(1)
+    Shift(1) ensures execution at bar t uses ADV computed strictly before t.
+    """
+    panel = panel.sort_values(["ticker", "date"]).copy()
+    panel["_dollar_vol"] = panel["volume"].astype(float) * panel["close"].astype(float)
+    panel["adv_vnd"] = (
+        panel.groupby("ticker")["_dollar_vol"]
+             .transform(lambda s: s.rolling(window, min_periods=max(5, window // 4)).mean().shift(1))
+    )
+    panel = panel.drop(columns=["_dollar_vol"])
+    return panel
+
 def load_panel(tickers, year_start, year_end):
     df = pd.read_parquet(REPO_ROOT / "data/market_2015_now.parquet")
     df["date"] = pd.to_datetime(df["date"])
-    panel = df[(df["ticker"].isin(tickers)) & (df["date"].dt.year >= year_start) & (df["date"].dt.year <= year_end)].copy()
+    # Pull 1 year extra history before year_start so the 20d ADV warm-up is
+    # computed PIT-correctly on prior data (not on intra-fold data).
+    panel = df[(df["ticker"].isin(tickers)) & (df["date"].dt.year >= year_start - 1) & (df["date"].dt.year <= year_end)].copy()
     panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
-    logger.info("Panel: %d rows, %d tickers, %s..%s", len(panel), panel["ticker"].nunique(), panel["date"].min().date(), panel["date"].max().date())
+    panel = _attach_adv(panel)
+    panel = panel[panel["date"].dt.year >= year_start].reset_index(drop=True)
+    logger.info("Panel: %d rows, %d tickers, %s..%s, adv_vnd non-null=%d", len(panel), panel["ticker"].nunique(), panel["date"].min().date(), panel["date"].max().date(), int(panel["adv_vnd"].notna().sum()))
     return panel
 
 def load_panel_walk_forward(yearly_universes: dict, year_start: int, year_end: int) -> pd.DataFrame:
-    """Load panel with year-aware universe filter (PIT walk-forward)."""
+    """Load panel with year-aware universe filter (PIT walk-forward).
+
+    Pulls 1 year of pre-history per yearly slice so ADV can warm up without
+    contaminating in-fold data.
+    """
     df = pd.read_parquet(REPO_ROOT / "data/market_2015_now.parquet")
     df["date"] = pd.to_datetime(df["date"])
     frames = []
     for year, tickers in yearly_universes.items():
+        # Pull (year-1) for ADV warm-up; will be filtered after _attach_adv.
         chunk = df[(df["ticker"].isin(tickers))
-                   & (df["date"].dt.year == year)].copy()
+                   & (df["date"].dt.year >= year - 1)
+                   & (df["date"].dt.year <= year)].copy()
+        chunk["_universe_year"] = year
         frames.append(chunk)
     panel = pd.concat(frames, ignore_index=True)
-    panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
-    logger.info("WF Panel: %d rows, %d unique tickers, %s..%s",
+    panel = panel.sort_values(["ticker", "date", "_universe_year"]).reset_index(drop=True)
+    panel = _attach_adv(panel)
+    # Keep only rows whose date.year matches the universe year used to fetch them.
+    panel = panel[panel["date"].dt.year == panel["_universe_year"]].drop(columns=["_universe_year"]).reset_index(drop=True)
+    logger.info("WF Panel: %d rows, %d unique tickers, %s..%s, adv_vnd non-null=%d",
                 len(panel), panel["ticker"].nunique(),
-                panel["date"].min().date(), panel["date"].max().date())
+                panel["date"].min().date(), panel["date"].max().date(),
+                int(panel["adv_vnd"].notna().sum()))
     return panel
 
 def compute_target(panel, horizon=5):
@@ -102,11 +132,15 @@ def evaluate_fold(X_tr, y_tr, X_te, y_te, alphas=(0.1, 1.0, 10.0, 100.0)):
     return {"ic": test_ic, "pred": pred, "alpha": best_a, "train_cv_ic": best_ic}
 
 def per_date_returns(pred, y_te, dates_te, tickers_te=None,
-                     apply_tail=False, tail_mod=None, tail_kwargs=None):
+                     apply_tail=False, tail_mod=None, tail_kwargs=None,
+                     adv_te=None):
     """P1-1: per-date long-short demedian portfolio.
 
     If apply_tail=True and tail_mod is the tail_controls module,
     apply 3 tail controls (per-name cap, vol target, DD breaker).
+
+    adv_te: optional 1-D array of ADV (VND) aligned with pred/y_te/tickers_te.
+             When provided, slippage uses real per-name ADV instead of None.
     """
     if len(pred) == 0:
         return np.array([])
@@ -115,6 +149,8 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
     df = pd.DataFrame({"pred": pred, "y": y_te, "date": dates_te})
     if tickers_te is not None:
         df["ticker"] = tickers_te
+    if adv_te is not None and tickers_te is not None:
+        df["adv"] = adv_te
 
     if not apply_tail or tail_mod is None or tickers_te is None:
         # Original aggregated path
@@ -134,6 +170,7 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
     pivot_w = pd.DataFrame(0.0, index=sorted(df["date"].unique()),
                             columns=sorted(df["ticker"].unique()))
     pivot_y = pivot_w.copy()
+    pivot_adv = pivot_w.copy() if adv_te is not None else None
 
     # Phase 3.6 knobs (passed via tail_kwargs).
     top_k = (tail_kwargs or {}).get('top_k', 0)
@@ -197,6 +234,9 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
         pivot_w.loc[date] = row_to_set
         for tk, ret in zip(g["ticker"].values, g["y"].values):
             pivot_y.loc[date, tk] = ret
+        if pivot_adv is not None:
+            for tk, adv_val in zip(g["ticker"].values, g["adv"].values):
+                pivot_adv.loc[date, tk] = adv_val
         prev_date_w = row_to_set
     # BT-2 fix: seed warmup_history with TRAIN portfolio returns to avoid
     # 60-bar scale=1.0 warmup at start of every test fold.
@@ -206,13 +246,14 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
         target_vol_ann=0.15, max_abs_weight=0.05,
         dd_window=20, dd_threshold=0.08, dd_cut=0.5,
         warmup_history=warmup)
-    # Phase 3.5: apply realistic execution costs if exec_mod is provided.
+    # Phase 3.5/3.8: apply realistic execution costs if exec_mod is provided.
     exec_mod = tail_kwargs.get('exec_mod') if tail_kwargs else None
     capital = tail_kwargs.get('capital_vnd', 1e9) if tail_kwargs else 1e9
     if exec_mod is not None:
+        adv_matrix = pivot_adv.to_numpy() if pivot_adv is not None else None
         _, port_rets, br = exec_mod.apply_realistic_tc(
             adj_w, pivot_y.to_numpy(),
-            daily_adv=None,  # ADV not yet wired through panel
+            daily_adv=adv_matrix,  # Phase 3.8: real ADV per (date, ticker)
             portfolio_capital_vnd=capital,
         )
         # Stash breakdown in module-level for run_pipeline to log
@@ -223,7 +264,8 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  tickers=None, tail_mod=None, n_alphas=4,
                  exec_mod_param=None, capital_vnd_param=1e9,
                  top_k_param=0, rebal_threshold_param=0.0,
-                 signal_ema_param=0, embargo_pct_param=0.01):
+                 signal_ema_param=0, embargo_pct_param=0.01,
+                 adv_arr=None):
     cpcv = cpcv_mod.CombinatorialPurgedKFold(n_splits=10, n_test_splits=2,
                                               embargo_pct=embargo_pct_param,
                                               label_horizon=label_horizon)
@@ -289,7 +331,8 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         rets = per_date_returns(r["pred"], y[te], dates[te],
                                 tickers_te=tickers[te] if tickers is not None else None,
                                 apply_tail=tail_mod is not None, tail_mod=tail_mod,
-                                tail_kwargs=tail_kwargs)
+                                tail_kwargs=tail_kwargs,
+                                adv_te=adv_arr[te] if adv_arr is not None else None)
         sr = float(np.mean(rets) / np.std(rets, ddof=1)) if (len(rets) > 1 and np.std(rets, ddof=1) > 0) else 0.0
         trial_srs.append(sr)  # P2-1: keep all
         daily_rets.extend(rets.tolist())
@@ -361,11 +404,21 @@ def main():
     feat_df["ticker"] = panel["ticker"].values
     feat_df["date"] = panel["date"].values
     feat_df["target"] = target.values
+    feat_df["adv_vnd"] = panel["adv_vnd"].values if "adv_vnd" in panel.columns else np.nan
     feat_df = feat_df.sort_values(["date", "ticker"]).reset_index(drop=True)
     valid = ~feat_df["target"].isna() & ~feat_df[feat_names].isna().any(axis=1)
     feat_df = feat_df[valid].reset_index(drop=True)
     X = feat_df[feat_names].to_numpy()
     y = feat_df["target"].to_numpy()
+    adv_arr = feat_df["adv_vnd"].to_numpy() if "adv_vnd" in feat_df.columns else None
+    if adv_arr is not None:
+        # Replace NaN ADV with median (warm-up rows lose only a few stocks)
+        if np.isnan(adv_arr).any():
+            med = float(np.nanmedian(adv_arr))
+            adv_arr = np.where(np.isnan(adv_arr), med, adv_arr)
+        logger.info("ADV stats (VND): median=%.2e p10=%.2e p90=%.2e",
+                    float(np.median(adv_arr)), float(np.percentile(adv_arr, 10)),
+                    float(np.percentile(adv_arr, 90)))
     max_per_date = int(feat_df.groupby("date").size().max())
     bar_horizon = 5 * max_per_date  # P1-2 fix
     ts = pd.Series(np.arange(len(y)))
@@ -379,7 +432,8 @@ def main():
                             exec_mod_param=exec_mod, capital_vnd_param=args.capital_vnd,
                             top_k_param=args.top_k, rebal_threshold_param=args.rebal_threshold,
                             signal_ema_param=args.signal_ema,
-                            embargo_pct_param=args.embargo_pct)
+                            embargo_pct_param=args.embargo_pct,
+                            adv_arr=adv_arr if (exec_mod is not None and tickers_arr is not None) else None)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
