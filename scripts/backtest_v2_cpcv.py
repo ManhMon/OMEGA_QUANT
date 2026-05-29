@@ -223,8 +223,10 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  tickers=None, tail_mod=None, n_alphas=4,
                  exec_mod_param=None, capital_vnd_param=1e9,
                  top_k_param=0, rebal_threshold_param=0.0,
-                 signal_ema_param=0):
-    cpcv = cpcv_mod.CombinatorialPurgedKFold(n_splits=10, n_test_splits=2, embargo_pct=0.01, label_horizon=label_horizon)
+                 signal_ema_param=0, embargo_pct_param=0.01):
+    cpcv = cpcv_mod.CombinatorialPurgedKFold(n_splits=10, n_test_splits=2,
+                                              embargo_pct=embargo_pct_param,
+                                              label_horizon=label_horizon)
     folds, daily_rets, trial_srs = [], [], []
     for fid, (tr, te) in enumerate(cpcv.split(ts)):
         X_tr, X_te = X[tr], X[te]
@@ -315,6 +317,7 @@ def main():
     p.add_argument("--label-horizon", type=int, default=5, help="Forward return label horizon in days (default 5)")
     p.add_argument("--signal-ema", type=int, default=0, help="EMA span for prediction smoothing per ticker (0=disabled)")
     p.add_argument("--shuffle-y", action="store_true", help="Falsification test: randomize labels (must produce SR ~ 0 if no leakage)")
+    p.add_argument("--embargo-pct", type=float, default=0.01, help="Embargo as fraction of N (default 0.01); bump to >= bar_horizon/N for AFML compliance")
     p.add_argument("--year-start", type=int, default=2020)
     p.add_argument("--year-end", type=int, default=2024)
     p.add_argument("--out", default=".ly_state/session/phase3_3_v2.json")
@@ -375,7 +378,8 @@ def main():
                             tickers=tickers_arr, tail_mod=tail_mod,
                             exec_mod_param=exec_mod, capital_vnd_param=args.capital_vnd,
                             top_k_param=args.top_k, rebal_threshold_param=args.rebal_threshold,
-                            signal_ema_param=args.signal_ema)
+                            signal_ema_param=args.signal_ema,
+                            embargo_pct_param=args.embargo_pct)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
