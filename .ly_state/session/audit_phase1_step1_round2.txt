@@ -1,0 +1,101 @@
+﻿[L3-Audit:Role21-CodeReviewer] Phase 1 Step 1 - Round 2
+================================================================
+Target: packages/quant/src/omega/quant/universe/feature_computer.py
+Auditor: Code Reviewer (Role 21)
+Date: 2026-05-29
+Scope: Verify L2 fixes for Round 1 findings (H1, H2, M1, M2, M3)
+
+VERDICT: [APPROVED]
+PIT Safety: PASS
+Role Compliance: PASS
+
+----------------------------------------------------------------
+FIX VERIFICATION
+----------------------------------------------------------------
+
+[H1] Dead placeholder line removed -- PASS
+  Volume block now flows cleanly: adv_30d -> vol_surge -> dollar_vol.
+  No orphan/no-op assignment remains. Comment marker confirms intent
+  ("H1: dead placeholder removed").
+
+[H2] Column validation + datetime coercion -- PASS
+  - Validates required = {ticker, date, close, volume} and raises
+    ValueError with sorted missing list (deterministic message).
+  - df = df.copy() prevents caller-side mutation (good defensive copy).
+  - pd.to_datetime(df["date"]) ensures the subsequent
+    df["date"] < as_of_date PIT guard is type-safe regardless of input
+    dtype (str, int epoch, datetime64, etc.).
+  - as_of_date is also normalized via pd.Timestamp(as_of_date), so
+    the comparison operands are consistently typed.
+
+[M1] Single groupby reused -- PASS
+  g = df.groupby("ticker", group_keys=False) is created once after
+  sort_values+reset_index and reused for:
+    g["close"].pct_change x4 (mom_*),
+    g["volume"].transform x2 (adv_30d, vol_surge),
+    g["ret_1d"].transform x2 (vol_20d, vol_60d),
+    g["close"].transform x3 (ma_50, ma_200, high_252d),
+    g["ma_50"].pct_change (ma50_slope),
+    g.tail(1) for latest snapshot.
+  Note: reusing g across newly-added columns is valid because
+  GroupBy holds a reference to df; column lookup is deferred until
+  the indexer is accessed. Confirmed by inspection.
+  liq_rank correctly uses a date-groupby (cross-sectional), not g --
+  semantically required and intentional.
+
+[M2] Vectorized winsorize -- PASS
+  q = result.quantile([0.01, 0.99])
+  result = result.clip(lower=q.loc[0.01], upper=q.loc[0.99], axis=1)
+  Single-pass, no per-column Python loop. q.loc[0.01] / q.loc[0.99]
+  return per-column Series; clip(axis=1) applies bounds column-wise
+  as intended. Correct and efficient.
+
+[M3] Per-column fillna semantics -- PASS
+  _FILL_DEFAULTS dict keyed by every entry in FEATURE_COLS:
+    - momentum/volume/vol/trend/slope -> 0.0 (neutral)
+    - near_52w_high -> 1.0 (at-high, neutral; avoids false negative
+      signal when history is short)
+    - liq_rank -> 0.5 (median rank, neutral)
+  result.fillna(self._FILL_DEFAULTS) replaces blanket fillna(0.0).
+  All FEATURE_COLS keys are covered (15/15); no missing key would
+  cause silent NaN propagation.
+
+----------------------------------------------------------------
+PIT SAFETY (T-1 / no look-ahead) -- PASS
+----------------------------------------------------------------
+  - df[df["date"] < as_of_date] uses strict less-than; as_of_date
+    itself and any future bars are excluded.
+  - All rolling windows operate only on the filtered (pre-cutoff)
+    frame, so no future leakage into mom_*, vol_*, ma_*, high_252d.
+  - liq_rank is computed cross-sectionally on the same filtered
+    frame; ranks reflect only PIT-available adv_30d values.
+  - Latest snapshot via g.tail(1) returns each ticker's most recent
+    pre-cutoff row -- correct PIT semantics.
+
+----------------------------------------------------------------
+ROLE COMPLIANCE -- PASS
+----------------------------------------------------------------
+  - File scope unchanged; only the targeted Round 1 findings were
+    addressed. No drive-by refactors.
+  - FEATURE_COLS contract preserved (15 features, identical names
+    and order).
+  - Public API (compute signature, return shape) unchanged.
+
+----------------------------------------------------------------
+NON-BLOCKING OBSERVATIONS (informational, not required for Phase 1)
+----------------------------------------------------------------
+  N1. .transform(lambda x: x.rolling(...).mean()) is functionally
+      correct; future optimization could use unsorted-aware
+      group-rolling for additional perf. Not required now.
+  N2. result = latest.set_index("ticker")[FEATURE_COLS].copy() is
+      safe; the .copy() prevents SettingWithCopy on subsequent
+      fillna/clip. Good.
+  N3. Logger uses %-style formatting (lazy) -- consistent with
+      stdlib logging best practice.
+
+----------------------------------------------------------------
+FINAL VERDICT: [APPROVED]
+----------------------------------------------------------------
+All five Round 1 findings (H1, H2, M1, M2, M3) are correctly and
+minimally addressed. PIT safety preserved. No regressions in public
+contract. Cleared to advance to Phase 1 Step 2.

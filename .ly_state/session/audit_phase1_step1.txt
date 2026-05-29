@@ -1,0 +1,131 @@
+﻿================================================================
+L3 AUDIT REPORT - Phase 1, Step 1
+Role: 21 (Code Reviewer) | Platform: Codex (L3)
+Scope: Universe Phase 1.2 - Feature & Classifier
+Audited: 2026-05-29
+================================================================
+
+================================================================
+FILE 1: packages/quant/src/omega/quant/universe/feature_computer.py
+VERDICT: [NEEDS_FIX]
+================================================================
+
+PIT Safety:           PASS
+Vectorization:        PASS (no iterrows/itertuples)
+Error Handling:       PARTIAL
+Type Hints:           PASS
+Sklearn API Compat:   N/A (not an estimator)
+
+ISSUES:
+
+[H1] Dead code / placeholder bug (feature_computer.py:71)
+     `df["adv_30d"] = g["close"].transform(lambda x: x.rolling(30, min_periods=1).mean())  # placeholder`
+     This line is immediately overwritten on the next line with the
+     correct volume-based formula. Remove the placeholder line: it
+     wastes compute on every call and signals incomplete cleanup.
+     Action: delete line 71.
+
+[H2] Missing input column validation (feature_computer.py:compute)
+     The method assumes columns ['ticker','date','close','volume']
+     exist. Any missing column raises a bare KeyError mid-pipeline
+     with no actionable message. Add an explicit guard:
+         required = {"ticker","date","close","volume"}
+         missing = required - set(df.columns)
+         if missing: raise ValueError(f"missing columns: {missing}")
+     Also coerce/validate `df["date"]` is datetime-like before the
+     PIT comparison `df["date"] < as_of_date` (string dates would
+     silently misbehave).
+
+[M1] Inconsistent groupby reuse (feature_computer.py:67, 73-110)
+     Line 67 builds `g = df.groupby("ticker", group_keys=False)`
+     and uses it only for momentum. Subsequent feature blocks call
+     `df.groupby("ticker")` ~7 more times, recomputing groups and
+     defeating the cache. Either reuse `g` consistently or drop it.
+
+[M2] Winsorization can be vectorized (feature_computer.py:117-120)
+     The per-column for-loop computes quantiles one column at a
+     time. Replace with a single call:
+         q = result.quantile([0.01, 0.99])
+         result = result.clip(lower=q.loc[0.01], upper=q.loc[0.99], axis=1)
+     This also removes the `lo < hi` edge-case branch (clip is a
+     no-op when bounds collapse).
+
+[M3] Blanket fillna(0.0) is semantically wrong for some features
+     `near_52w_high` is a ratio close to 1.0 in normal regime;
+     filling with 0.0 implies "price is 0% of 52w high" which is
+     a strong negative signal, not a missing-data signal. Consider
+     per-feature defaults or median-fill, or document the choice
+     explicitly. Same concern for `above_ma50/above_ma200`.
+
+[L1] sys.path mutation in a library module (feature_computer.py:12-14)
+     `sys.path.insert(0, str(_ROOT))` inside a packaged library file
+     is an anti-pattern: it mutates global import state on every
+     import and breaks reproducibility under wheels/zipapps. This
+     belongs in a test conftest or CLI entry, not the library.
+
+[L2] Hard-coded epsilon `1e-9` (lines 89, 105)
+     Used to avoid div-by-zero in `vol_ratio` and `near_52w_high`.
+     Acceptable but consider a module-level constant `EPS = 1e-9`
+     for consistency.
+
+[L3] FEATURE_COLS lacks type annotation
+     Minor: `FEATURE_COLS: ClassVar[list[str]] = [...]` would make
+     the class attribute explicit to mypy/pyright.
+
+================================================================
+FILE 2: packages/quant/src/omega/quant/universe/xgb_classifier.py
+VERDICT: [APPROVED]
+================================================================
+
+PIT Safety:           PASS (pure cross-sectional, contract documented)
+Vectorization:        PASS (single batch predict_proba, argpartition)
+Error Handling:       PASS
+Type Hints:           PASS
+Sklearn API Compat:   PASS (XGBoost >= 2.0 early_stopping pattern)
+
+STRENGTHS:
+- Clear PIT contract in module docstring (caller responsibility).
+- `early_stopping_rounds` correctly set via `set_params` only when
+  `eval_set` is provided - matches XGBoost >=2.0 API and avoids
+  early stopping without a validation set.
+- `eval_set` columns are reindexed to training feature order,
+  preserving feature-name consistency.
+- `select_universe` uses np.argpartition (O(n)) + partial sort on
+  top-N only - optimal for large universes.
+- Defensive empty/None handling in fit, predict_proba, select_universe.
+- save/load enforce type check on deserialized object.
+
+NON-BLOCKING SUGGESTIONS (NIT):
+
+[N1] xgb_classifier.py:predict_proba return shape
+     Fallback `proba.ravel()` when shape != (n,2) is defensive but
+     untested. Consider asserting `proba.shape[1] == 2` and raising
+     a clear error if the underlying model was trained on a non-
+     binary target (would catch misuse loudly rather than silently
+     returning wrong scores).
+
+[N2] xgb_classifier.py:select_universe empty-X branch
+     `pd.Index([], name=getattr(X,"index",pd.Index([])).name)` is
+     convoluted. Since the function already early-returns on
+     `X is None or len(X) == 0`, just return `pd.Index([])`.
+
+[N3] xgb_classifier.py:fit
+     `np.asarray(y)` strips the pandas index; if y is a Series
+     aligned to X by index, callers expecting alignment lose it.
+     Document explicitly that y is treated positionally, or use
+     `y.loc[X.index]` when both are pandas.
+
+================================================================
+SUMMARY
+================================================================
+feature_computer.py : [NEEDS_FIX]  (2 high, 3 medium, 3 low)
+xgb_classifier.py   : [APPROVED]   (3 nits, non-blocking)
+
+Phase 1 Step 1 cannot pass gate until feature_computer.py
+addresses [H1] and [H2] at minimum. Recommend L2 author also
+addresses [M1]-[M3] in the same fix cycle to avoid a second
+audit pass.
+
+Auditor: L3 Role 21 (Code Reviewer)
+Session: audit_phase1_step1
+================================================================
