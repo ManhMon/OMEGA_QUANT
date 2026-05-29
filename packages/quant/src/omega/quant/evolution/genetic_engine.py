@@ -180,14 +180,14 @@ class GPNode:
 class GPConfig:
     """Configuration for genetic programming engine."""
     
-    population_size: int = 100
-    generations: int = 30
+    population_size: int = 500
+    generations: int = 50
     max_depth: int = 5
     tournament_size: int = 5
     crossover_rate: float = 0.7
     mutation_rate: float = 0.2
     elitism_count: int = 1
-    hall_of_fame_size: int = 10
+    hall_of_fame_size: int = 20
     diversity_threshold: float = 0.7
     min_observations: int = 1000
     
@@ -197,6 +197,13 @@ class GPConfig:
     binary_ops: List[str] = field(default_factory=lambda: ['+', '-', '*', '/', 'max', 'min'])
     ts_ops: List[str] = field(default_factory=lambda: ['ts_std', 'ts_mean', 'ts_rank', 'decay_linear'])
     ts_windows: List[int] = field(default_factory=lambda: [5, 10, 20])
+    
+    # Multi-target fitness (Phase 2.2)
+    # Forward return horizons (in bars) used for combined IC fitness.
+    # When more than one horizon is provided, evaluate() expects
+    # features['target_h{N}'] for each N and computes a weighted IC.
+    multi_target_horizons: List[int] = field(default_factory=lambda: [5])
+    multi_target_weights: List[float] = field(default_factory=lambda: [1.0])
 
 
 # =============================================================================
@@ -252,8 +259,8 @@ class GPIndividual:
                 self.fitness = -np.inf
                 return
             
-            # Calculate IC (Spearman)
-            ic, _ = spearmanr(combined['alpha'], combined['target'])
+            # Calculate IC (Spearman) — multi-target aware
+            ic = self._compute_combined_ic(alpha_series, target, features, config)
             if np.isnan(ic):
                 ic = 0.0
             
@@ -296,6 +303,56 @@ class GPIndividual:
         except Exception as e:
             logger.debug(f"Fitness evaluation failed: {e}")
             self.fitness = -np.inf
+    
+    def _compute_combined_ic(
+        self,
+        alpha_series: np.ndarray,
+        target: np.ndarray,
+        features: Dict[str, np.ndarray],
+        config: GPConfig
+    ) -> float:
+        """Compute IC, supporting multi-target horizons (Phase 2.2).
+        
+        - Single-horizon (default): Spearman IC vs `target` (back-compat).
+        - Multi-horizon: weighted average of Spearman IC across each
+          features[f'target_h{N}'] for N in config.multi_target_horizons.
+          Falls back to `target` when a horizon key is missing.
+        """
+        horizons = list(getattr(config, 'multi_target_horizons', []) or [])
+        weights = list(getattr(config, 'multi_target_weights', []) or [])
+        
+        # Single-target back-compat path
+        if len(horizons) <= 1:
+            combined = pd.DataFrame({'alpha': alpha_series, 'target': target}).dropna()
+            if len(combined) < 2:
+                return 0.0
+            ic, _ = spearmanr(combined['alpha'], combined['target'])
+            return float(ic) if not np.isnan(ic) else 0.0
+        
+        # Normalize weights (default to equal weights if mismatch)
+        if len(weights) != len(horizons):
+            weights = [1.0] * len(horizons)
+        weight_sum = float(sum(weights))
+        if weight_sum <= 0:
+            return 0.0
+        
+        weighted_ic = 0.0
+        used_weight = 0.0
+        for horizon, weight in zip(horizons, weights):
+            key = f'target_h{horizon}'
+            target_h = features.get(key, target)
+            combined = pd.DataFrame({'alpha': alpha_series, 'target': target_h}).dropna()
+            if len(combined) < 2:
+                continue
+            ic_h, _ = spearmanr(combined['alpha'], combined['target'])
+            if np.isnan(ic_h):
+                continue
+            weighted_ic += float(weight) * float(ic_h)
+            used_weight += float(weight)
+        
+        if used_weight <= 0:
+            return 0.0
+        return weighted_ic / used_weight
     
     def _execute_tree(self, node: GPNode, features: Dict[str, np.ndarray]) -> np.ndarray:
         """Execute expression tree to compute alpha values."""
