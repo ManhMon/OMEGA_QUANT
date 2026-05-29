@@ -7,11 +7,17 @@ PIT-safe: T-1 lag, chronological split, no future data.
 import sys
 import json
 import logging
+import random
 import numpy as np
 import pandas as pd
 from pathlib import Path
 from datetime import datetime
 from scipy.stats import spearmanr
+
+# Set deterministic seeds for reproducibility
+SEED = 42
+random.seed(SEED)
+np.random.seed(SEED)
 
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "packages" / "quant" / "src"))
@@ -54,18 +60,80 @@ def load_and_prepare_data(top_n=30):
     logger.info(f"Data ready: {len(df)} rows, {df['ticker'].nunique()} tickers, {df['date'].min().date()} to {df['date'].max().date()}")
     return df
 
-def compute_metrics(signals, returns):
-    valid = pd.DataFrame({"sig": signals, "ret": returns}).dropna()
+def compute_metrics(signals, returns, dates, fwd_horizon=5, tickers=None):
+    """
+    Cross-sectional metrics. `dates` is required so we can build a daily
+    portfolio return (avg across tickers per date) before annualizing.
+
+    Bug-fix (audit 2026-05-29 Round 1):
+      - Old code treated each ticker-day as an independent observation,
+        inflating Sharpe by ~sqrt(N_tickers).
+      - Correct: positions * ret per ticker-day, then groupby(date).mean()
+        to get the equal-weighted daily portfolio return; Sharpe = mean/std
+        of that daily series * sqrt(252).
+
+    Bug-fix (audit 2026-05-29 Round 2 - Bug 4): Newey-West sqrt(H) correction.
+      - fwd_ret_H is an H-day overlapping forward return: each daily obs
+        contains the same H-day window data H times → autocorrelation →
+        Sharpe inflated by sqrt(H). Divide final Sharpe by sqrt(H) to
+        approximate Newey-West correction for H-day overlap.
+
+    Bug-fix (audit 2026-05-29 Round 2 - Bug 5): cross-sectional median demean.
+      - np.sign(alpha) collapses to all +1 when alpha is uniformly positive
+        (e.g., vol_ratio - 0.999 monotonic positive). Force long/short
+        balance per day by demeaning against the daily cross-sectional
+        median BEFORE sign(): positions = sign(alpha - median(alpha|date)).
+
+    Bug-fix (audit 2026-05-29 Round 4 - P2): per-ticker turnover.
+      - Old code averaged positions across tickers per date BEFORE diff,
+        which after Bug 5 demean collapses to ~0 always (fake zero turnover).
+      - Correct: diff each ticker's position over time, then average
+        |Δpos| across all ticker-day observations.
+      - Backward compatible: if `tickers` is None, falls back to old
+        portfolio-mean turnover (kept for callers that don't have ticker
+        info available).
+    """
+    valid = pd.DataFrame({
+        "sig": np.asarray(signals),
+        "ret": np.asarray(returns),
+        "date": pd.to_datetime(np.asarray(dates)),
+    })
+    if tickers is not None:
+        valid["ticker"] = np.asarray(tickers)
+        valid = valid.dropna(subset=["sig", "ret", "date", "ticker"])
+    else:
+        valid = valid.dropna(subset=["sig", "ret", "date"])
     if len(valid) < 50:
         return {"ic": 0.0, "sharpe": 0.0, "turnover": 0.0, "max_dd": 0.0}
     ic, _ = spearmanr(valid["sig"], valid["ret"])
-    if np.isnan(ic): ic = 0.0
-    positions = np.sign(valid["sig"])
-    strat_ret = positions * valid["ret"]
-    sharpe = (strat_ret.mean() / (strat_ret.std() + 1e-9)) * np.sqrt(252)
-    turnover = positions.diff().abs().mean()
-    cumret = (1 + strat_ret).cumprod()
-    max_dd = ((cumret / cumret.cummax()) - 1).min()
+    if np.isnan(ic):
+        ic = 0.0
+    # Bug 5 fix: cross-sectional median demean before sign() to force L/S balance
+    daily_median = valid.groupby("date")["sig"].transform("median")
+    positions = np.sign(valid["sig"] - daily_median)
+    valid["pos"] = positions.values
+    valid["strat_ret"] = positions.values * valid["ret"].values
+    # Cross-sectional: average across tickers per date FIRST, then annualize
+    daily_ret = valid.groupby("date")["strat_ret"].mean().sort_index()
+    if len(daily_ret) < 2 or daily_ret.std() < 1e-12:
+        sharpe = 0.0
+    else:
+        sharpe_raw = (daily_ret.mean() / (daily_ret.std() + 1e-9)) * np.sqrt(252)
+        # Bug 4 fix: Newey-West sqrt(H) correction for H-day overlapping forward returns
+        sharpe = sharpe_raw / np.sqrt(max(fwd_horizon, 1))
+    # P2 fix: per-ticker turnover (preserves per-ticker signal change info).
+    # When tickers passed: diff each ticker's position over time, then mean |Δpos|.
+    # When not: fall back to old portfolio-mean turnover for backward compat.
+    if tickers is not None:
+        valid_sorted = valid.sort_values(["ticker", "date"])
+        per_ticker_turn = valid_sorted.groupby("ticker")["pos"].diff().abs()
+        turnover = float(per_ticker_turn.mean()) if len(per_ticker_turn) else 0.0
+    else:
+        valid_sorted = valid.sort_values(["date"])
+        daily_mean_pos = valid_sorted.groupby("date")["pos"].mean()
+        turnover = float(daily_mean_pos.diff().abs().mean()) if len(daily_mean_pos) > 1 else 0.0
+    cumret = (1 + daily_ret).cumprod()
+    max_dd = float(((cumret / cumret.cummax()) - 1).min()) if len(cumret) > 0 else 0.0
     return {"ic": round(float(ic), 4), "sharpe": round(float(sharpe), 4),
             "turnover": round(float(turnover), 4), "max_dd": round(float(max_dd), 4)}
 
@@ -84,6 +152,10 @@ def run_walk_forward():
         # Train GP
         features_train = {col: train_df[col].values for col in FEATURE_COLS}
         target_train = train_df["fwd_ret_5"].values
+        # Reset seeds before each year for reproducibility
+        seed_for_year = int(SEED + int(year))
+        random.seed(seed_for_year)
+        np.random.seed(seed_for_year)
         config = GPConfig(population_size=50, generations=10, min_observations=500, max_depth=4)
         engine = GeneticEngine(config)
         try:
@@ -98,24 +170,53 @@ def run_walk_forward():
             logger.warning(f"No alphas evolved for {year}")
             continue
         ensemble_signal = np.zeros(len(test_df))
+        included = 0
         for ind in hof[:top_n]:
             try:
                 alpha = ind._execute_tree(ind.tree, features_test)
                 alpha = np.nan_to_num(alpha, nan=0.0, posinf=0.0, neginf=0.0)
-                ensemble_signal += alpha / top_n
+                # Bug-fix (audit 2026-05-29): reject constant GP signals.
+                # GP frequently converges to a constant, which after np.sign()
+                # collapses to equal-weight long/short and fakes "wins".
+                if np.std(alpha) < 1e-6:
+                    logger.warning(f"  Skipping constant alpha (std={np.std(alpha):.2e})")
+                    continue
+                # P3 fix (audit 2026-05-29 Round 4): tighter sign-balance guard.
+                # std<1e-6 lets through alphas with large std but uniformly
+                # positive sign (e.g., vol_ratio - 0.999). After demean, Bug 5
+                # neutralizes Sharpe but constants still dilute the ensemble
+                # average. Skip alpha if >90% of post-demean values share the
+                # same sign (low information content).
+                demean_alpha = alpha - np.median(alpha)
+                nz = demean_alpha[demean_alpha != 0]
+                if len(nz) >= 10:
+                    sign_balance = float(np.mean(np.sign(nz) > 0))
+                    if abs(sign_balance - 0.5) > 0.4:
+                        logger.warning(
+                            f"  Skipping mono-sign alpha (sign_balance={sign_balance:.2f})"
+                        )
+                        continue
+                ensemble_signal += alpha
+                included += 1
             except Exception:
                 continue
+        if included == 0:
+            logger.warning(f"All {top_n} alphas were constant for {year}; skipping year")
+            continue
+        ensemble_signal /= included
         # Baselines
         test_returns = test_df["fwd_ret_5"].values
-        evo_metrics = compute_metrics(pd.Series(ensemble_signal), pd.Series(test_returns))
-        base_mom = compute_metrics(pd.Series(test_df["mom_20"].values), pd.Series(test_returns))
-        base_ivol = compute_metrics(pd.Series(test_df["inverse_vol"].values), pd.Series(test_returns))
-        base_mr = compute_metrics(pd.Series(test_df["mean_reversion"].values), pd.Series(test_returns))
-        base_ew = compute_metrics(pd.Series(test_df["equal_weight"].values), pd.Series(test_returns))
+        test_dates = test_df["date"].values
+        test_tickers = test_df["ticker"].values
+        evo_metrics = compute_metrics(pd.Series(ensemble_signal), pd.Series(test_returns), pd.Series(test_dates), tickers=pd.Series(test_tickers))
+        base_mom = compute_metrics(pd.Series(test_df["mom_20"].values), pd.Series(test_returns), pd.Series(test_dates), tickers=pd.Series(test_tickers))
+        base_ivol = compute_metrics(pd.Series(test_df["inverse_vol"].values), pd.Series(test_returns), pd.Series(test_dates), tickers=pd.Series(test_tickers))
+        base_mr = compute_metrics(pd.Series(test_df["mean_reversion"].values), pd.Series(test_returns), pd.Series(test_dates), tickers=pd.Series(test_tickers))
+        base_ew = compute_metrics(pd.Series(test_df["equal_weight"].values), pd.Series(test_returns), pd.Series(test_dates), tickers=pd.Series(test_tickers))
         result = {"year": int(year), "evolution": evo_metrics,
                   "baseline_mom20": base_mom, "baseline_inverse_vol": base_ivol,
                   "baseline_mean_reversion": base_mr, "baseline_equal_weight": base_ew,
-                  "alpha_count": int(top_n), "train_size": int(len(train_df)), "test_size": int(len(test_df))}
+                  "alpha_count": int(included), "train_size": int(len(train_df)), "test_size": int(len(test_df))}
         results.append(result)
         logger.info(f"  Evolution:    IC={evo_metrics['ic']:.4f} Sharpe={evo_metrics['sharpe']:.2f}")
         logger.info(f"  Mom20:        IC={base_mom['ic']:.4f} Sharpe={base_mom['sharpe']:.2f}")

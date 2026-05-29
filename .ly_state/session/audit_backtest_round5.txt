@@ -1,0 +1,124 @@
+﻿═══════════════════════════════════════════════════════════════════════════════
+L3 ROLE 21 (CODE REVIEWER) - ROUND 5 AUDIT REPORT
+═══════════════════════════════════════════════════════════════════════════════
+Audit Date: 2026-05-29
+Scope: P2 (per-ticker turnover) + P3 (sign-balance guard) fixes
+Files: scripts/backtest_evolution.py
+       scripts/backtest_evolution_multiseed.py
+       data/backtest/evolution_backtest_results.json
+═══════════════════════════════════════════════════════════════════════════════
+
+[FILE 1] scripts/backtest_evolution.py
+───────────────────────────────────────────────────────────────────────────────
+Verdict: APPROVED
+
+P2 (per-ticker turnover):
+  Implementation at compute_metrics (tickers != None branch):
+    valid_sorted = valid.sort_values(["ticker", "date"])
+    per_ticker_turn = valid_sorted.groupby("ticker")["pos"].diff().abs()
+    turnover = float(per_ticker_turn.mean())
+  ✓ Sorts (ticker, date) → groupby ticker → diff pos → abs → mean.
+  ✓ Mathematically correct: each ticker's |Δposition| over time, averaged
+    across all ticker-day observations. Preserves per-ticker signal change
+    info that was destroyed by old portfolio-mean-then-diff approach.
+  ✓ NaN at the first date per ticker is correctly excluded by .mean()
+    (pandas mean ignores NaN).
+
+P3 (sign-balance guard):
+  Implementation at run_walk_forward inner loop:
+    demean_alpha = alpha - np.median(alpha)
+    nz = demean_alpha[demean_alpha != 0]
+    if len(nz) >= 10:
+        sign_balance = float(np.mean(np.sign(nz) > 0))
+        if abs(sign_balance - 0.5) > 0.4:
+            skip
+  ✓ Threshold 0.4 → rejects alphas where >90% (or <10%) of post-demean
+    values share one sign. Reasonable: leaves room for legitimate skewed
+    signals while catching mono-sign collapse (e.g., vol_ratio - 0.999).
+  ✓ Guards on len(nz) >= 10 to avoid spurious rejection on tiny samples.
+  ✓ Sits AFTER std<1e-6 constant-alpha filter → defense in depth.
+
+Backward compatibility:
+  ✓ Function signature: compute_metrics(..., tickers=None) preserves default.
+  ✓ Else-branch still computes old portfolio-mean turnover.
+  ✓ All in-file callers updated to pass tickers=pd.Series(test_tickers),
+    so the corrected path is exercised in production.
+
+───────────────────────────────────────────────────────────────────────────────
+[FILE 2] scripts/backtest_evolution_multiseed.py
+───────────────────────────────────────────────────────────────────────────────
+Verdict: APPROVED
+
+P2 turnover: identical implementation to File 1 (same per-ticker groupby
+  diff abs mean pattern, same tickers=None fallback). ✓ Consistent.
+
+P3 sign-balance guard: identical 0.4 threshold and post-std<1e-6 ordering
+  inside the per-seed alpha loop. Multi-seed ensemble correctly drops
+  mono-sign alphas BEFORE rank-normalize, so the per-date rank step
+  (Round 2 Bug 6 fix) remains uncontaminated. ✓
+
+Caller wiring: compute_metrics(..., tickers=pd.Series(test_tickers))
+  passed for both evolution_ensemble and baseline_mom20. ✓
+
+───────────────────────────────────────────────────────────────────────────────
+[FILE 3] data/backtest/evolution_backtest_results.json
+───────────────────────────────────────────────────────────────────────────────
+Verdict: APPROVED
+
+Turnover plausibility (10-year mean across all years):
+  Strategy           Reported   Observed (mean)   Range          Sanity
+  ─────────────────────────────────────────────────────────────────────
+  Evolution          ~0.36      ~0.36             0.03–0.65      ✓ varies year
+  InverseVol         ~0.11      ~0.11             0.08–0.13      ✓ slow signal
+  EqualWeight        0.00       0.00              0.00           ✓ const→demean=0
+  MeanReversion      ~0.44      ~0.44             0.41–0.46      ✓ 5d flip
+  Mom20              ~0.22      ~0.22             0.19–0.23      ✓ stable trend
+
+Plausibility checks:
+  ✓ Ordering EqWt(0) < InvVol < Mom20 < Evo < MeanRev matches signal
+    change-rate intuition.
+  ✓ EqualWeight=0 turnover is correct: constant 1.0 signal → demean
+    against daily median (also 1.0) → positions all 0 → diff=0.
+  ✓ MeanReversion=0.44 ≈ 5d-window flip rate, consistent with sign
+    flips on 5-day price reversals.
+  ✓ InverseVol=0.11 reflects slow drift of 20d rolling vol.
+  ✓ Evolution turnover varies (0.03–0.65) reflecting GP alpha diversity
+    year-over-year — no fake zero-turnover artifacts (pre-fix bug).
+
+Sharpe/IC regression vs Round 2:
+  ✓ Sharpe formula unchanged (mean/std * sqrt(252) / sqrt(H)).
+  ✓ Position formula unchanged (sign of cross-sectional median demean).
+  ✓ alpha_count = 5 in every year → P3 filter did not exclude any
+    GP-discovered alpha in this run, confirming P3 acts as a safety
+    net not a blunt instrument. Round 2 Sharpe/IC values are preserved.
+  ✓ Evolution Sharpe still poor (median ~ -0.4) and IC near zero, which
+    is the honest Round 2 finding (GP not adding alpha). No artificial
+    inflation introduced.
+
+═══════════════════════════════════════════════════════════════════════════════
+FINAL CONCLUSION: [APPROVED]
+═══════════════════════════════════════════════════════════════════════════════
+
+Summary of verdicts:
+  scripts/backtest_evolution.py            : APPROVED
+  scripts/backtest_evolution_multiseed.py  : APPROVED
+  data/backtest/evolution_backtest_results.json : APPROVED
+
+All 5 audit criteria PASS:
+  (1) P2 per-ticker turnover: correctly implemented as
+      groupby(ticker)["pos"].diff().abs().mean() after sort_values.
+  (2) Backward compat: tickers=None defaults preserved, fallback path
+      retains old portfolio-mean turnover for legacy callers.
+  (3) P3 sign-balance threshold 0.4 (skip if >90% mono-sign): reasonable,
+      defense-in-depth after std<1e-6 filter.
+  (4) No regression vs Round 2: Sharpe/IC formulas unchanged, alpha_count=5
+      every year confirms P3 is not over-rejecting.
+  (5) Turnover values plausible: EqWt<InvVol<Mom20<Evo<MeanRev ordering
+      correct, magnitudes match signal change-rate expectations.
+
+PIT Safety: PASS (T-1 lag preserved, no future leakage in turnover calc)
+Role Compliance: PASS (Round 4 P2/P3 issues correctly addressed)
+SOD: PASS (L3 audit performed independently from L2 implementation)
+
+Round 5 Audit closed by L3 Role 21 Code Reviewer.
+═══════════════════════════════════════════════════════════════════════════════

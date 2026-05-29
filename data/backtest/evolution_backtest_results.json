@@ -1,0 +1,365 @@
+{
+  "run_date": "2026-05-29T15:12:25.905522",
+  "results": [
+    {
+      "year": 2017,
+      "evolution": {
+        "ic": -0.1122,
+        "sharpe": -2.8162,
+        "turnover": 0.3578,
+        "max_dd": -0.7105
+      },
+      "baseline_mom20": {
+        "ic": -0.0007,
+        "sharpe": 2.0264,
+        "turnover": 0.2193,
+        "max_dd": -0.1293
+      },
+      "baseline_inverse_vol": {
+        "ic": -0.0617,
+        "sharpe": -0.7091,
+        "turnover": 0.1112,
+        "max_dd": -0.2889
+      },
+      "baseline_mean_reversion": {
+        "ic": -0.029,
+        "sharpe": 0.115,
+        "turnover": 0.4394,
+        "max_dd": -0.1746
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 8465,
+      "test_size": 4888
+    },
+    {
+      "year": 2018,
+      "evolution": {
+        "ic": -0.0242,
+        "sharpe": 0.0791,
+        "turnover": 0.0314,
+        "max_dd": -0.1881
+      },
+      "baseline_mom20": {
+        "ic": 0.0176,
+        "sharpe": 0.9213,
+        "turnover": 0.2234,
+        "max_dd": -0.3001
+      },
+      "baseline_inverse_vol": {
+        "ic": -0.0259,
+        "sharpe": 0.8761,
+        "turnover": 0.1238,
+        "max_dd": -0.1606
+      },
+      "baseline_mean_reversion": {
+        "ic": 0.0182,
+        "sharpe": 0.6483,
+        "turnover": 0.4483,
+        "max_dd": -0.1227
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 13353,
+      "test_size": 6393
+    },
+    {
+      "year": 2019,
+      "evolution": {
+        "ic": 0.0282,
+        "sharpe": -0.0908,
+        "turnover": 0.4398,
+        "max_dd": -0.1404
+      },
+      "baseline_mom20": {
+        "ic": -0.0132,
+        "sharpe": 0.0511,
+        "turnover": 0.2313,
+        "max_dd": -0.2595
+      },
+      "baseline_inverse_vol": {
+        "ic": -0.0552,
+        "sharpe": 0.3361,
+        "turnover": 0.1238,
+        "max_dd": -0.16
+      },
+      "baseline_mean_reversion": {
+        "ic": 0.0417,
+        "sharpe": 0.5865,
+        "turnover": 0.4573,
+        "max_dd": -0.1594
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 19746,
+      "test_size": 6742
+    },
+    {
+      "year": 2020,
+      "evolution": {
+        "ic": -0.0346,
+        "sharpe": -2.7378,
+        "turnover": 0.0352,
+        "max_dd": -0.7724
+      },
+      "baseline_mom20": {
+        "ic": 0.1001,
+        "sharpe": 1.3973,
+        "turnover": 0.2434,
+        "max_dd": -0.231
+      },
+      "baseline_inverse_vol": {
+        "ic": 0.0097,
+        "sharpe": -0.7068,
+        "turnover": 0.1257,
+        "max_dd": -0.4119
+      },
+      "baseline_mean_reversion": {
+        "ic": -0.0424,
+        "sharpe": -0.7686,
+        "turnover": 0.4478,
+        "max_dd": -0.3274
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 26488,
+      "test_size": 6789
+    },
+    {
+      "year": 2021,
+      "evolution": {
+        "ic": -0.0202,
+        "sharpe": -0.3458,
+        "turnover": 0.6471,
+        "max_dd": -0.4325
+      },
+      "baseline_mom20": {
+        "ic": -0.03,
+        "sharpe": 2.1863,
+        "turnover": 0.2062,
+        "max_dd": -0.2756
+      },
+      "baseline_inverse_vol": {
+        "ic": -0.1231,
+        "sharpe": -1.9376,
+        "turnover": 0.1294,
+        "max_dd": -0.7604
+      },
+      "baseline_mean_reversion": {
+        "ic": -0.0209,
+        "sharpe": -0.6453,
+        "turnover": 0.4193,
+        "max_dd": -0.4635
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 33277,
+      "test_size": 7079
+    },
+    {
+      "year": 2022,
+      "evolution": {
+        "ic": 0.027,
+        "sharpe": -0.7727,
+        "turnover": 0.3212,
+        "max_dd": -0.4143
+      },
+      "baseline_mom20": {
+        "ic": 0.0076,
+        "sharpe": 0.0748,
+        "turnover": 0.1927,
+        "max_dd": -0.3669
+      },
+      "baseline_inverse_vol": {
+        "ic": -0.1177,
+        "sharpe": 0.7359,
+        "turnover": 0.0957,
+        "max_dd": -0.3686
+      },
+      "baseline_mean_reversion": {
+        "ic": -0.0527,
+        "sharpe": -0.0628,
+        "turnover": 0.4141,
+        "max_dd": -0.3074
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 40356,
+      "test_size": 7221
+    },
+    {
+      "year": 2023,
+      "evolution": {
+        "ic": 0.0025,
+        "sharpe": 1.492,
+        "turnover": 0.6229,
+        "max_dd": -0.1827
+      },
+      "baseline_mom20": {
+        "ic": -0.0753,
+        "sharpe": 0.5393,
+        "turnover": 0.2316,
+        "max_dd": -0.1535
+      },
+      "baseline_inverse_vol": {
+        "ic": -0.0193,
+        "sharpe": -1.4601,
+        "turnover": 0.0762,
+        "max_dd": -0.5377
+      },
+      "baseline_mean_reversion": {
+        "ic": 0.0489,
+        "sharpe": 0.162,
+        "turnover": 0.4549,
+        "max_dd": -0.1756
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 47577,
+      "test_size": 7221
+    },
+    {
+      "year": 2024,
+      "evolution": {
+        "ic": -0.0084,
+        "sharpe": -0.6039,
+        "turnover": 0.4372,
+        "max_dd": -0.1532
+      },
+      "baseline_mom20": {
+        "ic": -0.0757,
+        "sharpe": 1.3897,
+        "turnover": 0.21,
+        "max_dd": -0.0925
+      },
+      "baseline_inverse_vol": {
+        "ic": -0.0083,
+        "sharpe": 1.2393,
+        "turnover": 0.107,
+        "max_dd": -0.0989
+      },
+      "baseline_mean_reversion": {
+        "ic": 0.0015,
+        "sharpe": -0.115,
+        "turnover": 0.4413,
+        "max_dd": -0.1928
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 54798,
+      "test_size": 7176
+    },
+    {
+      "year": 2025,
+      "evolution": {
+        "ic": -0.0219,
+        "sharpe": -0.1667,
+        "turnover": 0.3559,
+        "max_dd": -0.3478
+      },
+      "baseline_mom20": {
+        "ic": -0.0095,
+        "sharpe": 0.0116,
+        "turnover": 0.2218,
+        "max_dd": -0.3713
+      },
+      "baseline_inverse_vol": {
+        "ic": -0.0126,
+        "sharpe": 0.3384,
+        "turnover": 0.1038,
+        "max_dd": -0.293
+      },
+      "baseline_mean_reversion": {
+        "ic": -0.008,
+        "sharpe": -0.2175,
+        "turnover": 0.4416,
+        "max_dd": -0.1861
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 61974,
+      "test_size": 6962
+    },
+    {
+      "year": 2026,
+      "evolution": {
+        "ic": -0.1059,
+        "sharpe": -1.5451,
+        "turnover": 0.3528,
+        "max_dd": -0.2052
+      },
+      "baseline_mom20": {
+        "ic": -0.0674,
+        "sharpe": 1.6103,
+        "turnover": 0.2272,
+        "max_dd": -0.1976
+      },
+      "baseline_inverse_vol": {
+        "ic": -0.0417,
+        "sharpe": -1.5344,
+        "turnover": 0.0874,
+        "max_dd": -0.2204
+      },
+      "baseline_mean_reversion": {
+        "ic": 0.1439,
+        "sharpe": 0.221,
+        "turnover": 0.4591,
+        "max_dd": -0.1555
+      },
+      "baseline_equal_weight": {
+        "ic": 0.0,
+        "sharpe": 0.0,
+        "turnover": 0.0,
+        "max_dd": 0.0
+      },
+      "alpha_count": 5,
+      "train_size": 68936,
+      "test_size": 2305
+    }
+  ]
+}
