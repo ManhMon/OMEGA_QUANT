@@ -101,13 +101,38 @@ def evaluate_fold(X_tr, y_tr, X_te, y_te, alphas=(0.1, 1.0, 10.0, 100.0)):
     test_ic = 0.0 if np.std(pred) < 1e-12 else float(np.corrcoef(pred, y_te)[0, 1])
     return {"ic": test_ic, "pred": pred, "alpha": best_a, "train_cv_ic": best_ic}
 
-def per_date_returns(pred, y_te, dates_te):
-    """P1-1: per-date long-short demedian portfolio."""
+def per_date_returns(pred, y_te, dates_te, tickers_te=None,
+                     apply_tail=False, tail_mod=None):
+    """P1-1: per-date long-short demedian portfolio.
+
+    If apply_tail=True and tail_mod is the tail_controls module,
+    apply 3 tail controls (per-name cap, vol target, DD breaker).
+    """
     if len(pred) == 0:
         return np.array([])
     df = pd.DataFrame({"pred": pred, "y": y_te, "date": dates_te})
-    daily = []
-    for _, g in df.groupby("date"):
+    if tickers_te is not None:
+        df["ticker"] = tickers_te
+
+    if not apply_tail or tail_mod is None or tickers_te is None:
+        # Original aggregated path
+        daily = []
+        for _, g in df.groupby("date"):
+            if len(g) < 2:
+                continue
+            pos = np.sign(g["pred"].values - g["pred"].median())
+            if np.all(pos == 0):
+                continue
+            nl, ns = max(int((pos > 0).sum()), 1), max(int((pos < 0).sum()), 1)
+            w = np.where(pos > 0, 1.0 / nl, np.where(pos < 0, -1.0 / ns, 0.0))
+            daily.append(float(np.sum(w * g["y"].values)))
+        return np.asarray(daily)
+
+    # Tail-control path: build (T x N) weight + return matrices
+    pivot_w = pd.DataFrame(0.0, index=sorted(df["date"].unique()),
+                            columns=sorted(df["ticker"].unique()))
+    pivot_y = pivot_w.copy()
+    for date, g in df.groupby("date"):
         if len(g) < 2:
             continue
         pos = np.sign(g["pred"].values - g["pred"].median())
@@ -115,10 +140,17 @@ def per_date_returns(pred, y_te, dates_te):
             continue
         nl, ns = max(int((pos > 0).sum()), 1), max(int((pos < 0).sum()), 1)
         w = np.where(pos > 0, 1.0 / nl, np.where(pos < 0, -1.0 / ns, 0.0))
-        daily.append(float(np.sum(w * g["y"].values)))
-    return np.asarray(daily)
+        for tk, weight, ret in zip(g["ticker"].values, w, g["y"].values):
+            pivot_w.loc[date, tk] = weight
+            pivot_y.loc[date, tk] = ret
+    _, port_rets = tail_mod.apply_tail_controls(
+        pivot_w, pivot_y.to_numpy(),
+        target_vol_ann=0.15, max_abs_weight=0.05,
+        dd_window=20, dd_threshold=0.08, dd_cut=0.5)
+    return np.asarray(port_rets)
 
-def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon, n_alphas=4):
+def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
+                 tickers=None, tail_mod=None, n_alphas=4):
     cpcv = cpcv_mod.CombinatorialPurgedKFold(n_splits=10, n_test_splits=2, embargo_pct=0.01, label_horizon=label_horizon)
     folds, daily_rets, trial_srs = [], [], []
     for fid, (tr, te) in enumerate(cpcv.split(ts)):
@@ -130,7 +162,9 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon, n_alp
         X_tr = (X_tr - mu) / sd
         X_te = (X_te - mu) / sd
         r = evaluate_fold(X_tr, y[tr], X_te, y[te])
-        rets = per_date_returns(r["pred"], y[te], dates[te])
+        rets = per_date_returns(r["pred"], y[te], dates[te],
+                                tickers_te=tickers[te] if tickers is not None else None,
+                                apply_tail=tail_mod is not None, tail_mod=tail_mod)
         sr = float(np.mean(rets) / np.std(rets, ddof=1)) if (len(rets) > 1 and np.std(rets, ddof=1) > 0) else 0.0
         trial_srs.append(sr)  # P2-1: keep all
         daily_rets.extend(rets.tolist())
@@ -150,6 +184,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--walk-forward", action="store_true", help="Use per-year walk-forward universe (Phase 1.5 v2 fix)")
+    p.add_argument("--tail-controls", action="store_true", help="Apply Phase 3.4 tail controls (vol target + cap + DD breaker)")
     p.add_argument("--year-start", type=int, default=2020)
     p.add_argument("--year-end", type=int, default=2024)
     p.add_argument("--out", default=".ly_state/session/phase3_3_v2.json")
@@ -157,6 +192,7 @@ def main():
     cpcv_mod = _import("_cpcv", "omega/quant/validation/cpcv.py")
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
     feat_mod = _import("_feat", "omega/quant/evolution/feature_adapter.py")
+    tail_mod = _import("_tc", "omega/quant/portfolio/tail_controls.py") if args.tail_controls else None
     if args.walk_forward:
         wf = load_universe_walk_forward(args.year_start, args.year_end)
         if args.smoke:
@@ -188,7 +224,9 @@ def main():
     ts = pd.Series(np.arange(len(y)))
     dates = feat_df["date"].to_numpy()
     logger.info("Drop NaN: %d samples, %d feats, max_per_date=%d, bar_horizon=%d", len(y), X.shape[1], max_per_date, bar_horizon)
-    summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas", label_horizon=bar_horizon)
+    tickers_arr = feat_df["ticker"].to_numpy() if args.tail_controls else None
+    summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
+                            label_horizon=bar_horizon, tickers=tickers_arr, tail_mod=tail_mod)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
