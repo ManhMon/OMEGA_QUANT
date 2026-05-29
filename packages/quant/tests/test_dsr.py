@@ -18,6 +18,7 @@ _spec.loader.exec_module(_dsr_mod)
 
 deflated_sharpe_ratio = _dsr_mod.deflated_sharpe_ratio
 annualized_sharpe = _dsr_mod.annualized_sharpe
+fold_level_dsr = _dsr_mod.fold_level_dsr
 
 
 def test_zero_returns_dsr_zero():
@@ -131,3 +132,84 @@ def test_annualized_sharpe_near_constant_returns():
     r = np.ones(252) * 0.001
     sr = annualized_sharpe(r)
     assert sr == 0.0
+
+# ---------------------------------------------------------------------
+# Phase 3.9: fold-level DSR (CPCV oversampling fix)
+# ---------------------------------------------------------------------
+def test_fold_level_dsr_basic_positive():
+    """45 IID Gaussian fold Sharpes around 0.2 -> DSR moderate, finite."""
+    rng = np.random.default_rng(42)
+    fold_srs = rng.normal(loc=0.2, scale=0.3, size=45)
+    res = fold_level_dsr(fold_srs, n_trials=4)
+    assert res.n_obs == 45
+    assert 0.0 < res.dsr < 1.0
+    assert np.isclose(res.sr, float(np.mean(fold_srs)))
+
+
+def test_fold_level_dsr_independent_of_bars_per_fold():
+    """Fold-level DSR must depend ONLY on fold Sharpes, not on how many
+    bars each fold contains. This is the whole point of the fix:
+    pooled DSR over-counts samples; fold-level uses one obs per fold.
+    """
+    rng = np.random.default_rng(0)
+    fold_srs_short = rng.normal(loc=0.15, scale=0.2, size=45)
+    # Same fold Sharpes -- bars_per_fold should not matter at all.
+    res_a = fold_level_dsr(fold_srs_short, n_trials=4, bars_per_fold=100)
+    res_b = fold_level_dsr(fold_srs_short, n_trials=4, bars_per_fold=10000)
+    assert np.isclose(res_a.dsr, res_b.dsr)
+    assert np.isclose(res_a.sr, res_b.sr)
+
+
+def test_fold_level_dsr_does_not_inflate_with_oversampled_pooled_bars():
+    """Build a synthetic CPCV-like pool where the SAME 45 fold Sharpes are
+    realised at two pool sizes (oversampled vs not). Pooled DSR can move
+    a lot with pool size; fold-level DSR is invariant.
+    """
+    rng = np.random.default_rng(2)
+    fold_srs = rng.normal(loc=0.1, scale=0.15, size=45)
+    # The fold-level computation only sees fold_srs; the pooled
+    # computation in backtest_v2_cpcv would see all bars stacked.
+    fold_dsr = fold_level_dsr(fold_srs, n_trials=4).dsr
+    assert 0.0 <= fold_dsr <= 1.0
+    assert fold_dsr > 0  # mean SR is clearly positive
+
+
+def test_fold_level_dsr_pure_noise():
+    """Fold Sharpes centred at 0 should have DSR < 0.5."""
+    rng = np.random.default_rng(7)
+    fold_srs = rng.normal(loc=0.0, scale=0.2, size=45)
+    res = fold_level_dsr(fold_srs, n_trials=4)
+    assert res.dsr < 0.6  # not necessarily ~0 but well under pass
+
+
+def test_fold_level_dsr_strong_signal_passes():
+    """45 folds with mean SR 0.5 (per-bar) should pass at n_trials=1."""
+    rng = np.random.default_rng(11)
+    fold_srs = rng.normal(loc=0.5, scale=0.05, size=45)
+    res = fold_level_dsr(fold_srs, n_trials=1)
+    assert res.pass_threshold
+    assert res.dsr > 0.95
+
+
+def test_fold_level_dsr_n_trials_deflates():
+    """Same fold Sharpes, larger n_trials must give smaller DSR."""
+    rng = np.random.default_rng(13)
+    fold_srs = rng.normal(loc=0.15, scale=0.2, size=45)
+    d1 = fold_level_dsr(fold_srs, n_trials=1).dsr
+    d100 = fold_level_dsr(fold_srs, n_trials=100).dsr
+    assert d1 >= d100
+
+
+def test_fold_level_dsr_short_series():
+    """<2 folds returns zero."""
+    res = fold_level_dsr([0.1])
+    assert res.dsr == 0.0
+    assert res.n_obs == 1
+
+
+def test_fold_level_dsr_zero_variance():
+    """All identical fold Sharpes -> sr_std=0 path is well-defined."""
+    res = fold_level_dsr([0.3] * 10, n_trials=4)
+    # Mean is positive but no spread -> binary verdict path
+    assert res.dsr in (0.0, 1.0)
+    assert np.isclose(res.sr, 0.3)

@@ -54,7 +54,7 @@ from typing import Optional, Sequence
 import numpy as np
 from scipy.stats import norm, skew
 
-__all__ = ["DSRResult", "deflated_sharpe_ratio", "annualized_sharpe"]
+__all__ = ["DSRResult", "deflated_sharpe_ratio", "annualized_sharpe", "fold_level_dsr"]
 
 EULER = 0.5772156649015329
 
@@ -186,6 +186,122 @@ def deflated_sharpe_ratio(
         expected_max_sr=e_max_sr,
         dsr=dsr,
         n_obs=T,
+        n_trials=n_trials,
+        skew=g3,
+        kurtosis=g4,
+        pass_threshold=dsr >= 0.95,
+    )
+
+
+def fold_level_dsr(
+    fold_sharpes: Sequence[float],
+    n_trials: int = 1,
+    sr_benchmark: float = 0.0,
+    bars_per_fold: int = 252,
+    periods_per_year: int = 252,
+    benchmark_is_annualized: bool = False,
+) -> DSRResult:
+    """Phase 3.9: DSR computed at FOLD level instead of pooled bars.
+
+    Why this exists
+    ---------------
+    With CPCV(N=10, k=2) we generate 45 folds whose test windows OVERLAP
+    on the calendar timeline. Pooling all daily returns into one long
+    array and running ``deflated_sharpe_ratio`` overstates the effective
+    sample size (ESS): 11_142 daily obs that come from a calendar of
+    only ~1260 days = 9x over-sampling. Bailey-LdP eq.(1) assumes IID
+    bar-level returns, so its sigma(SR_hat) understates uncertainty.
+
+    Fold-level DSR fixes this by treating each fold's per-bar Sharpe as
+    one IID observation. There are exactly N_folds samples, no
+    over-sampling. Skew / kurtosis are computed over fold Sharpes, not
+    over daily returns. Selection bias term still uses ``n_trials``
+    (number of alpha hyper-parameters searched).
+
+    Args:
+        fold_sharpes: 1-D array of per-fold per-bar Sharpe ratios. Each
+            element is ``mean(fold_returns) / std(fold_returns)``.
+        n_trials: alpha grid size (or any other tuned hyper-parameter
+            count). Same semantics as ``deflated_sharpe_ratio``.
+        sr_benchmark: SR null hypothesis. Per-bar by default.
+        bars_per_fold: average bars per fold; used to convert per-bar
+            fold Sharpe back to annualized for reporting (default 252,
+            i.e. assume each fold is roughly one trading year).
+        periods_per_year: for annualised reporting.
+        benchmark_is_annualized: if True, divide ``sr_benchmark`` by
+            ``sqrt(periods_per_year)`` before applying.
+
+    Returns:
+        ``DSRResult`` with ``sr`` = mean fold Sharpe (per-bar), ``sr_std``
+        = standard error of that mean using fold-level moments, ``dsr``
+        = Phi((sr - E[max] - bench) / sr_std). ``n_obs`` is the number of
+        FOLDS (not bars), ``skew`` / ``kurtosis`` are computed over fold
+        Sharpes.
+    """
+    fs = np.asarray(list(fold_sharpes), dtype=float)
+    fs = fs[np.isfinite(fs)]
+    n_folds = len(fs)
+    if n_folds < 2:
+        return DSRResult(0, 0, 0, 0, 0.0, n_folds, n_trials, 0, 3, False)
+
+    sr_mean = float(np.mean(fs))
+    sr_var_sample = float(np.var(fs, ddof=1))
+    sr_std_emp = sqrt(sr_var_sample) if sr_var_sample > 0 else 0.0
+    # Treat near-zero spread (catastrophic cancellation) as degenerate.
+    eps = 1e-12 * max(abs(sr_mean), 1.0)
+    if sr_std_emp <= eps:
+        bench_per_bar = (
+            sr_benchmark / sqrt(periods_per_year)
+            if benchmark_is_annualized
+            else sr_benchmark
+        )
+        return DSRResult(
+            sr=sr_mean,
+            sr_annualized=sr_mean * sqrt(periods_per_year),
+            sr_std=0.0,
+            expected_max_sr=0.0,
+            dsr=1.0 if sr_mean > bench_per_bar else 0.0,
+            n_obs=n_folds,
+            n_trials=n_trials,
+            skew=0.0,
+            kurtosis=3.0,
+            pass_threshold=False,
+        )
+
+    g3 = float(skew(fs, bias=False))
+    from scipy.stats import kurtosis as _kurt
+    g4 = float(_kurt(fs, fisher=False, bias=False))
+
+    # Bailey-LdP eq.(1) at fold level: T = n_folds, sr = sr_mean.
+    # Numerator term uses fold-level skew / kurtosis, not bar-level.
+    sr_var_estim = (
+        1 - g3 * sr_mean + (g4 - 1) / 4.0 * sr_mean * sr_mean
+    ) / (n_folds - 1)
+    sr_std = sqrt(max(sr_var_estim, 0.0))
+
+    # Selection bias term: variance of trial Sharpes is the spread
+    # across folds (already empirical V).
+    e_max_sr = _expected_max_sharpe(n_trials, sr_var_sample)
+
+    bench_per_bar = (
+        sr_benchmark / sqrt(periods_per_year)
+        if benchmark_is_annualized
+        else sr_benchmark
+    )
+
+    if sr_std == 0:
+        dsr = 1.0 if sr_mean > e_max_sr + bench_per_bar else 0.0
+    else:
+        z = (sr_mean - e_max_sr - bench_per_bar) / sr_std
+        dsr = float(norm.cdf(z))
+
+    return DSRResult(
+        sr=sr_mean,
+        sr_annualized=sr_mean * sqrt(periods_per_year),
+        sr_std=sr_std,
+        expected_max_sr=e_max_sr,
+        dsr=dsr,
+        n_obs=n_folds,
         n_trials=n_trials,
         skew=g3,
         kurtosis=g4,

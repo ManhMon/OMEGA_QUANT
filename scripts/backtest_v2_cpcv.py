@@ -339,13 +339,36 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         folds.append({"fold": fid, "test_ic": r["ic"], "train_cv_ic": r["train_cv_ic"], "fold_sr": sr, "n_daily": int(len(rets)), "alpha": r["alpha"]})
     # P0-2: n_trials = SEARCH dim
     dsr = dsr_mod.deflated_sharpe_ratio(np.asarray(daily_rets), n_trials=n_alphas, trial_sharpes=trial_srs, periods_per_year=252)
+    # Phase 3.9: fold-level DSR (CPCV oversampling fix). Treats each
+    # fold's per-bar Sharpe as one IID observation, avoiding the 9x
+    # over-counting in pooled daily returns.
+    fold_dsr_res = dsr_mod.fold_level_dsr(
+        trial_srs, n_trials=n_alphas, periods_per_year=252
+    ) if len(trial_srs) >= 2 else None
     s = {"label": label, "n_features": int(X.shape[1]), "n_samples": int(len(y)), "n_folds": len(folds), "n_daily": int(len(daily_rets)), "n_trials_dsr": n_alphas,
          "median_test_ic": float(np.median([f["test_ic"] for f in folds])),
          "median_train_cv_ic": float(np.median([f["train_cv_ic"] for f in folds])),
          "median_fold_sr": float(np.median([f["fold_sr"] for f in folds])),
          "dsr_sharpe": dsr.sr, "dsr_sr_ann": dsr.sr_annualized, "dsr": dsr.dsr, "pass": dsr.pass_threshold,
          "skew": dsr.skew, "kurt": dsr.kurtosis, "folds": folds}
+    if fold_dsr_res is not None:
+        s["fold_dsr"] = {
+            "sr_mean_per_bar": fold_dsr_res.sr,
+            "sr_mean_annualized": fold_dsr_res.sr_annualized,
+            "sr_std_estim": fold_dsr_res.sr_std,
+            "expected_max_sr": fold_dsr_res.expected_max_sr,
+            "dsr": fold_dsr_res.dsr,
+            "pass": fold_dsr_res.pass_threshold,
+            "n_folds": fold_dsr_res.n_obs,
+            "skew": fold_dsr_res.skew,
+            "kurt": fold_dsr_res.kurtosis,
+        }
     logger.info("[%s] folds=%d med_test_IC=%.4f med_train_IC=%.4f med_SR=%.4f DSR=%.3f n_daily=%d", label, len(folds), s["median_test_ic"], s["median_train_cv_ic"], s["median_fold_sr"], dsr.dsr, len(daily_rets))
+    if fold_dsr_res is not None:
+        logger.info("[%s] FOLD-DSR=%.3f sr_mean=%.4f (ann %.3f) sr_std=%.4f e_max=%.4f",
+                    label, fold_dsr_res.dsr, fold_dsr_res.sr,
+                    fold_dsr_res.sr_annualized, fold_dsr_res.sr_std,
+                    fold_dsr_res.expected_max_sr)
     return s
 
 def main():
