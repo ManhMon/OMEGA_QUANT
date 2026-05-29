@@ -492,6 +492,18 @@
     "l2_completed": true,
     "final_verdict": "[APPROVED]"
   },
+  "phase_3_10_p1_hardening": {
+    "phase_name": "phase_3_10_p1_hardening",
+    "l2_session_id": "l2-ly-direct-20260530-phase310",
+    "l2_completed": true,
+    "l3_session_id": "019e7609-bcdd-78c0-97a6-e03371a70830",
+    "l3_session_key": "codex:role21:phase3_10-p1-hardening:20260530T062010+0700",
+    "audit_report_path": ".ly_state/session/phase3_10_l3_audit_codex.md",
+    "final_verdict": "[APPROVED]",
+    "timestamp": "2026-05-30T06:23:00+07:00",
+    "status": "APPROVED",
+    "notes": "Codex CLI audit ~3min, multi-file read + pytest 9/9 + cross-check JSON. 3 P2 findings: bootstrap PIT (fixed: zero-fill instead of first-valid), prev_w_dict dead-code clarity (fixed: comment updated), pre-existing test collection errors (deferred). 30/30 own tests PASS. Zero delta vs Phase 3.9 (defensive change). Codex Rule 9.1 stdin pipe."
+  },
   "phase_3_9_fold_level_dsr": {
     "phase_name": "phase_3_9_fold_level_dsr",
     "l2_session_id": "l2-ly-direct-20260530-phase39",
