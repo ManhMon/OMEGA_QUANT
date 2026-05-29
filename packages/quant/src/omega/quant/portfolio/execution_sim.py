@@ -48,6 +48,7 @@ def apply_realistic_tc(
     daily_adv: np.ndarray | None = None,
     portfolio_capital_vnd: float = 1e9,
     cost_model: VNCostModel | None = None,
+    prev_w_init: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, np.ndarray, dict]:
     """Subtract realistic VN costs from gross returns bar-by-bar.
 
@@ -59,6 +60,12 @@ def apply_realistic_tc(
         portfolio_capital_vnd: assumed AUM (default 1B VND retail). Larger
             capital -> more impact on illiquid names.
         cost_model: VNCostModel instance (default DEFAULT_VN_COSTS).
+        prev_w_init: optional starting weights for the first bar of this
+            call. Default None -> all zeros (cold-start = full open-from-
+            cash turnover on bar 0). When chaining CPCV folds, callers
+            should pass the last bar's adjusted weights from the prior
+            fold to avoid charging a synthetic open-from-cash cost on
+            every fold (Phase 3.10 P1 fix).
 
     Returns:
         adj_weights: same shape (after foreign room enforcement)
@@ -81,7 +88,14 @@ def apply_realistic_tc(
     total_slippage = 0.0
     total_turnover = 0.0
 
-    prev_w = np.zeros(N)
+    if prev_w_init is None:
+        prev_w = np.zeros(N)
+    else:
+        if prev_w_init.shape != (N,):
+            raise ValueError(
+                f"prev_w_init shape {prev_w_init.shape} != expected ({N},)"
+            )
+        prev_w = prev_w_init.astype(float, copy=True)
     for t in range(T):
         w_t = weights[t]
         delta_w = w_t - prev_w
@@ -127,5 +141,6 @@ def apply_realistic_tc(
         "total_cost": float(total_commission + total_spread + total_slippage),
         "avg_cost_per_bar_bps": float(10000 * (total_commission + total_spread + total_slippage) / T),
         "capital_vnd": portfolio_capital_vnd,
+        "final_w": prev_w.copy(),
     }
     return daily_weights, net_returns, breakdown

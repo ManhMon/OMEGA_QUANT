@@ -84,3 +84,81 @@ def test_returns_drop_after_costs():
     gross = np.array([float(np.sum(w.iloc[t] * y[t])) for t in range(T)])
     _, net, br = apply_realistic_tc(w, y)
     assert np.sum(net) < np.sum(gross), "Net should be < gross after costs"
+
+# ---------------------------------------------------------------------
+# Phase 3.10 P1 fix: prev_w_init carry-over
+# ---------------------------------------------------------------------
+def test_final_w_returned_in_breakdown():
+    """breakdown must expose final weights for fold-to-fold carry."""
+    T, N = 20, 4
+    w = pd.DataFrame(np.full((T, N), 0.05))
+    y = np.zeros((T, N))
+    _, _, br = apply_realistic_tc(w, y)
+    assert "final_w" in br
+    final_w = br["final_w"]
+    assert final_w.shape == (N,)
+    np.testing.assert_allclose(final_w, w.iloc[-1].to_numpy())
+
+
+def test_prev_w_init_avoids_open_from_cash_cost():
+    """Passing prev_w_init = first bar weights should drop bar-0
+    open-from-cash turnover to zero."""
+    T, N = 30, 5
+    w = pd.DataFrame(np.full((T, N), 0.05))
+    y = np.zeros((T, N))
+    _, _, cold = apply_realistic_tc(w, y)
+    _, _, warm = apply_realistic_tc(
+        w, y, prev_w_init=w.iloc[0].to_numpy()
+    )
+    # Cold start trades from 0 -> 0.05 on every name in bar 0; warm start
+    # has no first-bar turnover.
+    assert cold["total_turnover"] > warm["total_turnover"]
+    # Difference should be exactly the bar-0 turnover.
+    bar0_turnover = float(np.abs(w.iloc[0]).sum())
+    np.testing.assert_allclose(
+        cold["total_turnover"] - warm["total_turnover"], bar0_turnover
+    )
+
+
+def test_prev_w_init_shape_validation():
+    """Mismatched prev_w_init shape must raise."""
+    T, N = 5, 4
+    w = pd.DataFrame(np.full((T, N), 0.05))
+    y = np.zeros((T, N))
+    bad_prev = np.zeros(N + 1)
+    try:
+        apply_realistic_tc(w, y, prev_w_init=bad_prev)
+    except ValueError as exc:
+        assert "prev_w_init shape" in str(exc)
+        return
+    raise AssertionError("Expected ValueError for bad prev_w_init shape")
+
+
+def test_chaining_two_calls_matches_single_long_call():
+    """Splitting a path into two calls with prev_w_init carry should
+    match running it as one call (commission/spread are linear in turnover
+    so cumulative costs equal modulo bar-0 cold-start)."""
+    T_total, N = 20, 4
+    rng = np.random.default_rng(7)
+    w_full = pd.DataFrame(rng.normal(0, 0.04, (T_total, N)))
+    y = np.zeros((T_total, N))
+
+    _, _, br_full = apply_realistic_tc(w_full, y)
+    half = T_total // 2
+    _, _, br_a = apply_realistic_tc(w_full.iloc[:half].reset_index(drop=True), y[:half])
+    _, _, br_b = apply_realistic_tc(
+        w_full.iloc[half:].reset_index(drop=True),
+        y[half:],
+        prev_w_init=br_a["final_w"],
+    )
+    np.testing.assert_allclose(
+        br_full["total_turnover"], br_a["total_turnover"] + br_b["total_turnover"]
+    )
+    np.testing.assert_allclose(
+        br_full["total_commission_cost"],
+        br_a["total_commission_cost"] + br_b["total_commission_cost"],
+    )
+    np.testing.assert_allclose(
+        br_full["total_spread_cost"],
+        br_a["total_spread_cost"] + br_b["total_spread_cost"],
+    )

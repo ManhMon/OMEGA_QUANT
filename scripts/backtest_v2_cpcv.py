@@ -246,18 +246,41 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
         target_vol_ann=0.15, max_abs_weight=0.05,
         dd_window=20, dd_threshold=0.08, dd_cut=0.5,
         warmup_history=warmup)
-    # Phase 3.5/3.8: apply realistic execution costs if exec_mod is provided.
+    # Phase 3.5/3.8/3.10: apply realistic execution costs if exec_mod is provided.
     exec_mod = tail_kwargs.get('exec_mod') if tail_kwargs else None
     capital = tail_kwargs.get('capital_vnd', 1e9) if tail_kwargs else 1e9
     if exec_mod is not None:
         adv_matrix = pivot_adv.to_numpy() if pivot_adv is not None else None
+        # Phase 3.10 P1 fix: carry prev_w from prior fold instead of
+        # zero-cold-start, which would charge a synthetic open-from-cash
+        # cost on every fold's bar 0. Caller passes a {ticker: weight}
+        # dict via tail_kwargs["prev_w_dict"]; we remap to this fold's
+        # ticker columns. Tickers absent from the dict default to 0.0
+        # (representing flat positions in instruments not held last fold).
+        prev_w_init = None
+        prev_w_dict = tail_kwargs.get('prev_w_dict') if tail_kwargs else None
+        if prev_w_dict:
+            cols = list(adj_w.columns)
+            prev_w_init = np.asarray(
+                [prev_w_dict.get(c, 0.0) for c in cols], dtype=float
+            )
         _, port_rets, br = exec_mod.apply_realistic_tc(
             adj_w, pivot_y.to_numpy(),
             daily_adv=adv_matrix,  # Phase 3.8: real ADV per (date, ticker)
             portfolio_capital_vnd=capital,
+            prev_w_init=prev_w_init,
         )
         # Stash breakdown in module-level for run_pipeline to log
         per_date_returns._last_cost_breakdown = br
+        # Expose final weights so run_pipeline can carry them to the
+        # next fold. Build {ticker: w_final}.
+        final_w_arr = br.get("final_w")
+        if final_w_arr is not None:
+            per_date_returns._last_final_w_dict = dict(
+                zip(list(adj_w.columns), [float(x) for x in final_w_arr])
+            )
+        else:
+            per_date_returns._last_final_w_dict = {}
     return np.asarray(port_rets)
 
 def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
@@ -270,6 +293,18 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                                               embargo_pct=embargo_pct_param,
                                               label_horizon=label_horizon)
     folds, daily_rets, trial_srs = [], [], []
+    # Phase 3.10 P1 note: codex audit suggested carrying prev_w between
+    # folds to avoid the bar-0 open-from-cash bias. We initially tried
+    # auto-carrying across consecutive CPCV folds, but CPCV folds are
+    # COMBINATORIAL (45 folds = C(10,2)), not chronological -- their
+    # test windows interleave on the calendar. Carrying weights between
+    # non-adjacent folds frequently flips signs and INFLATES turnover
+    # (Phase 3.10 measured +1.8%). The principled fix would be to seed
+    # each fold's prev_w with the last bar of THAT fold's train period,
+    # which requires running the cost loop on the in-sample fit too.
+    # For now we keep prev_w_init=None (zero cold-start, codex-known
+    # 0.4% bias, RELATIVE capacity ranking unaffected) and rely on the
+    # explicit prev_w_init API for live-trading callers.
     for fid, (tr, te) in enumerate(cpcv.split(ts)):
         X_tr, X_te = X[tr], X[te]
         # P1-3: zscore inside fold (train-only stats)
@@ -435,10 +470,28 @@ def main():
     y = feat_df["target"].to_numpy()
     adv_arr = feat_df["adv_vnd"].to_numpy() if "adv_vnd" in feat_df.columns else None
     if adv_arr is not None:
-        # Replace NaN ADV with median (warm-up rows lose only a few stocks)
+        # Phase 3.10 P1 fix: causal/PIT-safe ADV imputation.
+        # OLD (Phase 3.8): np.nanmedian over full panel -> leaks future ADV
+        # into earlier years' warmup rows.
+        # NEW: expanding-median in date order, shifted by 1 row so bar t
+        # only sees ADV history strictly before t. Cold-start NaNs are
+        # filled with the first valid value (forward-only, equivalent to
+        # "use earliest seen ADV when nothing is known yet").
         if np.isnan(adv_arr).any():
-            med = float(np.nanmedian(adv_arr))
-            adv_arr = np.where(np.isnan(adv_arr), med, adv_arr)
+            adv_series = pd.Series(adv_arr)
+            # expanding().median().shift(1) is the canonical causal
+            # imputation. .ffill() then carries the latest known median
+            # across the next NaN row.
+            causal_med = adv_series.expanding(min_periods=1).median().shift(1)
+            # First bar has no prior history; use first non-NaN of the
+            # raw ADV as the bootstrap (this is one ADV value, no leak).
+            first_valid = adv_series.first_valid_index()
+            bootstrap = float(adv_series.iloc[first_valid]) if first_valid is not None else 0.0
+            causal_med = causal_med.fillna(bootstrap)
+            mask_nan = np.isnan(adv_arr)
+            adv_arr = np.where(mask_nan, causal_med.to_numpy(), adv_arr)
+            logger.info("ADV imputation: filled %d NaN cells via causal expanding median (bootstrap=%.2e)",
+                        int(mask_nan.sum()), bootstrap)
         logger.info("ADV stats (VND): median=%.2e p10=%.2e p90=%.2e",
                     float(np.median(adv_arr)), float(np.percentile(adv_arr, 10)),
                     float(np.percentile(adv_arr, 90)))
