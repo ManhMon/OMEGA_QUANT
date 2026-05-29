@@ -130,21 +130,74 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
             daily.append(float(np.sum(w * g["y"].values)))
         return np.asarray(daily)
 
-    # Tail-control path: build (T x N) weight + return matrices
+    # Tail-control path: build (T x N) weight + return matrices.
     pivot_w = pd.DataFrame(0.0, index=sorted(df["date"].unique()),
                             columns=sorted(df["ticker"].unique()))
     pivot_y = pivot_w.copy()
-    for date, g in df.groupby("date"):
+
+    # Phase 3.6 knobs (passed via tail_kwargs).
+    top_k = (tail_kwargs or {}).get('top_k', 0)
+    rebal_threshold = (tail_kwargs or {}).get('rebal_threshold', 0.0)
+
+    prev_date_w = None
+    sorted_dates = sorted(df["date"].unique())
+    for date in sorted_dates:
+        g = df[df["date"] == date]
         if len(g) < 2:
+            if prev_date_w is not None:
+                # Sticky: copy previous weights when we cannot rebalance
+                pivot_w.loc[date] = prev_date_w
+            for tk, ret in zip(g["ticker"].values, g["y"].values):
+                pivot_y.loc[date, tk] = ret
             continue
-        pos = np.sign(g["pred"].values - g["pred"].median())
-        if np.all(pos == 0):
-            continue
-        nl, ns = max(int((pos > 0).sum()), 1), max(int((pos < 0).sum()), 1)
-        w = np.where(pos > 0, 1.0 / nl, np.where(pos < 0, -1.0 / ns, 0.0))
-        for tk, weight, ret in zip(g["ticker"].values, w, g["y"].values):
-            pivot_w.loc[date, tk] = weight
+
+        if top_k > 0:
+            # Sparse: top-K long, bottom-K short, equal weight, others zero
+            ranked = g.sort_values("pred", ascending=False)
+            n = len(ranked)
+            k_eff = min(top_k, n // 2)
+            longs = ranked.head(k_eff)["ticker"].tolist()
+            shorts = ranked.tail(k_eff)["ticker"].tolist()
+            w_dict = {}
+            for tk in longs:
+                w_dict[tk] = 1.0 / k_eff
+            for tk in shorts:
+                w_dict[tk] = -1.0 / k_eff
+        else:
+            # Full demedian
+            pos = np.sign(g["pred"].values - g["pred"].median())
+            if np.all(pos == 0):
+                if prev_date_w is not None:
+                    pivot_w.loc[date] = prev_date_w
+                continue
+            nl = max(int((pos > 0).sum()), 1)
+            ns = max(int((pos < 0).sum()), 1)
+            w_arr = np.where(pos > 0, 1.0 / nl, np.where(pos < 0, -1.0 / ns, 0.0))
+            w_dict = dict(zip(g["ticker"].values, w_arr))
+
+        # Threshold rebalance: stick with previous weights if change is small
+        if prev_date_w is not None and rebal_threshold > 0:
+            new_row = pd.Series(0.0, index=pivot_w.columns)
+            for tk, wt in w_dict.items():
+                if tk in new_row.index:
+                    new_row[tk] = wt
+            delta = (new_row - prev_date_w).abs().sum()
+            if delta < rebal_threshold:
+                pivot_w.loc[date] = prev_date_w
+                for tk, ret in zip(g["ticker"].values, g["y"].values):
+                    pivot_y.loc[date, tk] = ret
+                continue
+            row_to_set = new_row
+        else:
+            row_to_set = pd.Series(0.0, index=pivot_w.columns)
+            for tk, wt in w_dict.items():
+                if tk in row_to_set.index:
+                    row_to_set[tk] = wt
+
+        pivot_w.loc[date] = row_to_set
+        for tk, ret in zip(g["ticker"].values, g["y"].values):
             pivot_y.loc[date, tk] = ret
+        prev_date_w = row_to_set
     # BT-2 fix: seed warmup_history with TRAIN portfolio returns to avoid
     # 60-bar scale=1.0 warmup at start of every test fold.
     warmup = tail_kwargs.get('train_pre_lev_history') if tail_kwargs else None
@@ -168,7 +221,8 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
 
 def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  tickers=None, tail_mod=None, n_alphas=4,
-                 exec_mod_param=None, capital_vnd_param=1e9):
+                 exec_mod_param=None, capital_vnd_param=1e9,
+                 top_k_param=0, rebal_threshold_param=0.0):
     cpcv = cpcv_mod.CombinatorialPurgedKFold(n_splits=10, n_test_splits=2, embargo_pct=0.01, label_horizon=label_horizon)
     folds, daily_rets, trial_srs = [], [], []
     for fid, (tr, te) in enumerate(cpcv.split(ts)):
@@ -205,6 +259,10 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         if exec_mod_param is not None:
             tail_kwargs["exec_mod"] = exec_mod_param
             tail_kwargs["capital_vnd"] = capital_vnd_param
+        if top_k_param > 0:
+            tail_kwargs["top_k"] = top_k_param
+        if rebal_threshold_param > 0:
+            tail_kwargs["rebal_threshold"] = rebal_threshold_param
         if not tail_kwargs:
             tail_kwargs = None
         rets = per_date_returns(r["pred"], y[te], dates[te],
@@ -233,6 +291,8 @@ def main():
     p.add_argument("--tail-controls", action="store_true", help="Apply Phase 3.4 tail controls (vol target + cap + DD breaker)")
     p.add_argument("--realistic-tc", action="store_true", help="Apply Phase 3.5 realistic VN execution costs (commission + spread + slippage)")
     p.add_argument("--capital-vnd", type=float, default=1e9, help="Portfolio capital VND for slippage scaling (default 1B)")
+    p.add_argument("--top-k", type=int, default=0, help="Sparse positions: long top-K, short bottom-K (0 = full demedian)")
+    p.add_argument("--rebal-threshold", type=float, default=0.0, help="Rebalance only when sum |delta_w| > threshold (0 = always)")
     p.add_argument("--year-start", type=int, default=2020)
     p.add_argument("--year-end", type=int, default=2024)
     p.add_argument("--out", default=".ly_state/session/phase3_3_v2.json")
@@ -276,7 +336,8 @@ def main():
     tickers_arr = feat_df["ticker"].to_numpy() if args.tail_controls else None
     summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
                             label_horizon=bar_horizon, tickers=tickers_arr, tail_mod=tail_mod,
-                            exec_mod_param=exec_mod, capital_vnd_param=args.capital_vnd)
+                            exec_mod_param=exec_mod, capital_vnd_param=args.capital_vnd,
+                            top_k_param=args.top_k, rebal_threshold_param=args.rebal_threshold)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
