@@ -64,6 +64,45 @@ Want a sharper version? See [SOUL.md Personality Guide](/concepts/soul).
 >      * Codex viết file → CẤM (trừ khi <500 bytes & critical)
 >      * Ly write tool → preferred cho mọi report/artifact
 
+> **9. 🔴 CODEX CLI INVOCATION RULES (BẮT BUỘC - LESSONS LEARNED 2026-05-30):**
+>    Phiên 2026-05-30 04:42-04:48 GMT+7 có 3 lần codex bị NGHI LÀ stuck nhưng thực ra do Ly invoke sai. Rollout file `~/.codex/sessions/<date>/rollout-*.jsonl` xác nhận codex vẫn reasoning + tool-call bình thường. Quy tắc bắt buộc:
+>
+>    **9.1 PROMPT DELIVERY**:
+>    - **CẤM**: Truyền multi-line prompt qua PowerShell `-ArgumentList @("exec", $prompt)` → PowerShell parse newline thành multiple args → `error: unexpected argument`.
+>    - **ĐÚNG #1 (preferred)**: Lưu prompt vào file → pipe qua stdin với arg cuối là `-`:
+>      ```
+>      cmd /c "type .ly_state\session\<phase>_codex_prompt.txt | C:\Users\GHC\AppData\Roaming\npm\codex.cmd exec --dangerously-bypass-approvals-and-sandbox - > <stdout> 2> <stderr>"
+>      ```
+>    - **ĐÚNG #2**: Single-line prompt làm 1 string argument:
+>      ```
+>      codex exec --dangerously-bypass-approvals-and-sandbox "[L3-Audit:Role21] Read X. Verify Y. Print VERDICT: ..."
+>      ```
+>
+>    **9.2 BACKGROUND EXECUTION VIA OPENCLAW**:
+>    - **CẤM**: `Start-Process -RedirectStandardOutput` rồi `Get-Process -Id <pid_launcher>`. Launcher exit ngay → Ly nhầm tưởng "DONE" trong khi codex.exe child vẫn reasoning. File redirect chỉ flush khi process tree hoàn toàn exit (Windows pipe buffer).
+>    - **ĐÚNG**: Dùng `exec(background:true, yieldMs:5000)` của OpenClaw → tự bind sessionId, dùng `process(action:poll, sessionId, timeout:30000)` để chờ event push. Stdout/stderr OpenClaw capture qua named pipe, đọc được realtime.
+>
+>    **9.3 PROGRESS DETECTION (KHÔNG kết luận "stuck" qua stdout file size)**:
+>    - **CẤM**: Coi `(Get-Item stdout.txt).Length == 0` là dấu hiệu stuck. Codex chỉ in `VERDICT: ...` ở cuối turn, output buffer không streaming qua file redirect giữa chừng.
+>    - **ĐÚNG**: Đọc rollout JSONL realtime — codex stream từng event:
+>      ```
+>      $latest = Get-ChildItem ~\.codex\sessions -Recurse -File | Sort-Object LastWriteTime -Desc | Select -First 1
+>      Get-Content $latest.FullName -Tail 5
+>      ```
+>      Mỗi `agent_reasoning`, `function_call`, `function_call_output` event có `timestamp`. Nếu **30s không có event mới** + **CPU delta < 0.5s** → mới là stuck thật, được phép kill.
+>
+>    **9.4 TIMEOUT BUDGET**:
+>    - Audit task ≤ 6 file: chờ tối thiểu 60s
+>    - Audit task 6-15 file: chờ tối thiểu 120s
+>    - Audit task > 15 file hoặc có pytest: chờ tối thiểu 180s
+>    - Trước hạn này, KHÔNG được kill codex nếu rollout vẫn có event mới.
+>
+>    **9.5 KILL CHILD ĐÚNG**:
+>    - Stop launcher (Start-Process pid) KHÔNG kill được codex.exe child.
+>    - Kill đúng: `Get-WmiObject Win32_Process -Filter "Name='codex.exe'"` rồi Stop-Process từng id, hoặc kill cả tree qua `Stop-Process -Id <pid> -Force` với pid lấy từ rollout filename hoặc parent cmd.exe.
+>
+>    **Hậu quả nếu vi phạm**: Audit không có chữ ký Codex thật → gate INVALID → fallback Python audit chỉ là evidence dự phòng, không thay thế được L3 SOD chính thức.
+
 **🔴 GATE CONTRACT (HARD STOP RULE - BẮT BUỘC):**
 > **KHI GHI GATE [APPROVED], LY PHẢI XÁC MINH CÓ ĐỦ 3 TRƯỜNG TỪ L3: `l3_session_id`, `l3_session_key`, VÀ `audit_report_path`.**
 > **NẾU THIẾU BẤT KỲ TRƯỜNG NÀO → AUTO REJECT GATE VÀ GHI `PENDING_AUDIT`.**
