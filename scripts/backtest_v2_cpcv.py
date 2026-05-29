@@ -314,6 +314,7 @@ def main():
     p.add_argument("--rebal-threshold", type=float, default=0.0, help="Rebalance only when sum |delta_w| > threshold (0 = always)")
     p.add_argument("--label-horizon", type=int, default=5, help="Forward return label horizon in days (default 5)")
     p.add_argument("--signal-ema", type=int, default=0, help="EMA span for prediction smoothing per ticker (0=disabled)")
+    p.add_argument("--shuffle-y", action="store_true", help="Falsification test: randomize labels (must produce SR ~ 0 if no leakage)")
     p.add_argument("--year-start", type=int, default=2020)
     p.add_argument("--year-end", type=int, default=2024)
     p.add_argument("--out", default=".ly_state/session/phase3_3_v2.json")
@@ -338,6 +339,19 @@ def main():
     if panel.empty:
         logger.error("Empty panel"); return 1
     target = compute_target(panel, horizon=args.label_horizon)
+    if args.shuffle_y:
+        rng = np.random.default_rng(42)
+        # Shuffle within each date (preserve cross-section structure but break alpha-target link)
+        target_arr = target.to_numpy().copy()
+        date_arr = panel["date"].to_numpy()
+        unique_dates = np.unique(date_arr)
+        for d in unique_dates:
+            mask = date_arr == d
+            idx = np.where(mask)[0]
+            shuffled = rng.permutation(target_arr[idx])
+            target_arr[idx] = shuffled
+        target = pd.Series(target_arr, index=target.index)
+        logger.info("FALSIFICATION TEST: y-shuffled within each date (alpha-target link broken)")
     feat_dict = feat_mod.GPFeatureAdapter().compute_all(panel, top_n_features=125)
     feat_names = list(feat_dict.keys())
     feat_df = pd.DataFrame(feat_dict, index=panel.index)
