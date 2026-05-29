@@ -1,0 +1,28 @@
+{
+  "phase": "2.4 GP Scaled Backtest",
+  "config": {
+    "year_oos": 2024,
+    "population": 500,
+    "generations": 50,
+    "features": 114,
+    "universe_size": 49,
+    "diversity_cache": true,
+    "duration_minutes": 38
+  },
+  "results": {
+    "train_ic": 0.0072,
+    "test_ic": 0.0276,
+    "test_sharpe_nw": 0.15,
+    "best_tree": "log(alpha_vn_001_post_settlement_momentum)",
+    "ic_oscillation": "stuck between 0.0072 and 0.0254 from gen 1 to gen 50"
+  },
+  "verdict": "FAIL - GP standalone không tạo alpha mới có giá trị. Test Sharpe 0.15 << 1.0 target. Chỉ dùng làm feature generator cho ML stack, KHÔNG dùng standalone.",
+  "lessons": [
+    "Pop=500 không hơn pop=50 vì GP stuck ở local optimum sau gen 1",
+    "Diversity penalty cache speedup 2.7x (38 phút thay vì 100+ phút)",
+    "Threading parallel (joblib) chỉ +12% — bottleneck không phải eval mà là tree exploration limited",
+    "Best tree là log() đơn biến → GP search không tìm được combination",
+    "Confirms prior backtest: GP avg Sharpe -0.75 vs Mom20 +1.02"
+  ],
+  "next_action": "Pivot: GP as feature generator (HoF top-20) → Ridge stacking ensemble; KHÔNG chạy GP scaled lại"
+}

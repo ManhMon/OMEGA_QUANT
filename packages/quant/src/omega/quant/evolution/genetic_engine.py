@@ -29,9 +29,16 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
+from joblib import Parallel, delayed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Standalone function for joblib parallel (must be picklable for serialization)
+def _evaluate_individual(ind, features, target, hof, config):
+    ind.evaluate(features, target, hof, config)
+    return ind
+
 
 
 # =============================================================================
@@ -205,6 +212,11 @@ class GPConfig:
     multi_target_horizons: List[int] = field(default_factory=lambda: [5])
     multi_target_weights: List[float] = field(default_factory=lambda: [1.0])
 
+    # Parallel evaluation (Phase 2.4)
+    # n_jobs: number of parallel threads for population evaluation.
+    # -1 = use all CPUs, 1 = sequential fallback.
+    n_jobs: int = -1
+
 
 # =============================================================================
 # GP Individual
@@ -285,10 +297,26 @@ class GPIndividual:
             # Diversity penalty
             self.diversity_penalty = 0.0
             if hall_of_fame:
-                for hof_individual in hall_of_fame:
+                # Cache HoF alphas: re-execute only if not cached at this features id
+                _cache_key = id(features)
+                _cache = getattr(hall_of_fame, '_alpha_cache', None)
+                if _cache is None or _cache.get('key') != _cache_key:
+                    _cache = {'key': _cache_key, 'alphas': []}
+                    for hof_individual in hall_of_fame:
+                        try:
+                            hof_a = self._execute_tree(hof_individual.tree, features)
+                            hof_a = np.nan_to_num(hof_a, nan=0.0, posinf=0.0, neginf=0.0)
+                            _cache['alphas'].append(hof_a)
+                        except Exception:
+                            _cache['alphas'].append(None)
                     try:
-                        hof_alpha = self._execute_tree(hof_individual.tree, features)
-                        hof_alpha = np.nan_to_num(hof_alpha, nan=0.0, posinf=0.0, neginf=0.0)
+                        hall_of_fame._alpha_cache = _cache
+                    except Exception:
+                        pass
+                for hof_alpha in _cache['alphas']:
+                    if hof_alpha is None:
+                        continue
+                    try:
                         corr_df = pd.DataFrame({'a': alpha_series, 'b': hof_alpha}).dropna()
                         if len(corr_df) > 100:
                             corr, _ = spearmanr(corr_df['a'], corr_df['b'])
@@ -493,6 +521,9 @@ class GeneticEngine:
         """Update Hall of Fame."""
         candidates = sorted(self.population, key=lambda ind: ind.fitness, reverse=True)
         self.hall_of_fame = []
+        # Invalidate diversity-penalty cache (HoF identity changes)
+        if hasattr(self.hall_of_fame, '_alpha_cache'):
+            self.hall_of_fame._alpha_cache = None
         for candidate in candidates:
             if len(self.hall_of_fame) >= self.config.hall_of_fame_size:
                 break
@@ -511,8 +542,18 @@ class GeneticEngine:
         self.initialize_population()
         
         for generation in range(self.config.generations):
-            for individual in self.population:
-                individual.evaluate(features, target, self.hall_of_fame, self.config)
+            if self.config.n_jobs == 1:
+                for individual in self.population:
+                    individual.evaluate(features, target, self.hall_of_fame, self.config)
+            else:
+                self.population = list(Parallel(
+                    n_jobs=self.config.n_jobs, prefer='threads', batch_size='auto'
+                )(
+                    delayed(_evaluate_individual)(
+                        ind, features, target, self.hall_of_fame, self.config
+                    )
+                    for ind in self.population
+                ))
             
             self.population.sort(key=lambda ind: ind.fitness, reverse=True)
             self.update_hall_of_fame()
