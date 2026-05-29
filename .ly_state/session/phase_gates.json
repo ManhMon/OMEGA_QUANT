@@ -492,6 +492,18 @@
     "l2_completed": true,
     "final_verdict": "[APPROVED]"
   },
+  "phase_3_11_ema_reset": {
+    "phase_name": "phase_3_11_ema_reset",
+    "l2_session_id": "l2-ly-direct-20260530-phase311",
+    "l2_completed": true,
+    "l3_session_id": "019e761a-2d9f-70e3-a9bf-27168f2255ca",
+    "l3_session_key": "codex:role21:phase3_11-ema-reset:20260530T063807+0700",
+    "audit_report_path": ".ly_state/session/phase3_11_l3_audit_codex.md",
+    "final_verdict": "[APPROVED]",
+    "timestamp": "2026-05-30T06:39:00+07:00",
+    "status": "APPROVED",
+    "notes": "Codex L3 audit ~3min, multi-file + cross-check JSONs. 5 P2 verification points all PASS, no P0/P1, no recommended fixes. EMA reset per (ticker, CPCV block) is semantically correct: adjacent group pairs collapse to single block (continuous), non-adjacent pairs get clean boundary. Numerical impact +0.004-0.005 SR_ann across 1B/10B/100B, turnover/cost identical. Codex Rule 9.1."
+  },
   "phase_3_10_p1_hardening": {
     "phase_name": "phase_3_10_p1_hardening",
     "l2_session_id": "l2-ly-direct-20260530-phase310",
