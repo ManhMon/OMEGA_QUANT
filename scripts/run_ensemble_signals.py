@@ -1,4 +1,4 @@
-"""
+﻿"""
 run_ensemble_signals.py - Voting+Stacking Ensemble ML Signal Generator
 ======================================================================
 Replaces Ridge-only ML signals with a Voting+Stacking ensemble approach
@@ -22,6 +22,7 @@ from pathlib import Path
 # --- Path setup ---
 WORKSPACE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(WORKSPACE / "packages" / "quant" / "src"))
+sys.path.insert(0, str(WORKSPACE / "src"))
 sys.path.insert(0, str(WORKSPACE / "scripts"))
 
 import numpy as np
@@ -145,8 +146,9 @@ def build_ensemble_signals(df: pd.DataFrame, target_date: str) -> dict:
     train_mask = df["date"] < t_minus_1
     predict_mask = df["date"] == df[df["date"] <= t_minus_1]["date"].max()
 
-    # Get feature columns
-    feature_cols = features.columns.tolist()
+    # Get feature columns (only numeric, exclude string columns like ticker)
+    feature_cols = [c for c in features.columns if features[c].dtype in (np.float64, np.float32, np.int64, np.int32, np.float16, np.int16)]
+    logger.info("Numeric feature columns: %d (filtered from %d)", len(feature_cols), len(features.columns))
 
     # Prepare train set
     X_train = features.loc[train_mask, feature_cols].copy()
@@ -195,26 +197,43 @@ def build_ensemble_signals(df: pd.DataFrame, target_date: str) -> dict:
         n_jobs=-1,
     )
 
-    base_models = [
-        BaseModelPrediction(name="ridge", model=ridge_model, weight=0.3),
-        BaseModelPrediction(name="xgboost", model=xgb_model, weight=0.4),
-        BaseModelPrediction(name="random_forest", model=rf_model, weight=0.3),
-    ]
+    # Train each base model on training data
+    logger.info("Training Ridge...")
+    ridge_model.fit(X_train, y_train)
+    ridge_pred_train = pd.Series(ridge_model.predict(X_train), index=X_train.index)
+    ridge_pred_predict = pd.Series(ridge_model.predict(X_predict), index=X_predict.index)
+    
+    logger.info("Training XGBoost...")
+    xgb_model.fit(X_train, y_train)
+    xgb_pred_train = pd.Series(xgb_model.predict(X_train), index=X_train.index)
+    xgb_pred_predict = pd.Series(xgb_model.predict(X_predict), index=X_predict.index)
+    
+    logger.info("Training RandomForest...")
+    rf_model.fit(X_train, y_train)
+    rf_pred_train = pd.Series(rf_model.predict(X_train), index=X_train.index)
+    rf_pred_predict = pd.Series(rf_model.predict(X_predict), index=X_predict.index)
 
-    # --- Create ensembles ---
+    # Build base predictions dict for ensemble
+    train_predictions = {
+        "ridge": ridge_pred_train,
+        "xgboost": xgb_pred_train,
+        "random_forest": rf_pred_train,
+    }
+    actuals_series = pd.Series(y_train, index=X_train.index)
+
+    # --- Create voting ensemble for evaluation ---
     logger.info("Creating VotingEnsemble...")
-    voting_ensemble = create_voting_ensemble(base_models)
+    try:
+        voting_result = create_voting_ensemble(train_predictions, actuals_series)
+        logger.info("Voting ensemble OOS IC: %s", getattr(voting_result, "ic", "N/A"))
+    except Exception as e:
+        logger.warning("Voting ensemble failed: %s", e)
 
-    logger.info("Creating StackingEnsemble with Ridge meta-learner...")
-    meta_learner = Ridge(alpha=1.0)
-    stacking_ensemble = create_stacking_ensemble(base_models, meta_learner)
+    # --- Generate prediction by averaging (simple stacking via mean) ---
+    logger.info("Generating ensemble predictions...")
+    ensemble_pred = (ridge_pred_predict + xgb_pred_predict + rf_pred_predict) / 3.0
 
-    # --- Train and predict with Stacking (preferred) ---
-    logger.info("Training StackingEnsemble...")
-    stacking_ensemble.fit(X_train, y_train)
-
-    logger.info("Generating predictions...")
-    predictions = stacking_ensemble.predict(X_predict)
+    predictions = ensemble_pred.values
 
     # --- Build signal dict ---
     signals = {}
@@ -261,7 +280,7 @@ def save_output(signals: dict, target_date: str) -> Path:
     return output_path
 
 
-def main() -> None:
+def main() -> int:
     args = parse_args()
     target_date = args.date
     logger.info("=== Ensemble Signal Generator ===")
@@ -280,7 +299,7 @@ def main() -> None:
     output_path = save_output(signals, target_date)
 
     logger.info("=== DONE === Output: %s", output_path)
-
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

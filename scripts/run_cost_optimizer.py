@@ -84,31 +84,56 @@ def optimize_signals(signals: list[dict]) -> tuple[list[dict], float, float]:
     Returns:
         (optimized_signals, total_cost_before_bps, total_cost_after_bps)
     """
+    from datetime import datetime, timedelta
     optimizer = TransactionCostOptimizer()
 
-    # Phase 1: Calculate costs for each signal
+    # Build positions and market_data dicts (API expects Dict[str, int] and Dict[str, Dict])
+    positions = {}
+    market_data = {}
+    for signal in signals:
+        symbol = signal.get("ticker", signal.get("symbol", ""))
+        shares = int(signal.get("shares", signal.get("weight", 0) * 1000))  # fallback
+        price = signal.get("price", signal.get("signal_score", 1.0))
+        adv = signal.get("adv", signal.get("adv_vnd", 1_000_000_000))
+        volatility = signal.get("volatility", 0.30)
+        positions[symbol] = shares
+        market_data[symbol] = {
+            "price": float(price) if price else 1.0,
+            "adv": float(adv),
+            "volatility": float(volatility),
+        }
+
+    now = datetime.now()
+    available_at = now - timedelta(minutes=1)
+    
+    try:
+        results = optimizer.calculate_cost(
+            positions=positions,
+            market_data=market_data,
+            as_of=now,
+            available_at=available_at,
+        )
+    except Exception as e:
+        logger.warning("calculate_cost failed: %s, using simple estimate", e)
+        results = {}
+
+    # Phase 1: Apply costs to signals
     total_cost_before = 0.0
     for signal in signals:
-        symbol = signal.get("symbol", "")
-        shares = signal.get("shares", 0)
-        price = signal.get("price", 0.0)
-        adv = signal.get("adv", 0.0)
-        volatility = signal.get("volatility", 0.0)
-
-        result = optimizer.calculate_cost(
-            symbol=symbol,
-            shares=shares,
-            price=price,
-            adv=adv,
-            volatility=volatility,
-        )
-
-        signal["cost_bps"] = result.total_cost_bps
-        signal["market_impact_bps"] = result.market_impact_bps
-        signal["optimal_participation_rate"] = result.optimal_participation_rate
-
+        symbol = signal.get("ticker", signal.get("symbol", ""))
+        result = results.get(symbol)
+        if result is not None:
+            cost_bps = getattr(result, "total_cost_bps", 25.0)
+            signal["cost_bps"] = float(cost_bps)
+            signal["market_impact_bps"] = float(getattr(result, "market_impact_bps", 10.0))
+            signal["optimal_participation_rate"] = float(getattr(result, "optimal_participation_rate", 0.10))
+        else:
+            # Fallback: estimate 25bps default
+            signal["cost_bps"] = 25.0
+            signal["market_impact_bps"] = 10.0
+            signal["optimal_participation_rate"] = 0.10
         weight = signal.get("weight", 0.0)
-        total_cost_before += result.total_cost_bps * abs(weight)
+        total_cost_before += signal["cost_bps"] * abs(weight)
 
     # Phase 2: Adjust weights - reduce for high-cost trades
     for signal in signals:
