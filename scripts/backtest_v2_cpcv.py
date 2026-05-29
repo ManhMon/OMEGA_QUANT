@@ -102,7 +102,7 @@ def evaluate_fold(X_tr, y_tr, X_te, y_te, alphas=(0.1, 1.0, 10.0, 100.0)):
     return {"ic": test_ic, "pred": pred, "alpha": best_a, "train_cv_ic": best_ic}
 
 def per_date_returns(pred, y_te, dates_te, tickers_te=None,
-                     apply_tail=False, tail_mod=None):
+                     apply_tail=False, tail_mod=None, tail_kwargs=None):
     """P1-1: per-date long-short demedian portfolio.
 
     If apply_tail=True and tail_mod is the tail_controls module,
@@ -110,6 +110,8 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
     """
     if len(pred) == 0:
         return np.array([])
+    if tail_kwargs is None:
+        tail_kwargs = {}
     df = pd.DataFrame({"pred": pred, "y": y_te, "date": dates_te})
     if tickers_te is not None:
         df["ticker"] = tickers_te
@@ -143,10 +145,16 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
         for tk, weight, ret in zip(g["ticker"].values, w, g["y"].values):
             pivot_w.loc[date, tk] = weight
             pivot_y.loc[date, tk] = ret
+    # BT-2 fix: seed warmup_history with TRAIN portfolio returns to avoid
+    # 60-bar scale=1.0 warmup at start of every test fold.
+    warmup = None
+    if 'train_pre_lev_history' in tail_kwargs:
+        warmup = tail_kwargs['train_pre_lev_history']
     _, port_rets = tail_mod.apply_tail_controls(
         pivot_w, pivot_y.to_numpy(),
         target_vol_ann=0.15, max_abs_weight=0.05,
-        dd_window=20, dd_threshold=0.08, dd_cut=0.5)
+        dd_window=20, dd_threshold=0.08, dd_cut=0.5,
+        warmup_history=warmup)
     return np.asarray(port_rets)
 
 def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
@@ -162,9 +170,30 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         X_tr = (X_tr - mu) / sd
         X_te = (X_te - mu) / sd
         r = evaluate_fold(X_tr, y[tr], X_te, y[te])
+        # BT-2 fix: seed tail-control vol history with TRAIN-fold portfolio rets
+        train_warmup = None
+        if tail_mod is not None and tickers is not None:
+            train_pred = evaluate_fold(X_tr, y[tr], X_tr, y[tr])  # in-sample fit
+            train_dates_arr = dates[tr]
+            train_tickers_arr = tickers[tr]
+            df_tr = pd.DataFrame({"p": train_pred["pred"], "y": y[tr],
+                                  "d": train_dates_arr, "t": train_tickers_arr})
+            daily_tr = []
+            for _, g in df_tr.groupby("d"):
+                if len(g) < 2:
+                    continue
+                pos = np.sign(g["p"].values - g["p"].median())
+                if np.all(pos == 0):
+                    continue
+                nl, ns = max(int((pos > 0).sum()), 1), max(int((pos < 0).sum()), 1)
+                w = np.where(pos > 0, 1.0 / nl, np.where(pos < 0, -1.0 / ns, 0.0))
+                daily_tr.append(float(np.sum(w * g["y"].values)))
+            train_warmup = np.asarray(daily_tr[-120:]) if daily_tr else None
+        tail_kwargs = {"train_pre_lev_history": train_warmup} if train_warmup is not None else None
         rets = per_date_returns(r["pred"], y[te], dates[te],
                                 tickers_te=tickers[te] if tickers is not None else None,
-                                apply_tail=tail_mod is not None, tail_mod=tail_mod)
+                                apply_tail=tail_mod is not None, tail_mod=tail_mod,
+                                tail_kwargs=tail_kwargs)
         sr = float(np.mean(rets) / np.std(rets, ddof=1)) if (len(rets) > 1 and np.std(rets, ddof=1) > 0) else 0.0
         trial_srs.append(sr)  # P2-1: keep all
         daily_rets.extend(rets.tolist())
