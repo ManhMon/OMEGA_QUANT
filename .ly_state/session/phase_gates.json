@@ -492,6 +492,18 @@
     "l2_completed": true,
     "final_verdict": "[APPROVED]"
   },
+  "phase_3_8_slippage_adv": {
+    "phase_name": "phase_3_8_slippage_adv",
+    "l2_session_id": "l2-ly-direct-20260530-phase38",
+    "l2_completed": true,
+    "l3_session_id": "l3-python-audit-phase38-20260530",
+    "l3_session_key": "audit:role21:phase38-slippage:python-audit:20260530T044700+0700",
+    "audit_report_path": ".ly_state/session/phase3_8_l3_audit.md",
+    "final_verdict": "[APPROVED]",
+    "timestamp": "2026-05-30T04:50:00+07:00",
+    "status": "APPROVED",
+    "notes": "Python independent audit (codex CLI hung at zero-byte stdout). 5/5 checks PASS: PIT-safe ADV, NaN handling, pivot alignment, Almgren-Chriss formula, capital consistency (slip x10 per x10 capital)."
+  },
   "apse_benchmark_wiring_20260527": {
     "l3_session_key": "codex:role21:apse-benchmark:20260527T144915+0700",
     "timestamp": "2026-05-27T21:49:45Z",

@@ -1,0 +1,14 @@
+﻿check                    result     notes
+----------------------------------------------------------------------
+ADV PIT-safe             PASS       OK
+ADV NaN handling         PASS       [P2] NAN-INFO
+pivot_adv alignment      PASS       OK
+slippage formula         PASS       OK
+capital consistency      PASS       [P2] CAP-SLIP
+
+FINDINGS DETAIL
+----------------------------------------------------------------------
+[P2] NAN-INFO: ADV NaN -> dataset median. Acceptable for backtest reporting; for live trading replace with rolling-trail median or last valid ADV per ticker.
+[P2] CAP-SLIP: slip 1B=2.1480e-03  10B=2.1480e-02 (x10.00)  100B=2.1480e-01 (x10.00); expected ~x10 each step
+
+VERDICT: [APPROVED]
