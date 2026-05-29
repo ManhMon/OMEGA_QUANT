@@ -147,18 +147,28 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
             pivot_y.loc[date, tk] = ret
     # BT-2 fix: seed warmup_history with TRAIN portfolio returns to avoid
     # 60-bar scale=1.0 warmup at start of every test fold.
-    warmup = None
-    if 'train_pre_lev_history' in tail_kwargs:
-        warmup = tail_kwargs['train_pre_lev_history']
-    _, port_rets = tail_mod.apply_tail_controls(
+    warmup = tail_kwargs.get('train_pre_lev_history') if tail_kwargs else None
+    adj_w, port_rets = tail_mod.apply_tail_controls(
         pivot_w, pivot_y.to_numpy(),
         target_vol_ann=0.15, max_abs_weight=0.05,
         dd_window=20, dd_threshold=0.08, dd_cut=0.5,
         warmup_history=warmup)
+    # Phase 3.5: apply realistic execution costs if exec_mod is provided.
+    exec_mod = tail_kwargs.get('exec_mod') if tail_kwargs else None
+    capital = tail_kwargs.get('capital_vnd', 1e9) if tail_kwargs else 1e9
+    if exec_mod is not None:
+        _, port_rets, br = exec_mod.apply_realistic_tc(
+            adj_w, pivot_y.to_numpy(),
+            daily_adv=None,  # ADV not yet wired through panel
+            portfolio_capital_vnd=capital,
+        )
+        # Stash breakdown in module-level for run_pipeline to log
+        per_date_returns._last_cost_breakdown = br
     return np.asarray(port_rets)
 
 def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
-                 tickers=None, tail_mod=None, n_alphas=4):
+                 tickers=None, tail_mod=None, n_alphas=4,
+                 exec_mod_param=None, capital_vnd_param=1e9):
     cpcv = cpcv_mod.CombinatorialPurgedKFold(n_splits=10, n_test_splits=2, embargo_pct=0.01, label_horizon=label_horizon)
     folds, daily_rets, trial_srs = [], [], []
     for fid, (tr, te) in enumerate(cpcv.split(ts)):
@@ -189,7 +199,14 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                 w = np.where(pos > 0, 1.0 / nl, np.where(pos < 0, -1.0 / ns, 0.0))
                 daily_tr.append(float(np.sum(w * g["y"].values)))
             train_warmup = np.asarray(daily_tr[-120:]) if daily_tr else None
-        tail_kwargs = {"train_pre_lev_history": train_warmup} if train_warmup is not None else None
+        tail_kwargs = {}
+        if train_warmup is not None:
+            tail_kwargs["train_pre_lev_history"] = train_warmup
+        if exec_mod_param is not None:
+            tail_kwargs["exec_mod"] = exec_mod_param
+            tail_kwargs["capital_vnd"] = capital_vnd_param
+        if not tail_kwargs:
+            tail_kwargs = None
         rets = per_date_returns(r["pred"], y[te], dates[te],
                                 tickers_te=tickers[te] if tickers is not None else None,
                                 apply_tail=tail_mod is not None, tail_mod=tail_mod,
@@ -214,6 +231,8 @@ def main():
     p.add_argument("--smoke", action="store_true")
     p.add_argument("--walk-forward", action="store_true", help="Use per-year walk-forward universe (Phase 1.5 v2 fix)")
     p.add_argument("--tail-controls", action="store_true", help="Apply Phase 3.4 tail controls (vol target + cap + DD breaker)")
+    p.add_argument("--realistic-tc", action="store_true", help="Apply Phase 3.5 realistic VN execution costs (commission + spread + slippage)")
+    p.add_argument("--capital-vnd", type=float, default=1e9, help="Portfolio capital VND for slippage scaling (default 1B)")
     p.add_argument("--year-start", type=int, default=2020)
     p.add_argument("--year-end", type=int, default=2024)
     p.add_argument("--out", default=".ly_state/session/phase3_3_v2.json")
@@ -222,6 +241,7 @@ def main():
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
     feat_mod = _import("_feat", "omega/quant/evolution/feature_adapter.py")
     tail_mod = _import("_tc", "omega/quant/portfolio/tail_controls.py") if args.tail_controls else None
+    exec_mod = _import("_es", "omega/quant/portfolio/execution_sim.py") if args.realistic_tc else None
     if args.walk_forward:
         wf = load_universe_walk_forward(args.year_start, args.year_end)
         if args.smoke:
@@ -255,11 +275,21 @@ def main():
     logger.info("Drop NaN: %d samples, %d feats, max_per_date=%d, bar_horizon=%d", len(y), X.shape[1], max_per_date, bar_horizon)
     tickers_arr = feat_df["ticker"].to_numpy() if args.tail_controls else None
     summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
-                            label_horizon=bar_horizon, tickers=tickers_arr, tail_mod=tail_mod)
+                            label_horizon=bar_horizon, tickers=tickers_arr, tail_mod=tail_mod,
+                            exec_mod_param=exec_mod, capital_vnd_param=args.capital_vnd)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
         json.dump({"baseline": summary}, f, indent=2, default=str)
+    if hasattr(per_date_returns, '_last_cost_breakdown'):
+        br = per_date_returns._last_cost_breakdown
+        logger.info("COSTS: avg=%.1fbps/bar, turnover=%.2f/bar, total=%.4f (commission=%.4f, spread=%.4f, slip=%.4f)",
+                     br["avg_cost_per_bar_bps"], br["avg_turnover_per_bar"],
+                     br["total_cost"], br["total_commission_cost"],
+                     br["total_spread_cost"], br["total_slippage_cost"])
+        summary["cost_breakdown"] = br
+        with open(out, "w") as f2:
+            json.dump({"baseline": summary}, f2, indent=2, default=str)
     logger.info("Saved: %s", out)
     return 0
 
