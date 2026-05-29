@@ -323,12 +323,27 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         if signal_ema_param > 0 and tickers is not None:
             te_tickers = tickers[te]
             te_dates = dates[te]
+            # Phase 3.11: identify contiguous CPCV calendar blocks inside
+            # this fold's test indices. CPCV(N=10, k=2) emits test_idx as
+            # the union of two contiguous integer ranges (np.arange per
+            # group), sorted. np.diff(te) > 1 cleanly marks the boundary.
+            # EMA must RESET at each block boundary so the smoothing
+            # span does not span the calendar gap between the two test
+            # windows (e.g., Q1 2020 and Q3 2022 cannot share EMA state).
+            if len(te) > 1:
+                block_breaks = np.where(np.diff(te) > 1)[0]
+                block_id = np.zeros(len(te), dtype=np.int64)
+                for b in block_breaks:
+                    block_id[b + 1:] += 1
+            else:
+                block_id = np.zeros(len(te), dtype=np.int64)
             df_pred = pd.DataFrame({
                 "pred": r["pred"], "ticker": te_tickers, "date": te_dates,
+                "block": block_id,
                 "pos": np.arange(len(r["pred"]))
             })
-            df_pred = df_pred.sort_values(["ticker", "date"]).reset_index(drop=True)
-            df_pred["pred_ema"] = df_pred.groupby("ticker")["pred"].transform(
+            df_pred = df_pred.sort_values(["ticker", "block", "date"]).reset_index(drop=True)
+            df_pred["pred_ema"] = df_pred.groupby(["ticker", "block"])["pred"].transform(
                 lambda s: s.ewm(span=signal_ema_param, adjust=False).mean()
             )
             df_pred = df_pred.sort_values("pos").reset_index(drop=True)
