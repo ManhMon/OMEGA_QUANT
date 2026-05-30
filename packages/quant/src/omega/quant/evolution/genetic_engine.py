@@ -275,8 +275,13 @@ class GPIndividual:
             ic = self._compute_combined_ic(alpha_series, target, features, config)
             if np.isnan(ic):
                 ic = 0.0
-            
-            self.ic_score = abs(ic)
+
+            # Phase 6 fix: signed IC fitness. abs(ic) used to reward both
+            # +alpha and -alpha equally, polluting the Hall of Fame with
+            # sign-flipped trees. With signed fitness GP only optimizes
+            # for IC > 0; users who want a short-only strategy can wrap
+            # the signal in a unary minus operator instead.
+            self.ic_score = float(ic)
             
             # Turnover calculation
             alpha_sign = np.sign(alpha_series)
@@ -527,6 +532,11 @@ class GeneticEngine:
         for candidate in candidates:
             if len(self.hall_of_fame) >= self.config.hall_of_fame_size:
                 break
+            # Phase 6 fix: with signed-IC fitness, individuals with negative
+            # IC have fitness < 0 (penalties only subtract). Skip them so
+            # the HoF never holds anti-correlated alphas.
+            if candidate.fitness <= 0:
+                continue
             if candidate.diversity_penalty <= 0 or len(self.hall_of_fame) == 0:
                 self.hall_of_fame.append(candidate)
     

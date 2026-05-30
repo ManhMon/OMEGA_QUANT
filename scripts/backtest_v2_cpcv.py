@@ -597,6 +597,7 @@ def main():
     p.add_argument("--lstm-lookback", type=int, default=60, help="Phase 4: LSTM lookback window (days)")
     p.add_argument("--lstm-hidden", type=int, default=64, help="Phase 4: LSTM hidden size")
     p.add_argument("--lstm-epochs", type=int, default=8, help="Phase 4: LSTM training epochs per fold")
+    p.add_argument("--lstm-loss", choices=["mse", "ic"], default="mse", help="Phase 6: LSTM loss function (mse=regression, ic=-Pearson)")
     args = p.parse_args()
     cpcv_mod = _import("_cpcv", "omega/quant/validation/cpcv.py")
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
@@ -683,9 +684,10 @@ def main():
             n_features=int(X.shape[1]),
             hidden_size=args.lstm_hidden,
             epochs=args.lstm_epochs,
+            loss=args.lstm_loss,
         )
-        logger.info("LSTM enabled: lookback=%d hidden=%d epochs=%d blend=%.2f",
-                    lstm_cfg.lookback, lstm_cfg.hidden_size, lstm_cfg.epochs, args.lstm_blend)
+        logger.info("LSTM enabled: lookback=%d hidden=%d epochs=%d blend=%.2f loss=%s",
+                    lstm_cfg.lookback, lstm_cfg.hidden_size, lstm_cfg.epochs, args.lstm_blend, args.lstm_loss)
     summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
                             label_horizon=args.label_horizon * max_per_date,
                             tickers=tickers_arr, tail_mod=tail_mod,

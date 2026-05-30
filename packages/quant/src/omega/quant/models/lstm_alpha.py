@@ -49,6 +49,7 @@ class LSTMAlphaConfig:
     n_threads: int = 4          # avoid oversubscription with pandas
     early_stop_patience: int = 2
     min_train_samples: int = 256  # safety: skip training if fold too small
+    loss: str = "mse"           # 'mse' (default, regression) or 'ic' (Phase 6: -Pearson(pred, y))
 
 
 class _LSTMRegressor(nn.Module):
@@ -138,7 +139,20 @@ class LSTMAlpha:
             self.model.parameters(), lr=self.cfg.lr,
             weight_decay=self.cfg.weight_decay,
         )
-        loss_fn = nn.MSELoss()
+        if self.cfg.loss == "ic":
+            # Phase 6: directional IC loss = -Pearson(pred, target).
+            # Forces the model to maximize positive correlation; without
+            # this, MSE on z-scored targets can converge to a sign-flipped
+            # solution (Phase 4/5 exhibited median IC ~ -0.02 to -0.04).
+            def _ic_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+                p = pred - pred.mean()
+                t = target - target.mean()
+                num = (p * t).sum()
+                den = torch.sqrt((p * p).sum() * (t * t).sum() + 1e-12)
+                return -num / (den + 1e-12)
+            loss_fn = _ic_loss
+        else:
+            loss_fn = nn.MSELoss()
 
         best_val = float("inf")
         bad_epochs = 0
