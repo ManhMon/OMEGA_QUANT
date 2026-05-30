@@ -1,7 +1,7 @@
 # Phase 4 LSTM Spec
 
 **Date**: 2026-05-30 07:00 GMT+7
-**Status**: Design draft, awaiting user sign-off
+**Status**: SIGNED OFF 2026-05-30 07:40 GMT+7 (5 decisions locked, see end of doc)
 **Baseline**: Phase 3.11 (SR_ann 3.185 @ 1B, fold_DSR 0.4452)
 
 ## Goal
@@ -52,14 +52,28 @@ Stack a small LSTM on top of Phase 3.11 features to capture sequence dependencie
 - `packages/quant/tests/test_lstm_alpha.py` (new)
 - `scripts/backtest_v2_lstm.py` (new, sibling of `backtest_v2_cpcv.py`)
 
-## Open decisions for user
-1. Lookback window: 60d (default) vs 20d (matches label horizon) vs 252d (full year) ?
-2. Hidden size: 32 / 64 / 128 ?
-3. Use Phase 3.11 alphas as input OR raw OHLCV + a few engineered features ?
-4. Single LSTM vs Ridge+LSTM ensemble vs LSTM-only ?
-5. Per-fold retrain (clean PIT) vs warm-start from previous fold (faster) ?
+## Locked decisions (signed off 2026-05-30 07:40 GMT+7)
 
-Recommend defaults: 60d / 64 / Phase 3.11 alphas / Ridge+LSTM ensemble (avg) / per-fold retrain.
+| # | Decision | Value | Rationale |
+|--|--|--|--|
+| 1 | Lookback window | **60 days** | ~3 months — captures regime shifts, vol spikes, momentum reversals; not so long it dilutes signal. 252d would 4x training cost on CPU. |
+| 2 | Hidden size | **64** | ~50k params, comfortable on 24GB CPU. 128 would 4x compute; 32 risk underfit. |
+| 3 | Input features | **Phase 3.11 alphas (114)** | Already PIT-safe, dropna-clean, consistent with Ridge baseline → apples-to-apples comparison. Raw OHLCV deferred to Phase 4.2. |
+| 4 | Model layout | **Ridge + LSTM ensemble (mean of two predictions)** | Ridge is the safety net (Phase 3.11 APPROVED). LSTM-only risks training failure; ensemble hedges and reuses sunk cost. |
+| 5 | Per-fold retrain | **Per-fold retrain (45 trainings)** | PIT clean, no warm-start bias from prior fold. Budget ~22 min wall time on CPU is acceptable. |
+
+## Framework choice: PyTorch (locked)
+
+| Criterion | PyTorch | TensorFlow | Winner |
+|--|--|--|--|
+| Pre-installed | 2.11 CPU ✓ | not installed | PyTorch |
+| CPCV loop integration | dynamic graph, plain Python | requires tf.data, more overhead at small data | PyTorch |
+| CPU memory footprint | ~150MB | ~500MB | PyTorch |
+| Determinism | torch.manual_seed + torch.use_deterministic_algorithms | needs env vars + set_random_seed, drift-prone | PyTorch |
+| Quant ecosystem fit | qlib / FinRL / Renaissance internal use PyTorch | broader DL/vision use | PyTorch |
+| Disk space | already on disk | ~700MB install | PyTorch |
+
+Plain `torch.nn.LSTM` + `torch.utils.data.Dataset`. No PyTorch Lightning (overhead unnecessary).
 
 ## Next concrete steps after sign-off
 1. Implement `lstm_alpha.py` with deterministic training loop
