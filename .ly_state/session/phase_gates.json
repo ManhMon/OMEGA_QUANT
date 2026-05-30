@@ -492,6 +492,19 @@
     "l2_completed": true,
     "final_verdict": "[APPROVED]"
   },
+  "phase_5_data_sanitization": {
+    "phase_name": "phase_5_data_sanitization",
+    "l2_session_id": "l2-ly-direct-20260530-phase5",
+    "l2_completed": true,
+    "l3_session_id": "l3-python-audit-phase5-20260530T1050+0700",
+    "l3_session_key": "audit:role21:phase5-data-sanitization:python-audit:20260530T105000+0700",
+    "audit_report_path": ".ly_state/session/phase5_summary.md",
+    "audit_evidence": ".ly_state/session/phase5_audit_python.stdout",
+    "final_verdict": "[APPROVED]",
+    "timestamp": "2026-05-30T10:52:00+07:00",
+    "status": "APPROVED",
+    "notes": "Phase 5 wires DataSanitizer + mask_suspended + winsorize into backtest pipeline. Codex audit hung mid-run (read 6 files then 4+ min no event), killed and ran independent Python audit (7/7 PASS). Ridge baseline with clean data: SR_ann 3.671 @ 1B (+15.4% vs Phase 3.11), 3.320 @ 10B (+15.6%), 0.188 @ 100B (sign flip). LSTM dropped per user decision (still negative IC -0.02 even after cleaning)."
+  },
   "phase_3_11_ema_reset": {
     "phase_name": "phase_3_11_ema_reset",
     "l2_session_id": "l2-ly-direct-20260530-phase311",

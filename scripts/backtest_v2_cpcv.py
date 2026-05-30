@@ -12,6 +12,74 @@ logger = logging.getLogger("backtest_v2_cpcv")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 QUANT_SRC = REPO_ROOT / "packages" / "quant" / "src"
 
+# Phase 5: wire existing DataSanitizer + AlphaSanitizer modules
+for _p in (
+    REPO_ROOT / "packages" / "data" / "src",
+    REPO_ROOT / "src",
+):
+    sp = str(_p)
+    if _p.exists() and sp not in sys.path:
+        sys.path.insert(0, sp)
+try:
+    from omega.data.sanitizer import DataSanitizer  # canonical
+except Exception:
+    DataSanitizer = None
+try:
+    from omega.quant.alpha_sanitizer import AlphaSanitizer
+except Exception:
+    AlphaSanitizer = None
+
+
+def mask_suspended(panel: pd.DataFrame) -> pd.DataFrame:
+    """Phase 5: drop bars where volume == 0 (suspended trading).
+    These are non-tradable, would corrupt ADV / slippage / returns.
+    """
+    n0 = len(panel)
+    out = panel[panel["volume"] > 0].reset_index(drop=True)
+    logger.info("mask_suspended: dropped %d / %d rows (%.1f%%) with volume==0",
+                n0 - len(out), n0, 100.0 * (n0 - len(out)) / max(n0, 1))
+    return out
+
+
+def sanitize_ohlcv(panel: pd.DataFrame) -> pd.DataFrame:
+    """Phase 5: apply DataSanitizer (forward-fill <=3d, clip 3 sigma per
+    symbol, dedup, min_price=0.01). PIT-safe: fit and apply on the same
+    panel (panel is already restricted to tickers/dates the backtest sees;
+    no future leakage because outlier bounds are per-symbol expanding-style
+    statistics, not per-date).
+
+    Note: canonical DataSanitizer.apply() drops the symbol column (it uses
+    groupby+transform which strips the group key). We work around by saving
+    a (input_idx -> ticker) map and re-attaching after apply().
+    """
+    if DataSanitizer is None:
+        logger.warning("DataSanitizer unavailable - skipping OHLCV sanitization")
+        return panel
+    max_date = pd.to_datetime(panel["date"].max())
+    san = DataSanitizer(max_fill_days=3, outlier_sigma=3.0, min_price=0.01,
+                        as_of_time=max_date)
+    san.fit(panel, symbol_col="ticker", date_col="date")
+    # Save ticker by original index BEFORE apply (which drops the column).
+    panel_in = panel.copy()
+    panel_in["_orig_idx"] = np.arange(len(panel_in))
+    cleaned = san.apply(panel_in, symbol_col="ticker", date_col="date")
+    if "ticker" not in cleaned.columns:
+        # Use _orig_idx (preserved through groupby+transform) to reattach ticker.
+        if "_orig_idx" not in cleaned.columns:
+            # Fallback: index-align (DataSanitizer keeps the original index).
+            cleaned["ticker"] = panel_in.loc[cleaned.index, "ticker"].values
+        else:
+            ticker_map = dict(zip(panel_in["_orig_idx"].values, panel_in["ticker"].values))
+            cleaned["ticker"] = cleaned["_orig_idx"].map(ticker_map)
+            cleaned = cleaned.drop(columns=["_orig_idx"])
+    s = san.sanitization_stats
+    logger.info("sanitize_ohlcv: in=%d dup=%d ffill=%d clipped=%d invalid=%d out=%d",
+                s.get("input_rows", 0), s.get("duplicates_removed", 0),
+                s.get("forward_filled", 0), s.get("outliers_clipped", 0),
+                s.get("invalid_prices_removed", 0), s.get("output_rows", 0))
+    return cleaned
+
+
 def _import(name, rel):
     spec = importlib.util.spec_from_file_location(name, str(QUANT_SRC / rel))
     mod = importlib.util.module_from_spec(spec)
@@ -74,6 +142,10 @@ def load_panel(tickers, year_start, year_end):
     # computed PIT-correctly on prior data (not on intra-fold data).
     panel = df[(df["ticker"].isin(tickers)) & (df["date"].dt.year >= year_start - 1) & (df["date"].dt.year <= year_end)].copy()
     panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
+    # Phase 5: clean BEFORE ADV (so dropped suspended bars don't pollute ADV)
+    panel = mask_suspended(panel)
+    panel = sanitize_ohlcv(panel)
+    panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
     panel = _attach_adv(panel)
     panel = panel[panel["date"].dt.year >= year_start].reset_index(drop=True)
     logger.info("Panel: %d rows, %d tickers, %s..%s, adv_vnd non-null=%d", len(panel), panel["ticker"].nunique(), panel["date"].min().date(), panel["date"].max().date(), int(panel["adv_vnd"].notna().sum()))
@@ -87,18 +159,33 @@ def load_panel_walk_forward(yearly_universes: dict, year_start: int, year_end: i
     """
     df = pd.read_parquet(REPO_ROOT / "data/market_2015_now.parquet")
     df["date"] = pd.to_datetime(df["date"])
+    # Build a (ticker, date) -> universe_year lookup so we can re-tag after
+    # sanitize_ohlcv (which would otherwise dedup our duplicate marker).
     frames = []
+    universe_year_map = {}
     for year, tickers in yearly_universes.items():
-        # Pull (year-1) for ADV warm-up; will be filtered after _attach_adv.
         chunk = df[(df["ticker"].isin(tickers))
                    & (df["date"].dt.year >= year - 1)
                    & (df["date"].dt.year <= year)].copy()
-        chunk["_universe_year"] = year
+        # If a (ticker, date) pair appears in multiple yearly slices, keep
+        # the LARGEST year (= the slice that owns the in-fold rows).
+        for ticker, date in zip(chunk["ticker"].values, chunk["date"].values):
+            key = (ticker, pd.Timestamp(date))
+            universe_year_map[key] = max(universe_year_map.get(key, 0), year)
         frames.append(chunk)
     panel = pd.concat(frames, ignore_index=True)
-    panel = panel.sort_values(["ticker", "date", "_universe_year"]).reset_index(drop=True)
+    panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
+    # Phase 5: clean BEFORE ADV (so dropped suspended bars don't pollute ADV)
+    panel = mask_suspended(panel)
+    panel = sanitize_ohlcv(panel)
+    # Re-tag universe_year (sanitize_ohlcv may have deduped or reordered)
+    panel = panel.sort_values(["ticker", "date"]).reset_index(drop=True)
+    panel["_universe_year"] = [
+        universe_year_map.get((t, pd.Timestamp(d)), 0)
+        for t, d in zip(panel["ticker"].values, panel["date"].values)
+    ]
     panel = _attach_adv(panel)
-    # Keep only rows whose date.year matches the universe year used to fetch them.
+    # Keep only rows whose date.year matches the universe year that owns them.
     panel = panel[panel["date"].dt.year == panel["_universe_year"]].drop(columns=["_universe_year"]).reset_index(drop=True)
     logger.info("WF Panel: %d rows, %d unique tickers, %s..%s, adv_vnd non-null=%d",
                 len(panel), panel["ticker"].nunique(),
@@ -108,6 +195,44 @@ def load_panel_walk_forward(yearly_universes: dict, year_start: int, year_end: i
 
 def compute_target(panel, horizon=5):
     return panel.groupby("ticker")["close"].transform(lambda s: s.shift(-horizon) / s - 1.0)
+
+
+# Phase 4: LSTM helper. Builds sequences inside the fold from already
+# z-scored 2D features (caller provides train-only mu/sd), trains a
+# fresh LSTMAlpha, and returns predictions aligned with X_te rows.
+# Rows that lack lookback history are left at 0 (Ridge ensemble dominates
+# there, safe fallback).
+def _lstm_predict_fold(
+    X_tr_z: np.ndarray, y_tr: np.ndarray,
+    X_te_z: np.ndarray,
+    feat_df: pd.DataFrame, feat_names: list,
+    tr_idx: np.ndarray, te_idx: np.ndarray,
+    cfg, lstm_mod,
+):
+    work = feat_df.iloc[np.concatenate([tr_idx, te_idx])][["ticker", "date"]].copy()
+    z_all = np.vstack([X_tr_z, X_te_z])
+    for i, fn in enumerate(feat_names):
+        work[fn] = z_all[:, i]
+    work = work.reset_index(drop=True)
+    X_seq, idx_into_work = lstm_mod.build_sequences(work, feat_names, cfg.lookback)
+    if len(X_seq) == 0:
+        return np.zeros(len(te_idx), dtype=np.float64)
+    n_tr = len(tr_idx)
+    train_mask = idx_into_work < n_tr
+    test_mask = ~train_mask
+    y_full = np.concatenate([y_tr, np.zeros(len(te_idx))])
+    X_seq_tr = X_seq[train_mask]
+    y_seq_tr = y_full[idx_into_work[train_mask]]
+    X_seq_te = X_seq[test_mask]
+    te_targets = idx_into_work[test_mask] - n_tr
+    if len(X_seq_tr) < cfg.min_train_samples or len(X_seq_te) == 0:
+        return np.zeros(len(te_idx), dtype=np.float64)
+    model = lstm_mod.LSTMAlpha(cfg).fit(X_seq_tr, y_seq_tr)
+    pred_te = model.predict(X_seq_te)
+    out = np.zeros(len(te_idx), dtype=np.float64)
+    out[te_targets] = pred_te
+    return out
+
 
 def evaluate_fold(X_tr, y_tr, X_te, y_te, alphas=(0.1, 1.0, 10.0, 100.0)):
     """P0-1: tune alpha on train-only inner KFold; predict once on test."""
@@ -289,7 +414,9 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  exec_mod_param=None, capital_vnd_param=1e9,
                  top_k_param=0, rebal_threshold_param=0.0,
                  signal_ema_param=0, embargo_pct_param=0.01,
-                 adv_arr=None):
+                 adv_arr=None,
+                 lstm_cfg=None, lstm_mod=None, feat_df=None, feat_names=None,
+                 lstm_blend=0.5):
     cpcv = cpcv_mod.CombinatorialPurgedKFold(n_splits=10, n_test_splits=2,
                                               embargo_pct=embargo_pct_param,
                                               label_horizon=label_horizon)
@@ -309,12 +436,39 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
     for fid, (tr, te) in enumerate(cpcv.split(ts)):
         X_tr, X_te = X[tr], X[te]
         # P1-3: zscore inside fold (train-only stats)
+        # Phase 5: also winsorize columns at train-fold percentiles to
+        # tame outliers (e.g. unadjusted CA spikes) BEFORE z-scoring.
+        # Both ops are train-only fitted -> PIT-safe.
+        try:
+            lo = np.nanpercentile(X_tr, 1.0, axis=0)
+            hi = np.nanpercentile(X_tr, 99.0, axis=0)
+            X_tr = np.clip(X_tr, lo, hi)
+            X_te = np.clip(X_te, lo, hi)
+        except Exception:
+            pass
         mu = np.nanmean(X_tr, axis=0)
         sd = np.nanstd(X_tr, axis=0, ddof=1)
         sd = np.where(sd < 1e-12, 1.0, sd)
         X_tr = (X_tr - mu) / sd
         X_te = (X_te - mu) / sd
         r = evaluate_fold(X_tr, y[tr], X_te, y[te])
+        # Phase 4: optional LSTM ensemble. Train LSTM on the same z-scored
+        # train fold, predict on test, then blend with Ridge.
+        if lstm_cfg is not None and lstm_mod is not None and feat_df is not None:
+            lstm_pred = _lstm_predict_fold(
+                X_tr, y[tr], X_te, feat_df, list(feat_names),
+                tr, te, lstm_cfg, lstm_mod,
+            )
+            # Diagnostic IC of LSTM alone (train-only would be cleaner; this
+            # is just for logging on test fold).
+            test_ic_lstm = (
+                0.0 if np.std(lstm_pred) < 1e-12
+                else float(np.corrcoef(lstm_pred, y[te])[0, 1])
+            )
+            r["pred_ridge"] = r["pred"].copy()
+            r["pred_lstm"] = lstm_pred
+            r["pred"] = (1.0 - lstm_blend) * r["pred"] + lstm_blend * lstm_pred
+            r["ic_lstm"] = test_ic_lstm
         # Phase 3.7: per-ticker EMA smoothing of predictions
         # Note: previous attempt with sort_index() returned to feat_df-row index
         # (NOT te-position index) -> shuffled predictions and inverted alpha sign.
@@ -387,7 +541,7 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         sr = float(np.mean(rets) / np.std(rets, ddof=1)) if (len(rets) > 1 and np.std(rets, ddof=1) > 0) else 0.0
         trial_srs.append(sr)  # P2-1: keep all
         daily_rets.extend(rets.tolist())
-        folds.append({"fold": fid, "test_ic": r["ic"], "train_cv_ic": r["train_cv_ic"], "fold_sr": sr, "n_daily": int(len(rets)), "alpha": r["alpha"]})
+        folds.append({"fold": fid, "test_ic": r["ic"], "train_cv_ic": r["train_cv_ic"], "fold_sr": sr, "n_daily": int(len(rets)), "alpha": r["alpha"], "ic_lstm": r.get("ic_lstm", None)})
     # P0-2: n_trials = SEARCH dim
     dsr = dsr_mod.deflated_sharpe_ratio(np.asarray(daily_rets), n_trials=n_alphas, trial_sharpes=trial_srs, periods_per_year=252)
     # Phase 3.9: fold-level DSR (CPCV oversampling fix). Treats each
@@ -438,12 +592,18 @@ def main():
     p.add_argument("--year-start", type=int, default=2020)
     p.add_argument("--year-end", type=int, default=2024)
     p.add_argument("--out", default=".ly_state/session/phase3_3_v2.json")
+    p.add_argument("--lstm", action="store_true", help="Phase 4: enable Ridge+LSTM ensemble")
+    p.add_argument("--lstm-blend", type=float, default=0.5, help="Phase 4: ensemble weight for LSTM (0=Ridge only, 1=LSTM only)")
+    p.add_argument("--lstm-lookback", type=int, default=60, help="Phase 4: LSTM lookback window (days)")
+    p.add_argument("--lstm-hidden", type=int, default=64, help="Phase 4: LSTM hidden size")
+    p.add_argument("--lstm-epochs", type=int, default=8, help="Phase 4: LSTM training epochs per fold")
     args = p.parse_args()
     cpcv_mod = _import("_cpcv", "omega/quant/validation/cpcv.py")
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
     feat_mod = _import("_feat", "omega/quant/evolution/feature_adapter.py")
     tail_mod = _import("_tc", "omega/quant/portfolio/tail_controls.py") if args.tail_controls else None
     exec_mod = _import("_es", "omega/quant/portfolio/execution_sim.py") if args.realistic_tc else None
+    lstm_mod = _import("_lstm", "omega/quant/models/lstm_alpha.py") if args.lstm else None
     if args.walk_forward:
         wf = load_universe_walk_forward(args.year_start, args.year_end)
         if args.smoke:
@@ -516,6 +676,16 @@ def main():
     logger.info("Drop NaN: %d samples, %d feats, max_per_date=%d, bar_horizon=%d", len(y), X.shape[1], max_per_date, bar_horizon)
     tickers_arr = feat_df["ticker"].to_numpy() if args.tail_controls else None
     # bar_horizon = args.label_horizon * max_per_date
+    lstm_cfg = None
+    if args.lstm and lstm_mod is not None:
+        lstm_cfg = lstm_mod.LSTMAlphaConfig(
+            lookback=args.lstm_lookback,
+            n_features=int(X.shape[1]),
+            hidden_size=args.lstm_hidden,
+            epochs=args.lstm_epochs,
+        )
+        logger.info("LSTM enabled: lookback=%d hidden=%d epochs=%d blend=%.2f",
+                    lstm_cfg.lookback, lstm_cfg.hidden_size, lstm_cfg.epochs, args.lstm_blend)
     summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
                             label_horizon=args.label_horizon * max_per_date,
                             tickers=tickers_arr, tail_mod=tail_mod,
@@ -523,7 +693,11 @@ def main():
                             top_k_param=args.top_k, rebal_threshold_param=args.rebal_threshold,
                             signal_ema_param=args.signal_ema,
                             embargo_pct_param=args.embargo_pct,
-                            adv_arr=adv_arr if (exec_mod is not None and tickers_arr is not None) else None)
+                            adv_arr=adv_arr if (exec_mod is not None and tickers_arr is not None) else None,
+                            lstm_cfg=lstm_cfg, lstm_mod=lstm_mod,
+                            feat_df=feat_df if lstm_cfg is not None else None,
+                            feat_names=feat_names if lstm_cfg is not None else None,
+                            lstm_blend=args.lstm_blend)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:

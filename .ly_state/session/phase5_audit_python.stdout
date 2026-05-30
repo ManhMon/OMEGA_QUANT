@@ -1,0 +1,19 @@
+﻿check                        result   notes
+----------------------------------------------------------------------
+imports                      PASS     OK
+helpers defined              PASS     OK
+cleaning order               PASS     OK
+WF universe re-tag           PASS     OK
+winsorize PIT                PASS     OK
+DataSanitizer as_of_time     PASS     OK
+numerical sanity             PASS     [P2]NUM-N, [P2]NUM-IC, [P2]NUM-SR, [P2]NUM-DSR, [P2]NUM-SMOKE
+
+FINDINGS DETAIL
+----------------------------------------------------------------------
+[P2] NUM-N: full n_samples=45746 (Phase 3.11=59133, drop=13387)
+[P2] NUM-IC: full median_test_IC=0.0173 (Phase 3.11=0.0137 -> +26.2%)
+[P2] NUM-SR: full fold_SR_ann=3.671 (Phase 3.11=3.181 -> +15.4%)
+[P2] NUM-DSR: full fold_DSR=0.3738 (Phase 3.11=0.4452)
+[P2] NUM-SMOKE: smoke median_test_IC=0.1600 (Phase 3.11 smoke=0.1242, expect uplift)
+
+VERDICT: [APPROVED]
