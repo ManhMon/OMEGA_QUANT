@@ -1,0 +1,56 @@
+[L3-Audit:Role21-CodeReviewer] Phase 12 Optuna hyperparameter tuning script audit.
+
+Context: Phase 12 wires Optuna TPESampler to auto-tune 6 hyperparameters of the CPCV pipeline. Optimization metric = fold_DSR (accounts for selection bias). Script was written but NOT yet run to completion (smoke 5 trials showed it works; full run killed pending this audit per SOD).
+
+Read these files only (do NOT run pytest, do NOT write any files):
+- scripts/optuna_phase12.py (the full script)
+- scripts/backtest_v2_cpcv.py (focus on run_pipeline signature + tail_kwargs plumbing to verify the monkey-patch approach is safe)
+
+Verify each:
+1. SEARCH SPACE VALIDITY:
+   (a) label_horizon: [20, 40, 60, 80, 120] — all previously tested in Phase 9, no new untested values.
+   (b) signal_ema: [0, 3, 5, 8, 12] — 0=disabled, others are reasonable spans.
+   (c) vol_target: [0.10, 0.12, 0.15, 0.18, 0.20] — all within sane range for VN equities.
+   (d) max_abs_weight: [0.03, 0.05, 0.08, 0.10] — position sizing bounds.
+   (e) dd_threshold: [0.05, 0.08, 0.10, 0.15] — drawdown breaker thresholds.
+   (f) embargo_pct: [0.005, 0.01, 0.02] — CPCV embargo fractions.
+   All categorical (finite grid) — no continuous params that could overfit.
+
+2. OPTIMIZATION METRIC:
+   (a) Objective returns fold_DSR (not raw SR). fold_DSR already accounts for selection bias via Bailey-LdP eq.1 at fold level (Phase 3.9).
+   (b) n_trials in DSR formula is hardcoded to n_alphas=4 inside run_pipeline. This means DSR does NOT account for the Optuna search itself (50 trials). Flag whether this is a problem.
+
+3. PIT SAFETY:
+   (a) Each trial calls build_features() which recomputes target via compute_target(panel, horizon=h). Target uses .shift(-h) on close — PIT-safe (forward return, no look-ahead in features).
+   (b) CPCV split uses label_horizon for purge — verify label_horizon is passed correctly (label_horizon * max_per_date).
+   (c) Winsorize + z-score inside fold loop uses train-only stats (inherited from run_pipeline).
+   (d) No cross-trial information leakage (each trial is independent, in-memory study).
+
+4. MONKEY-PATCH SAFETY:
+   (a) The script patches tail_mod.apply_tail_controls to override vol_target/max_abs_weight/dd_threshold per trial.
+   (b) Verify the patch is restored in the finally block (so a crashed trial doesn't corrupt subsequent trials).
+   (c) Verify the patch doesn't affect other modules that might import tail_mod independently.
+
+5. PARALLEL SAFETY (for future multi-worker runs):
+   (a) With in-memory study + separate processes (no shared state), each worker is fully independent. No race conditions.
+   (b) Monkey-patch is process-local (each worker has its own tail_mod import). Safe for multi-process.
+   (c) Results merge is post-hoc (read 4 JSONs, pick global best). No coordination needed.
+
+6. SELECTION BIAS CONCERN:
+   (a) Running 50 Optuna trials on the SAME CPCV folds = multiple testing. The reported fold_DSR of the BEST trial is optimistic because we searched 50 configs.
+   (b) Proper correction: the final reported DSR should use n_trials = 50 (Optuna search dim) × 4 (Ridge alpha grid) = 200. Currently n_trials=4 inside run_pipeline.
+   (c) Flag this as P1 if the script doesn't apply the correction, or P2 if it's documented as a known limitation.
+
+7. CODE QUALITY:
+   (a) build_features() is called per trial even when label_horizon is the same across trials. This is wasteful (~90s per call) but not incorrect. Flag as P2 optimization opportunity.
+   (b) Error handling: if a trial crashes (e.g. OOM), does Optuna handle it gracefully? (TPESampler marks failed trials as FAIL state by default — OK.)
+
+8. SOD: this is L3 audit reading L2 implementation. No file writes, STDOUT only.
+
+DO NOT WRITE ANY FILES. Print to STDOUT only:
+
+VERDICT: [APPROVED|NEEDS_FIX]
+FINDINGS:
+- <P0|P1|P2> <file:line>: <description> | FIX: <suggestion>
+- ...
+END.
