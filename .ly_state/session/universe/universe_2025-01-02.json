@@ -1,0 +1,214 @@
+{
+  "date": "2025-01-02",
+  "method": "adv_top50_from_2024",
+  "n_eligible": 1500,
+  "n_selected": 50,
+  "filter": {
+    "min_adv_vnd": 0,
+    "min_price": 0,
+    "min_listing_days": 0,
+    "quality_lookback_days": 365
+  },
+  "universe": [
+    {
+      "ticker": "MWG",
+      "score": 505037454043.44
+    },
+    {
+      "ticker": "HPG",
+      "score": 481263887153.04
+    },
+    {
+      "ticker": "STB",
+      "score": 446380035525.6
+    },
+    {
+      "ticker": "FPT",
+      "score": 420924847254.76
+    },
+    {
+      "ticker": "VHM",
+      "score": 397899015403.0
+    },
+    {
+      "ticker": "SSI",
+      "score": 387977039225.52
+    },
+    {
+      "ticker": "MSN",
+      "score": 356771569326.4
+    },
+    {
+      "ticker": "VPB",
+      "score": 338629385035.44
+    },
+    {
+      "ticker": "DIG",
+      "score": 338544248122.28
+    },
+    {
+      "ticker": "VND",
+      "score": 264615193442.92
+    },
+    {
+      "ticker": "DGC",
+      "score": 263281067765.04
+    },
+    {
+      "ticker": "MBB",
+      "score": 253887039469.16
+    },
+    {
+      "ticker": "TCB",
+      "score": 250434496103.36
+    },
+    {
+      "ticker": "NVL",
+      "score": 248804548110.0
+    },
+    {
+      "ticker": "VIX",
+      "score": 238438525369.6
+    },
+    {
+      "ticker": "VNM",
+      "score": 221940658079.04
+    },
+    {
+      "ticker": "SHS",
+      "score": 207062397108.6
+    },
+    {
+      "ticker": "PDR",
+      "score": 203124640629.12
+    },
+    {
+      "ticker": "CTG",
+      "score": 189056213504.0
+    },
+    {
+      "ticker": "VRE",
+      "score": 187622096931.6
+    },
+    {
+      "ticker": "ACB",
+      "score": 178189781029.44
+    },
+    {
+      "ticker": "DXG",
+      "score": 177375737407.64
+    },
+    {
+      "ticker": "KBC",
+      "score": 176053428900.6
+    },
+    {
+      "ticker": "SHB",
+      "score": 172394081586.28
+    },
+    {
+      "ticker": "DBC",
+      "score": 172189727917.72
+    },
+    {
+      "ticker": "HCM",
+      "score": 172147521176.24
+    },
+    {
+      "ticker": "HSG",
+      "score": 171312239210.12
+    },
+    {
+      "ticker": "TPB",
+      "score": 165099932957.36
+    },
+    {
+      "ticker": "EIB",
+      "score": 164811055576.4
+    },
+    {
+      "ticker": "GEX",
+      "score": 160896118874.52
+    },
+    {
+      "ticker": "PVS",
+      "score": 155643088897.28
+    },
+    {
+      "ticker": "VCI",
+      "score": 148475484744.44
+    },
+    {
+      "ticker": "DCM",
+      "score": 135597678092.72
+    },
+    {
+      "ticker": "HAG",
+      "score": 131302795073.4
+    },
+    {
+      "ticker": "TCH",
+      "score": 128693371319.72
+    },
+    {
+      "ticker": "PVD",
+      "score": 125845645167.44
+    },
+    {
+      "ticker": "HDB",
+      "score": 118423536596.56
+    },
+    {
+      "ticker": "CEO",
+      "score": 118334823885.52
+    },
+    {
+      "ticker": "NKG",
+      "score": 115634993255.08
+    },
+    {
+      "ticker": "GVR",
+      "score": 113285153430.28
+    },
+    {
+      "ticker": "VIB",
+      "score": 102062885674.88
+    },
+    {
+      "ticker": "HDG",
+      "score": 101299261962.72
+    },
+    {
+      "ticker": "EVF",
+      "score": 100234529376.4
+    },
+    {
+      "ticker": "HAH",
+      "score": 98067914902.36
+    },
+    {
+      "ticker": "VCB",
+      "score": 90126572808.36
+    },
+    {
+      "ticker": "VGI",
+      "score": 89191512421.68
+    },
+    {
+      "ticker": "BSR",
+      "score": 88771936116.68
+    },
+    {
+      "ticker": "NLG",
+      "score": 88749807581.08
+    },
+    {
+      "ticker": "POW",
+      "score": 88006301350.44
+    },
+    {
+      "ticker": "KDH",
+      "score": 87514909685.48
+    }
+  ]
+}

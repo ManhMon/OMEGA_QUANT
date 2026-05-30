@@ -1,0 +1,23 @@
+{
+  "holdout_year": 2025,
+  "train_years": "2020-2024",
+  "best_params": {
+    "label_horizon": 60,
+    "signal_ema": 3,
+    "vol_target": 0.15,
+    "max_abs_weight": 0.03,
+    "dd_threshold": 0.05,
+    "embargo_pct": 0.01
+  },
+  "best_alpha": 1.0,
+  "train_cv_ic": -0.004496920705285482,
+  "holdout_ic": 0.20599798765458618,
+  "holdout_sr_per_bar": 0.7459698350991599,
+  "holdout_sr_ann": 11.841904015369433,
+  "holdout_n_days": 189,
+  "holdout_n_samples": 9438,
+  "holdout_mean_daily_ret": 0.0563363666348512,
+  "holdout_std_daily_ret": 0.07552097147113535,
+  "holdout_max_dd": -0.8987612463954964,
+  "elapsed_s": 10.917676448822021
+}
