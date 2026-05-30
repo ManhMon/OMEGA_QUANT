@@ -241,8 +241,27 @@ def _lstm_predict_fold(
     return out
 
 
+def _per_date_zscore(X: np.ndarray, dates: np.ndarray) -> np.ndarray:
+    """Phase 8 vector #1: cross-sectional z-score per day, vectorized.
+
+    For each unique date, demean and rescale features by within-day mean/std.
+    Cross-sectional ops only use same-day data, so this is strictly PIT.
+    Zero-std days fall back to scale=1 (preserves sign-only information).
+    NaN/Inf cells are zeroed.
+    """
+    if X.size == 0:
+        return X
+    df = pd.DataFrame(X)
+    df["_date"] = dates
+    feat_cols = [c for c in df.columns if c != "_date"]
+    grp = df.groupby("_date", sort=False)
+    means = grp[feat_cols].transform("mean")
+    stds = grp[feat_cols].transform("std").replace(0.0, np.nan).fillna(1.0)
+    out_arr = ((df[feat_cols].to_numpy() - means.to_numpy()) / stds.to_numpy()).astype(np.float64)
+    return np.nan_to_num(out_arr, nan=0.0, posinf=0.0, neginf=0.0)
+
+
 def evaluate_fold(X_tr, y_tr, X_te, y_te, alphas=(0.1, 1.0, 10.0, 100.0)):
-    """P0-1: tune alpha on train-only inner KFold; predict once on test."""
     n_inner = min(3, max(2, len(X_tr) // 1000))
     inner = KFold(n_splits=n_inner, shuffle=False)
     best_a, best_ic = alphas[0], -np.inf
@@ -451,8 +470,12 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
             hi = np.nanpercentile(X_tr, 99.0, axis=0)
             X_tr = np.clip(X_tr, lo, hi)
             X_te = np.clip(X_te, lo, hi)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("winsorize skipped: %s", exc)
+        # Phase 8 attempted vector #1 (per-DATE z-score on features) -
+        # REVERTED. Empirically destroys alpha (IC +0.16 -> -0.006 in
+        # smoke). Cross-sectional zscore on features removes the
+        # information Ridge needs to rank tickers across days.
         mu = np.nanmean(X_tr, axis=0)
         sd = np.nanstd(X_tr, axis=0, ddof=1)
         sd = np.where(sd < 1e-12, 1.0, sd)
