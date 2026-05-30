@@ -1,0 +1,41 @@
+[L3-Audit:Role21-CodeReviewer] Phase 7 capacity sweep + falsification audit (CODEX 2-step retroactive).
+
+Context: Phase 7 was previously audited by a Python script (scripts/audit_phase7.py). SOUL.md Rule 9 requires codex CLI for production-affecting analysis. This audit validates Phase 7 conclusions with codex.
+
+Read these files only (do NOT run pytest, do NOT write any files):
+- scripts/phase5_capacity_sweep.py (the report generator)
+- scripts/audit_phase7.py (the Python audit script we want to validate)
+- .ly_state/session/phase5_full_1B_noLSTM.json
+- .ly_state/session/phase5_full_5B.json
+- .ly_state/session/phase5_full_10B_noLSTM.json
+- .ly_state/session/phase5_full_30B.json
+- .ly_state/session/phase5_full_50B.json
+- .ly_state/session/phase5_full_100B_noLSTM.json
+- .ly_state/session/phase5_full_1B_shuffle.json
+- .ly_state/session/phase5_capacity_report.txt
+
+Verify each:
+1. ALPHA INVARIANCE: median_test_IC must be IDENTICAL across all 6 capitals (1B/5B/10B/30B/50B/100B). The expected value is 0.0173. Cross-check from JSON files.
+2. CAPACITY MONOTONE: fold_SR_ann should be monotonically decreasing as capital grows. Expected sequence: 3.671 / 3.517 / 3.320 / 2.526 / 1.779 / 0.188. Verify and check no monotonicity violation.
+3. SLIPPAGE LINEARITY: total_slippage_cost should scale linearly with capital. Specifically, ratios should match capital ratios within ~5%:
+   - 1B->5B: ratio 5.0
+   - 5B->10B: ratio 2.0
+   - 10B->30B: ratio 3.0
+   - 30B->50B: ratio 1.667
+   - 50B->100B: ratio 2.0
+4. COMMISSION/SPREAD/TURNOVER INVARIANCE: total_commission_cost, total_spread_cost, and total_turnover MUST be identical to 6 decimal places across all capitals (capital-independent quantities).
+5. FALSIFICATION (y-shuffle): compare phase5_full_1B_noLSTM.json (real) vs phase5_full_1B_shuffle.json (target shuffled within each date):
+   - fold_SR_ann magnitude should drop by >70% (real ~3.67, shuffle should be |x| < ~1.1).
+   - median_test_IC should sign-flip (real positive, shuffle negative) OR drop >50% magnitude.
+   - Conclusion: alpha is REAL not artifact.
+6. FOLD STABILITY: 1B fold SR distribution should have >60% positive folds (out of 45). Check.
+7. AUDIT SCRIPT VALIDITY: review scripts/audit_phase7.py - does it correctly check the 6 invariants above? Any logic bugs in the script itself?
+8. SOD/PIT: confirm no leakage in the audit logic.
+
+DO NOT WRITE ANY FILES. Print to STDOUT only:
+
+VERDICT: [APPROVED|NEEDS_FIX]
+FINDINGS:
+- <P0|P1|P2> <file:line>: <description> | FIX: <suggestion>
+- ...
+END.

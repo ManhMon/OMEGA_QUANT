@@ -1,0 +1,29 @@
+﻿```
+VERDICT: [APPROVED]
+
+FINDINGS:
+- P1 scripts/backtest_v2_cpcv.py:47-49: sanitize_ohlcv docstring claims "outlier bounds are per-symbol expanding-style statistics, not per-date", but the canonical DataSanitizer.fit/apply path actually uses full-sample groupby mean/std (packages/data/src/omega/data/sanitizer.py:108-130 -> _clip_outliers_fitted at 369-412). The legacy expanding path (_clip_outliers, lines 325-367) is NOT used by fit/apply. In-slice scope is preserved (panel = single backtest universe), so this stays bounded; the full panel for load_panel_walk_forward spans year_start-1 .. year_end so cleaning of an early date can technically see later in-slice statistics. The audit checklist item 6(a) treats this as intentional, but the docstring is misleading. | FIX: change the docstring to "per-symbol in-slice full-sample mean/std (bounded to backtest scope)" or switch to a per-fold sanitize / the expanding _clip_outliers path if strict per-date PIT is required for OHLCV cleaning.
+- P2 scripts/backtest_v2_cpcv.py:442-448: bare try/except: pass around the winsorize block silently swallows np.nanpercentile / np.clip errors (e.g., all-NaN feature column, dtype mismatch). Pipeline still runs through z-score, but a real failure would go untraced. | FIX: log a warning in the except (logger.warning("winsorize skipped: %s", exc)) instead of silent pass; or assert no all-NaN columns upstream.
+- P2 scripts/backtest_v2_cpcv.py:27-30 + 28: AlphaSanitizer imported via fallback try/except but never invoked anywhere in the script (grep confirms only the import line 28 references the symbol). Phase 5 summary documents this as an intentional placeholder for future per-fold alpha winsorize/zscore; checklist item 6(c) acknowledges it. | FIX: either wire it (per-fold replacement of the inline numpy winsorize+zscore on alphas) or remove the import + global to eliminate dead code drift.
+
+VERIFICATION DETAILS (cross-check, no changes):
+- 1. mask_suspended drops volume==0 before ADV: PASS. load_panel:146-149 and load_panel_walk_forward:179-187 both call mask_suspended -> sanitize_ohlcv -> _attach_adv in that order. _attach_adv (123-136) computes dollar_vol*close rolling-20.shift(1) AFTER mask_suspended has already dropped volume==0 rows, so suspended bars never enter ADV.
+- 2a. sanitize_ohlcv calls DataSanitizer with as_of_time=max(panel.date): PASS. Line 58: max_date = pd.to_datetime(panel["date"].max()); line 59-60: DataSanitizer(..., as_of_time=max_date). DataSanitizer._enforce_pit_safety (sanitizer.py:414-438) raises if as_of_time is None and clamps as_of <= available_at(=date+1d).
+- 2b. Re-attach ticker after .apply: PASS. Lines 62-74: panel_in["_orig_idx"] = arange; cleaned via apply; if "ticker" missing, build ticker_map from _orig_idx and reattach. Robust to canonical sanitizer dropping the symbol col via groupby+transform.
+- 2c. Counter logging: PASS. Lines 76-79 log input_rows/duplicates_removed/forward_filled/outliers_clipped/invalid_prices_removed/output_rows.
+- 3. Cleaning order in BOTH load_panel and load_panel_walk_forward: PASS (lines 146-150, 179-189). _attach_adv runs on cleaned panel, then in-fold year filter applies last.
+- 4. universe_year_map preserves (ticker, date)->year tagging across sanitize dedup with LARGEST year wins: PASS. Line 172-174: for each yearly slice's (ticker, date) pairs, universe_year_map[key] = max(get(key,0), year). DataSanitizer.apply dedups by (date, symbol) keep='first' (sanitizer.py:188), so the surviving row's (ticker, date) still resolves to the largest tagged year via the post-sanitize lookup at lines 183-186. Final filter line 189 keeps date.year == _universe_year, dropping prehistory rows.
+- 5a. np.nanpercentile fitted on TRAIN ONLY: PASS. Lines 443-444: lo=np.nanpercentile(X_tr,1.0,axis=0), hi=np.nanpercentile(X_tr,99.0,axis=0). X_te never enters the percentile fit.
+- 5b. np.clip applied to BOTH X_tr and X_te using train-only bounds: PASS. Lines 445-446. Same lo/hi reused on X_te.
+- 5c. zscore mu/sd train-only: PASS. Lines 449-453: mu=np.nanmean(X_tr,axis=0), sd=np.nanstd(X_tr,axis=0,ddof=1), sd_floor=1e-12, then (X_tr-mu)/sd and (X_te-mu)/sd. Pre-existing P1-3 path preserved.
+- 5d. Order winsorize BEFORE z-score: PASS. Clip block lines 443-446 precedes mu/sd computation lines 449-453.
+- 6a. PIT for DataSanitizer outlier sigma: PARTIAL (see P1 above). In-slice scope is correct, but the underlying canonical fit uses full-sample per-symbol stats, not expanding. Bounded but not strict per-date.
+- 6b. Per-fold winsorize 1%/99%: STRICT PIT (train-only).
+- 6c. AlphaSanitizer NOT called: CONFIRMED. Only import reference exists; no .fit/.apply call anywhere in the script. Acknowledged placeholder.
+- 7a. Numerical sanity 1B: PASS. phase5_full_1B_noLSTM.json: median_test_ic=0.01729 (~0.0173), n_samples=45746, n_folds=45, fold_dsr.sr_mean_annualized=3.6715 (~3.671). Matches summary.
+- 7b. Cost monotone with capital: PASS. 1B avg_cost_per_bar_bps=2.489, 10B=4.045, 100B=19.603. Strictly increasing as capital ramps; reflects slippage scaling with participation.
+- 7c. No NaN in cost_breakdown / fold_dsr: PASS. Grep across all three JSONs found no "NaN"/Infinity/null tokens in the relevant blocks; numeric fields are finite.
+- 8. SOD: PASS. This is L3 (Codex) reading L2 (OpenCode) artifacts. No file writes performed; output is STDOUT-only per protocol. Writer (Phase 5 implementer) â‰  Reviewer (this audit). No self-approval.
+
+END.
+```

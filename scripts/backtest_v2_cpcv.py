@@ -43,10 +43,17 @@ def mask_suspended(panel: pd.DataFrame) -> pd.DataFrame:
 
 def sanitize_ohlcv(panel: pd.DataFrame) -> pd.DataFrame:
     """Phase 5: apply DataSanitizer (forward-fill <=3d, clip 3 sigma per
-    symbol, dedup, min_price=0.01). PIT-safe: fit and apply on the same
-    panel (panel is already restricted to tickers/dates the backtest sees;
-    no future leakage because outlier bounds are per-symbol expanding-style
-    statistics, not per-date).
+    symbol, dedup, min_price=0.01).
+
+    PIT scope: BOUNDED to backtest slice, NOT strict per-date.
+    DataSanitizer.fit/apply uses full-sample per-symbol mean/std for
+    the 3-sigma outlier clip. Cleaning of an early date can technically
+    see later in-slice statistics, but never sees data outside the
+    backtest panel (which is restricted by ticker universe + year range
+    BEFORE this call). Acceptable for backtest reporting; for live
+    paper-trading switch to the legacy expanding-window path
+    (DataSanitizer._clip_outliers, sanitizer.py:325-367) or per-fold
+    sanitize.
 
     Note: canonical DataSanitizer.apply() drops the symbol column (it uses
     groupby+transform which strips the group key). We work around by saving

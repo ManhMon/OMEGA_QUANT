@@ -1,0 +1,49 @@
+[L3-Audit:Role21-CodeReviewer] Phase 5 data sanitization wiring audit (CODEX 2-step retroactive).
+
+Context: Phase 5 was previously audited by a Python script (scripts/audit_phase5.py) because codex hung mid-session on 2026-05-30. SOUL.md Rule 9 mandates codex CLI for production-affecting code reviews. This audit validates Phase 5 wiring with codex.
+
+Read these files only (do NOT run pytest, do NOT write any files):
+- scripts/backtest_v2_cpcv.py - focus on:
+  * lines 14-30: imports for DataSanitizer + AlphaSanitizer with sys.path
+  * lines 32-43: mask_suspended() helper
+  * lines 45-66: sanitize_ohlcv() helper with as_of_time + ticker re-attachment
+  * load_panel() - cleaning order mask -> sanitize -> _attach_adv
+  * load_panel_walk_forward() - universe_year_map preserves (ticker, date) -> year tag across sanitize dedup
+  * run_pipeline() winsorize block (~lines 420-435): np.nanpercentile train-only fitted, np.clip BOTH train+test, BEFORE z-score
+- packages/data/src/omega/data/sanitizer.py (DataSanitizer.fit/apply, _enforce_pit_safety requires as_of_time)
+- src/omega/quant/alpha_sanitizer.py (AlphaSanitizer.fit/apply API; verify NOT called from pipeline)
+- .ly_state/session/phase5_full_1B_noLSTM.json
+- .ly_state/session/phase5_full_10B_noLSTM.json
+- .ly_state/session/phase5_full_100B_noLSTM.json
+- .ly_state/session/phase5_summary.md
+
+Verify each:
+1. mask_suspended drops volume==0 BEFORE _attach_adv. ADV is computed only on cleaned data.
+2. sanitize_ohlcv:
+   (a) Calls DataSanitizer with as_of_time=max(panel.date) for in-slice PIT.
+   (b) Re-attaches ticker column after .apply (canonical sanitizer drops it via groupby+transform).
+   (c) Logs in/dup/ffill/clipped/invalid/out counters.
+3. load_panel + load_panel_walk_forward: cleaning order is mask_suspended -> sanitize_ohlcv -> _attach_adv -> filter to in-fold years.
+4. load_panel_walk_forward: universe_year_map correctly preserves the (ticker, date) -> year tagging across DataSanitizer's dedup so prehistory rows are still identifiable and dropped after _attach_adv. Specifically: when same (ticker, date) appears in multiple yearly slices (year-1 prefetch overlap), the LARGEST year wins.
+5. run_pipeline winsorize block:
+   (a) np.nanpercentile(X_tr, 1.0/99.0, axis=0) fitted on TRAIN ONLY.
+   (b) np.clip applied to BOTH X_tr and X_te using train-only bounds (PIT-safe).
+   (c) zscore mu/sd remain train-only (existing P1-3 path preserved).
+   (d) Order: winsorize BEFORE z-score (clipping first prevents outliers from biasing mu/sd).
+6. PIT discipline:
+   (a) DataSanitizer outlier_sigma=3.0 uses per-symbol mean/std over the WHOLE in-slice panel (which includes prehistory rows but the panel is already restricted to backtest scope, no future leakage).
+   (b) Per-fold winsorize (1%/99% on X_tr only) is strictly PIT.
+   (c) AlphaSanitizer is imported but NOT called - confirm this is intentional placeholder (per Phase 5 summary).
+7. Numerical sanity from JSONs:
+   (a) phase5_full_1B_noLSTM.json: median test IC ~0.0173, fold_SR_ann ~3.671, n_samples ~45746 (vs Phase 3.11 dirty 59133, drop ~23%).
+   (b) Cost monotone increasing with capital (1B -> 10B -> 100B): bps/bar 2.49, 4.05, 19.6.
+   (c) No NaN in cost_breakdown or fold_dsr blocks.
+8. SOD: confirm this is L3 reading L2 artifacts, no self-approval, no writes.
+
+DO NOT WRITE ANY FILES. Print to STDOUT only:
+
+VERDICT: [APPROVED|NEEDS_FIX]
+FINDINGS:
+- <P0|P1|P2> <file:line>: <description> | FIX: <suggestion>
+- ...
+END.
