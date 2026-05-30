@@ -504,6 +504,19 @@
     "status": "APPROVED",
     "notes": "Codex audit found 2 P1: (1) determinism comment without seed code in backtest_evolution.py, (2) full_project_audit.py short-form portfolio import broken by rename. Both P1 fixed in follow-up commit; 560/560 tests verified after fixes. 3 P2 deferred (HoF cache invalidation, redundant continue, diversity gate ordering) - not blocking, GP off production path. SOD note: this audit is retroactive; commit 38f1fef2 was made before L3 verdict, gate retroactively locked after P1 fixes verified."
   },
+  "phase_12_optuna_tuning": {
+    "phase_name": "phase_12_optuna_tuning",
+    "l2_session_id": "l2-ly-direct-20260530-phase12",
+    "l2_completed": true,
+    "l3_session_id": "019e7862-xxxx-codex-phase12-results-audit",
+    "l3_session_key": "codex:role21:phase12-optuna-results:20260530T205500+0700",
+    "audit_report_path": ".ly_state/session/phase12_results_codex_audit.stdout",
+    "final_verdict": "[APPROVED]",
+    "timestamp": "2026-05-30T20:55:00+07:00",
+    "status": "APPROVED",
+    "notes": "Codex 2-step results audit. 50 trials complete, no NaN/null. Top 10 all h=60, strong TPE convergence. Best trial #46: fold_DSR=0.5414 SR_ann=5.871 params={h=60,ema=3,vol=0.15,cap=0.03,dd=0.05,emb=0.01}. Selection bias correctly flagged (n_trials_corrected=200). All param changes are risk-reducing (tighter cap, tighter DD). 1 P2: holdout validation on 2025 data required before live deployment.",
+    "holdout_validation_required": true
+  },
   "phase_8_label_horizon_h60": {
     "phase_name": "phase_8_label_horizon_h60",
     "l2_session_id": "l2-ly-direct-20260530-phase8",

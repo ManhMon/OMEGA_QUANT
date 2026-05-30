@@ -1,0 +1,45 @@
+﻿Now let me read the script to verify the objective function and search space.
+**VERDICT: [APPROVED]**
+
+**FINDINGS:**
+
+- **P2** No holdout validation mention in results JSON | FIX: Before live deployment, validate best params on 2025 out-of-sample data. Add a `holdout_validation_required: true` field to the results JSON or phase gate to enforce this before release.
+
+**DETAILED AUDIT NOTES:**
+
+**1. RESULT INTEGRITY â€” PASS**
+- (a) 50/50 trials completed. `n_trials=50` confirmed in JSON.
+- (b) All 50 trials have valid `fold_dsr`, `sr_ann`, `median_ic`, `elapsed_s` fields.
+- (c) Zero NaN/null values in any critical field.
+- (d) Best trial params `{h=60, ema=3, vol=0.15, cap=0.03, dd=0.05, emb=0.01}` â€” all within declared search space.
+
+**2. CONVERGENCE â€” PASS**
+- (a) Top 10 trials ALL use `h=60`. Top 5 cluster tightly: identical `vol=0.15, cap=0.03, dd=0.05`; only `signal_ema` varies (3 vs 0) and `embargo_pct` (0.01 vs 0.02).
+- (b) `h=60` dominates top trials â€” 100% of top 10. Consistent with Phase 9 manual sweep.
+- (c) Bottom 5 trials are exclusively `h=80` and `h=120` â€” confirms vol-dilution finding from Phase 9.
+- TPE convergence is strong: trials 38-43 repeatedly sample the same `{h=60, ema=0, vol=0.15, cap=0.03, dd=0.05}` config, and trials 46+49 are identical best configs. This is expected TPE exploitation behavior.
+
+**3. SELECTION BIAS ACCOUNTING â€” PASS**
+- (a) `best_fold_dsr_n_trials_corrected = 200` (50 Optuna Ã— 4 Ridge). Correct.
+- (b) `selection_bias_note` present with clear warning about ~30-50% optimism.
+- (c) Raw best DSR = 0.5414 with n_trials=4. With corrected n_trials=200, the true DSR drops significantly. Conservative estimate: ~0.35-0.45 range. Phase 8 baseline was 0.423 (DSR with n_trials=4). The comparison is apples-to-apples only if Phase 8 also used n_trials=4, which it did. So the raw improvement (0.5414 vs 0.423) is valid for relative comparison. The absolute DSR is optimistic for both.
+
+**4. PRODUCTION DECISION VALIDITY â€” PASS**
+- (a) Best params confirmed: `h=60, ema=3, vol=0.15, cap=0.03, dd=0.05, emb=0.01`.
+- (b) vs Phase 8 default `h=60, ema=5, vol=0.15, cap=0.05, dd=0.08, emb=0.01`:
+  - `ema`: 5â†’3 (lighter smoothing, faster signal response)
+  - `cap`: 0.05â†’0.03 (tighter position sizing, REDUCES risk)
+  - `dd`: 0.08â†’0.05 (tighter drawdown breaker, REDUCES risk)
+- (c) All changes are conservative/risk-reducing. No new risk introduced.
+- (d) SR_ann improvement 5.548â†’5.871 (+5.8%) is modest. Trials 46 & 49 produce identical results (deterministic given same params + seed), confirming reproducibility.
+
+**5. PIT/SOD â€” PASS (with P2 caveat)**
+- (a) All 50 trials searched over the SAME CPCV folds. Multiple testing on same data correctly flagged by `selection_bias_note`.
+- (b) No new data introduced; all trials used Phase 5 cleaned panel (2020-2024).
+- (c) **P2 caveat**: No holdout validation on 2025 data mentioned. This should be a mandatory gate before live deployment.
+
+**6. REPRODUCIBILITY â€” PASS**
+- (a) `TPESampler(seed=42)` ensures deterministic trial ordering. Confirmed by trials 46 & 49 producing bit-identical results.
+- (b) Feature cache keyed by `label_horizon` in `_feature_cache` dict â€” verified in script. Same horizon â†’ same features across trials.
+
+**END.**

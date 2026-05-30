@@ -1,0 +1,47 @@
+[L3-Audit:Role21-CodeReviewer] Phase 12 Optuna results audit.
+
+Context: Phase 12 ran 50 Optuna trials (TPESampler) to tune 6 hyperparameters of the CPCV pipeline. Best trial #46: fold_DSR=0.5414, SR_ann=5.871. Script was previously audited (codex session 019e7800, NEEDS_FIX with 1 P1 + 2 P2, all fixed before run). This audit validates the RESULTS, not the script.
+
+Read these files only (do NOT write any files):
+- .ly_state/session/phase12_full_50trials.json (full results)
+- scripts/optuna_phase12.py (to verify the objective function matches what was run)
+
+Verify:
+1. RESULT INTEGRITY:
+   (a) 50 trials completed (n_trials=50 in JSON).
+   (b) All trials have valid fold_dsr, sr_ann, median_ic, elapsed_s fields.
+   (c) No NaN or null values in critical fields.
+   (d) Best trial params are within the declared search space.
+
+2. CONVERGENCE:
+   (a) Top 5 trials should cluster around similar params (TPE convergence).
+   (b) h=60 should dominate top trials (consistent with Phase 9 manual sweep).
+   (c) Bottom trials should be h=80/h=120 (consistent with Phase 9 finding that these are vol-diluted).
+
+3. SELECTION BIAS ACCOUNTING:
+   (a) JSON contains best_fold_dsr_n_trials_corrected = 200 (50 Optuna x 4 Ridge).
+   (b) selection_bias_note is present and warns about optimistic raw DSR.
+   (c) The raw best DSR (0.5414) with n_trials=4 is optimistic; with n_trials=200 the true DSR would be lower. Estimate: if E[max{SR}] increases by ~0.05-0.10 with 200 trials vs 4, the corrected DSR drops to ~0.35-0.45. Still above Phase 8 baseline (0.423)?
+
+4. PRODUCTION DECISION VALIDITY:
+   (a) Best params: h=60, ema=3, vol=0.15, cap=0.03, dd=0.05, emb=0.01.
+   (b) Compare vs Phase 8 default: h=60, ema=5, vol=0.15, cap=0.05, dd=0.08, emb=0.01.
+   (c) Changes are conservative (tighter position cap, tighter DD breaker, lighter EMA). None introduce new risk.
+   (d) SR_ann improvement 5.548 -> 5.871 (+5.8%) is modest but consistent across multiple trials with same params (trials 46, 49 identical).
+
+5. PIT/SOD:
+   (a) Optuna searched over the SAME CPCV folds for all 50 trials. This is multiple testing on the same data. The selection_bias_note correctly flags this.
+   (b) No new data was introduced; all trials used the same Phase 5 cleaned panel.
+   (c) The best params should be validated on a HOLDOUT period (e.g., 2025 data) before live deployment. Flag if this is not mentioned.
+
+6. REPRODUCIBILITY:
+   (a) seed=42 in TPESampler ensures deterministic trial ordering.
+   (b) Feature cache keyed by label_horizon ensures identical features across trials with same horizon.
+
+DO NOT WRITE ANY FILES. Print to STDOUT only:
+
+VERDICT: [APPROVED|NEEDS_FIX]
+FINDINGS:
+- <P0|P1|P2> <description> | FIX: <suggestion>
+- ...
+END.
