@@ -416,11 +416,13 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
             prev_w_init = np.asarray(
                 [prev_w_dict.get(c, 0.0) for c in cols], dtype=float
             )
+        cost_model_kwarg = tail_kwargs.get('cost_model') if tail_kwargs else None
         _, port_rets, br = exec_mod.apply_realistic_tc(
             adj_w, pivot_y.to_numpy(),
             daily_adv=adv_matrix,  # Phase 3.8: real ADV per (date, ticker)
             portfolio_capital_vnd=capital,
             prev_w_init=prev_w_init,
+            cost_model=cost_model_kwarg,
         )
         # Stash breakdown in module-level for run_pipeline to log
         per_date_returns._last_cost_breakdown = br
@@ -442,7 +444,15 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  signal_ema_param=0, embargo_pct_param=0.01,
                  adv_arr=None,
                  lstm_cfg=None, lstm_mod=None, feat_df=None, feat_names=None,
-                 lstm_blend=0.5):
+                 lstm_blend=0.5,
+                 ensemble_y=None, ensemble_weights=None,
+                 cost_model_override=None):
+    """Phase 10 (B): ensemble_y is an optional dict {horizon: y_array}.
+    When provided, fit one Ridge per horizon target, blend predictions by
+    ensemble_weights (default = uniform). All Ridge fits use the SAME
+    train/test split, SAME features, SAME CPCV. Only the regression
+    target differs per horizon.
+    """
     cpcv = cpcv_mod.CombinatorialPurgedKFold(n_splits=10, n_test_splits=2,
                                               embargo_pct=embargo_pct_param,
                                               label_horizon=label_horizon)
@@ -482,6 +492,41 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         X_tr = (X_tr - mu) / sd
         X_te = (X_te - mu) / sd
         r = evaluate_fold(X_tr, y[tr], X_te, y[te])
+        # Phase 10 (B): multi-horizon Ridge ensemble. Fit one Ridge per
+        # additional horizon target on the SAME (X_tr, X_te) split, then
+        # blend predictions with the primary fit using ensemble_weights.
+        # All targets share the same train/test rows, only the y values
+        # differ. PIT-safe because each Ridge still uses train-only fit.
+        if ensemble_y is not None and len(ensemble_y) > 1:
+            preds = [r["pred"]]
+            ics = {label_horizon: r["ic"]}
+            for h, y_h in ensemble_y.items():
+                # Phase 9/10/11 codex P1 fix: skip the primary horizon by
+                # comparing against label_horizon (integer match), not the
+                # never-set string "primary". Without this skip, the
+                # primary fit was double-counted in `preds`, biasing the
+                # uniform blend toward the primary horizon (e.g. 2:1
+                # instead of 1:1 with --ensemble-horizons=20,60
+                # --label-horizon=60).
+                if h == label_horizon:
+                    continue
+                rh = evaluate_fold(X_tr, y_h[tr], X_te, y_h[te])
+                preds.append(rh["pred"])
+                ics[h] = rh["ic"]
+            # Apply ensemble blend (uniform if weights not given)
+            if ensemble_weights is None or len(ensemble_weights) != len(preds):
+                w = [1.0 / len(preds)] * len(preds)
+            else:
+                tot = float(sum(ensemble_weights))
+                w = [x / tot for x in ensemble_weights]
+            blended = sum(wi * pi for wi, pi in zip(w, preds))
+            # Use primary y for IC scoring to keep apples-to-apples vs
+            # standalone runs (a fold's signal quality is judged on the
+            # ORIGINAL target, not the blended one).
+            r["pred_ridge_primary"] = r["pred"].copy()
+            r["pred"] = blended
+            r["ic_per_horizon"] = ics
+            r["ic"] = float(np.corrcoef(blended, y[te])[0, 1]) if np.std(blended) > 1e-12 else 0.0
         # Phase 4: optional LSTM ensemble. Train LSTM on the same z-scored
         # train fold, predict on test, then blend with Ridge.
         if lstm_cfg is not None and lstm_mod is not None and feat_df is not None:
@@ -557,6 +602,8 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         if exec_mod_param is not None:
             tail_kwargs["exec_mod"] = exec_mod_param
             tail_kwargs["capital_vnd"] = capital_vnd_param
+            if cost_model_override is not None:
+                tail_kwargs["cost_model"] = cost_model_override
         if top_k_param > 0:
             tail_kwargs["top_k"] = top_k_param
         if rebal_threshold_param > 0:
@@ -628,12 +675,44 @@ def main():
     p.add_argument("--lstm-hidden", type=int, default=64, help="Phase 4: LSTM hidden size")
     p.add_argument("--lstm-epochs", type=int, default=8, help="Phase 4: LSTM training epochs per fold")
     p.add_argument("--lstm-loss", choices=["mse", "ic"], default="mse", help="Phase 6: LSTM loss function (mse=regression, ic=-Pearson)")
+    p.add_argument("--ensemble-horizons", default="", help="Phase 10: comma-sep horizons for multi-Ridge ensemble (e.g. '20,60'). Empty = single horizon (--label-horizon).")
+    p.add_argument("--ensemble-weights", default="", help="Phase 10: comma-sep blend weights (default uniform). Must match --ensemble-horizons count.")
+    # Phase 11 cost-model knobs
+    p.add_argument("--slip-nonlinear-exp", type=float, default=1.0, help="Phase 11: slippage nonlinear exponent (1.0=linear legacy, 0.6=Almgren-Chriss-ish, 1.5=toxic execution)")
+    p.add_argument("--settlement-lag-days", type=float, default=0.0, help="Phase 11: HOSE T+2.5 settlement lag (0=off; 2.5=enable haircut ~1bp/day*lag)")
+    p.add_argument("--halt-limit-haircut", type=float, default=0.0, help="Phase 11: per-bar limit-lock haircut as fraction (e.g. 0.0005 = 5 bps/bar)")
+    p.add_argument("--foreign-room-haircut", type=float, default=0.0, help="Phase 11: foreign-fill haircut as fraction (e.g. 0.0002 = 2 bps/bar)")
     args = p.parse_args()
     cpcv_mod = _import("_cpcv", "omega/quant/validation/cpcv.py")
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
     feat_mod = _import("_feat", "omega/quant/evolution/feature_adapter.py")
     tail_mod = _import("_tc", "omega/quant/portfolio/tail_controls.py") if args.tail_controls else None
     exec_mod = _import("_es", "omega/quant/portfolio/execution_sim.py") if args.realistic_tc else None
+    # Phase 11: build custom VNCostModel from CLI knobs (defaults preserve
+    # backward compat). Falls through to DEFAULT_VN_COSTS if nothing set.
+    custom_cost_model = None
+    if exec_mod is not None and (
+        args.slip_nonlinear_exp != 1.0
+        or args.settlement_lag_days > 0
+        or args.halt_limit_haircut > 0
+        or args.foreign_room_haircut > 0
+    ):
+        defaults = exec_mod.DEFAULT_VN_COSTS
+        custom_cost_model = exec_mod.VNCostModel(
+            commission_buy=defaults.commission_buy,
+            commission_sell=defaults.commission_sell,
+            tax_sell=defaults.tax_sell,
+            half_spread_bps=defaults.half_spread_bps,
+            slippage_k=defaults.slippage_k,
+            slippage_nonlinear_exp=args.slip_nonlinear_exp,
+            foreign_room_cap=defaults.foreign_room_cap,
+            settlement_lag_days=args.settlement_lag_days,
+            halt_limit_haircut_pct=args.halt_limit_haircut,
+            foreign_room_haircut_pct=args.foreign_room_haircut,
+        )
+        logger.info("Phase 11 cost model: slip_exp=%.2f settle=%.1fd halt=%.4f foreign=%.4f",
+                    args.slip_nonlinear_exp, args.settlement_lag_days,
+                    args.halt_limit_haircut, args.foreign_room_haircut)
     lstm_mod = _import("_lstm", "omega/quant/models/lstm_alpha.py") if args.lstm else None
     if args.walk_forward:
         wf = load_universe_walk_forward(args.year_start, args.year_end)
@@ -650,6 +729,20 @@ def main():
     if panel.empty:
         logger.error("Empty panel"); return 1
     target = compute_target(panel, horizon=args.label_horizon)
+    # Phase 10 (B): build per-horizon target arrays for ensemble.
+    ensemble_y_dict = None
+    ensemble_weights_list = None
+    if args.ensemble_horizons.strip():
+        horizons = [int(h.strip()) for h in args.ensemble_horizons.split(",") if h.strip()]
+        ensemble_y_dict = {}
+        for h in horizons:
+            ensemble_y_dict[h] = compute_target(panel, horizon=h)
+        if args.ensemble_weights.strip():
+            ensemble_weights_list = [float(w) for w in args.ensemble_weights.split(",")]
+            assert len(ensemble_weights_list) == len(horizons), \
+                f"ensemble-weights count {len(ensemble_weights_list)} != horizons count {len(horizons)}"
+        logger.info("Ensemble horizons enabled: %s, weights=%s", horizons,
+                    ensemble_weights_list or "uniform")
     if args.shuffle_y:
         rng = np.random.default_rng(42)
         # Shuffle within each date (preserve cross-section structure but break alpha-target link)
@@ -718,6 +811,37 @@ def main():
         )
         logger.info("LSTM enabled: lookback=%d hidden=%d epochs=%d blend=%.2f loss=%s",
                     lstm_cfg.lookback, lstm_cfg.hidden_size, lstm_cfg.epochs, args.lstm_blend, args.lstm_loss)
+    # Phase 10: convert per-horizon target Series into aligned numpy arrays
+    # using the same `valid` mask as the primary y. We must compute targets
+    # BEFORE the dropna mask was applied, then re-mask to align with X.
+    ensemble_y_aligned = None
+    if ensemble_y_dict is not None:
+        ensemble_y_aligned = {}
+        for h, target_h in ensemble_y_dict.items():
+            # Build a feat_df-aligned target for this horizon, then apply
+            # the same valid mask used to build X / y.
+            target_h_aligned = target_h.reindex(panel.index)
+            target_h_full = pd.DataFrame({"target": target_h_aligned.values, "date": panel["date"].values, "ticker": panel["ticker"].values})
+            target_h_full = target_h_full.sort_values(["date", "ticker"]).reset_index(drop=True)
+            # The same `valid` mask used in feat_df construction; we re-apply
+            # by intersecting with the original feat_df rows already kept.
+            # Easiest: the X/y arrays are aligned to feat_df rows after
+            # dropna; we just need target_h at those same (date, ticker)
+            # rows. Use a join.
+            keep_keys = list(zip(feat_df["date"].values, feat_df["ticker"].values))
+            tgt_lookup = dict(zip(zip(target_h_full["date"].values, target_h_full["ticker"].values),
+                                  target_h_full["target"].values))
+            y_h = np.array([tgt_lookup.get(k, np.nan) for k in keep_keys], dtype=np.float64)
+            # Drop NaN by replacing with primary y (so this horizon contributes
+            # 0 marginal info on rows with no future return). Better: signal
+            # the row to be skipped per fold via masked Ridge fit. For
+            # simplicity here we fillna with column median of y.
+            mask_nan = np.isnan(y_h)
+            if mask_nan.any():
+                y_h = np.where(mask_nan, np.nanmedian(y_h), y_h)
+            ensemble_y_aligned[h] = y_h
+        logger.info("Ensemble target arrays built: horizons=%s sizes=%s", list(ensemble_y_aligned.keys()), [len(v) for v in ensemble_y_aligned.values()])
+
     summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
                             label_horizon=args.label_horizon * max_per_date,
                             tickers=tickers_arr, tail_mod=tail_mod,
@@ -729,7 +853,10 @@ def main():
                             lstm_cfg=lstm_cfg, lstm_mod=lstm_mod,
                             feat_df=feat_df if lstm_cfg is not None else None,
                             feat_names=feat_names if lstm_cfg is not None else None,
-                            lstm_blend=args.lstm_blend)
+                            lstm_blend=args.lstm_blend,
+                            ensemble_y=ensemble_y_aligned,
+                            ensemble_weights=ensemble_weights_list,
+                            cost_model_override=custom_cost_model)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
