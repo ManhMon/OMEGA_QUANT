@@ -1,0 +1,44 @@
+[L3-Audit:Role21-CodeReviewer] Phase 8 label horizon sweep audit (h=5/h=20/h=60).
+
+Context: Phase 8 explored priority queue vector #2 (multi-horizon). Tested h=5/h=20/h=60 standalone. h=60 wins by wide margin (SR_ann 5.55 @ 1B vs Phase 5 h=20 baseline 3.67). Capacity ceiling pushed from 50B to >100B. Falsification PASS. Vector #1 (per-date zscore on features) REVERTED after smoke showed IC collapse +0.16 -> -0.006.
+
+Read these files only (do NOT run pytest, do NOT write any files):
+- scripts/backtest_v2_cpcv.py - focus on the run_pipeline winsorize+zscore block (~lines 420-440), confirm reverted state (no per-date zscore call inside the fold loop). Confirm _per_date_zscore helper exists but is unused (dead code with rationale).
+- scripts/compare_phase8_horizons.py
+- scripts/compare_phase8_h60_capacity.py
+- scripts/compare_phase8_h60_falsification.py
+- .ly_state/session/phase8_h5_1B.json
+- .ly_state/session/phase8_h60_1B.json
+- .ly_state/session/phase8_h60_10B.json
+- .ly_state/session/phase8_h60_100B.json
+- .ly_state/session/phase8_h60_1B_shuffle.json
+- .ly_state/session/phase5_full_1B_noLSTM.json (h=20 baseline, for cross-check)
+- .ly_state/session/phase5_full_10B_noLSTM.json
+- .ly_state/session/phase5_full_100B_noLSTM.json
+- .ly_state/session/phase8_summary.md
+
+Verify:
+1. NO PIT/SOD changes in the pipeline. The only difference between h=20 and h=60 backtests is the --label-horizon CLI arg passed to compute_target(panel, horizon=N). Same data sanitization, same Ridge, same CPCV, same winsorize+zscore. Verify by inspecting the script.
+2. _per_date_zscore helper exists but is NOT called in run_pipeline loop. Confirm helper is dead code with explanatory comment.
+3. compute_target uses .shift(-horizon) -- verify forward return is computed correctly for each horizon.
+4. Numerical sanity from JSONs:
+   - h=60 1B: median_test_ic ~ 0.0340, fold_SR_ann ~ 5.548, fold_DSR ~ 0.423, n_samples should match h=20 sample count (or be slightly less due to bigger forward window dropna).
+   - h=60 100B: SR_ann ~ 4.37 (vs h=20 100B = 0.19, sign flip from negative to positive).
+   - Slippage h=60 vs h=20: lower turnover (0.04 vs 0.077) means lower slippage cost. Verify in cost_breakdown.
+5. Falsification check:
+   - h=60 real vs shuffle:
+     * median IC: real +0.034, shuffle -0.066 (sign flip)
+     * fold SR_ann: real +5.55, shuffle -0.70 (87% collapse)
+     * pool SR_ann: real +5.63, shuffle -0.57 (sign flip)
+   - Same quality of falsification as Phase 5 h=20 baseline. Confirm alpha is REAL.
+6. Multi-horizon comparison logic in scripts/compare_phase8_horizons.py: correctly loads 3 JSONs and prints SR/IC/cost. No bug.
+7. Capacity sweep logic in scripts/compare_phase8_h60_capacity.py: correctly diffs h=20 vs h=60 across 1B/10B/100B.
+8. SOD: this is L3 audit reading L2 implementation. No file writes, STDOUT only.
+
+DO NOT WRITE ANY FILES. Print to STDOUT only:
+
+VERDICT: [APPROVED|NEEDS_FIX]
+FINDINGS:
+- <P0|P1|P2> <file:line>: <description> | FIX: <suggestion>
+- ...
+END.

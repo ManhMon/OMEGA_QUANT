@@ -504,6 +504,19 @@
     "status": "APPROVED",
     "notes": "Codex audit found 2 P1: (1) determinism comment without seed code in backtest_evolution.py, (2) full_project_audit.py short-form portfolio import broken by rename. Both P1 fixed in follow-up commit; 560/560 tests verified after fixes. 3 P2 deferred (HoF cache invalidation, redundant continue, diversity gate ordering) - not blocking, GP off production path. SOD note: this audit is retroactive; commit 38f1fef2 was made before L3 verdict, gate retroactively locked after P1 fixes verified."
   },
+  "phase_8_label_horizon_h60": {
+    "phase_name": "phase_8_label_horizon_h60",
+    "l2_session_id": "l2-ly-direct-20260530-phase8",
+    "l2_completed": true,
+    "l3_session_id": "019e77d5-567f-73b0-ba72-f0e66d828228",
+    "l3_session_key": "codex:role21:phase8-label-horizon:20260530T144210+0700",
+    "audit_report_path": ".ly_state/session/phase8_l3_audit_codex.md",
+    "audit_evidence": ".ly_state/session/phase8_codex_audit.stdout",
+    "final_verdict": "[APPROVED]",
+    "timestamp": "2026-05-30T14:44:00+07:00",
+    "status": "APPROVED",
+    "notes": "Codex 2-step audit (~1.5min) BEFORE gate lock (proper SOD flow restored). All 8 verification points PASS, P2 cosmetic only. Phase 8 = label horizon sweep (h=5/h=20/h=60). Winner: h=60. SR_ann @ 1B 5.548 (vs h=20 baseline 3.671, +51%). 100B SR magnitude jumps from +0.19 to +4.37 (capacity ceiling 50B -> >100B). Falsification PASS: IC sign-flip +0.034 -> -0.066, fold SR collapse 87%. Production decision: switch label_horizon=20 -> 60."
+  },
   "phase_7_capacity_falsification": {
     "phase_name": "phase_7_capacity_falsification",
     "l2_session_id": "l2-ly-direct-20260530-phase7",
