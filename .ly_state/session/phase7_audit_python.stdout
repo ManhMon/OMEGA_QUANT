@@ -1,0 +1,26 @@
+﻿check                            result     notes
+--------------------------------------------------------------------------------
+alpha invariant                  PASS       [P2]ALPHA-INV
+capacity monotone                PASS       [P2]CAP-MONO
+slippage linear                  PASS       [P2]SLIP-LIN, [P2]SLIP-LIN, [P2]SLIP-LIN
+commission/spread invariant      PASS       [P2]COST-INV, [P2]COST-INV, [P2]COST-INV
+falsification                    PASS       [P2]FALS-SR, [P2]FALS-IC
+fold stability                   PASS       [P2]FOLD-POS
+
+FINDINGS DETAIL
+--------------------------------------------------------------------------------
+[P2] ALPHA-INV: median_test_IC identical across all capitals: 0.0173
+[P2] CAP-MONO: SR_ann monotone decreasing: ['3.671', '3.517', '3.320', '2.526', '1.779', '0.188']
+[P2] SLIP-LIN: 1B->5B: ratio 5.000 ~ expected 5.000 OK
+[P2] SLIP-LIN: 5B->10B: ratio 2.000 ~ expected 2.000 OK
+[P2] SLIP-LIN: 10B->30B: ratio 3.000 ~ expected 3.000 OK
+[P2] SLIP-LIN: 30B->50B: ratio 1.667 ~ expected 1.667 OK
+[P2] SLIP-LIN: 50B->100B: ratio 2.000 ~ expected 2.000 OK
+[P2] COST-INV: commission identical across capitals: 0.028411
+[P2] COST-INV: spread identical across capitals: 0.014206
+[P2] COST-INV: turnover identical across capitals: 14.205679
+[P2] FALS-SR: y-shuffle fold_SR collapsed to 23.9% of real OK
+[P2] FALS-IC: y-shuffle IC sign-flip or major drop: real +0.0173 -> shuf -0.0183
+[P2] FOLD-POS: 80% folds positive OK
+
+VERDICT: [APPROVED]

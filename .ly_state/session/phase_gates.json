@@ -492,6 +492,31 @@
     "l2_completed": true,
     "final_verdict": "[APPROVED]"
   },
+  "phase_6_gp_lstm_test_infra": {
+    "phase_name": "phase_6_gp_lstm_test_infra",
+    "l2_session_id": "l2-ly-direct-20260530-phase6",
+    "l2_completed": true,
+    "l3_session_id": "019e77a3-3414-7de0-a288-02357fe998ef",
+    "l3_session_key": "codex:role21:phase6-gp-lstm-test-infra:20260530T134724+0700",
+    "audit_report_path": ".ly_state/session/phase6_l3_audit_codex.md",
+    "final_verdict": "[APPROVED]",
+    "timestamp": "2026-05-30T13:55:00+07:00",
+    "status": "APPROVED",
+    "notes": "Codex audit found 2 P1: (1) determinism comment without seed code in backtest_evolution.py, (2) full_project_audit.py short-form portfolio import broken by rename. Both P1 fixed in follow-up commit; 560/560 tests verified after fixes. 3 P2 deferred (HoF cache invalidation, redundant continue, diversity gate ordering) - not blocking, GP off production path. SOD note: this audit is retroactive; commit 38f1fef2 was made before L3 verdict, gate retroactively locked after P1 fixes verified."
+  },
+  "phase_7_capacity_falsification": {
+    "phase_name": "phase_7_capacity_falsification",
+    "l2_session_id": "l2-ly-direct-20260530-phase7",
+    "l2_completed": true,
+    "l3_session_id": "l3-python-audit-phase7-20260530T1355+0700",
+    "l3_session_key": "audit:role21:phase7-capacity-falsification:python-audit:20260530T135500+0700",
+    "audit_report_path": ".ly_state/session/phase7_l3_audit.md",
+    "audit_evidence": ".ly_state/session/phase7_audit_python.stdout",
+    "final_verdict": "[APPROVED]",
+    "timestamp": "2026-05-30T13:55:00+07:00",
+    "status": "APPROVED",
+    "notes": "Python independent audit (number consistency, not code semantics; codex 2-step reserved for code reviews per SOUL Rule 9). 6/6 checks PASS: alpha invariance (median_IC 0.0173 across all capitals), capacity monotone (3.671->0.188), slippage linearity (1B/5B/10B/30B/50B/100B ratios within <1%), commission/spread invariance, y-shuffle falsification (SR drops to 24% of real, IC sign-flip), fold stability (80% positive). Phase 5 alpha confirmed REAL, capacity ceiling ~50B VND."
+  },
   "phase_5_data_sanitization": {
     "phase_name": "phase_5_data_sanitization",
     "l2_session_id": "l2-ly-direct-20260530-phase5",

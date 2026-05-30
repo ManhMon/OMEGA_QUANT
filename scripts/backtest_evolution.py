@@ -32,12 +32,22 @@ from __future__ import annotations
 
 import json
 import logging
+import random
 import sys
 from pathlib import Path
 from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
+
+# Phase 6 P1 fix (codex audit 019e77a3): set seeds at module load so
+# joblib parallel population evaluation is deterministic. The previous
+# comment in train_gp() claimed this was already done; in fact no seed
+# call existed. Set BOTH stdlib `random` (used by GeneticEngine for
+# tree generation / crossover / mutation / tournament) and numpy.random
+# (used in feature transforms).
+random.seed(42)
+np.random.seed(42)
 
 # --- Path wiring ------------------------------------------------------------
 ROOT = Path(__file__).resolve().parents[1]
@@ -308,10 +318,12 @@ def train_gp(panel_train: pd.DataFrame) -> List[GPIndividual]:
         hall_of_fame_size=10,
         diversity_threshold=0.7,
         min_observations=500,
-        # Phase 6: parallel population evaluation. joblib.Parallel(n_jobs=10)
-        # uses 10 of 12 logical cores, leaves 2 for system + pandas BLAS
-        # threads. Determinism is preserved because GP seeds (random.seed,
-        # np.random.seed) are set at module load time before evolve().
+        # Phase 6 (codex audit 019e77a3): seeds are set at module load
+        # in this script (random.seed(42); np.random.seed(42)) -- see
+        # the top of the file. With prefer='threads', joblib workers
+        # share the parent process random state, so the n_jobs=10
+        # path is deterministic given the same population_size and
+        # generations.
         n_jobs=10,
     )
     feats = features_dict(panel_train)
