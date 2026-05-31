@@ -88,5 +88,14 @@ def apply_continuous_learning_overlay(
                 last_retrain = t
                 n_retrains += 1
 
+        # Apply model predictions to generate weights (rank-based)
+        if model is not None and t < T:
+            X_t = np.nan_to_num(features_matrix[t:t+1], 0)
+            pred = model.predict(X_t)[0]
+            # Use prediction as cross-sectional score -> rank -> weight
+            # pred is scalar per bar; scale original weights by signal strength
+            signal_strength = max(0.1, min(2.0, 1.0 + pred * 10))  # Scale 0.1x to 2.0x
+            adjusted.iloc[t] = daily_weights.iloc[t] * signal_strength
+
     logger.info("Continuous learning: %d retrains over %d bars", n_retrains, T)
     return adjusted
