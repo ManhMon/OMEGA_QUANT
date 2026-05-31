@@ -57,8 +57,8 @@ class AlternativeFeatureGenerator:
         result['volume_trend'] = panel.groupby(level='symbol')['volume'].transform(lambda x: x.rolling(5).mean() / x.rolling(20).mean())
 
         # Volume-price divergence (price up but volume down = bearish divergence)
-        price_dir = panel.groupby(level='symbol')['close'].pct_change(5).apply(np.sign)
-        vol_dir = panel.groupby(level='symbol')['volume'].pct_change(5).apply(np.sign)
+        price_dir = panel.groupby(level='symbol')['close'].pct_change(5).map(np.sign)
+        vol_dir = panel.groupby(level='symbol')['volume'].pct_change(5).map(np.sign)
         result['vp_divergence'] = price_dir - vol_dir
 
         # Close Location Value (CLV) - proxy for accumulation/distribution
@@ -94,10 +94,10 @@ class AlternativeFeatureGenerator:
         # Momentum acceleration
         result['momentum_accel'] = result.groupby(level='symbol')['ret_5d'].transform(lambda x: x.diff())
 
-        # Fill NaN with 0 for features (PIT-safe: NaN means insufficient history)
+        # Leave NaN for features with insufficient history (PIT-safe).
+        # Downstream consumers (screening, backtest) handle NaN via dropna/corr(nan_policy).
+        # Do NOT fill with 0 — it biases cross-sectional ranks during warm-up.
         feature_cols = [c for c in result.columns if c not in panel.columns]
-        result[feature_cols] = result[feature_cols].fillna(0)
-
         logger.info("Generated %d alternative features", len(feature_cols))
         return result
 

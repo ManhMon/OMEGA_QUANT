@@ -105,6 +105,8 @@ for horizon in horizons:
     target_col = f'fwd_ret_{horizon}'
     val_h = val_panel.copy()
     val_h[target_col] = val_h.groupby(level='symbol')['close'].pct_change(horizon).shift(-horizon)
+    # dropna removes rows where fwd_ret is NaN (tail rows) — no look-ahead bias
+    # because IC is only computed on rows where both signal (T-1) and target exist
     val_h = val_h.dropna(subset=[target_col])
 
     train_h = train_panel.copy()
