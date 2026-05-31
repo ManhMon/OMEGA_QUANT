@@ -1,0 +1,23 @@
+{
+  "phase": "unified_feature_adapter_v31",
+  "status": "APPROVED",
+  "l3_session_id": "brisk-valley",
+  "l3_session_key": "exec:brisk-valley:pid:5036",
+  "final_verdict": "[APPROVED]",
+  "auditor_role": "Role21-CodeReviewer",
+  "platform": "Codex",
+  "timestamp": "2026-05-31T16:31:00Z",
+  "pit_safety": "PASS",
+  "issues_summary": "2x LOW (HRP walk-forward, index assertion). No blockers.",
+  "test_results": {
+    "signals": 20,
+    "total_return": "50.52%",
+    "sharpe": 1.1106,
+    "wf_avg_sharpe": 1.6679,
+    "features_screened": 165
+  },
+  "files_audited": [
+    "src/omega/quant/evolution/unified_feature_adapter.py",
+    "scripts/backtest_v31_unified.py"
+  ]
+}
