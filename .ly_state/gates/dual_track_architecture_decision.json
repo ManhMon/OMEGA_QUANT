@@ -1,0 +1,30 @@
+{
+  "decision": "DUAL_TRACK_ARCHITECTURE",
+  "timestamp": "2026-05-31T17:46:00Z",
+  "reviewers": ["Role06-SystemArchitect", "Role21-CodeReviewer"],
+  "verdict": "APPROVED",
+  "summary": "Keep Pipeline A (CPCV, production) and Pipeline B (screening, research) SEPARATE. Selective module promotion via gates.",
+  "pipeline_a": {
+    "script": "backtest_v2_cpcv.py",
+    "status": "PRODUCTION (holdout validated, paper trading)",
+    "sr_ann": 11.84,
+    "approach": "Ridge + CPCV(10,2) + Optuna + 114 alphas + vol-target"
+  },
+  "pipeline_b": {
+    "script": "backtest_v31_unified.py",
+    "status": "RESEARCH (SOD approved, not holdout validated)",
+    "sharpe": 1.11,
+    "approach": "170 features screening + HRP + Regime + 20 signals"
+  },
+  "integration_plan": [
+    {"phase": 1, "module": "RegimeDetector -> tail_controls.py", "risk": "LOW", "timeline": "immediate"},
+    {"phase": 2, "module": "HRP -> ensemble weights", "risk": "MEDIUM", "timeline": "needs new holdout"},
+    {"phase": 3, "module": "UnifiedFeatureAdapter -> expand alphas", "risk": "HIGH", "timeline": "needs full re-validation"},
+    {"phase": 4, "module": "ParallelBacktestRunner/rank-normalize", "risk": "NEVER", "timeline": "A's execution sim superior"}
+  ],
+  "risk_warnings": [
+    "Do NOT contaminate Pipeline A holdout (2025) with Pipeline B research",
+    "RegimeDetector needs hysteresis (5-day min hold) to avoid whipsaw",
+    "HRP lookback needs 120+ for 167-ticker universe"
+  ]
+}
