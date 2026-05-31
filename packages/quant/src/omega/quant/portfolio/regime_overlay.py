@@ -136,6 +136,10 @@ def apply_regime_overlay(
     daily_weights: pd.DataFrame,
     market_returns: np.ndarray,
     hysteresis_days: int = 5,
+    dd_threshold: float = -0.10,
+    bull_exposure: float = 1.1,
+    bear_exposure: float = 0.5,
+    sideways_exposure: float = 0.8,
 ) -> pd.DataFrame:
     """
     Apply regime exposure overlay to portfolio weights.
@@ -144,11 +148,24 @@ def apply_regime_overlay(
     Args:
         daily_weights: T x N DataFrame of raw weights
         market_returns: T-length array of market (equal-weight) returns
+        hysteresis_days: Min days to hold regime before switching
+        dd_threshold: Drawdown level to trigger BEAR
+        bull_exposure: Exposure multiplier in BULL regime
+        bear_exposure: Exposure multiplier in BEAR regime
+        sideways_exposure: Exposure multiplier in SIDEWAYS regime
 
     Returns:
         Regime-adjusted weights (same shape).
     """
-    exposures = compute_regime_exposure(market_returns, hysteresis_days=hysteresis_days)
+    exposures = compute_regime_exposure(
+        market_returns,
+        dd_threshold=dd_threshold,
+        hysteresis_days=hysteresis_days,
+    )
+    # Override exposure levels
+    exposures = np.where(exposures > 1.0, bull_exposure, exposures)
+    exposures = np.where(exposures < 0.6, bear_exposure, exposures)
+    exposures = np.where((exposures >= 0.6) & (exposures <= 1.0), sideways_exposure, exposures)
 
     # Scale weights by exposure multiplier per bar
     adjusted = daily_weights.copy()

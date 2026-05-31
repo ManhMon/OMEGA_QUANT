@@ -400,7 +400,18 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
             # Compute equal-weight market returns from pivot_y
             market_rets = pivot_y.to_numpy().mean(axis=1)
             hysteresis = tail_kwargs.get('regime_hysteresis', 5)
-            pivot_w = regime_mod.apply_regime_overlay(pivot_w, market_rets, hysteresis_days=hysteresis)
+            dd_threshold = tail_kwargs.get('regime_dd_threshold', -0.10)
+            bull_exp = tail_kwargs.get('regime_bull_exposure', 1.1)
+            bear_exp = tail_kwargs.get('regime_bear_exposure', 0.5)
+            side_exp = tail_kwargs.get('regime_sideways_exposure', 0.8)
+            pivot_w = regime_mod.apply_regime_overlay(
+                pivot_w, market_rets,
+                hysteresis_days=hysteresis,
+                dd_threshold=dd_threshold,
+                bull_exposure=bull_exp,
+                bear_exposure=bear_exp,
+                sideways_exposure=side_exp,
+            )
     adj_w, port_rets = tail_mod.apply_tail_controls(
         pivot_w, pivot_y.to_numpy(),
         target_vol_ann=0.15, max_abs_weight=0.05,
@@ -456,7 +467,11 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  lstm_blend=0.5,
                  ensemble_y=None, ensemble_weights=None,
                  cost_model_override=None,
-                 regime_mod_param=None, regime_hysteresis_param=5):
+                 regime_mod_param=None, regime_hysteresis_param=5,
+                 regime_dd_threshold_param=-0.10,
+                 regime_bear_exposure_param=0.5,
+                 regime_bull_exposure_param=1.1,
+                 regime_sideways_exposure_param=0.8):
     """Phase 10 (B): ensemble_y is an optional dict {horizon: y_array}.
     When provided, fit one Ridge per horizon target, blend predictions by
     ensemble_weights (default = uniform). All Ridge fits use the SAME
@@ -623,6 +638,10 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
             tail_kwargs["regime_enabled"] = True
             tail_kwargs["regime_mod"] = regime_mod_param
             tail_kwargs["regime_hysteresis"] = regime_hysteresis_param
+            tail_kwargs["regime_dd_threshold"] = regime_dd_threshold_param
+            tail_kwargs["regime_bear_exposure"] = regime_bear_exposure_param
+            tail_kwargs["regime_bull_exposure"] = regime_bull_exposure_param
+            tail_kwargs["regime_sideways_exposure"] = regime_sideways_exposure_param
         if not tail_kwargs:
             tail_kwargs = None
         rets = per_date_returns(r["pred"], y[te], dates[te],
@@ -699,6 +718,10 @@ def main():
     p.add_argument("--foreign-room-haircut", type=float, default=0.0, help="Phase 11: foreign-fill haircut as fraction (e.g. 0.0002 = 2 bps/bar)")
     p.add_argument("--regime-overlay", action="store_true", help="Phase 13: apply RegimeDetector exposure overlay before vol-target (bull=1.1x, bear=0.5x, sideways=0.8x)")
     p.add_argument("--regime-hysteresis", type=int, default=5, help="Phase 13: minimum days to hold regime before switching (default 5)")
+    p.add_argument("--regime-dd-threshold", type=float, default=-0.10, help="Phase 13: drawdown threshold for BEAR detection (default -0.10)")
+    p.add_argument("--regime-bear-exposure", type=float, default=0.5, help="Phase 13: exposure in BEAR regime (default 0.5)")
+    p.add_argument("--regime-bull-exposure", type=float, default=1.1, help="Phase 13: exposure in BULL regime (default 1.1)")
+    p.add_argument("--regime-sideways-exposure", type=float, default=0.8, help="Phase 13: exposure in SIDEWAYS regime (default 0.8)")
     args = p.parse_args()
     cpcv_mod = _import("_cpcv", "omega/quant/validation/cpcv.py")
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
@@ -881,7 +904,11 @@ def main():
                             ensemble_weights=ensemble_weights_list,
                             cost_model_override=custom_cost_model,
                             regime_mod_param=regime_mod,
-                            regime_hysteresis_param=args.regime_hysteresis)
+                            regime_hysteresis_param=args.regime_hysteresis,
+                            regime_dd_threshold_param=args.regime_dd_threshold,
+                            regime_bear_exposure_param=args.regime_bear_exposure,
+                            regime_bull_exposure_param=args.regime_bull_exposure,
+                            regime_sideways_exposure_param=args.regime_sideways_exposure)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
