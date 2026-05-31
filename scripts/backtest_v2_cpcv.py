@@ -392,6 +392,15 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
     # BT-2 fix: seed warmup_history with TRAIN portfolio returns to avoid
     # 60-bar scale=1.0 warmup at start of every test fold.
     warmup = tail_kwargs.get('train_pre_lev_history') if tail_kwargs else None
+    # Phase 13: Regime overlay (applied BEFORE vol-target, PIT-safe)
+    regime_enabled = tail_kwargs.get('regime_enabled', False) if tail_kwargs else False
+    if regime_enabled:
+        regime_mod = tail_kwargs.get('regime_mod')
+        if regime_mod is not None:
+            # Compute equal-weight market returns from pivot_y
+            market_rets = pivot_y.to_numpy().mean(axis=1)
+            hysteresis = tail_kwargs.get('regime_hysteresis', 5)
+            pivot_w = regime_mod.apply_regime_overlay(pivot_w, market_rets, hysteresis_days=hysteresis)
     adj_w, port_rets = tail_mod.apply_tail_controls(
         pivot_w, pivot_y.to_numpy(),
         target_vol_ann=0.15, max_abs_weight=0.05,
@@ -446,7 +455,8 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  lstm_cfg=None, lstm_mod=None, feat_df=None, feat_names=None,
                  lstm_blend=0.5,
                  ensemble_y=None, ensemble_weights=None,
-                 cost_model_override=None):
+                 cost_model_override=None,
+                 regime_mod_param=None, regime_hysteresis_param=5):
     """Phase 10 (B): ensemble_y is an optional dict {horizon: y_array}.
     When provided, fit one Ridge per horizon target, blend predictions by
     ensemble_weights (default = uniform). All Ridge fits use the SAME
@@ -608,6 +618,11 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
             tail_kwargs["top_k"] = top_k_param
         if rebal_threshold_param > 0:
             tail_kwargs["rebal_threshold"] = rebal_threshold_param
+        # Phase 13: regime overlay
+        if regime_mod_param is not None:
+            tail_kwargs["regime_enabled"] = True
+            tail_kwargs["regime_mod"] = regime_mod_param
+            tail_kwargs["regime_hysteresis"] = regime_hysteresis_param
         if not tail_kwargs:
             tail_kwargs = None
         rets = per_date_returns(r["pred"], y[te], dates[te],
@@ -682,6 +697,8 @@ def main():
     p.add_argument("--settlement-lag-days", type=float, default=0.0, help="Phase 11: HOSE T+2.5 settlement lag (0=off; 2.5=enable haircut ~1bp/day*lag)")
     p.add_argument("--halt-limit-haircut", type=float, default=0.0, help="Phase 11: per-bar limit-lock haircut as fraction (e.g. 0.0005 = 5 bps/bar)")
     p.add_argument("--foreign-room-haircut", type=float, default=0.0, help="Phase 11: foreign-fill haircut as fraction (e.g. 0.0002 = 2 bps/bar)")
+    p.add_argument("--regime-overlay", action="store_true", help="Phase 13: apply RegimeDetector exposure overlay before vol-target (bull=1.1x, bear=0.5x, sideways=0.8x)")
+    p.add_argument("--regime-hysteresis", type=int, default=5, help="Phase 13: minimum days to hold regime before switching (default 5)")
     args = p.parse_args()
     cpcv_mod = _import("_cpcv", "omega/quant/validation/cpcv.py")
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
@@ -842,6 +859,12 @@ def main():
             ensemble_y_aligned[h] = y_h
         logger.info("Ensemble target arrays built: horizons=%s sizes=%s", list(ensemble_y_aligned.keys()), [len(v) for v in ensemble_y_aligned.values()])
 
+    # Phase 13: regime overlay module
+    regime_mod = None
+    if args.regime_overlay:
+        regime_mod = _import("_regime", "omega/quant/portfolio/regime_overlay.py")
+        logger.info("Phase 13: Regime overlay enabled (hysteresis=%d days)", args.regime_hysteresis)
+
     summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
                             label_horizon=args.label_horizon * max_per_date,
                             tickers=tickers_arr, tail_mod=tail_mod,
@@ -856,7 +879,9 @@ def main():
                             lstm_blend=args.lstm_blend,
                             ensemble_y=ensemble_y_aligned,
                             ensemble_weights=ensemble_weights_list,
-                            cost_model_override=custom_cost_model)
+                            cost_model_override=custom_cost_model,
+                            regime_mod_param=regime_mod,
+                            regime_hysteresis_param=args.regime_hysteresis)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
