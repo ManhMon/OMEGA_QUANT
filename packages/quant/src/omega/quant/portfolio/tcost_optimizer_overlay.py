@@ -41,15 +41,15 @@ def apply_cost_aware_rebalance(
     # Trade threshold as fraction
     threshold = min_trade_threshold_bps / 10000.0
 
-    optimized = new_weights.copy()
+    # Vectorized: compute delta, suppress small trades
+    delta = new_weights - prev_weights
+    abs_delta = delta.abs()
+    suppress_mask = abs_delta < threshold
 
-    for i in range(1, len(optimized)):
-        delta = optimized.iloc[i] - prev_weights.iloc[i]
-        abs_delta = delta.abs()
-
-        # Suppress trades below threshold
-        suppress_mask = abs_delta < threshold
-        optimized.iloc[i, suppress_mask.values] = prev_weights.iloc[i, suppress_mask.values]
+    # Where delta is below threshold, keep previous weights
+    optimized = new_weights.where(~suppress_mask, prev_weights)
+    # First row always uses new_weights (no prev)
+    optimized.iloc[0] = new_weights.iloc[0]
 
     # Re-normalize rows
     row_sums = optimized.sum(axis=1).replace(0, 1.0)

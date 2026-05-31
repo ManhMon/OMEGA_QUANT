@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -93,21 +94,19 @@ def apply_adaptive_sizing(
     Returns:
         Adjusted weights with tier-appropriate constraints.
     """
-    from typing import Optional
     params = get_adaptive_params(capital_vnd)
     max_w = params['max_weight']
 
     adjusted = daily_weights.clip(upper=max_w)
 
-    # Liquidity constraint: position < 5% of ADV
+    # Liquidity constraint: position < 5% of ADV (vectorized)
     if adv_series is not None:
-        for col in adjusted.columns:
-            if col in adv_series.index:
-                adv = adv_series[col]
-                if adv > 0:
-                    max_position_vnd = 0.05 * adv  # Max 5% of daily volume
-                    max_w_liq = max_position_vnd / capital_vnd
-                    adjusted[col] = adjusted[col].clip(upper=min(max_w, max_w_liq))
+        max_w_liq = (0.05 * adv_series) / capital_vnd
+        max_w_liq = max_w_liq.clip(upper=max_w)
+        # Only apply to columns present in both
+        common_cols = adjusted.columns.intersection(max_w_liq.index)
+        if len(common_cols) > 0:
+            adjusted[common_cols] = adjusted[common_cols].clip(upper=max_w_liq[common_cols], axis=1)
 
     # Re-normalize
     row_sums = adjusted.sum(axis=1).replace(0, 1.0)

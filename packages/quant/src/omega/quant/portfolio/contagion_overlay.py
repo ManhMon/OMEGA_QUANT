@@ -68,7 +68,7 @@ def compute_correlation_spike_exposure(
     is_spike = corr_series > spike_level
 
     # Apply exposure reduction during spikes
-    exposures[is_spike.values == True] = spike_exposure
+    exposures[is_spike.fillna(False).values] = spike_exposure
 
     n_spikes = is_spike.sum()
     logger.info("Contagion overlay: %d/%d spike bars (%.1f%%), mean_corr=%.4f, threshold=%.4f",
