@@ -1,0 +1,10 @@
+exclude:
+  - archive/
+  - OMEGA_QUANT/
+  - vnstock-agent-guide/
+  - node_modules/
+  - .pytest_cache/
+  - __pycache__/
+  - pytest_temp/
+  - .ly_state/
+  - .git/

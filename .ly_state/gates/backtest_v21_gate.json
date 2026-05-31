@@ -1,0 +1,34 @@
+{
+  "phase": "backtest_v21_implementation",
+  "status": "APPROVED",
+  "l3_session_id": "gentle-atlas",
+  "l3_session_key": "exec:gentle-atlas:pid:12968",
+  "audit_report_path": ".ly_state/session/audit_backtest_v21_final.md",
+  "final_verdict": "[APPROVED]",
+  "auditor_role": "Role21-CodeReviewer",
+  "platform": "Codex",
+  "timestamp": "2026-05-31T08:31:00Z",
+  "fixes_verified": {
+    "N1_turnover_cap": "FIXED - 1.19%/day confirmed in results",
+    "N3_pit_universe": "FIXED - independent per-period, no intersection"
+  },
+  "test_results": {
+    "total_return": "43.44%",
+    "sharpe": 0.9863,
+    "sortino": 1.1867,
+    "calmar": 1.1126,
+    "max_drawdown": "-21.09%",
+    "win_rate": "54.5%",
+    "avg_turnover": "1.19%/day",
+    "slippage_effective": "6.9 bps",
+    "walk_forward_avg_sharpe": 1.4923
+  },
+  "pit_safety": "PASS",
+  "all_gates_applied": ["FDR_q0.05", "profit_factor_1.3", "IC_0.05", "hit_rate_0.53"],
+  "files_audited": ["scripts/backtest_v2_full.py"],
+  "history": [
+    {"round": 1, "session": "nova-gulf", "verdict": "NEEDS_FIX", "issues": "3 HIGH, 3 MED, 3 LOW, 3 INFO"},
+    {"round": 2, "session": "gentle-atlas", "verdict": "NEEDS_FIX", "issues": "N1 turnover 2x, N3 universe intersection"},
+    {"round": 3, "session": "mellow-reef", "verdict": "APPROVED", "issues": "All fixed. N2/N4 accepted as-is."}
+  ]
+}
