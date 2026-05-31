@@ -41,22 +41,26 @@ def apply_cost_aware_rebalance(
     # Trade threshold as fraction
     threshold = min_trade_threshold_bps / 10000.0
 
+    # Fill NaN with 0 to prevent float overflow/garbage on difference
+    w_new = new_weights.fillna(0.0)
+    w_prev = prev_weights.fillna(0.0)
+
     # Vectorized: compute delta, suppress small trades
-    delta = new_weights - prev_weights
+    delta = w_new - w_prev
     abs_delta = delta.abs()
     suppress_mask = abs_delta < threshold
 
     # Where delta is below threshold, keep previous weights
-    optimized = new_weights.where(~suppress_mask, prev_weights)
+    optimized = w_new.where(~suppress_mask, w_prev)
     # First row always uses new_weights (no prev)
-    optimized.iloc[0] = new_weights.iloc[0]
+    optimized.iloc[0] = w_new.iloc[0]
 
     # Re-normalize rows
     row_sums = optimized.sum(axis=1).replace(0, 1.0)
     optimized = optimized.div(row_sums, axis=0)
 
     # Stats
-    original_turnover = (new_weights.diff().abs().sum(axis=1)).mean()
+    original_turnover = (w_new.diff().abs().sum(axis=1)).mean()
     optimized_turnover = (optimized.diff().abs().sum(axis=1)).mean()
     reduction = (1 - optimized_turnover / original_turnover) * 100 if original_turnover > 0 else 0
 
