@@ -157,23 +157,21 @@ def apply_regime_overlay(
     Returns:
         Regime-adjusted weights (same shape).
     """
+    # Override exposure levels based on regime classification
     exposures = compute_regime_exposure(
         market_returns,
         dd_threshold=dd_threshold,
         hysteresis_days=hysteresis_days,
     )
-    # Override exposure levels
-    exposures = np.where(exposures > 1.0, bull_exposure, exposures)
-    exposures = np.where(exposures < 0.6, bear_exposure, exposures)
-    exposures = np.where((exposures >= 0.6) & (exposures <= 1.0), sideways_exposure, exposures)
+    # Remap to configured exposure levels
+    final_exposures = np.where(exposures > 1.0, bull_exposure,
+                      np.where(exposures < 0.6, bear_exposure, sideways_exposure))
 
-    # Scale weights by exposure multiplier per bar
-    adjusted = daily_weights.copy()
-    for t in range(len(adjusted)):
-        adjusted.iloc[t] = adjusted.iloc[t] * exposures[t]
+    # Vectorized multiply (P1 fix: no iloc loop)
+    adjusted = daily_weights.multiply(final_exposures, axis=0)
 
     logger.info("Regime overlay applied: mean_exposure=%.3f, bull_bars=%d, bear_bars=%d, sideways_bars=%d",
-                exposures.mean(),
+                final_exposures.mean(),
                 (exposures > 1.0).sum(),
                 (exposures < 0.6).sum(),
                 ((exposures >= 0.6) & (exposures <= 1.0)).sum())
