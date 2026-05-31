@@ -396,7 +396,22 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
     regime_enabled = tail_kwargs.get('regime_enabled', False) if tail_kwargs else False
     if regime_enabled:
         regime_mod = tail_kwargs.get('regime_mod')
-        if regime_mod is not None:
+        regime_hmm_mod = tail_kwargs.get('regime_hmm_mod')
+        if regime_hmm_mod is not None:
+            # Phase 13b: HMM regime overlay
+            market_rets = pivot_y.to_numpy().mean(axis=1)
+            bear_exp = tail_kwargs.get('regime_bear_exposure', 0.5)
+            bull_exp = tail_kwargs.get('regime_bull_exposure', 1.1)
+            side_exp = tail_kwargs.get('regime_sideways_exposure', 0.8)
+            retrain = tail_kwargs.get('regime_hmm_retrain', 60)
+            pivot_w = regime_hmm_mod.apply_hmm_regime_overlay(
+                pivot_w, market_rets,
+                bear_exposure=bear_exp,
+                bull_exposure=bull_exp,
+                sideways_exposure=side_exp,
+                retrain_every=retrain,
+            )
+        elif regime_mod is not None:
             # Compute equal-weight market returns from pivot_y
             market_rets = pivot_y.to_numpy().mean(axis=1)
             hysteresis = tail_kwargs.get('regime_hysteresis', 5)
@@ -467,11 +482,13 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  lstm_blend=0.5,
                  ensemble_y=None, ensemble_weights=None,
                  cost_model_override=None,
-                 regime_mod_param=None, regime_hysteresis_param=5,
+                 regime_mod_param=None, regime_hmm_mod_param=None,
+                 regime_hysteresis_param=5,
                  regime_dd_threshold_param=-0.10,
                  regime_bear_exposure_param=0.5,
                  regime_bull_exposure_param=1.1,
-                 regime_sideways_exposure_param=0.8):
+                 regime_sideways_exposure_param=0.8,
+                 regime_hmm_retrain_param=60):
     """Phase 10 (B): ensemble_y is an optional dict {horizon: y_array}.
     When provided, fit one Ridge per horizon target, blend predictions by
     ensemble_weights (default = uniform). All Ridge fits use the SAME
@@ -634,14 +651,16 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
         if rebal_threshold_param > 0:
             tail_kwargs["rebal_threshold"] = rebal_threshold_param
         # Phase 13: regime overlay
-        if regime_mod_param is not None:
+        if regime_mod_param is not None or regime_hmm_mod_param is not None:
             tail_kwargs["regime_enabled"] = True
             tail_kwargs["regime_mod"] = regime_mod_param
+            tail_kwargs["regime_hmm_mod"] = regime_hmm_mod_param
             tail_kwargs["regime_hysteresis"] = regime_hysteresis_param
             tail_kwargs["regime_dd_threshold"] = regime_dd_threshold_param
             tail_kwargs["regime_bear_exposure"] = regime_bear_exposure_param
             tail_kwargs["regime_bull_exposure"] = regime_bull_exposure_param
             tail_kwargs["regime_sideways_exposure"] = regime_sideways_exposure_param
+            tail_kwargs["regime_hmm_retrain"] = regime_hmm_retrain_param
         if not tail_kwargs:
             tail_kwargs = None
         rets = per_date_returns(r["pred"], y[te], dates[te],
@@ -722,6 +741,8 @@ def main():
     p.add_argument("--regime-bear-exposure", type=float, default=0.5, help="Phase 13: exposure in BEAR regime (default 0.5)")
     p.add_argument("--regime-bull-exposure", type=float, default=1.1, help="Phase 13: exposure in BULL regime (default 1.1)")
     p.add_argument("--regime-sideways-exposure", type=float, default=0.8, help="Phase 13: exposure in SIDEWAYS regime (default 0.8)")
+    p.add_argument("--regime-hmm", action="store_true", help="Phase 13b: use HMM regime detector instead of simple MA/vol rules")
+    p.add_argument("--regime-hmm-retrain", type=int, default=60, help="Phase 13b: retrain HMM every N bars (default 60)")
     args = p.parse_args()
     cpcv_mod = _import("_cpcv", "omega/quant/validation/cpcv.py")
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
@@ -884,9 +905,14 @@ def main():
 
     # Phase 13: regime overlay module
     regime_mod = None
+    regime_hmm_mod = None
     if args.regime_overlay:
-        regime_mod = _import("_regime", "omega/quant/portfolio/regime_overlay.py")
-        logger.info("Phase 13: Regime overlay enabled (hysteresis=%d days)", args.regime_hysteresis)
+        if args.regime_hmm:
+            regime_hmm_mod = _import("_regime_hmm", "omega/quant/portfolio/hmm_regime_overlay.py")
+            logger.info("Phase 13b: HMM Regime overlay enabled (retrain=%d bars)", args.regime_hmm_retrain)
+        else:
+            regime_mod = _import("_regime", "omega/quant/portfolio/regime_overlay.py")
+            logger.info("Phase 13: Regime overlay enabled (hysteresis=%d days)", args.regime_hysteresis)
 
     summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
                             label_horizon=args.label_horizon * max_per_date,
@@ -904,11 +930,13 @@ def main():
                             ensemble_weights=ensemble_weights_list,
                             cost_model_override=custom_cost_model,
                             regime_mod_param=regime_mod,
+                            regime_hmm_mod_param=regime_hmm_mod,
                             regime_hysteresis_param=args.regime_hysteresis,
                             regime_dd_threshold_param=args.regime_dd_threshold,
                             regime_bear_exposure_param=args.regime_bear_exposure,
                             regime_bull_exposure_param=args.regime_bull_exposure,
-                            regime_sideways_exposure_param=args.regime_sideways_exposure)
+                            regime_sideways_exposure_param=args.regime_sideways_exposure,
+                            regime_hmm_retrain_param=args.regime_hmm_retrain)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:
