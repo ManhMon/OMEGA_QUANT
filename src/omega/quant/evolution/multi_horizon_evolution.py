@@ -137,6 +137,8 @@ class MultiHorizonEvolution:
         for alpha in all_alphas:
             try:
                 sig = alpha.genome.evaluate_vectorized(val_panel)
+                # Explicit T-1 lag guard (PIT safety - do not rely on pipeline internals)
+                sig = enforce_t_minus_1_lag(sig)
                 if sig.std() < 1e-8:
                     continue
 

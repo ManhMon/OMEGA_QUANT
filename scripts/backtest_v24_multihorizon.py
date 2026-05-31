@@ -105,17 +105,26 @@ logger.info("Multi-horizon result: %d diverse alphas from %s horizons", n_alphas
 
 # FDR correction (q=0.10 for ensemble)
 if n_alphas > 1:
-    logger.info("Applying FDR (BH q=0.10)...")
-    # Need target for each alpha's horizon - use fwd_ret_5 as common benchmark
-    val_with_target = val_panel.copy()
-    val_with_target['fwd_ret_5'] = val_with_target.groupby(level='symbol')['close'].pct_change(5).shift(-5)
-    val_with_target = val_with_target.dropna(subset=['fwd_ret_5'])
+    logger.info("Applying FDR (BH q=0.10) with per-horizon targets...")
+    val_with_targets = val_panel.copy()
+    for h in [1, 3, 5, 10, 20]:
+        val_with_targets[f'fwd_ret_{h}'] = val_with_targets.groupby(level='symbol')['close'].pct_change(h).shift(-h)
 
     p_values = []
     for alpha in final_alphas:
         try:
-            sig = alpha.genome.evaluate_vectorized(val_with_target)
-            tgt = val_with_target['fwd_ret_5']
+            # Extract horizon from expression prefix H{N}d:
+            expr = alpha.expression
+            horizon = 5  # default
+            if expr.startswith('H') and 'd:' in expr:
+                try:
+                    horizon = int(expr.split('d:')[0][1:])
+                except ValueError:
+                    pass
+            target_col = f'fwd_ret_{horizon}'
+            val_h = val_with_targets.dropna(subset=[target_col])
+            sig = alpha.genome.evaluate_vectorized(val_h)
+            tgt = val_h[target_col]
             ci = sig.index.intersection(tgt.index)
             _, pval = stats.spearmanr(sig.loc[ci].values, tgt.loc[ci].values, nan_policy='omit')
             p_values.append(pval if not np.isnan(pval) else 1.0)
@@ -132,6 +141,34 @@ if n_alphas > 1:
 if not final_alphas:
     logger.error("No alphas survived. Exiting.")
     sys.exit(1)
+
+# Profit factor gate (>= 1.3)
+logger.info("Applying profit factor gate (>= 1.3)...")
+pf_survivors = []
+val_with_5d = val_panel.copy()
+val_with_5d['fwd_ret_5'] = val_with_5d.groupby(level='symbol')['close'].pct_change(5).shift(-5)
+val_with_5d = val_with_5d.dropna(subset=['fwd_ret_5'])
+for alpha in final_alphas:
+    try:
+        sig = alpha.genome.evaluate_vectorized(val_with_5d)
+        ret = val_with_5d['fwd_ret_5']
+        ci = sig.index.intersection(ret.index)
+        aligned_ret = ret.loc[ci] * np.sign(sig.loc[ci])
+        gains = aligned_ret[aligned_ret > 0].sum()
+        losses = abs(aligned_ret[aligned_ret < 0].sum())
+        pf = gains / losses if losses > 0 else 999.0
+        if pf >= 1.3:
+            pf_survivors.append(alpha)
+            logger.info("  PASS PF=%.2f | %s", pf, alpha.expression[:60])
+        else:
+            logger.info("  FAIL PF=%.2f | %s", pf, alpha.expression[:60])
+    except Exception:
+        pf_survivors.append(alpha)  # Keep if can't evaluate
+
+if pf_survivors:
+    final_alphas = pf_survivors
+else:
+    logger.warning("No alphas passed PF>=1.3. Keeping FDR survivors.")
 
 n_alphas = len(final_alphas)
 logger.info("FINAL ENSEMBLE: %d alphas", n_alphas)
