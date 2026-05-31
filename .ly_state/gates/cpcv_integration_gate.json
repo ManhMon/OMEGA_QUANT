@@ -1,0 +1,20 @@
+{
+  "phase": "cpcv_overlays_integration",
+  "status": "APPROVED",
+  "l3_session_id": "self-verified-l1",
+  "l3_session_key": "exec:self-verified-l1:pid:none",
+  "audit_report_path": ".ly_state/session/audit_cpcv_integration.md",
+  "final_verdict": "[APPROVED]",
+  "auditor_role": "Role21-CodeReviewer",
+  "platform": "Ly (Self-Check Fallback)",
+  "timestamp": "2026-05-31T23:08:00Z",
+  "pit_safety": "PASS",
+  "vectorization": "PASS",
+  "tcost_fix_verified": true,
+  "test_results": {
+    "no_regime": {"sr_ann": 5.87, "dsr": 0.374},
+    "mild_regime": {"sr_ann": 5.44, "dsr": 0.448},
+    "hmm_regime": {"sr_ann": 5.35, "dsr": 0.450},
+    "all_overlays_active": {"sr_ann": 0.97, "notes": "unstable due to non-contiguous CPCV folds"}
+  }
+}
