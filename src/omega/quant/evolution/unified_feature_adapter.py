@@ -97,6 +97,51 @@ class UnifiedFeatureAdapter:
             except Exception as e:
                 logger.warning("ultimate_alpha_arsenal failed: %s", e)
 
+        # 4. Microstructure alphas (P2 wire)
+        try:
+            from omega.quant.market_microstructure import compute_microstructure_alphas
+            flat = result.reset_index()
+            flat.columns = ['date', 'ticker'] + list(flat.columns[2:])
+            required = ['date', 'ticker', 'open', 'high', 'low', 'close', 'volume']
+            if all(c in flat.columns for c in required):
+                micro_df = compute_microstructure_alphas(flat[required], symbol_col='ticker')
+                micro_cols = [c for c in micro_df.columns if c.startswith('micro_') or c.startswith('alpha_micro')]
+                if not micro_cols:
+                    micro_cols = [c for c in micro_df.columns if c not in required]
+                if micro_cols:
+                    micro_df = micro_df.set_index(['date', 'ticker'])[micro_cols]
+                    micro_df.index.names = ['date', 'symbol']
+                    # Only add columns not already present
+                    new_cols = [c for c in micro_cols if c not in result.columns]
+                    if new_cols:
+                        result = result.join(micro_df[new_cols], how='left')
+                        self._arsenal_features.extend(new_cols)
+                        logger.info("Microstructure alphas: +%d", len(new_cols))
+        except Exception as e:
+            logger.debug("Microstructure alphas skipped: %s", e)
+
+        # 5. Macro alphas (P2 wire)
+        try:
+            from omega.quant.macro_alphas import compute_macro_alphas
+            flat = result.reset_index()
+            flat.columns = ['date', 'ticker'] + list(flat.columns[2:])
+            required = ['date', 'ticker', 'open', 'high', 'low', 'close', 'volume']
+            if all(c in flat.columns for c in required):
+                macro_df = compute_macro_alphas(flat[required], symbol_col='ticker')
+                macro_cols = [c for c in macro_df.columns if c.startswith('macro_') or c.startswith('alpha_macro')]
+                if not macro_cols:
+                    macro_cols = [c for c in macro_df.columns if c not in required]
+                if macro_cols:
+                    macro_df = macro_df.set_index(['date', 'ticker'])[macro_cols]
+                    macro_df.index.names = ['date', 'symbol']
+                    new_cols = [c for c in macro_cols if c not in result.columns]
+                    if new_cols:
+                        result = result.join(macro_df[new_cols], how='left')
+                        self._arsenal_features.extend(new_cols)
+                        logger.info("Macro alphas: +%d", len(new_cols))
+        except Exception as e:
+            logger.debug("Macro alphas skipped: %s", e)
+
         total_after = len(result.columns)
         logger.info("UnifiedFeatureAdapter: %d -> %d columns (+%d features)",
                     total_before, total_after, total_after - total_before)
