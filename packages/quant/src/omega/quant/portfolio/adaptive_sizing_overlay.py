@@ -28,53 +28,72 @@ logger = logging.getLogger(__name__)
 class AdaptiveSizingConfig:
     """Capital-tier adaptive sizing parameters."""
     capital_vnd: float = 1e9
-    # Tier thresholds (VND)
-    small_cap_threshold: float = 5e9
-    large_cap_threshold: float = 50e9
-    # Small tier
-    small_max_weight: float = 0.05
-    small_vol_target: float = 0.15
-    # Medium tier
-    medium_max_weight: float = 0.03
-    medium_vol_target: float = 0.12
-    # Large tier
-    large_max_weight: float = 0.02
-    large_vol_target: float = 0.10
+    # Continuous scaling params (power law)
+    # max_weight = base_weight * (reference_capital / capital) ^ weight_exponent
+    reference_capital: float = 1e9  # 1B VND baseline
+    base_max_weight: float = 0.08  # 8% at 1B
+    weight_exponent: float = 0.3   # Power law decay
+    min_max_weight: float = 0.015  # Floor at 1.5%
+    # vol_target = base_vol * (reference_capital / capital) ^ vol_exponent
+    base_vol_target: float = 0.18  # 18% at 1B
+    vol_exponent: float = 0.2      # Slower decay than weight
+    min_vol_target: float = 0.08   # Floor at 8%
 
 
-def get_adaptive_params(capital_vnd: float) -> dict:
+def get_adaptive_params(capital_vnd: float, config: Optional[AdaptiveSizingConfig] = None) -> dict:
     """
-    Get adaptive portfolio params based on capital tier.
+    Get adaptive portfolio params via continuous scaling (no cliff).
+
+    Formula:
+        max_weight = base * (ref / capital) ^ exponent
+        vol_target = base * (ref / capital) ^ exponent
+
+    Examples:
+        1B  -> max_weight=8.0%, vol=18.0%
+        2B  -> max_weight=6.5%, vol=16.4%
+        4B  -> max_weight=5.3%, vol=14.9%
+        10B -> max_weight=4.0%, vol=13.1%
+        20B -> max_weight=3.3%, vol=11.9%
+        50B -> max_weight=2.6%, vol=10.5%
+        100B-> max_weight=2.1%, vol=9.6%
 
     Args:
         capital_vnd: Portfolio capital in VND
+        config: Optional custom config
 
     Returns:
         Dict with max_weight, vol_target, tier_name
     """
-    cfg = AdaptiveSizingConfig(capital_vnd=capital_vnd)
+    cfg = config or AdaptiveSizingConfig(capital_vnd=capital_vnd)
 
-    if capital_vnd < cfg.small_cap_threshold:
-        params = {
-            'max_weight': cfg.small_max_weight,
-            'vol_target': cfg.small_vol_target,
-            'tier': 'SMALL',
-        }
-    elif capital_vnd < cfg.large_cap_threshold:
-        params = {
-            'max_weight': cfg.medium_max_weight,
-            'vol_target': cfg.medium_vol_target,
-            'tier': 'MEDIUM',
-        }
+    # Continuous power-law scaling
+    ratio = cfg.reference_capital / max(capital_vnd, 1e6)  # Avoid div by zero
+    max_weight = cfg.base_max_weight * (ratio ** cfg.weight_exponent)
+    max_weight = max(min(max_weight, cfg.base_max_weight), cfg.min_max_weight)
+
+    vol_target = cfg.base_vol_target * (ratio ** cfg.vol_exponent)
+    vol_target = max(min(vol_target, cfg.base_vol_target), cfg.min_vol_target)
+
+    # Tier label (for logging only)
+    if capital_vnd < 1e9:
+        tier = 'MICRO'
+    elif capital_vnd < 5e9:
+        tier = 'SMALL'
+    elif capital_vnd < 20e9:
+        tier = 'MEDIUM'
+    elif capital_vnd < 50e9:
+        tier = 'LARGE'
     else:
-        params = {
-            'max_weight': cfg.large_max_weight,
-            'vol_target': cfg.large_vol_target,
-            'tier': 'LARGE',
-        }
+        tier = 'MEGA'
 
-    logger.info("Adaptive sizing: capital=%.0fB VND, tier=%s, max_w=%.1f%%, vol_target=%.1f%%",
-                capital_vnd / 1e9, params['tier'], params['max_weight'] * 100, params['vol_target'] * 100)
+    params = {
+        'max_weight': float(max_weight),
+        'vol_target': float(vol_target),
+        'tier': tier,
+    }
+
+    logger.info("Adaptive sizing: capital=%.1fB VND, tier=%s, max_w=%.1f%%, vol_target=%.1f%%",
+                capital_vnd / 1e9, tier, max_weight * 100, vol_target * 100)
     return params
 
 
