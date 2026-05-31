@@ -154,17 +154,20 @@ class OptunaRegimeNestedCV:
             inner_sharpe = study.best_value
 
             # Outer: evaluate best params on held-out fold
-            outer_exposures = self._compute_regime_exposures(
-                outer_market,
+            # Pass full history up to test_end to avoid cold-start bias (Issue #1 fix)
+            full_exposures = self._compute_regime_exposures(
+                market_returns[:test_end],
                 best['dd_threshold'], best['hysteresis'],
                 best['bear_exposure'], best['bull_exposure'], best['sideways_exposure'],
             )
+            outer_exposures = full_exposures[split:test_end]
             n = min(len(outer_exposures), len(outer_returns))
             outer_sharpe = self._compute_fold_sharpe(
                 outer_returns[:n], outer_weights[:n], outer_exposures[:n]
             )
 
             outer_results.append(outer_sharpe)
+            best['_inner_sharpe'] = inner_sharpe
             all_best_params.append(best)
             logger.info("  Fold %d: inner_SR=%.4f, outer_SR=%.4f, params=%s",
                         fold, inner_sharpe, outer_sharpe,
@@ -184,7 +187,9 @@ class OptunaRegimeNestedCV:
                           'bull_exposure': 1.1, 'sideways_exposure': 0.8}
 
         avg_outer_sharpe = np.mean(outer_results) if outer_results else 0.0
-        avg_inner_sharpe = np.mean([s.best_value for s in [study]]) if outer_results else 0.0
+        # Fix #3: accumulate inner sharpe from all folds (not just last study)
+        all_inner_sharpes = [p.get('_inner_sharpe', 0) for p in all_best_params] if all_best_params else [0.0]
+        avg_inner_sharpe = np.mean(all_inner_sharpes)
 
         result = RegimeTunedParams(
             dd_threshold=avg_params['dd_threshold'],
