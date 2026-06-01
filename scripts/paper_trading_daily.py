@@ -35,8 +35,8 @@ from omega.quant.evolution.genetic_alpha import enforce_t_minus_1_lag
 # ============================================================
 # CONFIG
 # ============================================================
-CAPITAL = 10_000_000_000.0  # 10B VND
-MAX_WEIGHT = 0.05           # 5% max single name
+CAPITAL = 2_000_000_000.0  # Vốn 2B VND (Thay vì 10B cũ)
+MAX_WEIGHT = 0.08           # Trần động tối đa 8% cho Tier 2B
 BOARD_LOT = 100
 TURNOVER_CAP = 0.0119       # 1.19%/day
 OUTPUT_DIR = Path('data/paper_trading')
@@ -193,49 +193,74 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
     dynamic_k_mask = z_scores > z_threshold
     latest_weights = latest_weights.where(dynamic_k_mask, 0.0)
     
-    # Re-normalize dynamic K selection
+    # Re-normalize dynamic K selection (giữ nguyên tỷ trọng tương đối gốc từ HRP)
     weight_sum = latest_weights.sum()
     if weight_sum > 0:
         latest_weights = latest_weights / weight_sum
     else:
         latest_weights = pd.Series(0.0, index=latest_weights.index)
         
-    # Scale exposure to target regime exposure
+    # Scale exposure to target regime exposure (ví dụ: sideways = 0.8)
     latest_weights = latest_weights * regime_mult
     
-    # Apply single name cap (MAX_WEIGHT)
-    # Tier 2B limit cap (6.5%)
-    tier_max_weight = 0.065
-    latest_weights = latest_weights.clip(upper=tier_max_weight)
+    # Dynamic single name cap: tỷ trọng tối đa của mỗi mã tỷ lệ thuận với điểm số Z-score của nó
+    # Không để cứng 6.5%, cho phép dao động từ 3.0% đến 8.0% dựa trên độ mạnh yếu của tín hiệu
+    # w_cap_i = min_cap + (max_cap - min_cap) * (z_i - z_threshold) / (z_max - z_threshold)
+    active_mask = latest_weights > 0.0
+    if active_mask.any():
+        active_z = z_scores[active_mask]
+        z_max = active_z.max()
+        z_min = active_z.min()
+        z_range = z_max - z_min if z_max > z_min else 1.0
+        
+        # Thiết lập khoảng cap từ 4.0% đến 8.0% cho Tier 2B
+        min_cap = 0.04
+        max_cap = 0.08
+        
+        caps = min_cap + (max_cap - min_cap) * (active_z - z_min) / z_range
+        # Giới hạn caps trong khoảng [min_cap, max_cap]
+        caps = caps.clip(lower=min_cap, upper=max_cap)
+        
+        # Áp dụng cap động cho từng mã hoạt động
+        latest_weights[active_mask] = np.minimum(latest_weights[active_mask], caps)
     
-    # Re-scale exposure after clipping
-    # L3/L2 audit fix: If clipping causes the sum of weights to fall below regime_mult,
-    # we redistribute, but we must respect the cap. So we run a simple iterative scaling.
+    # Re-scale exposure after dynamic clipping
+    # L3/L2 audit fix: Tối ưu hóa phân bổ lại phần thừa sao cho tổng bằng regime_mult mà không vượt trần cap động
     for _ in range(5):
         weight_sum = latest_weights.sum()
         if weight_sum <= 0 or abs(weight_sum - regime_mult) < 1e-4:
             break
         factor = regime_mult / weight_sum
-        latest_weights = (latest_weights * factor).clip(upper=tier_max_weight)
+        # Nhân factor và clip lại với cap động tương ứng
+        if active_mask.any():
+            latest_weights[active_mask] = np.minimum(latest_weights[active_mask] * factor, caps)
 
     # Get active weights
     active_weights = latest_weights[latest_weights > 0.001].sort_values(ascending=False)
 
-    # Board-lot conversion
+    # Board-lot conversion with round-to-nearest and real weight re-calculation
     latest_prices = test_prices.iloc[-1]
     positions = {}
+    total_realized_exposure = 0.0
+    
     for sym, w in active_weights.items():
         if sym in latest_prices.index:
             price = latest_prices[sym]
             if price > 0:
-                shares = int((w * CAPITAL) / price / BOARD_LOT) * BOARD_LOT
+                # Round to nearest board lot (100) instead of flooring
+                raw_shares = (w * CAPITAL) / price
+                shares = int(round(raw_shares / BOARD_LOT)) * BOARD_LOT
+                
                 if shares >= BOARD_LOT:
+                    real_value = shares * price
+                    real_w = real_value / CAPITAL
                     positions[sym] = {
-                        'weight': round(float(w), 4),
+                        'weight': round(float(real_w), 4),
                         'shares': int(shares),
                         'price': float(price),
-                        'value_vnd': float(shares * price),
+                        'value_vnd': float(real_value),
                     }
+                    total_realized_exposure += real_w
 
     # 9. Output
     signal_output = {
@@ -251,7 +276,7 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
         'universe_size': len(universe),
         'positions': positions,
         'n_positions': len(positions),
-        'total_exposure': round(sum(p['weight'] for p in positions.values()), 4),
+        'total_exposure': round(float(total_realized_exposure), 4),
         'capital': CAPITAL,
     }
 
