@@ -212,6 +212,8 @@ class TestOrderRouter:
         router.volume_profile_enabled = True
         router.minimum_lot_size = 100
         router.historical_volume_profiles = {"VNM": [0.1]} # 10% for first period
+        # Set market data so POV calculations run correctly
+        router.update_market_data("VNM", {"adv": 200000.0}) # 10% * 200,000 = 20,000 * 0.05 = 1,000
         
         order = BrokerOrder(
             symbol="VNM",
@@ -223,7 +225,7 @@ class TestOrderRouter:
         
         response = router.submit_order(order, current_price=100000.0)
         
-        # First chunk should be 10000 * 0.1 = 1000
+        # First chunk should be 1000
         assert response.success is True
         assert order.quantity == 1000
         
@@ -233,6 +235,7 @@ class TestOrderRouter:
         router.volume_profile_enabled = True
         router.minimum_lot_size = 100
         router.historical_volume_profiles = {"VNM": [0.01]} # 1% for first period
+        router.update_market_data("VNM", {"adv": 200000.0}) # 1% * 200,000 = 2,000 * 0.05 = 100
         
         order = BrokerOrder(
             symbol="VNM",
@@ -244,8 +247,6 @@ class TestOrderRouter:
         
         response = router.submit_order(order, current_price=100000.0)
         
-        # Target chunk 1000 * 0.01 = 10. But min lot size is 100.
-        # Max(100, (10//100)*100) = Max(100, 0) = 100
         assert response.success is True
         assert order.quantity == 100
 
@@ -541,6 +542,103 @@ class TestSwitchModeConfigSync:
         # _switch_mode silently falls back to PAPER when no credentials
         assert router.mode == TradingMode.PAPER
         assert router.config.mode == TradingMode.PAPER
+
+
+class TestExecutionSchedulesAndConstraints:
+    """Tests for TWAP, VWAP, POV, limit-locks, and ADV participation caps."""
+
+    @pytest.fixture
+    def paper_router(self):
+        return OrderRouter(OrderRouterConfig(
+            mode=TradingMode.PAPER,
+            simulate_latency=False,
+        ))
+
+    def _make_order(self, quantity: int = 1000) -> BrokerOrder:
+        return BrokerOrder(
+            symbol="VNM",
+            side=OrderSide.BUY,
+            quantity=quantity,
+            order_type=OrderType.LIMIT,
+            price=100000.0,
+        )
+
+    def test_twap_generation(self, paper_router):
+        """Test generating TWAP slices."""
+        order = self._make_order(quantity=10000)
+        slices = paper_router.generate_twap_schedule(order, duration_minutes=30, interval_minutes=5)
+        # 30 / 5 = 6 slices
+        assert len(slices) == 6
+        assert sum(s.quantity for s in slices) == 10000
+        for s in slices:
+            assert s.quantity % 100 == 0
+
+    def test_vwap_generation(self, paper_router):
+        """Test generating VWAP slices."""
+        order = self._make_order(quantity=10000)
+        slices = paper_router.generate_vwap_schedule(order, duration_minutes=30, interval_minutes=5)
+        assert len(slices) == 6
+        assert sum(s.quantity for s in slices) == 10000
+        for s in slices:
+            assert s.quantity % 100 == 0
+
+    def test_pov_generation(self, paper_router):
+        """Test generating POV slice size."""
+        order = self._make_order(quantity=50000)
+        paper_router.update_market_data("VNM", {"adv": 1000000.0})
+        # slice market vol: 1,000,000 * 0.05 = 50,000. target_chunk: 50,000 * 0.05 = 2,500.
+        pov_order = paper_router.generate_pov_schedule(order, target_participation_rate=0.05)
+        assert pov_order.quantity == 2500
+
+    def test_limit_lock_pause_buy_ceiling(self, paper_router):
+        """Ceiling limit-lock with zero ask volume must block/pause buy execution."""
+        order = self._make_order(quantity=100)
+        # HOSE limit is +/- 7%. price 107000 vs ref 100000 is +7%.
+        paper_router.update_market_data("VNM", {
+            "price": 107000.0,
+            "reference_price": 100000.0,
+            "ask_volume": 0.0,
+            "exchange": "HOSE"
+        })
+        response = paper_router.submit_order(order, current_price=107000.0)
+        assert response.success is False
+        assert response.error_code == "LIMIT_LOCK_PAUSE"
+        assert "Ceiling limit-lock" in response.message
+
+    def test_limit_lock_pause_sell_floor(self, paper_router):
+        """Floor limit-lock with zero bid volume must block/pause sell execution."""
+        order = BrokerOrder(
+            symbol="VNM",
+            side=OrderSide.SELL,
+            quantity=100,
+            order_type=OrderType.LIMIT,
+            price=93000.0,
+        )
+        # HOSE limit is +/- 7%. price 93000 vs ref 100000 is -7%.
+        paper_router.update_market_data("VNM", {
+            "price": 93000.0,
+            "reference_price": 100000.0,
+            "bid_volume": 0.0,
+            "exchange": "HOSE"
+        })
+        response = paper_router.submit_order(order, current_price=93000.0)
+        assert response.success is False
+        assert response.error_code == "LIMIT_LOCK_PAUSE"
+        assert "Floor limit-lock" in response.message
+
+    def test_strict_10_percent_adv_cap(self, paper_router):
+        """Order size must be strictly capped to 10% of ADV."""
+        order = self._make_order(quantity=50000)
+        paper_router.update_market_data("VNM", {
+            "price": 100000.0,
+            "reference_price": 100000.0,
+            "adv": 200000.0  # 10% ADV is 20,000 shares
+        })
+        # Disable POV routing to avoid clipping order to POV chunk size instead of the ADV cap
+        paper_router.volume_profile_enabled = False
+        response = paper_router.submit_order(order, current_price=100000.0)
+        assert response.success is True
+        assert order.quantity == 20000
 
 
 class TestGatewayProvenance:

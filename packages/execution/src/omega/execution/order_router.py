@@ -190,6 +190,10 @@ class OrderRouter:
             "SSI": [0.1, 0.1, 0.1, 0.2, 0.2, 0.1, 0.1, 0.1],
         }
 
+        # Market data cache for limit-lock and ADV validation: symbol -> dict
+        # Expected keys: 'price', 'reference_price', 'bid_volume', 'ask_volume', 'adv'
+        self.market_data_cache: Dict[str, Dict[str, Any]] = {}
+
         # Initialize engines
         self.paper_engine = PaperTradingEngine()
 
@@ -318,6 +322,238 @@ class OrderRouter:
         )
 
     # ------------------------------------------------------------------
+    # Market Data & Validation updates
+    # ------------------------------------------------------------------
+
+    def update_market_data(self, symbol: str, data: Dict[str, Any]) -> None:
+        """Update market data cache for a symbol."""
+        if symbol not in self.market_data_cache:
+            self.market_data_cache[symbol] = {}
+        self.market_data_cache[symbol].update(data)
+
+    def check_limit_lock(self, symbol: str, side: OrderSide) -> Tuple[bool, str]:
+        """
+        Check for VN limit-lock conditions.
+        If last price is near ceiling/floor with zero opposite liquidity, pause execution.
+        HOSE +/-7%, HNX +/-10%, UPCOM +/-15%.
+        """
+        mdata = self.market_data_cache.get(symbol)
+        if not mdata:
+            return False, ""
+
+        last_price = mdata.get("price") or mdata.get("last_price")
+        ref_price = mdata.get("reference_price")
+        if last_price is None or ref_price is None or ref_price <= 0:
+            return False, ""
+
+        # Auto-detect limit pct based on exchange or default to HOSE (7%)
+        exchange = mdata.get("exchange", "HOSE").upper()
+        if exchange == "HOSE":
+            limit_pct = 0.07
+        elif exchange == "HNX":
+            limit_pct = 0.10
+        elif exchange == "UPCOM":
+            limit_pct = 0.15
+        else:
+            limit_pct = 0.07
+
+        price_diff_pct = (last_price - ref_price) / ref_price
+
+        # Check floor: price is near floor, and opposite liquidity (bid volume) is zero or near zero
+        # L3 Audit Fix: exact comparison to float range and zero opposite volume rule (volume <= 0.0)
+        # We also support a minor float epsilon (1e-5) for price matches.
+        is_floor = (price_diff_pct <= -limit_pct + 1e-5)
+        bid_volume = mdata.get("bid_volume", 0.0)
+
+        # Check ceiling: price is near ceiling, and opposite liquidity (ask volume) is zero or near zero
+        is_ceiling = (price_diff_pct >= limit_pct - 1e-5)
+        ask_volume = mdata.get("ask_volume", 0.0)
+
+        if side == OrderSide.SELL and is_floor and bid_volume <= 0.0:
+            return True, f"Floor limit-lock detected for {symbol} (price change: {price_diff_pct:.2%}, bid_volume: {bid_volume}). SELL order paused."
+        
+        if side == OrderSide.BUY and is_ceiling and ask_volume <= 0.0:
+            return True, f"Ceiling limit-lock detected for {symbol} (price change: {price_diff_pct:.2%}, ask_volume: {ask_volume}). BUY order paused."
+
+        return False, ""
+
+    def apply_adv_cap(self, symbol: str, quantity: int) -> int:
+        """
+        Enforce strict 10% ADV volume participation cap.
+        If order size exceeds 10% of ADV, clamp/split it.
+        """
+        mdata = self.market_data_cache.get(symbol)
+        if not mdata:
+            return quantity
+
+        adv = mdata.get("adv") or mdata.get("avg_daily_volume")
+        if not adv or adv <= 0:
+            return quantity
+
+        # L3 Audit Fix: strict 10% cap validation, do not round UP max_qty if it violates the true 10% cap.
+        # Ensure max_qty is capped strictly at 10% ADV.
+        max_qty = int(adv * 0.10)
+        if max_qty >= self.minimum_lot_size:
+            # Round down to nearest board lot
+            max_qty = (max_qty // self.minimum_lot_size) * self.minimum_lot_size
+        else:
+            # Under standard board lot minimum, but we must clamp to the true cap (cannot trade odd lot unless enabled)
+            # If the user requested odd-lot or low-liquidity size, we still clip it strictly.
+            max_qty = max_qty
+
+        if quantity > max_qty:
+            logger.warning(f"Order size {quantity} for {symbol} exceeds 10% ADV limit ({max_qty}). Clamping.")
+            return max_qty
+
+        return quantity
+
+    # ------------------------------------------------------------------
+    # Execution Schedules (TWAP, VWAP, POV)
+    # ------------------------------------------------------------------
+
+    def generate_twap_schedule(
+        self,
+        order: BrokerOrder,
+        duration_minutes: int,
+        interval_minutes: int = 5
+    ) -> list[BrokerOrder]:
+        """
+        Generates TWAP slices.
+        """
+        quantity = order.quantity
+        slices = max(1, duration_minutes // interval_minutes)
+        slice_qty = (quantity // slices)
+        # Round to board lot
+        slice_qty = max(self.minimum_lot_size, (slice_qty // self.minimum_lot_size) * self.minimum_lot_size)
+
+        child_orders = []
+        remaining_qty = quantity
+
+        for i in range(slices):
+            if i == slices - 1:
+                qty = remaining_qty
+            else:
+                qty = slice_qty
+
+            if qty <= 0:
+                continue
+
+            # Ensure final slice is board lot rounded if it's not the last remaining fraction
+            if qty % self.minimum_lot_size != 0:
+                qty = max(self.minimum_lot_size, (qty // self.minimum_lot_size) * self.minimum_lot_size)
+
+            child = BrokerOrder(
+                symbol=order.symbol,
+                side=order.side,
+                quantity=min(qty, remaining_qty),
+                order_type=order.order_type,
+                price=order.price,
+                time_in_force=order.time_in_force,
+                client_order_id=f"{order.client_order_id}_TWAP_{i}",
+                allow_odd_lot=order.allow_odd_lot
+            )
+            child_orders.append(child)
+            remaining_qty -= child.quantity
+            if remaining_qty <= 0:
+                break
+
+        return child_orders
+
+    def generate_vwap_schedule(
+        self,
+        order: BrokerOrder,
+        duration_minutes: int,
+        interval_minutes: int = 5,
+        volume_profile: Optional[list[float]] = None
+    ) -> list[BrokerOrder]:
+        """
+        Generates VWAP slices using volume profile.
+        """
+        quantity = order.quantity
+        slices = max(1, duration_minutes // interval_minutes)
+
+        if volume_profile is None:
+            # U-shape profile: high volume at open and close, low volume in middle.
+            # L3 Audit Fix: The previous formula '1.0 - 0.6 * ((2 * ti / (slices - 1) - 1) ** 2)' peaked in the middle.
+            # We fix it to be a proper U-shape: '0.1 + 0.9 * ((2 * ti / (slices - 1) - 1) ** 2)'
+            if slices == 1:
+                volume_profile = [1.0]
+            else:
+                t = list(range(slices))
+                profile = [0.1 + 0.9 * ((2 * ti / (slices - 1) - 1) ** 2) for ti in t]
+                volume_profile = [max(0.05, p) for p in profile]
+
+        # Normalize
+        total_p = sum(volume_profile)
+        volume_profile = [p / total_p for p in volume_profile]
+
+        child_orders = []
+        remaining_qty = quantity
+
+        for i in range(min(slices, len(volume_profile))):
+            if i == min(slices, len(volume_profile)) - 1:
+                qty = remaining_qty
+            else:
+                qty = int(quantity * volume_profile[i])
+                qty = max(self.minimum_lot_size, (qty // self.minimum_lot_size) * self.minimum_lot_size)
+
+            if qty <= 0:
+                continue
+
+            child = BrokerOrder(
+                symbol=order.symbol,
+                side=order.side,
+                quantity=min(qty, remaining_qty),
+                order_type=order.order_type,
+                price=order.price,
+                time_in_force=order.time_in_force,
+                client_order_id=f"{order.client_order_id}_VWAP_{i}",
+                allow_odd_lot=order.allow_odd_lot
+            )
+            child_orders.append(child)
+            remaining_qty -= child.quantity
+            if remaining_qty <= 0:
+                break
+
+        return child_orders
+
+    def generate_pov_schedule(
+        self,
+        order: BrokerOrder,
+        target_participation_rate: float = 0.05
+    ) -> BrokerOrder:
+        """
+        POV Routing: Adjust quantity of the submitted order based on target participation rate and market volume.
+        """
+        mdata = self.market_data_cache.get(order.symbol)
+        if not mdata:
+            return order
+
+        # Default to historical profile period if no real-time interval volume is passed
+        profile = self.historical_volume_profiles.get(order.symbol, [0.1] * 10)
+        adv = mdata.get("adv") or mdata.get("avg_daily_volume") or 100000.0
+
+        # Expected volume in typical 5-min slice
+        slice_market_vol = adv * profile[0]
+        target_chunk = int(slice_market_vol * target_participation_rate)
+        target_chunk = max(self.minimum_lot_size, (target_chunk // self.minimum_lot_size) * self.minimum_lot_size)
+
+        # Clamped by order quantity
+        clamped_chunk = min(target_chunk, order.quantity)
+        
+        child = BrokerOrder(
+            symbol=order.symbol,
+            side=order.side,
+            quantity=clamped_chunk,
+            order_type=order.order_type,
+            price=order.price,
+            time_in_force=order.time_in_force,
+            client_order_id=f"{order.client_order_id}_POV",
+            allow_odd_lot=order.allow_odd_lot
+        )
+        return child
+
+    # ------------------------------------------------------------------
     # Mode switching
     # ------------------------------------------------------------------
 
@@ -368,22 +604,33 @@ class OrderRouter:
         Returns:
             Response from broker
         """
+        # --- VN Limit-Lock Checker ---
+        locked, reason = self.check_limit_lock(order.symbol, order.side)
+        if locked:
+            logger.warning(reason)
+            return BrokerOrderResponse(
+                success=False,
+                client_order_id=order.client_order_id,
+                status=OrderStatus.REJECTED,
+                message=reason,
+                error_code="LIMIT_LOCK_PAUSE"
+            )
+
+        # --- Strict 10% ADV Volume Participation Cap ---
+        original_qty = order.quantity
+        capped_qty = self.apply_adv_cap(order.symbol, original_qty)
+        if capped_qty != original_qty:
+            order.quantity = capped_qty
+
         # --- Advanced Routing: POV (Percentage of Volume) ---
         if self.volume_profile_enabled and order.quantity >= self.minimum_lot_size * 10:
             logger.info(f"Applying POV routing for {order.symbol} size {order.quantity}")
-            # Placeholder for POV routing logic: just log that we are splitting the order
-            # In a real implementation, we would return a composite response or submit the first chunk
-            profile = self.historical_volume_profiles.get(order.symbol, [0.1] * 10)
-            target_chunk = int(order.quantity * profile[0])
-            # Adjust to minimum lot size
-            target_chunk = max(self.minimum_lot_size, (target_chunk // self.minimum_lot_size) * self.minimum_lot_size)
-            logger.info(f"POV routing chunk size calculated: {target_chunk}")
-            
-            # For the scope of this update, we just modify the current order object
-            # to submit the first chunk, and leave remaining logic for a full POV execution engine
-            original_quantity = order.quantity
-            order.quantity = target_chunk
-            logger.info(f"Modifying initial submission size to {target_chunk} from {original_quantity} based on POV")
+            # L3 Audit Fix: Use generate_pov_schedule to perform actual POV calculation
+            # and slice the order correctly.
+            # We suggest a target participation rate of 5% (0.05) by default.
+            pov_order = self.generate_pov_schedule(order, target_participation_rate=0.05)
+            logger.info(f"Modifying initial submission size to {pov_order.quantity} from {order.quantity} based on POV")
+            order.quantity = pov_order.quantity
 
         # Simulate routing latency (paper ~2 ms, live ~50 ms + jitter)
         self._simulate_latency()
