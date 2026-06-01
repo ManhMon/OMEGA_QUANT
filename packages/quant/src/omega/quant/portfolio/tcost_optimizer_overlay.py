@@ -55,13 +55,24 @@ def apply_cost_aware_rebalance(
     # First row always uses new_weights (no prev)
     optimized.iloc[0] = w_new.iloc[0]
 
-    # Re-normalize rows
-    row_sums = optimized.sum(axis=1).replace(0, 1.0)
-    optimized = optimized.div(row_sums, axis=0)
+    # Re-normalize rows to ensure weights sum to 1.0 (long-short demedian may sum to 0.0 or 1.0 depending on leverage)
+    # Long-short weights should keep their net scale. If the rows represent long-short active weights
+    # that sum to 0, dividing by row sums will fail. So we check if the weights represent dollar allocations.
+    # In long-short demedian, the sum of absolute values or sum of weights needs scaling.
+    # We only normalize if the sum of weights is positive (long-only or leverage-weighted).
+    row_sums = optimized.sum(axis=1)
+    # For long-short portfolios where sum of weights is 0, do not normalize by sum.
+    # Instead, scale to match the target absolute exposure of new_weights.
+    target_exposure = w_new.abs().sum(axis=1)
+    current_exposure = optimized.abs().sum(axis=1).replace(0, 1.0)
+    
+    # Scale back to target exposure
+    optimized = optimized.mul(target_exposure / current_exposure, axis=0)
 
-    # Stats
-    original_turnover = (w_new.diff().abs().sum(axis=1)).mean()
-    optimized_turnover = (optimized.diff().abs().sum(axis=1)).mean()
+    # Calculate actual turnover (bar-by-bar transition)
+    # Ignore index 0 in both metrics to avoid cold-start bias
+    original_turnover = (w_new.diff().abs().sum(axis=1)).iloc[1:].mean()
+    optimized_turnover = (optimized.diff().abs().sum(axis=1)).iloc[1:].mean()
     reduction = (1 - optimized_turnover / original_turnover) * 100 if original_turnover > 0 else 0
 
     logger.info("Cost optimizer: turnover %.4f -> %.4f (%.1f%% reduction, threshold=%dbps)",
@@ -86,7 +97,12 @@ def apply_tcost_overlay(
     Returns:
         Cost-optimized weights with reduced turnover.
     """
-    prev_weights = daily_weights.shift(1).fillna(0)
+    # Use actual daily_weights shift. Fill leading row with same values to prevent first-bar drop-to-zero.
+    prev_weights = daily_weights.shift(1)
+    if len(prev_weights) > 0:
+        prev_weights.iloc[0] = daily_weights.iloc[0]
+    prev_weights = prev_weights.fillna(0.0)
+    
     return apply_cost_aware_rebalance(
         daily_weights, prev_weights,
         cost_per_trade_bps=cost_per_trade_bps,

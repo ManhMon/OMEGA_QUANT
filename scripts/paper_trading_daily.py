@@ -168,18 +168,63 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
     combined_weights.loc[over_exposed] = combined_weights.loc[over_exposed].div(row_sums[over_exposed], axis=0)
 
     # 8. Apply constraints (max weight, board-lot, turnover)
-    combined_weights = combined_weights.clip(upper=MAX_WEIGHT)
-    row_sums = combined_weights.sum(axis=1).replace(0, 1.0)
-    combined_weights = combined_weights.div(row_sums, axis=0)
-
-    # Get latest weights (today's signal for tomorrow)
+    # Dynamic K logic: filter assets where combined weight score is above average
+    # and adapt K dynamically based on regime exposure
     latest_weights = combined_weights.iloc[-1]
-    latest_weights = latest_weights[latest_weights > 0.001].sort_values(ascending=False)
+    
+    # Calculate Z-score of latest weights to select top conviction names dynamically
+    mean_w = latest_weights.mean()
+    std_w = latest_weights.std()
+    std_w = std_w if std_w > 1e-8 else 1.0
+    z_scores = (latest_weights - mean_w) / std_w
+    
+    # Minimum Z-score threshold adjusted by regime exposure (tighter in bad regimes)
+    # Bull: threshold = 1.0 (more assets allowed)
+    # Sideways: threshold = 1.25
+    # Bear: threshold = 1.6 (only highest conviction allowed)
+    regime_mult = regime_state.exposure_multiplier
+    if regime_mult > 1.0:
+        z_threshold = 1.0
+    elif regime_mult >= 0.8:
+        z_threshold = 1.25
+    else:
+        z_threshold = 1.6
+        
+    dynamic_k_mask = z_scores > z_threshold
+    latest_weights = latest_weights.where(dynamic_k_mask, 0.0)
+    
+    # Re-normalize dynamic K selection
+    weight_sum = latest_weights.sum()
+    if weight_sum > 0:
+        latest_weights = latest_weights / weight_sum
+    else:
+        latest_weights = pd.Series(0.0, index=latest_weights.index)
+        
+    # Scale exposure to target regime exposure
+    latest_weights = latest_weights * regime_mult
+    
+    # Apply single name cap (MAX_WEIGHT)
+    # Tier 2B limit cap (6.5%)
+    tier_max_weight = 0.065
+    latest_weights = latest_weights.clip(upper=tier_max_weight)
+    
+    # Re-scale exposure after clipping
+    # L3/L2 audit fix: If clipping causes the sum of weights to fall below regime_mult,
+    # we redistribute, but we must respect the cap. So we run a simple iterative scaling.
+    for _ in range(5):
+        weight_sum = latest_weights.sum()
+        if weight_sum <= 0 or abs(weight_sum - regime_mult) < 1e-4:
+            break
+        factor = regime_mult / weight_sum
+        latest_weights = (latest_weights * factor).clip(upper=tier_max_weight)
+
+    # Get active weights
+    active_weights = latest_weights[latest_weights > 0.001].sort_values(ascending=False)
 
     # Board-lot conversion
     latest_prices = test_prices.iloc[-1]
     positions = {}
-    for sym, w in latest_weights.items():
+    for sym, w in active_weights.items():
         if sym in latest_prices.index:
             price = latest_prices[sym]
             if price > 0:
