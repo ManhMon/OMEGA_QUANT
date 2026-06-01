@@ -203,6 +203,37 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
     # Scale exposure to target regime exposure (ví dụ: sideways = 0.8)
     latest_weights = latest_weights * regime_mult
     
+    # --- Phân ngành & Hạn chế Tập trung Ngành (Sector Concentration Control) ---
+    # Tải dữ liệu phân ngành để tránh bỏ trứng vào một giỏ
+    sector_file = Path(r"C:\Users\GHC\.openclaw\workspace\data\sector_mapping_level2.csv")
+    if sector_file.exists():
+        try:
+            sector_df = pd.read_csv(sector_file)
+            sector_map = dict(zip(sector_df['symbol'], sector_df['sector']))
+            
+            # Giới hạn tập trung tối đa cho mỗi nhóm ngành là 30% NAV (0.30)
+            max_sector_cap = 0.30
+            
+            active_symbols = latest_weights[latest_weights > 0.0].index.tolist()
+            symbol_sectors = {sym: sector_map.get(sym, "Unknown") for sym in active_symbols}
+            
+            # Tính tổng tỷ trọng hiện tại theo từng ngành
+            sector_weights = {}
+            for sym in active_symbols:
+                sec = symbol_sectors[sym]
+                sector_weights[sec] = sector_weights.get(sec, 0.0) + latest_weights[sym]
+                
+            # Nếu ngành nào vượt quá 30% NAV, tự động co lại
+            for sec, sec_w in sector_weights.items():
+                if sec_w > max_sector_cap:
+                    excess_factor = max_sector_cap / sec_w
+                    logger.warning(f"Sector '{sec}' weight ({sec_w:.2%}) exceeds cap ({max_sector_cap:.2%}). Scaling down.")
+                    for sym in active_symbols:
+                        if symbol_sectors[sym] == sec:
+                            latest_weights[sym] *= excess_factor
+        except Exception as e:
+            logger.error(f"Failed to apply sector constraints: {e}")
+            
     # Dynamic single name cap: tỷ trọng tối đa của mỗi mã tỷ lệ thuận với điểm số Z-score của nó
     # Không để cứng 6.5%, cho phép dao động từ 3.0% đến 8.0% dựa trên độ mạnh yếu của tín hiệu
     # w_cap_i = min_cap + (max_cap - min_cap) * (z_i - z_threshold) / (z_max - z_threshold)
@@ -226,14 +257,31 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
     
     # Re-scale exposure after dynamic clipping
     # L3/L2 audit fix: Tối ưu hóa phân bổ lại phần thừa sao cho tổng bằng regime_mult mà không vượt trần cap động
+    # và luôn tôn trọng giới hạn tập trung ngành 30%
     for _ in range(5):
         weight_sum = latest_weights.sum()
         if weight_sum <= 0 or abs(weight_sum - regime_mult) < 1e-4:
             break
         factor = regime_mult / weight_sum
+        
         # Nhân factor và clip lại với cap động tương ứng
         if active_mask.any():
             latest_weights[active_mask] = np.minimum(latest_weights[active_mask] * factor, caps)
+            
+        # Áp dụng lại sector cap 30% sau khi phân bổ lại
+        if sector_file.exists() and active_mask.any():
+            active_symbols = latest_weights[latest_weights > 0.0].index.tolist()
+            sector_weights = {}
+            for sym in active_symbols:
+                sec = symbol_sectors[sym]
+                sector_weights[sec] = sector_weights.get(sec, 0.0) + latest_weights[sym]
+            
+            for sec, sec_w in sector_weights.items():
+                if sec_w > max_sector_cap:
+                    excess_factor = max_sector_cap / sec_w
+                    for sym in active_symbols:
+                        if symbol_sectors[sym] == sec:
+                            latest_weights[sym] *= excess_factor
 
     # Get active weights
     active_weights = latest_weights[latest_weights > 0.001].sort_values(ascending=False)
