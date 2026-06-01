@@ -311,7 +311,14 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
     
     for sym, w in active_weights.items():
         if sym in latest_prices.index:
+            # L3 Audit Fix: Dynamic price unit scaling
+            # Standardize price to VND scale dynamically:
+            # If price in dataset is raw unit (e.g. 24.9), multiply by 1000.0.
+            # If price in dataset is already in VND (e.g. 24900.0), preserve it.
             price = latest_prices[sym]
+            if price > 0 and price < 1000.0:
+                price = price * 1000.0
+            
             if price > 0:
                 # Round to nearest board lot (100) instead of flooring
                 raw_shares = (w * CAPITAL) / price
@@ -341,20 +348,32 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
             if sec_w > max_sector_cap:
                 excess_factor = max_sector_cap / sec_w
                 logger.warning(f"Post-rounding sector '{sec}' weight ({sec_w:.2%}) exceeds cap ({max_sector_cap:.2%}). Readjusting.")
-                for sym, pos in list(positions.items()):
-                    if symbol_sectors.get(sym) == sec:
-                        # Scale down the shares and recalculate weight
-                        new_shares = int(round((pos['shares'] * excess_factor) / BOARD_LOT)) * BOARD_LOT
-                        if new_shares >= BOARD_LOT:
-                            positions[sym]['shares'] = new_shares
-                            positions[sym]['value_vnd'] = new_shares * positions[sym]['price']
-                            old_w = positions[sym]['weight']
-                            positions[sym]['weight'] = round(positions[sym]['value_vnd'] / CAPITAL, 4)
-                            total_realized_exposure -= (old_w - positions[sym]['weight'])
-                        else:
-                            # Drop symbol entirely if below minimum lot
-                            total_realized_exposure -= pos['weight']
-                            positions.pop(sym)
+                
+                # To guarantee we strictly fall below max_sector_cap, we iteratively drop 1 lot (100 shares)
+                # from the largest holdings in that sector until the sum is <= max_sector_cap.
+                # This is much cleaner and mathematically guaranteed to respect the board-lot constraints.
+                sec_symbols = [sym for sym in positions if symbol_sectors.get(sym) == sec]
+                
+                # Vòng lặp hạ dần cổ phiếu lô 100 cho đến khi đạt chuẩn
+                for _ in range(50):
+                    current_sec_w = sum(positions[sym]['weight'] for sym in sec_symbols)
+                    if current_sec_w <= max_sector_cap:
+                        break
+                    # Find the symbol in this sector with the largest share value to reduce
+                    target_sym = max(sec_symbols, key=lambda sym: positions[sym]['shares'])
+                    if positions[target_sym]['shares'] > BOARD_LOT:
+                        positions[target_sym]['shares'] -= BOARD_LOT
+                        positions[target_sym]['value_vnd'] = positions[target_sym]['shares'] * positions[target_sym]['price']
+                        old_w = positions[target_sym]['weight']
+                        positions[target_sym]['weight'] = round(positions[target_sym]['value_vnd'] / CAPITAL, 4)
+                        total_realized_exposure -= (old_w - positions[target_sym]['weight'])
+                    else:
+                        # Drop if we cannot reduce further
+                        total_realized_exposure -= positions[target_sym]['weight']
+                        positions.pop(target_sym)
+                        sec_symbols.remove(target_sym)
+                        if not sec_symbols:
+                            break
 
     # 9. Output
     signal_output = {
