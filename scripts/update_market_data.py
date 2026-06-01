@@ -16,9 +16,9 @@ from datetime import datetime, timedelta
 import pandas as pd
 
 try:
-    from vnstock3 import Vnstock
+    from vnstock import Vnstock
 except ImportError:
-    logging.warning("vnstock3 not installed. Skipping live data pull.")
+    logging.warning("vnstock not installed. Skipping live data pull.")
     Vnstock = None
 
 PROJECT_ROOT = Path(__file__).parent.parent
@@ -154,8 +154,13 @@ def fetch_and_append_data():
     logger.info(f"Total new rows fetched: {len(new_data)}")
 
     # Ensure date column is datetime
+    if "time" in new_data.columns and "date" not in new_data.columns:
+        new_data = new_data.rename(columns={"time": "date"})
+        
     if "date" in new_data.columns:
         new_data["date"] = pd.to_datetime(new_data["date"])
+        # Format to date-only string to match warehouse format
+        new_data["date"] = new_data["date"].dt.normalize()
 
     # Append to warehouse with deduplication
     if WAREHOUSE_PATH.exists():
