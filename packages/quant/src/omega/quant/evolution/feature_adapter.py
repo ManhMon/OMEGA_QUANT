@@ -47,9 +47,12 @@ _PKG_SRC = _THIS_FILE.parents[3]                # .../packages/quant/src
 _REPO_ROOT = _PKG_SRC.parents[2]                # workspace root
 _LEGACY_SRC = _REPO_ROOT / "src"                # .../src
 
-for _p in (_PKG_SRC, _LEGACY_SRC):
+# FIX v5: Guarantee _PKG_SRC at sys.path[0]
+for _p in (_LEGACY_SRC, _PKG_SRC):
     _ps = str(_p)
-    if _p.exists() and _ps not in sys.path:
+    if _p.exists():
+        if _ps in sys.path:
+            sys.path.remove(_ps)
         sys.path.insert(0, _ps)
 
 logger = logging.getLogger(__name__)

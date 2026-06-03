@@ -128,9 +128,10 @@ class MultiSymbolRouter:
     def _get_model_registry(self) -> ModelRegistry:
         if self._model_registry is None:
             registry_path = self.config.model_registry_path
-            if registry_path is not None:
-                registry_path = str(Path(registry_path))
-            self._model_registry = ModelRegistry(registry_path=registry_path)
+            if registry_path is None:
+                self._model_registry = ModelRegistry()
+            else:
+                self._model_registry = ModelRegistry(registry_path=str(Path(registry_path)))
         return self._model_registry
 
     def _ensure_models_loaded(self) -> None:

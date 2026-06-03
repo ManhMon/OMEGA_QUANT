@@ -162,6 +162,19 @@ def fetch_and_append_data():
         # Format to date-only string to match warehouse format
         new_data["date"] = new_data["date"].dt.normalize()
 
+    # Standardize new data to VND scale (Vnstock 4.x returns raw thousands)
+    price_cols = ["open", "high", "low", "close"]
+    for col in price_cols:
+        if col in new_data.columns:
+            new_data[col] = new_data[col].astype(float)
+            
+    mask_to_scale = (new_data["close"] > 0) & (new_data["close"] < 1000.0)
+    for col in price_cols:
+        if col in new_data.columns:
+            new_data.loc[mask_to_scale, col] = new_data.loc[mask_to_scale, col] * 1000.0
+            
+    logger.info("New data prices successfully standardized to VND scale.")
+
     # Append to warehouse with deduplication
     if WAREHOUSE_PATH.exists():
         existing = pd.read_parquet(WAREHOUSE_PATH)

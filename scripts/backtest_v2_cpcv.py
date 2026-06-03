@@ -427,6 +427,57 @@ def per_date_returns(pred, y_te, dates_te, tickers_te=None,
                 bear_exposure=bear_exp,
                 sideways_exposure=side_exp,
             )
+    # Phase 14: Additional overlays (applied after regime, before vol-target)
+    # Smart Money overlay
+    smart_money_mod = tail_kwargs.get('smart_money_mod') if tail_kwargs else None
+    if smart_money_mod is not None:
+        market_rets = pivot_y.to_numpy().mean(axis=1)
+        ret_series = pd.Series(market_rets)
+        # Soft-dampening: scale weights smoothly by CMF proxy
+        sm_score = ret_series.rolling(20, min_periods=5).mean() / ret_series.rolling(20, min_periods=5).std().replace(0, 1.0)
+        sm_exposure = 1.0 + sm_score.fillna(0.0).clip(-1.0, 1.0).values * tail_kwargs.get('smart_money_boost', 0.25)
+        # Clean exposure array
+        sm_exposure = np.nan_to_num(sm_exposure, nan=1.0, posinf=1.0, neginf=1.0)
+        pivot_w = pivot_w.multiply(sm_exposure, axis=0)
+        row_sums = pivot_w.sum(axis=1).replace(0, 1.0)
+        pivot_w = pivot_w.div(row_sums, axis=0)
+
+    # Sentiment overlay
+    sentiment_mod = tail_kwargs.get('sentiment_mod') if tail_kwargs else None
+    if sentiment_mod is not None:
+        market_rets = pivot_y.to_numpy().mean(axis=1)
+        ret_series = pd.Series(market_rets)
+        streak = ret_series.rolling(5, min_periods=3).mean().fillna(0.0)
+        sent_exposure = 1.0 + streak.clip(-0.05, 0.05).values * (tail_kwargs.get('sentiment_boost', 0.2) / 0.05)
+        sent_exposure = np.nan_to_num(sent_exposure, nan=1.0, posinf=1.0, neginf=1.0)
+        pivot_w = pivot_w.multiply(sent_exposure, axis=0)
+        row_sums = pivot_w.sum(axis=1).replace(0, 1.0)
+        pivot_w = pivot_w.div(row_sums, axis=0)
+
+    # Contagion overlay
+    contagion_mod = tail_kwargs.get('contagion_mod') if tail_kwargs else None
+    if contagion_mod is not None:
+        pivot_w = contagion_mod.apply_contagion_overlay(
+            pivot_w, pivot_y.to_numpy(),
+            lookback=60, spike_threshold_std=2.0, spike_exposure=0.5)
+
+    # TCost optimizer overlay
+    tcost_mod = tail_kwargs.get('tcost_mod') if tail_kwargs else None
+    if tcost_mod is not None:
+        # Avoid float distortion in CPCV context by using a smaller threshold
+        pivot_w = tcost_mod.apply_tcost_overlay(
+            pivot_w, cost_per_trade_bps=15.0,
+            min_trade_threshold_bps=tail_kwargs.get('tcost_threshold', 10.0))
+
+    # Advanced circuit breaker
+    breaker_mod = tail_kwargs.get('breaker_mod') if tail_kwargs else None
+    if breaker_mod is not None:
+        port_rets_pre = (pivot_w.to_numpy() * pivot_y.to_numpy()).sum(axis=1)
+        pivot_w = breaker_mod.apply_advanced_circuit_breaker(
+            pivot_w, port_rets_pre,
+            cvar_limit=tail_kwargs.get('breaker_cvar_limit', -0.20),
+            derisk_multiplier=0.7, lookback=60, cooldown_bars=2)
+
     adj_w, port_rets = tail_mod.apply_tail_controls(
         pivot_w, pivot_y.to_numpy(),
         target_vol_ann=0.15, max_abs_weight=0.05,
@@ -488,7 +539,12 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
                  regime_bear_exposure_param=0.5,
                  regime_bull_exposure_param=1.1,
                  regime_sideways_exposure_param=0.8,
-                 regime_hmm_retrain_param=60):
+                 regime_hmm_retrain_param=60,
+                 smart_money_mod_param=None, smart_money_boost_param=0.25,
+                 sentiment_mod_param=None, sentiment_boost_param=0.2,
+                 contagion_mod_param=None,
+                 tcost_mod_param=None, tcost_threshold_param=30.0,
+                 breaker_mod_param=None, breaker_cvar_limit_param=-0.08):
     """Phase 10 (B): ensemble_y is an optional dict {horizon: y_array}.
     When provided, fit one Ridge per horizon target, blend predictions by
     ensemble_weights (default = uniform). All Ridge fits use the SAME
@@ -661,6 +717,21 @@ def run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, label, label_horizon,
             tail_kwargs["regime_bull_exposure"] = regime_bull_exposure_param
             tail_kwargs["regime_sideways_exposure"] = regime_sideways_exposure_param
             tail_kwargs["regime_hmm_retrain"] = regime_hmm_retrain_param
+        # Phase 14: additional overlays
+        if smart_money_mod_param is not None:
+            tail_kwargs["smart_money_mod"] = smart_money_mod_param
+            tail_kwargs["smart_money_boost"] = smart_money_boost_param
+        if sentiment_mod_param is not None:
+            tail_kwargs["sentiment_mod"] = sentiment_mod_param
+            tail_kwargs["sentiment_boost"] = sentiment_boost_param
+        if contagion_mod_param is not None:
+            tail_kwargs["contagion_mod"] = contagion_mod_param
+        if tcost_mod_param is not None:
+            tail_kwargs["tcost_mod"] = tcost_mod_param
+            tail_kwargs["tcost_threshold"] = tcost_threshold_param
+        if breaker_mod_param is not None:
+            tail_kwargs["breaker_mod"] = breaker_mod_param
+            tail_kwargs["breaker_cvar_limit"] = breaker_cvar_limit_param
         if not tail_kwargs:
             tail_kwargs = None
         rets = per_date_returns(r["pred"], y[te], dates[te],
@@ -743,6 +814,15 @@ def main():
     p.add_argument("--regime-sideways-exposure", type=float, default=0.8, help="Phase 13: exposure in SIDEWAYS regime (default 0.8)")
     p.add_argument("--regime-hmm", action="store_true", help="Phase 13b: use HMM regime detector instead of simple MA/vol rules")
     p.add_argument("--regime-hmm-retrain", type=int, default=60, help="Phase 13b: retrain HMM every N bars (default 60)")
+    p.add_argument("--smart-money", action="store_true", help="Phase 14: smart money overlay (CMF/VWAP/OBV boost)")
+    p.add_argument("--smart-money-boost", type=float, default=0.25, help="Phase 14: smart money boost scale")
+    p.add_argument("--sentiment", action="store_true", help="Phase 14: sentiment proxy overlay")
+    p.add_argument("--sentiment-boost", type=float, default=0.2, help="Phase 14: sentiment boost scale")
+    p.add_argument("--contagion", action="store_true", help="Phase 14: contagion/correlation spike overlay")
+    p.add_argument("--tcost", action="store_true", help="Phase 14: transaction cost optimizer overlay")
+    p.add_argument("--tcost-threshold", type=float, default=30.0, help="Phase 14: min trade threshold bps")
+    p.add_argument("--advanced-breaker", action="store_true", help="Phase 14: advanced CVaR circuit breaker")
+    p.add_argument("--breaker-cvar-limit", type=float, default=-0.08, help="Phase 14: CVaR limit for breaker")
     args = p.parse_args()
     cpcv_mod = _import("_cpcv", "omega/quant/validation/cpcv.py")
     dsr_mod = _import("_dsr", "omega/quant/validation/dsr.py")
@@ -914,6 +994,16 @@ def main():
             regime_mod = _import("_regime", "omega/quant/portfolio/regime_overlay.py")
             logger.info("Phase 13: Regime overlay enabled (hysteresis=%d days)", args.regime_hysteresis)
 
+    # Phase 14: additional overlays
+    smart_money_mod = _import("_sm", "omega/quant/portfolio/smart_money_overlay.py") if args.smart_money else None
+    sentiment_mod = _import("_sent", "omega/quant/portfolio/sentiment_overlay.py") if args.sentiment else None
+    contagion_mod = _import("_cont", "omega/quant/portfolio/contagion_overlay.py") if args.contagion else None
+    tcost_mod = _import("_tcost", "omega/quant/portfolio/tcost_optimizer_overlay.py") if args.tcost else None
+    breaker_mod = _import("_breaker", "omega/quant/portfolio/advanced_breaker_overlay.py") if args.advanced_breaker else None
+    if any([smart_money_mod, sentiment_mod, contagion_mod, tcost_mod, breaker_mod]):
+        logger.info("Phase 14 overlays: SM=%s SENT=%s CONT=%s TCOST=%s BREAKER=%s",
+                    bool(smart_money_mod), bool(sentiment_mod), bool(contagion_mod), bool(tcost_mod), bool(breaker_mod))
+
     summary = run_pipeline(X, y, ts, dates, cpcv_mod, dsr_mod, "A_baseline_alphas",
                             label_horizon=args.label_horizon * max_per_date,
                             tickers=tickers_arr, tail_mod=tail_mod,
@@ -936,7 +1026,16 @@ def main():
                             regime_bear_exposure_param=args.regime_bear_exposure,
                             regime_bull_exposure_param=args.regime_bull_exposure,
                             regime_sideways_exposure_param=args.regime_sideways_exposure,
-                            regime_hmm_retrain_param=args.regime_hmm_retrain)
+                            regime_hmm_retrain_param=args.regime_hmm_retrain,
+                            smart_money_mod_param=smart_money_mod,
+                            smart_money_boost_param=args.smart_money_boost,
+                            sentiment_mod_param=sentiment_mod,
+                            sentiment_boost_param=args.sentiment_boost,
+                            contagion_mod_param=contagion_mod,
+                            tcost_mod_param=tcost_mod,
+                            tcost_threshold_param=args.tcost_threshold,
+                            breaker_mod_param=breaker_mod,
+                            breaker_cvar_limit_param=args.breaker_cvar_limit)
     out = REPO_ROOT / args.out
     out.parent.mkdir(parents=True, exist_ok=True)
     with open(out, "w") as f:

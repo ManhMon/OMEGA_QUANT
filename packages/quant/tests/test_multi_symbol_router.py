@@ -40,6 +40,37 @@ def feature_frame() -> pd.DataFrame:
     )
 
 
+def test_get_model_registry_uses_default_registry_when_path_is_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    created_paths: list[object] = []
+
+    class FakeRegistry:
+        def __init__(self, registry_path: object = ".models") -> None:
+            created_paths.append(registry_path)
+
+    monkeypatch.setattr("omega.quant.multi_symbol_router.ModelRegistry", FakeRegistry)
+
+    router = MultiSymbolRouter(RouterConfig(model_registry_path=None))
+
+    assert router._get_model_registry() is router._get_model_registry()
+    assert created_paths == [".models"]
+
+
+def test_get_model_registry_uses_configured_registry_path(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    created_paths: list[object] = []
+
+    class FakeRegistry:
+        def __init__(self, registry_path: object = ".models") -> None:
+            created_paths.append(registry_path)
+
+    monkeypatch.setattr("omega.quant.multi_symbol_router.ModelRegistry", FakeRegistry)
+
+    registry_path = tmp_path / "models"
+    router = MultiSymbolRouter(RouterConfig(model_registry_path=str(registry_path)))
+
+    assert router._get_model_registry() is router._get_model_registry()
+    assert created_paths == [str(registry_path)]
+
+
 def test_process_all_symbols_runs_real_inference_in_parallel(feature_frame: pd.DataFrame) -> None:
     router = MultiSymbolRouter(RouterConfig(max_workers=2, xgboost_weight=0.75, lstm_weight=0.25))
     xgb_model = RecordingModel(0.8, delay=0.05)

@@ -1,0 +1,19 @@
+# Python caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# OpenClaw / tool runtime clutter
+.openclaw/
+.code-review-graph/
+.antigravitycli/
+skills/
+pi_skill/
+cache/
+pytest_temp/
+archive/
+.token-savior-cache.json
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
