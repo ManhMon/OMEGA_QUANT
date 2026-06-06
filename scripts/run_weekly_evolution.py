@@ -48,7 +48,11 @@ FEATURE_COLUMNS = [
     "open", "high", "low", "close", "volume",
     "returns_1d", "returns_5d", "returns_10d", "vol_ratio", "vol_trend_5_20",
     "hl_range", "oc_range", "rsi_14", "rsi_5", "rsi_21", "ma_ratio_5_20",
-    "vol_std_10", "close_range_ratio"
+    "vol_std_10", "close_range_ratio",
+    "macd_line", "macd_signal", "macd_hist", "roc_10", "roc_20",
+    "realized_vol_20", "bollinger_w_20", "williams_r_14", "mfi_14",
+    "cci_14", "obv_norm", "force_index_13", "ma_ratio_10_50",
+    "close_to_ema_10", "close_to_ema_20"
 ]
 TRAIN_RATIO = 0.70
 TARGET_HORIZON = 5  # T+5 forward returns
@@ -82,38 +86,153 @@ def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
     return rsi.fillna(50.0)
 
 
+def compute_macd(close: pd.Series) -> pd.DataFrame:
+    """Compute MACD, Signal line and Histogram."""
+    ema_12 = close.ewm(span=12, adjust=False).mean()
+    ema_26 = close.ewm(span=26, adjust=False).mean()
+    macd_line = ema_12 - ema_26
+    macd_signal = macd_line.ewm(span=9, adjust=False).mean()
+    macd_hist = macd_line - macd_signal
+    return pd.DataFrame({
+        "macd_line": macd_line,
+        "macd_signal": macd_signal,
+        "macd_hist": macd_hist
+    })
+
+
+def compute_cci(df: pd.DataFrame, window: int = 14) -> pd.Series:
+    """Compute Commodity Channel Index (CCI)."""
+    tp = (df['high'] + df['low'] + df['close']) / 3
+    ma = tp.rolling(window).mean()
+    md = tp.rolling(window).apply(lambda x: np.abs(x - x.mean()).mean(), raw=True)
+    cci = (tp - ma) / (0.015 * md + 1e-9)
+    return cci.fillna(0.0)
+
+
+def compute_williams_r(df: pd.DataFrame, window: int = 14) -> pd.Series:
+    """Compute Williams %R."""
+    highest_high = df['high'].rolling(window).max()
+    lowest_low = df['low'].rolling(window).min()
+    r = (highest_high - df['close']) / (highest_high - lowest_low + 1e-9) * -100
+    return r.fillna(-50.0)
+
+
+def compute_mfi(df: pd.DataFrame, window: int = 14) -> pd.Series:
+    """Compute Money Flow Index (MFI)."""
+    tp = (df['high'] + df['low'] + df['close']) / 3
+    mf = tp * df['volume']
+    tp_diff = tp.diff()
+    pos_mf = np.where(tp_diff > 0, mf, 0.0)
+    neg_mf = np.where(tp_diff < 0, mf, 0.0)
+    pos_mf_sum = pd.Series(pos_mf).rolling(window).sum()
+    neg_mf_sum = pd.Series(neg_mf).rolling(window).sum()
+    mfr = pos_mf_sum / (neg_mf_sum + 1e-9)
+    mfi = 100 - (100 / (1 + mfr))
+    return mfi.fillna(50.0)
+
+
+def compute_obv(df: pd.DataFrame) -> pd.Series:
+    """Compute normalized On-Balance Volume (OBV)."""
+    ret = df['close'].pct_change(1)
+    direction = np.sign(ret.fillna(0.0))
+    obv = (direction * df['volume']).cumsum()
+    roll_v_sum = df['volume'].rolling(20).sum()
+    normalized_obv = obv / (roll_v_sum + 1e-9)
+    return normalized_obv.fillna(0.0)
+
+
+def compute_force_index(df: pd.DataFrame, window: int = 13) -> pd.Series:
+    """Compute normalized Force Index."""
+    raw_force = df['close'].diff(1) * df['volume']
+    force_ema = raw_force.ewm(span=window, adjust=False).mean()
+    roll_v_mean = df['volume'].rolling(20).mean()
+    normalized_force = force_ema / (df['close'] * roll_v_mean + 1e-9)
+    return normalized_force.fillna(0.0)
+
+
 def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute features with T-1 lag for PIT safety, strictly grouped by ticker."""
     result = df.copy()
     result = result.sort_values(["ticker", "date"]).reset_index(drop=True)
 
-    # Compute derived features grouped by ticker
-    result["returns_1d"] = result.groupby("ticker")["close"].pct_change(1)
-    result["returns_5d"] = result.groupby("ticker")["close"].pct_change(5)
-    result["returns_10d"] = result.groupby("ticker")["close"].pct_change(10)
-    
-    # Transform rolling mean
-    roll_mean_20 = result.groupby("ticker")["volume"].transform(lambda x: x.rolling(20).mean())
-    result["vol_ratio"] = result["volume"] / (roll_mean_20 + 1e-9)
-    
-    roll_v_5 = result.groupby("ticker")["volume"].transform(lambda x: x.rolling(5).mean())
-    result["vol_trend_5_20"] = roll_v_5 / (roll_mean_20 + 1e-9)
-    
-    result["hl_range"] = (result["high"] - result["low"]) / (result["close"] + 1e-9)
-    result["oc_range"] = (result["close"] - result["open"]) / (result["open"] + 1e-9)
-
-    # New primitive features
-    result["rsi_14"] = result.groupby("ticker")["close"].transform(compute_rsi, window=14)
-    result["rsi_5"] = result.groupby("ticker")["close"].transform(compute_rsi, window=5)
-    result["rsi_21"] = result.groupby("ticker")["close"].transform(compute_rsi, window=21)
-    
-    roll_mean_5 = result.groupby("ticker")["close"].transform(lambda x: x.rolling(5).mean())
-    roll_mean_20_c = result.groupby("ticker")["close"].transform(lambda x: x.rolling(20).mean())
-    result["ma_ratio_5_20"] = roll_mean_5 / (roll_mean_20_c + 1e-9)
-    
-    result["vol_std_10"] = result.groupby("ticker")["volume"].transform(lambda x: x.rolling(10).std())
-    
-    result["close_range_ratio"] = (result["close"] - result["low"]) / (result["high"] - result["low"] + 1e-9)
+    # Compute derived features grouped by ticker to prevent boundary bleed
+    temp_dfs = []
+    for ticker, group in result.groupby("ticker"):
+        group = group.copy()
+        
+        # Returns / Momentum
+        group["returns_1d"] = group["close"].pct_change(1)
+        group["returns_5d"] = group["close"].pct_change(5)
+        group["returns_10d"] = group["close"].pct_change(10)
+        
+        # Volume features
+        roll_mean_20 = group["volume"].rolling(20).mean()
+        group["vol_ratio"] = group["volume"] / (roll_mean_20 + 1e-9)
+        
+        roll_v_5 = group["volume"].rolling(5).mean()
+        group["vol_trend_5_20"] = roll_v_5 / (roll_mean_20 + 1e-9)
+        group["vol_std_10"] = group["volume"].rolling(10).std()
+        
+        # Ranges
+        group["hl_range"] = (group["high"] - group["low"]) / (group["close"] + 1e-9)
+        group["oc_range"] = (group["close"] - group["open"]) / (group["open"] + 1e-9)
+        group["close_range_ratio"] = (group["close"] - group["low"]) / (group["high"] - group["low"] + 1e-9)
+        
+        # RSI
+        group["rsi_14"] = compute_rsi(group["close"], 14)
+        group["rsi_5"] = compute_rsi(group["close"], 5)
+        group["rsi_21"] = compute_rsi(group["close"], 21)
+        
+        # MA ratios
+        roll_mean_5_c = group["close"].rolling(5).mean()
+        roll_mean_20_c = group["close"].rolling(20).mean()
+        group["ma_ratio_5_20"] = roll_mean_5_c / (roll_mean_20_c + 1e-9)
+        
+        # MACD
+        macd_df = compute_macd(group["close"])
+        group["macd_line"] = macd_df["macd_line"]
+        group["macd_signal"] = macd_df["macd_signal"]
+        group["macd_hist"] = macd_df["macd_hist"]
+        
+        # CCI
+        group["cci_14"] = compute_cci(group, 14)
+        
+        # Williams %R
+        group["williams_r_14"] = compute_williams_r(group, 14)
+        
+        # MFI
+        group["mfi_14"] = compute_mfi(group, 14)
+        
+        # OBV Normalized
+        group["obv_norm"] = compute_obv(group)
+        
+        # Force Index
+        group["force_index_13"] = compute_force_index(group, 13)
+        
+        # ROC
+        group["roc_10"] = group["close"].pct_change(10)
+        group["roc_20"] = group["close"].pct_change(20)
+        
+        # Realized Volatility
+        group["realized_vol_20"] = group["returns_1d"].rolling(20).std()
+        
+        # Bollinger Bands Width
+        bb_std = group["close"].rolling(20).std()
+        group["bollinger_w_20"] = (4 * bb_std) / (roll_mean_20_c + 1e-9)
+        
+        # MA ratios & EMA distance
+        ema_10 = group["close"].ewm(span=10, adjust=False).mean()
+        ema_20 = group["close"].ewm(span=20, adjust=False).mean()
+        ma_50 = group["close"].rolling(50).mean()
+        ma_10 = group["close"].rolling(10).mean()
+        
+        group["ma_ratio_10_50"] = ma_10 / (ma_50 + 1e-9)
+        group["close_to_ema_10"] = group["close"] / (ema_10 + 1e-9)
+        group["close_to_ema_20"] = group["close"] / (ema_20 + 1e-9)
+        
+        temp_dfs.append(group)
+        
+    result = pd.concat(temp_dfs).sort_values(["ticker", "date"]).reset_index(drop=True)
 
     # PIT SAFETY: Apply T-1 lag to ALL features strictly per ticker (no shift bleed across symbols)
     for col in FEATURE_COLUMNS:
