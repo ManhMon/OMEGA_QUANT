@@ -46,13 +46,15 @@ MARKET_DATA_PATH = PROJECT_ROOT / "data" / "market_2015_now.parquet"
 OUTPUT_PATH = PROJECT_ROOT / ".ly_state" / "session" / "evolved_alphas.json"
 FEATURE_COLUMNS = [
     "open", "high", "low", "close", "volume",
-    "returns_1d", "returns_5d", "returns_10d", "vol_ratio", "vol_trend_5_20",
+    "returns_1d", "returns_5d", "returns_10d", "returns_3d", "vol_ratio", "vol_trend_5_20",
     "hl_range", "oc_range", "rsi_14", "rsi_5", "rsi_21", "ma_ratio_5_20",
     "vol_std_10", "close_range_ratio",
     "macd_line", "macd_signal", "macd_hist", "roc_10", "roc_20",
     "realized_vol_20", "bollinger_w_20", "williams_r_14", "mfi_14",
     "cci_14", "obv_norm", "force_index_13", "ma_ratio_10_50",
-    "close_to_ema_10", "close_to_ema_20"
+    "close_to_ema_10", "close_to_ema_20",
+    "vn_vol_shock_5d", "vn_ceil_limit_proximity", "vn_floor_limit_proximity",
+    "vn_hit_ceil", "vn_hit_floor"
 ]
 TRAIN_RATIO = 0.70
 TARGET_HORIZON = 5  # T+5 forward returns
@@ -229,6 +231,15 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
         group["ma_ratio_10_50"] = ma_10 / (ma_50 + 1e-9)
         group["close_to_ema_10"] = group["close"] / (ema_10 + 1e-9)
         group["close_to_ema_20"] = group["close"] / (ema_20 + 1e-9)
+        
+        # Vietnam Stock Market specific features
+        prev_close = group["close"].shift(1)
+        group["returns_3d"] = group["close"].pct_change(3)
+        group["vn_vol_shock_5d"] = group["volume"] / (group["volume"].rolling(5).mean() + 1e-9)
+        group["vn_ceil_limit_proximity"] = (1.07 * prev_close - group["close"]) / (prev_close + 1e-9)
+        group["vn_floor_limit_proximity"] = (group["close"] - 0.93 * prev_close) / (prev_close + 1e-9)
+        group["vn_hit_ceil"] = (group["high"] >= 1.069 * prev_close).astype(float)
+        group["vn_hit_floor"] = (group["low"] <= 0.931 * prev_close).astype(float)
         
         temp_dfs.append(group)
         
