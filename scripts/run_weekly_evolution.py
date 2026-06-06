@@ -46,8 +46,9 @@ MARKET_DATA_PATH = PROJECT_ROOT / "data" / "market_2015_now.parquet"
 OUTPUT_PATH = PROJECT_ROOT / ".ly_state" / "session" / "evolved_alphas.json"
 FEATURE_COLUMNS = [
     "open", "high", "low", "close", "volume",
-    "returns_1d", "returns_5d", "vol_ratio", "hl_range", "oc_range",
-    "rsi_14", "rsi_5", "ma_ratio_5_20", "vol_std_10"
+    "returns_1d", "returns_5d", "returns_10d", "vol_ratio", "vol_trend_5_20",
+    "hl_range", "oc_range", "rsi_14", "rsi_5", "rsi_21", "ma_ratio_5_20",
+    "vol_std_10", "close_range_ratio"
 ]
 TRAIN_RATIO = 0.70
 TARGET_HORIZON = 5  # T+5 forward returns
@@ -89,10 +90,14 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     # Compute derived features grouped by ticker
     result["returns_1d"] = result.groupby("ticker")["close"].pct_change(1)
     result["returns_5d"] = result.groupby("ticker")["close"].pct_change(5)
+    result["returns_10d"] = result.groupby("ticker")["close"].pct_change(10)
     
     # Transform rolling mean
     roll_mean_20 = result.groupby("ticker")["volume"].transform(lambda x: x.rolling(20).mean())
     result["vol_ratio"] = result["volume"] / (roll_mean_20 + 1e-9)
+    
+    roll_v_5 = result.groupby("ticker")["volume"].transform(lambda x: x.rolling(5).mean())
+    result["vol_trend_5_20"] = roll_v_5 / (roll_mean_20 + 1e-9)
     
     result["hl_range"] = (result["high"] - result["low"]) / (result["close"] + 1e-9)
     result["oc_range"] = (result["close"] - result["open"]) / (result["open"] + 1e-9)
@@ -100,12 +105,15 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     # New primitive features
     result["rsi_14"] = result.groupby("ticker")["close"].transform(compute_rsi, window=14)
     result["rsi_5"] = result.groupby("ticker")["close"].transform(compute_rsi, window=5)
+    result["rsi_21"] = result.groupby("ticker")["close"].transform(compute_rsi, window=21)
     
     roll_mean_5 = result.groupby("ticker")["close"].transform(lambda x: x.rolling(5).mean())
     roll_mean_20_c = result.groupby("ticker")["close"].transform(lambda x: x.rolling(20).mean())
     result["ma_ratio_5_20"] = roll_mean_5 / (roll_mean_20_c + 1e-9)
     
     result["vol_std_10"] = result.groupby("ticker")["volume"].transform(lambda x: x.rolling(10).std())
+    
+    result["close_range_ratio"] = (result["close"] - result["low"]) / (result["high"] - result["low"] + 1e-9)
 
     # PIT SAFETY: Apply T-1 lag to ALL features strictly per ticker (no shift bleed across symbols)
     for col in FEATURE_COLUMNS:
