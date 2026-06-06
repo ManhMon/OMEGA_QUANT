@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 OMEGA_QUANT E2E Full Pipeline Backtest
 Phases: Data(1-2) -> Alpha(3) -> ML Gate(3.5) -> Portfolio(4) -> Risk(5) -> Execution(19) -> CircuitBreaker(16) -> Attribution(21)
@@ -25,6 +25,12 @@ os.chdir(str(PROJECT_ROOT))
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("e2e_backtest")
 
+try:
+    from omega.data.sanitizer import DataSanitizer
+except Exception:
+    DataSanitizer = None
+
+
 # ============================================================
 # CONFIG
 # ============================================================
@@ -50,6 +56,38 @@ CONFIG = {
     "n_folds": 6,
 }
 
+def mask_suspended(panel: pd.DataFrame) -> pd.DataFrame:
+    n0 = len(panel)
+    out = panel[panel["volume"] > 0].reset_index(drop=True)
+    logger.info("  mask_suspended: dropped %d / %d rows (%.1f%%) with volume==0",
+                n0 - len(out), n0, 100.0 * (n0 - len(out)) / max(n0, 1))
+    return out
+
+def sanitize_ohlcv(panel: pd.DataFrame) -> pd.DataFrame:
+    if DataSanitizer is None:
+        logger.warning("  DataSanitizer unavailable - skipping OHLCV sanitization")
+        return panel
+    max_date = pd.to_datetime(panel["date"].max())
+    san = DataSanitizer(max_fill_days=3, outlier_sigma=3.0, min_price=0.01,
+                        as_of_time=max_date)
+    san.fit(panel, symbol_col="ticker", date_col="date")
+    panel_in = panel.copy()
+    panel_in["_orig_idx"] = np.arange(len(panel_in))
+    cleaned = san.apply(panel_in, symbol_col="ticker", date_col="date")
+    if "ticker" not in cleaned.columns:
+        if "_orig_idx" not in cleaned.columns:
+            cleaned["ticker"] = panel_in.loc[cleaned.index, "ticker"].values
+        else:
+            ticker_map = dict(zip(panel_in["_orig_idx"].values, panel_in["ticker"].values))
+            cleaned["ticker"] = cleaned["_orig_idx"].map(ticker_map)
+            cleaned = cleaned.drop(columns=["_orig_idx"])
+    s = san.sanitization_stats
+    logger.info("  sanitize_ohlcv: in=%d dup=%d ffill=%d clipped=%d invalid=%d out=%d",
+                s.get("input_rows", 0), s.get("duplicates_removed", 0),
+                s.get("forward_filled", 0), s.get("outliers_clipped", 0),
+                s.get("invalid_prices_removed", 0), s.get("output_rows", 0))
+    return cleaned
+
 # ============================================================
 # PHASE 1-2: DATA LOADING & PREPARATION
 # ============================================================
@@ -68,6 +106,11 @@ def phase_1_2_load_data(config):
     median_vol = df.groupby("ticker")["volume"].median().nlargest(config["top_n_symbols"])
     top_tickers = median_vol.index.tolist()
     df = df[df["ticker"].isin(top_tickers)].copy()
+
+    # Clean data (mask suspended and sanitize OHLCV)
+    df = mask_suspended(df)
+    df = sanitize_ohlcv(df)
+
 
     # Compute returns (T-1 safe: use shift)
     df["returns"] = df.groupby("ticker")["close"].pct_change()
@@ -404,14 +447,17 @@ def phase_16_circuit_breaker(equity_curve, config):
 # ============================================================
 # PHASE 21: PERFORMANCE ATTRIBUTION
 # ============================================================
-def phase_21_attribution(portfolio_returns, benchmark_returns):
+def phase_21_attribution(portfolio_returns, benchmark_returns, config):
     """Compute performance metrics (PIT-safe)."""
     if len(portfolio_returns) < 10:
         return {}
 
+    rebal_freq = config.get("rebalance_freq_days", 5)
+    annualization_factor = 252 / rebal_freq
+
     # Sharpe
     excess = portfolio_returns - 0.0  # risk-free ~ 0 for simplicity
-    sharpe = excess.mean() / (excess.std() + 1e-10) * np.sqrt(252)
+    sharpe = excess.mean() / (excess.std() + 1e-10) * np.sqrt(annualization_factor)
 
     # Max Drawdown
     cum = (1 + portfolio_returns).cumprod()
@@ -421,21 +467,21 @@ def phase_21_attribution(portfolio_returns, benchmark_returns):
 
     # Information Ratio (with floor on tracking error to avoid division artifacts)
     active = portfolio_returns - benchmark_returns
-    te_raw = active.std() * np.sqrt(252)
+    te_raw = active.std() * np.sqrt(annualization_factor)
     te = max(te_raw, 0.01)  # Floor at 1% to avoid IR explosion
-    ir = active.mean() / (active.std() + 1e-10) * np.sqrt(252) if te_raw >= 0.01 else float('nan')
+    ir = active.mean() / (active.std() + 1e-10) * np.sqrt(annualization_factor) if te_raw >= 0.01 else float('nan')
 
     # Total Return
     total_ret = (1 + portfolio_returns).prod() - 1
 
     # Annual Return (based on actual rebalance periods, not raw observation count)
     # Each observation = rebalance_freq_days trading days
-    n_trading_days = len(portfolio_returns) * CONFIG.get("rebalance_freq_days", 5)
+    n_trading_days = len(portfolio_returns) * rebal_freq
     n_years = n_trading_days / 252
     annual_ret = (1 + total_ret) ** (1 / max(n_years, 0.01)) - 1
 
     # Annual Volatility
-    annual_vol = portfolio_returns.std() * np.sqrt(252)
+    annual_vol = portfolio_returns.std() * np.sqrt(annualization_factor)
 
     # Turnover (will be filled externally)
     return {
@@ -507,6 +553,17 @@ def run_e2e_backtest():
             logger.warning(f"  CIRCUIT BREAKER TRIGGERED at {rebal_date} (DD={current_dd:.2%})")
             # Zero out positions
             prev_weights = pd.Series(dtype=float)
+            portfolio_returns.append(0.0)
+            
+            # Record benchmark return to maintain timeline alignment
+            next_dates = [d for d in test_dates if d > rebal_date][:config["rebalance_freq_days"]]
+            if next_dates:
+                period_df = df[df["date"].isin(next_dates)]
+                bench_ret = period_df.groupby("ticker")["returns"].apply(lambda x: (1 + x).prod() - 1).mean() if not period_df.empty else 0.0
+            else:
+                bench_ret = 0.0
+            benchmark_returns.append(bench_ret)
+            equity_curve.append(equity_curve[-1])
             continue
 
         # Select top N by signal
@@ -537,13 +594,13 @@ def run_e2e_backtest():
         if len(period_df) == 0:
             continue
 
-        # Portfolio return for period
-        period_ret_by_ticker = period_df.groupby("ticker")["returns"].mean()
+        # Portfolio return for period (cumulative over 5 days)
+        period_ret_by_ticker = period_df.groupby("ticker")["returns"].apply(lambda x: (1 + x).prod() - 1)
         gross_ret = (weights * period_ret_by_ticker.reindex(weights.index, fill_value=0)).sum()
-        net_ret = gross_ret - cost / max(config["rebalance_freq_days"], 1)
+        net_ret = gross_ret - cost
 
-        # Benchmark: equal-weight all top tickers
-        bench_ret = period_df.groupby("ticker")["returns"].mean().mean()
+        # Benchmark: equal-weight all top tickers (cumulative over 5 days)
+        bench_ret = period_df.groupby("ticker")["returns"].apply(lambda x: (1 + x).prod() - 1).mean()
 
         portfolio_returns.append(net_ret)
         benchmark_returns.append(bench_ret)
@@ -558,7 +615,7 @@ def run_e2e_backtest():
 
     port_ret_series = pd.Series(portfolio_returns)
     bench_ret_series = pd.Series(benchmark_returns)
-    metrics = phase_21_attribution(port_ret_series, bench_ret_series)
+    metrics = phase_21_attribution(port_ret_series, bench_ret_series, config)
 
     # Add execution metrics
     metrics["total_turnover"] = float(total_turnover)

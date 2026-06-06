@@ -29,9 +29,16 @@ from typing import Any, Callable, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
+from joblib import Parallel, delayed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Standalone function for joblib parallel (must be picklable for serialization)
+def _evaluate_individual(ind, features, target, hof, config):
+    ind.evaluate(features, target, hof, config)
+    return ind
+
 
 
 # =============================================================================
@@ -180,14 +187,14 @@ class GPNode:
 class GPConfig:
     """Configuration for genetic programming engine."""
     
-    population_size: int = 100
-    generations: int = 30
+    population_size: int = 500
+    generations: int = 50
     max_depth: int = 5
     tournament_size: int = 5
     crossover_rate: float = 0.7
     mutation_rate: float = 0.2
     elitism_count: int = 1
-    hall_of_fame_size: int = 10
+    hall_of_fame_size: int = 20
     diversity_threshold: float = 0.7
     min_observations: int = 1000
     
@@ -197,6 +204,18 @@ class GPConfig:
     binary_ops: List[str] = field(default_factory=lambda: ['+', '-', '*', '/', 'max', 'min'])
     ts_ops: List[str] = field(default_factory=lambda: ['ts_std', 'ts_mean', 'ts_rank', 'decay_linear'])
     ts_windows: List[int] = field(default_factory=lambda: [5, 10, 20])
+    
+    # Multi-target fitness (Phase 2.2)
+    # Forward return horizons (in bars) used for combined IC fitness.
+    # When more than one horizon is provided, evaluate() expects
+    # features['target_h{N}'] for each N and computes a weighted IC.
+    multi_target_horizons: List[int] = field(default_factory=lambda: [5])
+    multi_target_weights: List[float] = field(default_factory=lambda: [1.0])
+
+    # Parallel evaluation (Phase 2.4)
+    # n_jobs: number of parallel threads for population evaluation.
+    # -1 = use all CPUs, 1 = sequential fallback.
+    n_jobs: int = -1
 
 
 # =============================================================================
@@ -252,12 +271,17 @@ class GPIndividual:
                 self.fitness = -np.inf
                 return
             
-            # Calculate IC (Spearman)
-            ic, _ = spearmanr(combined['alpha'], combined['target'])
+            # Calculate IC (Spearman) — multi-target aware
+            ic = self._compute_combined_ic(alpha_series, target, features, config)
             if np.isnan(ic):
                 ic = 0.0
-            
-            self.ic_score = abs(ic)
+
+            # Phase 6 fix: signed IC fitness. abs(ic) used to reward both
+            # +alpha and -alpha equally, polluting the Hall of Fame with
+            # sign-flipped trees. With signed fitness GP only optimizes
+            # for IC > 0; users who want a short-only strategy can wrap
+            # the signal in a unary minus operator instead.
+            self.ic_score = float(ic)
             
             # Turnover calculation
             alpha_sign = np.sign(alpha_series)
@@ -278,10 +302,26 @@ class GPIndividual:
             # Diversity penalty
             self.diversity_penalty = 0.0
             if hall_of_fame:
-                for hof_individual in hall_of_fame:
+                # Cache HoF alphas: re-execute only if not cached at this features id
+                _cache_key = id(features)
+                _cache = getattr(hall_of_fame, '_alpha_cache', None)
+                if _cache is None or _cache.get('key') != _cache_key:
+                    _cache = {'key': _cache_key, 'alphas': []}
+                    for hof_individual in hall_of_fame:
+                        try:
+                            hof_a = self._execute_tree(hof_individual.tree, features)
+                            hof_a = np.nan_to_num(hof_a, nan=0.0, posinf=0.0, neginf=0.0)
+                            _cache['alphas'].append(hof_a)
+                        except Exception:
+                            _cache['alphas'].append(None)
                     try:
-                        hof_alpha = self._execute_tree(hof_individual.tree, features)
-                        hof_alpha = np.nan_to_num(hof_alpha, nan=0.0, posinf=0.0, neginf=0.0)
+                        hall_of_fame._alpha_cache = _cache
+                    except Exception:
+                        pass
+                for hof_alpha in _cache['alphas']:
+                    if hof_alpha is None:
+                        continue
+                    try:
                         corr_df = pd.DataFrame({'a': alpha_series, 'b': hof_alpha}).dropna()
                         if len(corr_df) > 100:
                             corr, _ = spearmanr(corr_df['a'], corr_df['b'])
@@ -296,6 +336,56 @@ class GPIndividual:
         except Exception as e:
             logger.debug(f"Fitness evaluation failed: {e}")
             self.fitness = -np.inf
+    
+    def _compute_combined_ic(
+        self,
+        alpha_series: np.ndarray,
+        target: np.ndarray,
+        features: Dict[str, np.ndarray],
+        config: GPConfig
+    ) -> float:
+        """Compute IC, supporting multi-target horizons (Phase 2.2).
+        
+        - Single-horizon (default): Spearman IC vs `target` (back-compat).
+        - Multi-horizon: weighted average of Spearman IC across each
+          features[f'target_h{N}'] for N in config.multi_target_horizons.
+          Falls back to `target` when a horizon key is missing.
+        """
+        horizons = list(getattr(config, 'multi_target_horizons', []) or [])
+        weights = list(getattr(config, 'multi_target_weights', []) or [])
+        
+        # Single-target back-compat path
+        if len(horizons) <= 1:
+            combined = pd.DataFrame({'alpha': alpha_series, 'target': target}).dropna()
+            if len(combined) < 2:
+                return 0.0
+            ic, _ = spearmanr(combined['alpha'], combined['target'])
+            return float(ic) if not np.isnan(ic) else 0.0
+        
+        # Normalize weights (default to equal weights if mismatch)
+        if len(weights) != len(horizons):
+            weights = [1.0] * len(horizons)
+        weight_sum = float(sum(weights))
+        if weight_sum <= 0:
+            return 0.0
+        
+        weighted_ic = 0.0
+        used_weight = 0.0
+        for horizon, weight in zip(horizons, weights):
+            key = f'target_h{horizon}'
+            target_h = features.get(key, target)
+            combined = pd.DataFrame({'alpha': alpha_series, 'target': target_h}).dropna()
+            if len(combined) < 2:
+                continue
+            ic_h, _ = spearmanr(combined['alpha'], combined['target'])
+            if np.isnan(ic_h):
+                continue
+            weighted_ic += float(weight) * float(ic_h)
+            used_weight += float(weight)
+        
+        if used_weight <= 0:
+            return 0.0
+        return weighted_ic / used_weight
     
     def _execute_tree(self, node: GPNode, features: Dict[str, np.ndarray]) -> np.ndarray:
         """Execute expression tree to compute alpha values."""
@@ -436,9 +526,17 @@ class GeneticEngine:
         """Update Hall of Fame."""
         candidates = sorted(self.population, key=lambda ind: ind.fitness, reverse=True)
         self.hall_of_fame = []
+        # Invalidate diversity-penalty cache (HoF identity changes)
+        if hasattr(self.hall_of_fame, '_alpha_cache'):
+            self.hall_of_fame._alpha_cache = None
         for candidate in candidates:
             if len(self.hall_of_fame) >= self.config.hall_of_fame_size:
                 break
+            # Phase 6 fix: with signed-IC fitness, individuals with negative
+            # IC have fitness < 0 (penalties only subtract). Skip them so
+            # the HoF never holds anti-correlated alphas.
+            if candidate.fitness <= 0:
+                continue
             if candidate.diversity_penalty <= 0 or len(self.hall_of_fame) == 0:
                 self.hall_of_fame.append(candidate)
     
@@ -454,8 +552,18 @@ class GeneticEngine:
         self.initialize_population()
         
         for generation in range(self.config.generations):
-            for individual in self.population:
-                individual.evaluate(features, target, self.hall_of_fame, self.config)
+            if self.config.n_jobs == 1:
+                for individual in self.population:
+                    individual.evaluate(features, target, self.hall_of_fame, self.config)
+            else:
+                self.population = list(Parallel(
+                    n_jobs=self.config.n_jobs, prefer='threads', batch_size='auto'
+                )(
+                    delayed(_evaluate_individual)(
+                        ind, features, target, self.hall_of_fame, self.config
+                    )
+                    for ind in self.population
+                ))
             
             self.population.sort(key=lambda ind: ind.fitness, reverse=True)
             self.update_hall_of_fame()

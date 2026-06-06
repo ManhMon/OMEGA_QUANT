@@ -4,7 +4,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Tuple
 
-from ..strategy_logic.position_sizer import TargetPortfolio
+from ..quant.position_sizer import TargetPortfolio
 
 
 @dataclass(frozen=True)

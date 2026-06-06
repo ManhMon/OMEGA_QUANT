@@ -1,8 +1,8 @@
-﻿"""
+"""
 OMEGA_QUANT System Orchestrator Bridge
-Connects legacy V21QuantSystem to new unified pipeline.
+Connects legacy V21_QuantSystem to new unified pipeline.
 
-Since V21QuantSystem has unresolvable legacy imports (v21_system.*),
+Since legacy quant system has unresolvable legacy imports,
 this bridge provides the same interface using new modules.
 
 Author: Backend Engineer (Role 09)

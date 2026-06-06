@@ -178,3 +178,69 @@ class CircuitBreaker:
         
         return result
 
+
+@dataclass
+class DrawdownStatus:
+    """Status object returned by DrawdownCircuitBreaker."""
+    drawdown: float           # Current drawdown as positive fraction (e.g. 0.12 = 12%)
+    is_active: bool           # True if circuit breaker triggered
+    risk_multiplier: float    # 1.0 = normal, <1.0 = scale down, 0.0 = halt
+    message: str
+
+
+class DrawdownCircuitBreaker:
+    """
+    Drawdown-based circuit breaker for portfolio equity curves.
+
+    Thresholds (institutionally calibrated for VN market):
+      - drawdown >= HALT_THRESHOLD  -> halt (risk_multiplier=0.0, EMERGENCY)
+      - drawdown >= WARN_THRESHOLD  -> scale down (risk_multiplier proportional, WARNING)
+      - otherwise                   -> normal (risk_multiplier=1.0)
+    """
+
+    WARN_THRESHOLD: float = 0.10   # 10% drawdown -> amber warning
+    HALT_THRESHOLD: float = 0.20   # 20% drawdown -> emergency halt
+
+    def check_risk_from_equity_curve(self, equity_curve: list) -> DrawdownStatus:
+        """
+        Evaluate drawdown risk from an equity curve list.
+
+        Args:
+            equity_curve: Ordered list of portfolio values (oldest -> newest).
+
+        Returns:
+            DrawdownStatus with drawdown, is_active, risk_multiplier, message.
+        """
+        if len(equity_curve) < 2:
+            return DrawdownStatus(
+                drawdown=0.0, is_active=False, risk_multiplier=1.0,
+                message="Insufficient data"
+            )
+
+        values = np.array(equity_curve, dtype=float)
+        peak = np.maximum.accumulate(values)
+        with np.errstate(invalid="ignore", divide="ignore"):
+            dd_series = np.where(peak > 0, (values - peak) / peak, 0.0)
+        current_dd = float(-dd_series[-1])   # Positive fraction
+
+        if current_dd >= self.HALT_THRESHOLD:
+            msg = (f"EMERGENCY: Drawdown {current_dd:.1%} >= halt threshold "
+                   f"{self.HALT_THRESHOLD:.0%}")
+            return DrawdownStatus(
+                drawdown=current_dd, is_active=True, risk_multiplier=0.0, message=msg
+            )
+
+        if current_dd >= self.WARN_THRESHOLD:
+            range_dd = self.HALT_THRESHOLD - self.WARN_THRESHOLD
+            excess = current_dd - self.WARN_THRESHOLD
+            multiplier = max(0.0, 1.0 - (excess / range_dd))
+            msg = (f"WARNING: Drawdown {current_dd:.1%} in warning zone. "
+                   f"Scale factor {multiplier:.2f}")
+            return DrawdownStatus(
+                drawdown=current_dd, is_active=True, risk_multiplier=multiplier, message=msg
+            )
+
+        return DrawdownStatus(
+            drawdown=current_dd, is_active=False, risk_multiplier=1.0,
+            message="Drawdown within normal range"
+        )

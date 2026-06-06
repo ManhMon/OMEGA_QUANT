@@ -20,13 +20,24 @@ GATES_FILE = WORKSPACE / ".ly_state" / "session" / "phase_gates.json"
 
 
 def load_gates() -> dict:
-    """Load phase gates from state file."""
+    """Load phase gates from state file. Handles both dict and list formats."""
     if not GATES_FILE.exists():
         print(f"ERROR: Gates file not found: {GATES_FILE}")
         sys.exit(1)
     
     with open(GATES_FILE, 'r', encoding='utf-8-sig') as f:
-        return json.load(f)
+        raw = json.load(f)
+    
+    # Normalize: if raw is a list of single-key dicts, flatten to one dict
+    if isinstance(raw, list):
+        gates = {}
+        for item in raw:
+            if isinstance(item, dict):
+                for k, v in item.items():
+                    gates[k] = v
+        return gates
+    
+    return raw
 
 
 def check_sod_compliance() -> bool:

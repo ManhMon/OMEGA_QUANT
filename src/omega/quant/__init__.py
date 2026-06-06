@@ -36,6 +36,12 @@ __all__ = [
     "WeightsConfig",
     "ExperimentTracker",
     "PITManager",
+    "TradingPipelineV2",
+    "PipelineStateManager",
+    "ParquetFeatureStoreAdapter",
+    "DatabaseFeatureStoreAdapter",
+    "BacktestOutputHandler",
+    "LiveOutputHandler",
 ]
 
 # Import core components
@@ -139,3 +145,17 @@ try:
     __all__.extend(["BrokerOrder", "OrderRouter"])
 except ImportError:
     pass
+
+try:
+    from .pipeline_v2 import (
+        TradingPipelineV2,
+        PipelineStateManager,
+        ParquetFeatureStoreAdapter,
+        DatabaseFeatureStoreAdapter,
+        BacktestOutputHandler,
+        LiveOutputHandler,
+    )
+except ImportError as e:
+    import logging
+    logging.warning("Failed to import pipeline_v2: %s", e)
+

@@ -33,8 +33,8 @@ from datetime import datetime
 from omega.quant.factory.discovery_engine import DiscoveryEngine
 from omega.quant.portfolio.portfolio_optimizer import PortfolioOptimizer
 from omega.quant.risk.risk_monitor import RiskMonitor
-from omega.quant.execution.order_router import OrderRouter
-from omega.quant.execution.broker_gateway import BrokerOrder, OrderSide, OrderType
+from omega.execution.order_router import OrderRouter
+from omega.execution.broker_gateway import BrokerOrder, OrderSide, OrderType
 from omega.quant.backtest_engine import BacktestEngine
 from omega.quant.observability import setup_observability
 

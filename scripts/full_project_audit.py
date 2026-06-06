@@ -62,7 +62,19 @@ for k, v in layers.items():
     print(f'  [{status}] {k}: {v}')
 
 # 5. Gate status
-gates = json.loads(pathlib.Path('.ly_state/session/phase_gates.json').read_text(encoding='utf-8'))
+gates_raw = json.loads(pathlib.Path('.ly_state/session/phase_gates.json').read_text(encoding='utf-8'))
+gates = {}
+if isinstance(gates_raw, list):
+    for item in gates_raw:
+        if isinstance(item, dict):
+            if "gate_id" in item:
+                gates[item["gate_id"]] = item
+            else:
+                for k, v in item.items():
+                    gates[k] = v
+else:
+    gates = gates_raw
+
 approved = [k for k, v in gates.items() if isinstance(v, dict) and v.get('status') == 'APPROVED']
 pending  = [k for k, v in gates.items() if isinstance(v, dict) and v.get('status') != 'APPROVED']
 results['gates_approved'] = f'{len(approved)} gates APPROVED'

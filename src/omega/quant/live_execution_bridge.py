@@ -27,13 +27,13 @@ import uuid
 import numpy as np
 import pandas as pd
 
-from omega.quant.execution.broker_gateway import (
+from omega.execution.broker_gateway import (
     BrokerOrder,
+    BrokerOrderResponse,
+    BrokerOrderStatus,
     OrderSide,
     OrderStatus,
     OrderType,
-    OrderResponse,
-    OrderStatusResponse,
     PaperTradingEngine,
 )
 
@@ -249,10 +249,16 @@ class LiveExecutionBridge:
                     execution_order.broker_order_id = response.broker_order_id
                     execution_order.update_state(ExecutionState.SUBMITTED)
 
-                    # Check if immediately filled
+                    # Check if immediately filled - query status for fill details
                     if response.status == OrderStatus.FILLED:
-                        execution_order.filled_quantity = execution_order.quantity
-                        execution_order.average_fill_price = response.average_fill_price or 0.0
+                        try:
+                            broker_status = self._broker.get_order_status(response.broker_order_id)
+                            execution_order.filled_quantity = broker_status.filled_quantity
+                            execution_order.average_fill_price = broker_status.average_fill_price or 0.0
+                        except Exception:
+                            # Fallback if status query fails
+                            execution_order.filled_quantity = execution_order.quantity
+                            execution_order.average_fill_price = 0.0
                         execution_order.update_state(ExecutionState.FILLED)
                     elif response.status == OrderStatus.PARTIALLY_FILLED:
                         execution_order.update_state(ExecutionState.PARTIALLY_FILLED)
@@ -312,7 +318,7 @@ class LiveExecutionBridge:
         self,
         broker_order: BrokerOrder,
         current_price: Optional[float]
-    ) -> OrderResponse:
+    ) -> BrokerOrderResponse:
         """
         Submit order to broker (abstraction layer).
 
@@ -321,7 +327,7 @@ class LiveExecutionBridge:
             current_price: Current market price (for paper trading)
 
         Returns:
-            OrderResponse from broker
+            BrokerOrderResponse from broker
         """
         # Use current_price or default to 100.0 for paper trading
         price = current_price if current_price is not None else 100.0
@@ -361,7 +367,7 @@ class LiveExecutionBridge:
     def _update_from_broker_status(
         self,
         execution_order: ExecutionOrder,
-        broker_status: OrderStatusResponse
+        broker_status: BrokerOrderStatus
     ):
         """
         Update internal order state from broker status.

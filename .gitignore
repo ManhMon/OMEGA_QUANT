@@ -11,8 +11,10 @@ skills/
 pi_skill/
 cache/
 pytest_temp/
-archive/
 .token-savior-cache.json
+
+# Archive directory (tracked - contains historical workspace cleanup)
+# archive/ is intentionally tracked to preserve execution cleanup history
 
 # OS / editor noise
 .DS_Store

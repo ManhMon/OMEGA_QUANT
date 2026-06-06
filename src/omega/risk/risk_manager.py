@@ -7,7 +7,7 @@ import json
 import os
 import numpy as np
 
-from ..strategy_logic.position_sizer import TargetPortfolio
+from ..quant.position_sizer import TargetPortfolio
 from .models import ApprovedPortfolio, RiskViolation
 from .validators import (
     AssetLimitValidator,
@@ -392,7 +392,7 @@ class RiskManager:
                     scaled_weights = {k: v for k, v in scaled_weights.items() if k != "CASH"}
                     
                     # Reconstruct portfolio with scaled weights
-                    from ..strategy_logic.position_sizer import TargetPortfolio
+                    from ..quant.position_sizer import TargetPortfolio
                     final_portfolio = TargetPortfolio(
                         weights=scaled_weights,
                         shares={}, # Execution engine will re-calculate shares

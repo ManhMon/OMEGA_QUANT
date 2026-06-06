@@ -10,7 +10,8 @@ from sklearn.model_selection import KFold
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("backtest_v2_cpcv")
 REPO_ROOT = Path(__file__).resolve().parent.parent
-QUANT_SRC = REPO_ROOT / "packages" / "quant" / "src"
+QUANT_SRC = REPO_ROOT / "src" if (REPO_ROOT / "src" / "omega").exists() else REPO_ROOT / "packages" / "quant" / "src"
+
 
 # Phase 5: wire existing DataSanitizer + AlphaSanitizer modules
 for _p in (

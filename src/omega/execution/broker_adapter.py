@@ -4,7 +4,7 @@ from typing import Any
 # v19_system stub (scaffold only - not production code)
 from typing import Any
 try:
-    from v19_system.core import ExecutionContext, ModuleResult
+    from v19_system.core import ExecutionContext, ModuleResult  # stub
 except ImportError:
     class ExecutionContext:  # type: ignore
         pass

@@ -360,18 +360,19 @@ class OrderRouter:
         price_diff_pct = (last_price - ref_price) / ref_price
 
         # Check floor: price is near floor, and opposite liquidity (bid volume) is zero or near zero
-        # Min bid volume to consider liquid: 100 shares
-        is_floor = (price_diff_pct <= -limit_pct + 0.005)
+        # L3 Audit Fix: exact comparison to float range and zero opposite volume rule (volume <= 0.0)
+        # We also support a minor float epsilon (1e-5) for price matches.
+        is_floor = (price_diff_pct <= -limit_pct + 1e-5)
         bid_volume = mdata.get("bid_volume", 0.0)
 
         # Check ceiling: price is near ceiling, and opposite liquidity (ask volume) is zero or near zero
-        is_ceiling = (price_diff_pct >= limit_pct - 0.005)
+        is_ceiling = (price_diff_pct >= limit_pct - 1e-5)
         ask_volume = mdata.get("ask_volume", 0.0)
 
-        if side == OrderSide.SELL and is_floor and bid_volume < 100.0:
+        if side == OrderSide.SELL and is_floor and bid_volume <= 0.0:
             return True, f"Floor limit-lock detected for {symbol} (price change: {price_diff_pct:.2%}, bid_volume: {bid_volume}). SELL order paused."
         
-        if side == OrderSide.BUY and is_ceiling and ask_volume < 100.0:
+        if side == OrderSide.BUY and is_ceiling and ask_volume <= 0.0:
             return True, f"Ceiling limit-lock detected for {symbol} (price change: {price_diff_pct:.2%}, ask_volume: {ask_volume}). BUY order paused."
 
         return False, ""
@@ -389,9 +390,16 @@ class OrderRouter:
         if not adv or adv <= 0:
             return quantity
 
+        # L3 Audit Fix: strict 10% cap validation, do not round UP max_qty if it violates the true 10% cap.
+        # Ensure max_qty is capped strictly at 10% ADV.
         max_qty = int(adv * 0.10)
-        # VN market rule: board-lot compliance
-        max_qty = max(self.minimum_lot_size, (max_qty // self.minimum_lot_size) * self.minimum_lot_size)
+        if max_qty >= self.minimum_lot_size:
+            # Round down to nearest board lot
+            max_qty = (max_qty // self.minimum_lot_size) * self.minimum_lot_size
+        else:
+            # Under standard board lot minimum, but we must clamp to the true cap (cannot trade odd lot unless enabled)
+            # If the user requested odd-lot or low-liquidity size, we still clip it strictly.
+            max_qty = max_qty
 
         if quantity > max_qty:
             logger.warning(f"Order size {quantity} for {symbol} exceeds 10% ADV limit ({max_qty}). Clamping.")
@@ -465,13 +473,15 @@ class OrderRouter:
         slices = max(1, duration_minutes // interval_minutes)
 
         if volume_profile is None:
-            # U-shape profile
+            # U-shape profile: high volume at open and close, low volume in middle.
+            # L3 Audit Fix: The previous formula '1.0 - 0.6 * ((2 * ti / (slices - 1) - 1) ** 2)' peaked in the middle.
+            # We fix it to be a proper U-shape: '0.1 + 0.9 * ((2 * ti / (slices - 1) - 1) ** 2)'
             if slices == 1:
                 volume_profile = [1.0]
             else:
                 t = list(range(slices))
-                profile = [1.0 - 0.6 * ((2 * ti / (slices - 1) - 1) ** 2) for ti in t]
-                volume_profile = [max(0.1, p) for p in profile]
+                profile = [0.1 + 0.9 * ((2 * ti / (slices - 1) - 1) ** 2) for ti in t]
+                volume_profile = [max(0.05, p) for p in profile]
 
         # Normalize
         total_p = sum(volume_profile)
@@ -615,19 +625,46 @@ class OrderRouter:
         # --- Advanced Routing: POV (Percentage of Volume) ---
         if self.volume_profile_enabled and order.quantity >= self.minimum_lot_size * 10:
             logger.info(f"Applying POV routing for {order.symbol} size {order.quantity}")
-            # Placeholder for POV routing logic: just log that we are splitting the order
-            # In a real implementation, we would return a composite response or submit the first chunk
-            profile = self.historical_volume_profiles.get(order.symbol, [0.1] * 10)
-            target_chunk = int(order.quantity * profile[0])
-            # Adjust to minimum lot size
-            target_chunk = max(self.minimum_lot_size, (target_chunk // self.minimum_lot_size) * self.minimum_lot_size)
-            logger.info(f"POV routing chunk size calculated: {target_chunk}")
-            
-            # For the scope of this update, we just modify the current order object
-            # to submit the first chunk, and leave remaining logic for a full POV execution engine
-            original_quantity = order.quantity
-            order.quantity = target_chunk
-            logger.info(f"Modifying initial submission size to {target_chunk} from {original_quantity} based on POV")
+            # L3 Audit Fix: Use generate_pov_schedule to perform actual POV calculation
+            # and slice the order correctly.
+            # We suggest a target participation rate of 5% (0.05) by default.
+            pov_order = self.generate_pov_schedule(order, target_participation_rate=0.05)
+            logger.info(f"Modifying initial submission size to {pov_order.quantity} from {order.quantity} based on POV")
+            order.quantity = pov_order.quantity
+
+        # --- Post-Cap Quantity Validation (L3 Audit Fix) ---
+        # After ADV cap and POV routing, re-validate quantity before submission.
+        # Reject orders with quantity <= 0 or non-compliant odd lots.
+        if order.quantity <= 0:
+            logger.error(f"Order quantity after cap/POV is {order.quantity} (<= 0). Rejecting order for {order.symbol}.")
+            return BrokerOrderResponse(
+                success=False,
+                client_order_id=order.client_order_id,
+                status=OrderStatus.REJECTED,
+                message=f"Order quantity {order.quantity} is invalid (<= 0) after ADV/POV cap",
+                error_code="INVALID_QUANTITY_POST_CAP"
+            )
+        
+        # Enforce board-lot compliance unless odd-lot is explicitly allowed
+        if not order.allow_odd_lot:
+            if order.quantity < self.minimum_lot_size:
+                logger.error(f"Order quantity {order.quantity} for {order.symbol} is below minimum board lot {self.minimum_lot_size} and odd-lot not allowed. Rejecting.")
+                return BrokerOrderResponse(
+                    success=False,
+                    client_order_id=order.client_order_id,
+                    status=OrderStatus.REJECTED,
+                    message=f"Order quantity {order.quantity} below minimum board lot {self.minimum_lot_size} (odd-lot disabled)",
+                    error_code="INVALID_QUANTITY_BOARD_LOT"
+                )
+            if order.quantity % self.minimum_lot_size != 0:
+                logger.error(f"Order quantity {order.quantity} for {order.symbol} is not a multiple of board lot {self.minimum_lot_size} and odd-lot not allowed. Rejecting.")
+                return BrokerOrderResponse(
+                    success=False,
+                    client_order_id=order.client_order_id,
+                    status=OrderStatus.REJECTED,
+                    message=f"Order quantity {order.quantity} not a multiple of board lot {self.minimum_lot_size} (odd-lot disabled)",
+                    error_code="INVALID_QUANTITY_BOARD_LOT"
+                )
 
         # Simulate routing latency (paper ~2 ms, live ~50 ms + jitter)
         self._simulate_latency()
