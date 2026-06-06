@@ -1,4 +1,4 @@
-﻿"""
+"""
 OMEGA_QUANT Advanced Circuit Breaker Overlay for Pipeline A
 VaR/CVaR breach detection + auto de-risking.
 
@@ -26,11 +26,12 @@ def compute_rolling_cvar(
     confidence: float = 0.95,
 ) -> np.ndarray:
     """Compute rolling CVaR (Expected Shortfall) from portfolio returns."""
-    T = len(portfolio_returns)
+    rets = np.asarray(portfolio_returns)
+    T = len(rets)
     cvar_series = np.full(T, np.nan)
 
     for t in range(lookback, T):
-        window = portfolio_returns[t - lookback:t]
+        window = rets[t - lookback:t]
         var_threshold = np.percentile(window, (1 - confidence) * 100)
         tail = window[window <= var_threshold]
         cvar_series[t] = tail.mean() if len(tail) > 0 else var_threshold

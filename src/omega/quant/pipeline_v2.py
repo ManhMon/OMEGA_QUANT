@@ -235,7 +235,7 @@ class CircuitBreakerOverlay(WeightOverlay):
     def apply(self, weights: pd.DataFrame, panel: pd.DataFrame, state: Dict[str, Any]) -> pd.DataFrame:
         from omega.quant.portfolio.advanced_breaker_overlay import apply_advanced_circuit_breaker
         port_rets = state.get("portfolio_returns_history", np.array([]))
-        if len(port_rets) == 0:
+        if len(port_rets) != len(weights):
             panel_flat = panel.reset_index() if not {"date", "symbol"}.issubset(panel.columns) else panel
             returns_pivot = panel_flat.pivot_table(index="date", columns="symbol", values="returns").fillna(0.0)
             returns_pivot = returns_pivot.reindex(index=weights.index, columns=weights.columns, fill_value=0.0)
