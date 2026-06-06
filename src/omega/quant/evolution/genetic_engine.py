@@ -413,6 +413,20 @@ class GPIndividual:
                 return -child_val
             return child_val
         
+        elif len(node.children) == 2 and node.operator in ['ts_std', 'ts_mean', 'ts_rank', 'decay_linear']:
+            child_val = self._execute_tree(node.children[0], features)
+            window = int(self._execute_tree(node.children[1], features)[0])
+            window = max(2, min(window, 60))
+            
+            if node.operator == 'ts_std':
+                return _ts_std(child_val, window)
+            elif node.operator == 'ts_mean':
+                return _ts_mean(child_val, window)
+            elif node.operator == 'ts_rank':
+                return _ts_rank(child_val, window)
+            elif node.operator == 'decay_linear':
+                return _decay_linear(child_val, window)
+
         elif len(node.children) == 2:
             left_val = self._execute_tree(node.children[0], features)
             right_val = self._execute_tree(node.children[1], features)
@@ -430,20 +444,6 @@ class GPIndividual:
             elif node.operator == 'min':
                 return np.minimum(left_val, right_val)
             return left_val
-        
-        elif len(node.children) == 2 and node.operator in ['ts_std', 'ts_mean', 'ts_rank', 'decay_linear']:
-            child_val = self._execute_tree(node.children[0], features)
-            window = int(self._execute_tree(node.children[1], features)[0])
-            window = max(2, min(window, 60))
-            
-            if node.operator == 'ts_std':
-                return _ts_std(child_val, window)
-            elif node.operator == 'ts_mean':
-                return _ts_mean(child_val, window)
-            elif node.operator == 'ts_rank':
-                return _ts_rank(child_val, window)
-            elif node.operator == 'decay_linear':
-                return _decay_linear(child_val, window)
         
         return np.zeros(len(next(iter(features.values()))))
 

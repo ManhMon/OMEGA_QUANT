@@ -25,7 +25,7 @@ from datetime import datetime
 
 # --- Path Setup ---
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "packages" / "quant" / "src"))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import numpy as np
 import pandas as pd
@@ -46,7 +46,8 @@ MARKET_DATA_PATH = PROJECT_ROOT / "data" / "market_2015_now.parquet"
 OUTPUT_PATH = PROJECT_ROOT / ".ly_state" / "session" / "evolved_alphas.json"
 FEATURE_COLUMNS = [
     "open", "high", "low", "close", "volume",
-    "returns_1d", "returns_5d", "vol_ratio", "hl_range", "oc_range"
+    "returns_1d", "returns_5d", "vol_ratio", "hl_range", "oc_range",
+    "rsi_14", "rsi_5", "ma_ratio_5_20", "vol_std_10"
 ]
 TRAIN_RATIO = 0.70
 TARGET_HORIZON = 5  # T+5 forward returns
@@ -68,29 +69,51 @@ def load_market_data() -> pd.DataFrame:
     return df
 
 
+def compute_rsi(close: pd.Series, window: int = 14) -> pd.Series:
+    """Compute Relative Strength Index (RSI)."""
+    delta = close.diff()
+    gain = delta.clip(lower=0)
+    loss = -delta.clip(upper=0)
+    avg_gain = gain.rolling(window).mean()
+    avg_loss = loss.rolling(window).mean()
+    rs = avg_gain / (avg_loss + 1e-9)
+    rsi = 100 - (100 / (1 + rs))
+    return rsi.fillna(50.0)
+
+
 def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Compute features with T-1 lag for PIT safety."""
+    """Compute features with T-1 lag for PIT safety, strictly grouped by ticker."""
     result = df.copy()
+    result = result.sort_values(["ticker", "date"]).reset_index(drop=True)
 
-    # Compute derived features if not present
-    if "returns_1d" not in result.columns:
-        result["returns_1d"] = result["close"].pct_change(1)
-    if "returns_5d" not in result.columns:
-        result["returns_5d"] = result["close"].pct_change(5)
-    if "vol_ratio" not in result.columns:
-        result["vol_ratio"] = result["volume"] / (result["volume"].rolling(20).mean() + 1e-9)
-    if "hl_range" not in result.columns:
-        result["hl_range"] = (result["high"] - result["low"]) / (result["close"] + 1e-9)
-    if "oc_range" not in result.columns:
-        result["oc_range"] = (result["close"] - result["open"]) / (result["open"] + 1e-9)
+    # Compute derived features grouped by ticker
+    result["returns_1d"] = result.groupby("ticker")["close"].pct_change(1)
+    result["returns_5d"] = result.groupby("ticker")["close"].pct_change(5)
+    
+    # Transform rolling mean
+    roll_mean_20 = result.groupby("ticker")["volume"].transform(lambda x: x.rolling(20).mean())
+    result["vol_ratio"] = result["volume"] / (roll_mean_20 + 1e-9)
+    
+    result["hl_range"] = (result["high"] - result["low"]) / (result["close"] + 1e-9)
+    result["oc_range"] = (result["close"] - result["open"]) / (result["open"] + 1e-9)
 
-    # PIT SAFETY: Apply T-1 lag to ALL features (no look-ahead)
+    # New primitive features
+    result["rsi_14"] = result.groupby("ticker")["close"].transform(compute_rsi, window=14)
+    result["rsi_5"] = result.groupby("ticker")["close"].transform(compute_rsi, window=5)
+    
+    roll_mean_5 = result.groupby("ticker")["close"].transform(lambda x: x.rolling(5).mean())
+    roll_mean_20_c = result.groupby("ticker")["close"].transform(lambda x: x.rolling(20).mean())
+    result["ma_ratio_5_20"] = roll_mean_5 / (roll_mean_20_c + 1e-9)
+    
+    result["vol_std_10"] = result.groupby("ticker")["volume"].transform(lambda x: x.rolling(10).std())
+
+    # PIT SAFETY: Apply T-1 lag to ALL features strictly per ticker (no shift bleed across symbols)
     for col in FEATURE_COLUMNS:
         if col in result.columns:
-            result[col] = result[col].shift(1)
+            result[col] = result.groupby("ticker")[col].shift(1)
 
-    # Forward return target (T+5) - this is what we predict
-    result["target"] = result["close"].pct_change(TARGET_HORIZON).shift(-TARGET_HORIZON)
+    # Forward return target (T+5) strictly per ticker
+    result["target"] = result.groupby("ticker")["close"].pct_change(TARGET_HORIZON).shift(-TARGET_HORIZON)
 
     # Drop NaN rows from lag/lead
     result = result.dropna(subset=FEATURE_COLUMNS + ["target"]).reset_index(drop=True)
@@ -98,13 +121,21 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def chronological_split(df: pd.DataFrame):
-    """Chronological 70/30 split - NO shuffling (PIT safe)."""
-    split_idx = int(len(df) * TRAIN_RATIO)
-    train = df.iloc[:split_idx].copy()
-    test = df.iloc[split_idx:].copy()
-    logger.info(f"Chronological split: train={len(train)}, test={len(test)}")
-    return train, test
+def walk_forward_split(df: pd.DataFrame, horizon: int = 5):
+    """Sequential 3-way split: 60% Train, 20% Validate, 20% Test (OOS), with boundary purging."""
+    n = len(df)
+    idx_val = int(n * 0.6)
+    idx_test = int(n * 0.8)
+    
+    # Train split (purge horizon boundary)
+    train = df.iloc[:idx_val - horizon].copy()
+    # Validate split (purge horizon boundary)
+    validate = df.iloc[idx_val:idx_test - horizon].copy()
+    # Test split
+    test = df.iloc[idx_test:].copy()
+    
+    logger.info(f"Walk-forward split: train={len(train)}, validate={len(validate)}, test={len(test)}")
+    return train, validate, test
 
 
 def run_evolution(train_df: pd.DataFrame) -> list:
@@ -227,8 +258,8 @@ def main():
     df_prepared = prepare_features(df)
     logger.info(f"Prepared data: {len(df_prepared)} rows after lag/dropna")
 
-    # Step 3: Chronological split
-    train_df, test_df = chronological_split(df_prepared)
+    # Step 3: Walk-forward split (3-way)
+    train_df, val_df, test_df = walk_forward_split(df_prepared, horizon=TARGET_HORIZON)
 
     # Step 4: Run GP evolution on training set
     hall_of_fame = run_evolution(train_df)
@@ -238,10 +269,33 @@ def main():
         save_results([])
         sys.exit(0)
 
-    # Step 5: Evaluate and promote via champion/challenger
-    # Train end date = last date in training set (for embargo calculation)
+    # Step 4b: Validation culling
+    logger.info("Step 4b: Running validation culling...")
+    val_features = {col: val_df[col].values for col in FEATURE_COLUMNS}
+    val_target = val_df["target"].values
+    
+    surviving_hof = []
+    for individual in hall_of_fame:
+        try:
+            val_values = individual._execute_tree(individual.tree, val_features)
+            val_values = np.nan_to_num(val_values, nan=0.0, posinf=0.0, neginf=0.0)
+            
+            # Spearman correlation on validation set
+            val_corr_df = pd.DataFrame({'alpha': val_values, 'target': val_target}).dropna()
+            if len(val_corr_df) > 100:
+                from scipy.stats import spearmanr
+                val_ic, _ = spearmanr(val_corr_df['alpha'], val_corr_df['target'])
+                if not np.isnan(val_ic) and val_ic > 0.01: # Must maintain positive validation IC
+                    surviving_hof.append(individual)
+                    logger.info("  Alpha passed validation: IC=%.4f", val_ic)
+        except Exception as e:
+            logger.warning("Validation culling failed for individual: %s", e)
+            
+    logger.info("Validation complete: %d / %d individuals survived", len(surviving_hof), len(hall_of_fame))
+
+    # Step 5: Evaluate and promote via champion/challenger strictly on OOS Test set
     train_end_date = pd.Timestamp(datetime.now().strftime("%Y-%m-%d"))
-    promoted = evaluate_and_promote(hall_of_fame, test_df, train_end_date)
+    promoted = evaluate_and_promote(surviving_hof, test_df, train_end_date)
 
     # Step 6: Save results
     save_results(promoted)

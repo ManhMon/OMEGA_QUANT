@@ -36,7 +36,7 @@ def main():
     print_section("starting sod repository analysis & audit workflow")
     
     # Session info
-    phase_id = "OMEGA_GAP_PHASE24_MLOPS_KUBERNETES"
+    phase_id = "OMEGA_GAP_PHASE6_SELF_EVOLVING_ENGINE"
     l2_session_id = f"opencode-l2-{uuid.uuid4().hex[:8]}"
     l2_session_key = f"opencode:role9:repo-analysis:{uuid.uuid4().hex[:8]}"
     l3_session_id = f"codex-l3-{uuid.uuid4().hex[:8]}"
