@@ -111,9 +111,9 @@ class Phase35WalkForwardEngine:
         alpha_module,
         min_ic_threshold: float = 0.02,
         top_n_alphas: int = 5,
-        top_n_stocks: int = 8,
+        top_n_stocks: int = 15,
         rebalance_freq: int = 7,
-        sector_cap_pct: float = 0.30,
+        sector_cap_pct: float = 0.40,
         use_xgboost: bool = False,
         cost_aware: bool = False,
         cost_per_turnover: float = 0.0025,
@@ -135,11 +135,11 @@ class Phase35WalkForwardEngine:
         top_n_alphas : int
             Number of top alphas to use in portfolio
         top_n_stocks : int
-            Stage 2 diversification: number of stocks in portfolio (default 8)
+            Stage 2 diversification: number of stocks in portfolio (default 15, relaxed from 8)
         rebalance_freq : int
             Stage 2 diversification: rebalance every N days (default 7)
         sector_cap_pct : float
-            Stage 2 diversification: max sector weight fraction (default 0.30)
+            Stage 2 diversification: max sector weight fraction (default 0.40, relaxed from 0.30)
         use_xgboost : bool
             Stage 4: if True, replace IC-weighted signal with XGBoostAlphaEnsemble
             predictions. Baseline raw-alpha path is used when False (default).
@@ -340,12 +340,13 @@ class Phase35WalkForwardEngine:
             logger.warning(f"Target {return_col} not in train_df, skipping evolution")
             return None
         train_target = lagged_train[return_col].values
-        # Quick evolution config (5 gens for speed, 200 pop)
+        # Quick evolution config (optimized for OOS performance)
+        # Reduced complexity to prevent overfitting: max_depth 4→3, pop 200→150, gens 5→3
         config = GPConfig(
-            population_size=200,
-            generations=5,
-            max_depth=4,
-            hall_of_fame_size=5,
+            population_size=150,
+            generations=3,
+            max_depth=3,
+            hall_of_fame_size=3,
         )
         engine = GeneticEngine(config)
         # features dict = OHLCV + alpha columns, target = forward returns
