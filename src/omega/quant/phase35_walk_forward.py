@@ -359,30 +359,50 @@ class Phase35WalkForwardEngine:
             logger.warning("Evolution produced no individuals, skipping")
             return None, 0.0
 
-        # Execute best individual on lagged test_df
-        best_individual = hall_of_fame[0]
+        # P1: Ensemble top 3 GP trees (not just best) for robustness
+        # Average signals from hall_of_fame[0:3] to reduce variance
         test_features = {col: lagged_test[col].values if col in lagged_test.columns else np.zeros(len(lagged_test))
                         for col in available_cols}
-
+        
         try:
-            evolved_signal = best_individual._execute_tree(best_individual.tree, test_features)
-            evolved_signal = np.nan_to_num(evolved_signal, nan=0.0, posinf=0.0, neginf=0.0)
-            # Normalize to zero mean, unit std
-            std_val = np.std(evolved_signal)
-            if std_val > 1e-9:
-                evolved_signal = (evolved_signal - np.mean(evolved_signal)) / std_val
-            # Compute train IC for adaptive blending
-            train_signal = best_individual._execute_tree(best_individual.tree, train_features)
-            train_signal = np.nan_to_num(train_signal, nan=0.0, posinf=0.0, neginf=0.0)
+            # Execute all individuals in hall_of_fame
+            ensemble_signals = []
+            for individual in hall_of_fame:
+                signal = individual._execute_tree(individual.tree, test_features)
+                signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
+                # Normalize each signal to zero mean, unit std
+                std_val = np.std(signal)
+                if std_val > 1e-9:
+                    signal = (signal - np.mean(signal)) / std_val
+                ensemble_signals.append(signal)
+            
+            # Average ensemble signals
+            evolved_signal = np.mean(ensemble_signals, axis=0)
+            
+            # Compute train IC on ensemble signal for adaptive blending
+            train_ensemble_signals = []
+            for individual in hall_of_fame:
+                signal = individual._execute_tree(individual.tree, train_features)
+                signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
+                train_ensemble_signals.append(signal)
+            
+            train_signal = np.mean(train_ensemble_signals, axis=0)
             train_ic = float(np.corrcoef(train_signal, train_target)[0, 1]) if len(train_signal) > 1 else 0.0
             if np.isnan(train_ic):
                 train_ic = 0.0
+            
             test_ret = lagged_test[return_col].values if return_col in lagged_test.columns else np.zeros(len(lagged_test))
-            ic_val = float(np.corrcoef(evolved_signal, test_ret)[0, 1]) if len(evolved_signal) > 1 else 0.0
-            logger.info(f"Fold evolved signal IC on test: {ic_val:.4f}, train IC: {train_ic:.4f}")
+            test_ic = float(np.corrcoef(evolved_signal, test_ret)[0, 1]) if len(evolved_signal) > 1 else 0.0
+            if np.isnan(test_ic):
+                test_ic = 0.0
+            
+            logger.info(
+                f"GP ensemble (n={len(hall_of_fame)}): train_ic={train_ic:.4f}, "
+                f"test_ic={test_ic:.4f}, signal_std={np.std(evolved_signal):.4f}"
+            )
             return evolved_signal, train_ic
         except Exception as e:
-            logger.warning(f"Failed to execute evolved tree: {e}")
+            logger.error(f"GP ensemble execution failed: {e}")
             return None, 0.0
     
     def compute_alpha_ics(
@@ -1060,8 +1080,12 @@ class Phase35WalkForwardEngine:
                     abs_train_ic = abs(gp_train_ic)
                     scale_factor = 2.0
                     w_adaptive = min(self.evolved_blend_weight, abs_train_ic * scale_factor)
+                    # P2: Ceiling protection - cap at 25% to prevent overfit
+                    # Ensures hand-crafted signal dominates (≥75%)
+                    ceiling = 0.25
+                    w_evo = min(w_adaptive, ceiling)
                     # Floor: at least 10% of user weight to avoid zero contribution
-                    w_evo = max(w_adaptive, self.evolved_blend_weight * 0.1)
+                    w_evo = max(w_evo, self.evolved_blend_weight * 0.1)
                     w_hand = 1.0 - w_evo
                     portfolio_signal = pd.Series(
                         w_evo * evolved_signal + w_hand * portfolio_signal.values,
