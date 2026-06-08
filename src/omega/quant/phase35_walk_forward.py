@@ -295,17 +295,18 @@ class Phase35WalkForwardEngine:
         train_df: pd.DataFrame,
         test_df: pd.DataFrame,
         return_col: str,
-    ) -> Optional[np.ndarray]:
+    ) -> Tuple[Optional[np.ndarray], float]:
         """Run inline GP evolution on train_df, execute best on test_df.
 
         PIT-safe: evolves only on train_actual, executes on test_df.
-        Returns evolved signal array aligned with test_df index, or None on failure.
+        Returns (evolved_signal_array, train_ic) or (None, 0.0) on failure.
+        train_ic is used by caller for adaptive blend weighting.
         """
         try:
             from omega.quant.evolution.genetic_engine import GeneticEngine, GPConfig
         except ImportError:
             logger.warning("Cannot import GeneticEngine, skipping evolved signal")
-            return None
+            return None, 0.0
 
         # Extract features from train_df (OHLCV + any alpha/feature columns)
         base_cols = ['open', 'high', 'low', 'close', 'volume']
@@ -319,7 +320,7 @@ class Phase35WalkForwardEngine:
         
         if len(available_cols) < 5:
             logger.warning(f"Insufficient features ({len(available_cols)}), skipping evolution")
-            return None
+            return None, 0.0
 
         # PIT Safety: T-1 lag raw OHLCV per ticker before GP sees them
         # Alpha columns are already T-1 lagged by compute_alphas(), but raw OHLCV are not.
@@ -338,10 +339,10 @@ class Phase35WalkForwardEngine:
         # Add target
         if return_col not in lagged_train.columns:
             logger.warning(f"Target {return_col} not in train_df, skipping evolution")
-            return None
+            return None, 0.0
         train_target = lagged_train[return_col].values
-        # Quick evolution config (optimized for OOS performance)
-        # Reduced complexity to prevent overfitting: max_depth 4→3, pop 200→150, gens 5→3
+        # GP config: keep simple to avoid overfitting (V2 proven config)
+        # Adaptive blend weight handles quality variance instead
         config = GPConfig(
             population_size=150,
             generations=3,
@@ -356,7 +357,7 @@ class Phase35WalkForwardEngine:
 
         if not hall_of_fame:
             logger.warning("Evolution produced no individuals, skipping")
-            return None
+            return None, 0.0
 
         # Execute best individual on lagged test_df
         best_individual = hall_of_fame[0]
@@ -370,13 +371,19 @@ class Phase35WalkForwardEngine:
             std_val = np.std(evolved_signal)
             if std_val > 1e-9:
                 evolved_signal = (evolved_signal - np.mean(evolved_signal)) / std_val
+            # Compute train IC for adaptive blending
+            train_signal = best_individual._execute_tree(best_individual.tree, train_features)
+            train_signal = np.nan_to_num(train_signal, nan=0.0, posinf=0.0, neginf=0.0)
+            train_ic = float(np.corrcoef(train_signal, train_target)[0, 1]) if len(train_signal) > 1 else 0.0
+            if np.isnan(train_ic):
+                train_ic = 0.0
             test_ret = lagged_test[return_col].values if return_col in lagged_test.columns else np.zeros(len(lagged_test))
             ic_val = float(np.corrcoef(evolved_signal, test_ret)[0, 1]) if len(evolved_signal) > 1 else 0.0
-            logger.info(f"Fold evolved signal IC on test: {ic_val:.4f}")
-            return evolved_signal
+            logger.info(f"Fold evolved signal IC on test: {ic_val:.4f}, train IC: {train_ic:.4f}")
+            return evolved_signal, train_ic
         except Exception as e:
             logger.warning(f"Failed to execute evolved tree: {e}")
-            return None
+            return None, 0.0
     
     def compute_alpha_ics(
         self,
@@ -1036,17 +1043,25 @@ class Phase35WalkForwardEngine:
             portfolio_signal = self.compute_portfolio_signal(test_df, gated_alphas, train_ics)
 
         # ------------------------------------------------------------------
-        # Evolved Alpha Blending (optional)
+        # Evolved Alpha Blending (optional) with Adaptive Weight
         # If enable_evolved=True, run inline GP evolution on train_actual,
         # execute best tree on test_df, and blend with hand-crafted signal.
         # PIT Safety: evolution trains only on train_actual (embargoed).
+        # Adaptive: blend weight scales with train_ic quality (cap at user weight).
         # ------------------------------------------------------------------
         if self.enable_evolved and len(train_actual) > 0:
-            evolved_signal = self._evolve_inline_signal(train_actual, test_df, return_col)
+            evolved_signal, gp_train_ic = self._evolve_inline_signal(train_actual, test_df, return_col)
             if evolved_signal is not None:
                 # Align evolved signal length with portfolio_signal
                 if len(evolved_signal) == len(portfolio_signal):
-                    w_evo = self.evolved_blend_weight
+                    # Adaptive blend: scale weight by GP train quality
+                    # w_adaptive = min(user_weight, abs(train_ic) * scale_factor)
+                    # scale_factor=2 means IC=0.05 → weight=0.10, IC=0.10 → weight=0.20
+                    abs_train_ic = abs(gp_train_ic)
+                    scale_factor = 2.0
+                    w_adaptive = min(self.evolved_blend_weight, abs_train_ic * scale_factor)
+                    # Floor: at least 10% of user weight to avoid zero contribution
+                    w_evo = max(w_adaptive, self.evolved_blend_weight * 0.1)
                     w_hand = 1.0 - w_evo
                     portfolio_signal = pd.Series(
                         w_evo * evolved_signal + w_hand * portfolio_signal.values,
@@ -1054,7 +1069,8 @@ class Phase35WalkForwardEngine:
                     )
                     logger.info(
                         f"Fold {fold_id}: Evolved signal blended "
-                        f"(evolved={w_evo:.2f}, handcrafted={w_hand:.2f})"
+                        f"(evolved={w_evo:.3f}, handcrafted={w_hand:.3f}, "
+                        f"gp_train_ic={gp_train_ic:.4f}, adaptive=True)"
                     )
                 else:
                     logger.warning(

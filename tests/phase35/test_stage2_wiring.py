@@ -114,8 +114,8 @@ class TestRunPhase35BacktestStage2Constants(unittest.TestCase):
     def test_script_defines_stage2_top_n_stocks(self):
         src = self._get_script_source()
         self.assertIn(
-            'STAGE2_TOP_N_STOCKS = 8', src,
-            "run_phase35_backtest.py must define STAGE2_TOP_N_STOCKS = 8"
+            'STAGE2_TOP_N_STOCKS = 15', src,
+            "run_phase35_backtest.py must define STAGE2_TOP_N_STOCKS = 15"
         )
 
     def test_script_defines_stage2_rebalance_freq(self):
@@ -128,8 +128,8 @@ class TestRunPhase35BacktestStage2Constants(unittest.TestCase):
     def test_script_defines_stage2_sector_cap_pct(self):
         src = self._get_script_source()
         self.assertIn(
-            'STAGE2_SECTOR_CAP_PCT = 0.30', src,
-            "run_phase35_backtest.py must define STAGE2_SECTOR_CAP_PCT = 0.30"
+            'STAGE2_SECTOR_CAP_PCT = 0.40', src,
+            "run_phase35_backtest.py must define STAGE2_SECTOR_CAP_PCT = 0.40"
         )
 
     def test_script_passes_top_n_stocks_to_engine(self):
