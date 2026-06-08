@@ -135,11 +135,11 @@ class Phase35WalkForwardEngine:
         top_n_alphas : int
             Number of top alphas to use in portfolio
         top_n_stocks : int
-            Stage 2 diversification: number of stocks in portfolio (default 15, relaxed from 8)
+            Stage 2 diversification: number of stocks in portfolio (default 15)
         rebalance_freq : int
             Stage 2 diversification: rebalance every N days (default 7)
         sector_cap_pct : float
-            Stage 2 diversification: max sector weight fraction (default 0.40, relaxed from 0.30)
+            Stage 2 diversification: max sector weight fraction (default 0.40)
         use_xgboost : bool
             Stage 4: if True, replace IC-weighted signal with XGBoostAlphaEnsemble
             predictions. Baseline raw-alpha path is used when False (default).

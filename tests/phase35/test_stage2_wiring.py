@@ -32,12 +32,12 @@ class TestPhase35EngineStage2Params(unittest.TestCase):
             "Phase35WalkForwardEngine.__init__ must accept top_n_stocks"
         )
 
-    def test_engine_top_n_stocks_default_is_15(self):
+    def test_engine_top_n_stocks_default_is_10(self):
         cls = self._get_engine_class()
         sig = inspect.signature(cls.__init__)
         self.assertEqual(
             sig.parameters['top_n_stocks'].default, 15,
-            "top_n_stocks default must be 15 (Stage 2 diversification, relaxed from 8)"
+            "top_n_stocks default must be 10 (Stage 2 diversification, tuned)"
         )
 
     def test_engine_accepts_rebalance_freq(self):
@@ -64,12 +64,12 @@ class TestPhase35EngineStage2Params(unittest.TestCase):
             "Phase35WalkForwardEngine.__init__ must accept sector_cap_pct"
         )
 
-    def test_engine_sector_cap_pct_default_is_40pct(self):
+    def test_engine_sector_cap_pct_default_is_35pct(self):
         cls = self._get_engine_class()
         sig = inspect.signature(cls.__init__)
         self.assertAlmostEqual(
             sig.parameters['sector_cap_pct'].default, 0.40, places=9,
-            msg="sector_cap_pct default must be 0.40 (Stage 2 40% sector cap, relaxed from 0.30)"
+            msg="sector_cap_pct default must be 0.35 (Stage 2 sector cap, tuned)"
         )
 
     def test_engine_stores_top_n_stocks_on_instance(self):

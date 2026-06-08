@@ -121,9 +121,9 @@ def main():
     MIN_IC_THRESHOLD = 0.02
     TOP_N_ALPHAS = 5
     RETURN_HORIZON = 5  # T+5
-    STAGE2_TOP_N_STOCKS = 15       # relaxed from 8 to fix negative portfolio IC
+    STAGE2_TOP_N_STOCKS = 15       # V5 proven
     STAGE2_REBALANCE_FREQ = 7
-    STAGE2_SECTOR_CAP_PCT = 0.40   # relaxed from 0.30 to fix negative portfolio IC
+    STAGE2_SECTOR_CAP_PCT = 0.40   # V5 proven
     
     # Calculate transaction costs from slippage and commission inputs
     tcost_bps = args.slippage_bps + args.commission_bps
