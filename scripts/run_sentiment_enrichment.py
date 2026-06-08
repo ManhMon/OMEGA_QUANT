@@ -21,7 +21,11 @@ from datetime import datetime, timedelta
 # Path setup for project imports
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
-sys.path.insert(0, str(PROJECT_ROOT / "packages" / "quant" / "src"))
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 import pandas as pd
 

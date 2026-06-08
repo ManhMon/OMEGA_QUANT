@@ -40,7 +40,7 @@ def _import_apply_sector_caps():
     Searches for alpha_pipeline.py relative to this file's location so the
     import works regardless of the working directory.
     """
-    _scripts_dir = str(Path(__file__).resolve().parents[5] / "scripts")
+    _scripts_dir = str(Path(__file__).resolve().parents[3] / "scripts")
     if _scripts_dir not in sys.path:
         sys.path.insert(0, _scripts_dir)
     from alpha_pipeline import _apply_sector_caps  # noqa: PLC0415
@@ -59,7 +59,10 @@ class FoldMetrics:
     portfolio_sharpe: float = 0.0
     portfolio_max_dd: float = 0.0
     portfolio_total_return: float = 0.0
+    portfolio_pnl_vnd: float = 0.0
     portfolio_ic: float = 0.0
+    raw_signal_ic: float = 0.0
+    raw_signal_daily_cs_ic: float = 0.0
     n_train_samples: int = 0
     n_test_samples: int = 0
     # Stage 3 ML Gate fields
@@ -75,6 +78,9 @@ class WalkForwardResult:
     avg_portfolio_sharpe: float = 0.0
     avg_portfolio_max_dd: float = 0.0
     avg_portfolio_ic: float = 0.0
+    avg_raw_signal_ic: float = 0.0
+    avg_raw_signal_daily_cs_ic: float = 0.0
+    avg_portfolio_pnl_vnd: float = 0.0
     total_folds: int = 0
     
     def summary(self) -> str:
@@ -82,7 +88,9 @@ class WalkForwardResult:
         lines = [
             f"Walk-Forward Backtest Results ({self.total_folds} folds)",
             "=" * 60,
-            f"Average Portfolio IC: {self.avg_portfolio_ic:.4f}",
+            f"Average Portfolio IC (post Stage 2): {self.avg_portfolio_ic:.4f}",
+            f"Average Raw Signal IC (pre Stage 2):  {self.avg_raw_signal_ic:.4f}",
+            f"Average Raw Signal Daily CS IC:       {self.avg_raw_signal_daily_cs_ic:.4f}",
             f"Average Portfolio Sharpe: {self.avg_portfolio_sharpe:.4f}",
             f"Average Max Drawdown: {self.avg_portfolio_max_dd:.2%}",
             "",
@@ -111,6 +119,10 @@ class Phase35WalkForwardEngine:
         cost_per_turnover: float = 0.0025,
         drawdown_control: bool = False,
         drawdown_threshold: float = 0.05,
+        strategy: str = "multi_factor",
+        initial_capital: float = 1_000_000_000.0,
+        enable_evolved: bool = False,
+        evolved_blend_weight: float = 0.5,
     ):
         """Initialize walk-forward engine.
         
@@ -139,6 +151,14 @@ class Phase35WalkForwardEngine:
             Stage 6.3: if True, stop out to cash if max drawdown threshold is breached
         drawdown_threshold : float
             Stage 6.3: drawdown threshold to trigger stop-out (default 0.05)
+        strategy : str
+            Trading strategy (multi_factor, momentum, mean_reversion)
+        initial_capital : float
+            Initial capital in VND
+        enable_evolved : bool
+            If True, run inline GP evolution per fold and blend evolved signal
+        evolved_blend_weight : float
+            Weight of evolved signal in blend (0-1), remainder is hand-crafted
         """
         self.alpha_module = alpha_module
         self.min_ic_threshold = min_ic_threshold
@@ -151,6 +171,16 @@ class Phase35WalkForwardEngine:
         self.cost_per_turnover = cost_per_turnover
         self.drawdown_control = drawdown_control
         self.drawdown_threshold = drawdown_threshold
+        self.strategy = strategy
+        self.initial_capital = initial_capital
+        self.enable_evolved = enable_evolved
+        # Validate and clamp blend weight to [0, 1]
+        if not 0 <= evolved_blend_weight <= 1:
+            raise ValueError(f"evolved_blend_weight must be in [0, 1], got {evolved_blend_weight}")
+        self.evolved_blend_weight = evolved_blend_weight
+        
+        # Store reference alpha columns for feature whitelist
+        self.alpha_cols_ref = getattr(alpha_module, 'PHASE34_ALPHA_COLUMNS', [])
     
     def compute_alphas(self, df: pd.DataFrame) -> pd.DataFrame:
         """Compute Phase 3.4 alphas on data.
@@ -209,6 +239,143 @@ class Phase35WalkForwardEngine:
         except Exception as e:
             logger.warning(f"IC computation failed: {e}")
             return 0.0
+
+    def compute_daily_cs_ic(
+        self,
+        df: pd.DataFrame,
+        signal_col: str,
+        return_col: str,
+        min_cross_section: int = 5,
+    ) -> float:
+        """Compute daily cross-sectional Spearman IC, then average across dates.
+
+        For each unique date in df, computes Spearman IC between signal_col and
+        return_col across tickers. Returns the mean of per-date ICs.
+
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Must have 'date', signal_col, return_col columns.
+        signal_col : str
+            Column name for the signal (alpha or portfolio weight).
+        return_col : str
+            Column name for forward returns.
+        min_cross_section : int
+            Minimum number of non-NaN pairs per date to compute IC (default 5).
+
+        Returns
+        -------
+        float
+            Mean daily cross-sectional Spearman IC.
+        """
+        if signal_col not in df.columns or return_col not in df.columns:
+            return 0.0
+
+        def _cs_ic(group: pd.DataFrame) -> float:
+            mask = ~(group[signal_col].isna() | group[return_col].isna())
+            if mask.sum() < min_cross_section:
+                return np.nan
+            try:
+                ic, _ = spearmanr(
+                    group.loc[mask, signal_col].values,
+                    group.loc[mask, return_col].values,
+                )
+                return ic if not np.isnan(ic) else np.nan
+            except Exception:
+                return np.nan
+
+        daily_ics = df.groupby('date').apply(_cs_ic, include_groups=False)
+        valid = daily_ics.dropna()
+        if valid.empty:
+            return 0.0
+        return float(valid.mean())
+
+    def _evolve_inline_signal(
+        self,
+        train_df: pd.DataFrame,
+        test_df: pd.DataFrame,
+        return_col: str,
+    ) -> Optional[np.ndarray]:
+        """Run inline GP evolution on train_df, execute best on test_df.
+
+        PIT-safe: evolves only on train_actual, executes on test_df.
+        Returns evolved signal array aligned with test_df index, or None on failure.
+        """
+        try:
+            from omega.quant.evolution.genetic_engine import GeneticEngine, GPConfig
+        except ImportError:
+            logger.warning("Cannot import GeneticEngine, skipping evolved signal")
+            return None
+
+        # Extract features from train_df (OHLCV + any alpha/feature columns)
+        base_cols = ['open', 'high', 'low', 'close', 'volume']
+        # Add any additional numeric columns available (alphas, fwd returns, etc.)
+        alpha_cols = [c for c in self.alpha_cols_ref if c in train_df.columns]
+        
+        # Explicitly exclude return_col and any fwd_ret_* columns (prevent look-ahead leak)
+        exclude_patterns = [return_col] + [c for c in train_df.columns if c.startswith('fwd_ret_')]
+        available_cols = [c for c in base_cols + alpha_cols 
+                         if c in train_df.columns and c not in exclude_patterns]
+        
+        if len(available_cols) < 5:
+            logger.warning(f"Insufficient features ({len(available_cols)}), skipping evolution")
+            return None
+
+        # PIT Safety: T-1 lag raw OHLCV per ticker before GP sees them
+        # Alpha columns are already T-1 lagged by compute_alphas(), but raw OHLCV are not.
+        lagged_train = train_df.copy()
+        lagged_test = test_df.copy()
+        for col in base_cols:
+            if col in lagged_train.columns:
+                lagged_train[col] = lagged_train.groupby('ticker')[col].shift(1)
+            if col in lagged_test.columns:
+                lagged_test[col] = lagged_test.groupby('ticker')[col].shift(1)
+        # Drop rows with NaN from lagging
+        lagged_train = lagged_train.dropna(subset=[c for c in base_cols if c in lagged_train.columns])
+
+        # Build features dict for train (using lagged OHLCV)
+        train_features = {col: lagged_train[col].values for col in available_cols if col in lagged_train.columns}
+        # Add target
+        if return_col not in lagged_train.columns:
+            logger.warning(f"Target {return_col} not in train_df, skipping evolution")
+            return None
+        train_target = lagged_train[return_col].values
+        # Quick evolution config (5 gens for speed, 200 pop)
+        config = GPConfig(
+            population_size=200,
+            generations=5,
+            max_depth=4,
+            hall_of_fame_size=5,
+        )
+        engine = GeneticEngine(config)
+        # features dict = OHLCV + alpha columns, target = forward returns
+        train_target = lagged_train[return_col].values
+        # Align hall_of_fame evolve with lagged train features
+        hall_of_fame = engine.evolve(train_features, train_target)
+
+        if not hall_of_fame:
+            logger.warning("Evolution produced no individuals, skipping")
+            return None
+
+        # Execute best individual on lagged test_df
+        best_individual = hall_of_fame[0]
+        test_features = {col: lagged_test[col].values if col in lagged_test.columns else np.zeros(len(lagged_test))
+                        for col in available_cols}
+
+        try:
+            evolved_signal = best_individual._execute_tree(best_individual.tree, test_features)
+            evolved_signal = np.nan_to_num(evolved_signal, nan=0.0, posinf=0.0, neginf=0.0)
+            # Normalize to zero mean, unit std
+            std_val = np.std(evolved_signal)
+            if std_val > 1e-9:
+                evolved_signal = (evolved_signal - np.mean(evolved_signal)) / std_val
+            test_ret = lagged_test[return_col].values if return_col in lagged_test.columns else np.zeros(len(lagged_test))
+            ic_val = float(np.corrcoef(evolved_signal, test_ret)[0, 1]) if len(evolved_signal) > 1 else 0.0
+            logger.info(f"Fold evolved signal IC on test: {ic_val:.4f}")
+            return evolved_signal
+        except Exception as e:
+            logger.warning(f"Failed to execute evolved tree: {e}")
+            return None
     
     def compute_alpha_ics(
         self,
@@ -376,31 +543,39 @@ class Phase35WalkForwardEngine:
         gate_results: Dict[str, dict] = {}
 
         # Compute daily cross-sectional IC per alpha on embargoed train set
-        # Group by date, compute Spearman IC across tickers each day
+        # Vectorized: groupby date, compute all alpha ICs per group
         dates = sorted(train_df_clean['date'].unique())
+        _avail_alphas = [a for a in top_alphas if a in train_df_clean.columns]
 
-        # Build daily IC series per alpha (vectorized over dates)
-        daily_ics: Dict[str, pd.Series] = {}
-        for alpha in top_alphas:
-            if alpha not in train_df_clean.columns:
-                daily_ics[alpha] = pd.Series(dtype=float)
-                continue
-            ic_by_date = []
-            for date in dates:
-                day_df = train_df_clean[train_df_clean['date'] == date]
-                mask = ~(day_df[alpha].isna() | day_df[return_col].isna())
+        def _daily_ics(group: pd.DataFrame) -> pd.Series:
+            """Return Series of IC per alpha for one date group."""
+            ret = group[return_col]
+            ics = {}
+            for alpha in _avail_alphas:
+                mask = ~(group[alpha].isna() | ret.isna())
                 if mask.sum() < 5:
-                    ic_by_date.append(np.nan)
+                    ics[alpha] = np.nan
                     continue
                 try:
                     ic_val, _ = spearmanr(
-                        day_df.loc[mask, alpha].values,
-                        day_df.loc[mask, return_col].values,
+                        group.loc[mask, alpha].values,
+                        group.loc[mask, return_col].values,
                     )
-                    ic_by_date.append(ic_val if not np.isnan(ic_val) else np.nan)
+                    ics[alpha] = ic_val if not np.isnan(ic_val) else np.nan
                 except Exception:
-                    ic_by_date.append(np.nan)
-            daily_ics[alpha] = pd.Series(ic_by_date, index=dates, dtype=float)
+                    ics[alpha] = np.nan
+            return pd.Series(ics)
+
+        ic_df = train_df_clean.groupby('date').apply(
+            _daily_ics, include_groups=False
+        )  # index=date, columns=alphas
+
+        daily_ics: Dict[str, pd.Series] = {}
+        for alpha in top_alphas:
+            if alpha in ic_df.columns:
+                daily_ics[alpha] = ic_df[alpha].reindex(dates)
+            else:
+                daily_ics[alpha] = pd.Series(dtype=float)
 
         # Validate each alpha through Research Gate
         gated_alphas: List[str] = []
@@ -461,8 +636,16 @@ class Phase35WalkForwardEngine:
         else:
             weights = np.ones(len(weights)) / len(weights)
         
-        # Compute weighted average
-        alpha_matrix = df[alpha_cols].values
+        # Per-alpha z-score normalization (cross-sectional per date) BEFORE blend
+        # Prevents high-scale alphas from dominating IC-weighted combination
+        df_norm = df[alpha_cols].copy()
+        for col in alpha_cols:
+            df_norm[col] = df.groupby('date')[col].transform(
+                lambda x: (x - x.mean()) / (x.std() + 1e-9)
+            )
+        
+        # Compute weighted average on normalized alphas
+        alpha_matrix = df_norm[alpha_cols].values
         portfolio_signal = alpha_matrix @ weights
         
         return pd.Series(portfolio_signal, index=df.index)
@@ -687,9 +870,36 @@ class Phase35WalkForwardEngine:
         if cost_aware is None:
             cost_aware = self.cost_aware
         
-        # Compute alphas on train and test (full train_df — no embargo yet)
+        # Compute alphas on train (full train_df — no embargo yet)
         train_df = self.compute_alphas(train_df)
-        test_df = self.compute_alphas(test_df)
+
+        # --- Cold-start fix: prepend train tail to test_df for alpha computation ---
+        # Phase34 uses rolling windows (5, 10, 20 bars). Without train history,
+        # the first ~20 test days get NaN/zero-fill distortion.
+        # PIT safe: we only prepend already-embargoed train data, then strip it back.
+        warmup_n = 30  # rows per symbol to prepend (covers max rolling window)
+        train_tail = (
+            train_df
+            .groupby('ticker', group_keys=False)
+            .tail(warmup_n)
+            .copy()
+        )
+        # Mark original test rows so we can strip warmup back after alpha computation
+        is_test_mask = pd.Series(True, index=test_df.index)
+        test_df = test_df.copy()
+        test_df['_is_test'] = True
+        test_with_warmup = pd.concat([train_tail, test_df], ignore_index=True)
+        test_with_warmup = test_with_warmup.sort_values(
+            ['ticker', 'date'], ignore_index=True
+        )
+        test_with_warmup = self.compute_alphas(test_with_warmup)
+        # Strip warmup rows — keep only original test rows
+        keep_mask = test_with_warmup['_is_test'].fillna(False).astype(bool)
+        test_df = (
+            test_with_warmup.loc[keep_mask]
+            .drop(columns=['_is_test'], errors='ignore')
+            .reset_index(drop=True)
+        )
         
         # --- Embargo: drop last h rows per symbol from IC/selection window ---
         # Extract horizon h from return_col name (e.g. 'fwd_ret_5' -> h=5).
@@ -712,16 +922,35 @@ class Phase35WalkForwardEngine:
             f"Fold {fold_id} embargo: h={h}, "
             f"train rows before={len(train_df)}, after={len(train_df_clean)}"
         )
+        # Split train_df_clean into Train Actual and Validation dynamically (e.g. 2:1 ratio by unique dates)
+        unique_dates = sorted(train_df_clean['date'].unique())
+        if len(unique_dates) >= 3:
+            split_idx = int(len(unique_dates) * 2 / 3)
+            val_start_date = unique_dates[split_idx]
+            train_actual = train_df_clean[train_df_clean['date'] < val_start_date].reset_index(drop=True)
+            val_actual = train_df_clean[train_df_clean['date'] >= val_start_date].reset_index(drop=True)
+        else:
+            train_actual = train_df_clean
+            val_actual = train_df_clean
+            
+        logger.info(
+            f"Fold {fold_id} validation split: "
+            f"train_actual={len(train_actual)} rows, val_actual={len(val_actual)} rows"
+        )
         
-        # Compute IC on embargoed training set (no label leakage)
-        train_ics = self.compute_alpha_ics(train_df_clean, alpha_cols, return_col)
+        # Compute IC on actual training set (no label leakage)
+        train_ics = self.compute_alpha_ics(train_actual, alpha_cols, return_col)
         
-        logger.info(f"Fold {fold_id} train ICs: {train_ics}")
+        # Strategy filter: momentum only keeps positive IC alphas
+        if hasattr(self, "strategy") and self.strategy == "momentum":
+            train_ics = {k: v for k, v in train_ics.items() if v > 0.0}
+            
+        logger.info(f"Fold {fold_id} train ICs (strategy={self.strategy}): {train_ics}")
 
         # Stage 6.2: Cost-aware alpha selection
         if cost_aware:
             adjusted_ics = self.adjust_alphas_for_cost(
-                train_df_clean, alpha_cols, train_ics
+                train_actual, alpha_cols, train_ics
             )
             top_alphas = self.select_top_alphas(adjusted_ics)
         else:
@@ -730,28 +959,27 @@ class Phase35WalkForwardEngine:
 
         # ------------------------------------------------------------------
         # Stage 3 ML Gate: filter top_alphas through Research Gate
-        # Uses embargoed train_df_clean — PIT safe, no look-ahead.
+        # Uses validation set (val_actual) — PIT safe, no look-ahead.
         # ------------------------------------------------------------------
         gated_alphas, gate_results = self.validate_alpha_with_research_gate(
             top_alphas=top_alphas,
             train_ics=train_ics,
-            train_df_clean=train_df_clean,
+            train_df_clean=val_actual,
             return_col=return_col,
         )
 
         # ------------------------------------------------------------------
         # Stage 4: optional XGBoost path (use_xgboost=True) vs baseline
         # Baseline: IC-weighted signal from gated alphas (unchanged).
-        # XGBoost: train XGBoostAlphaEnsemble on train_df_clean MultiIndex,
+        # XGBoost: train XGBoostAlphaEnsemble on train_actual MultiIndex,
         #          predict on test_df MultiIndex, standardize to portfolio_signal.
-        # PIT Safety: ensemble trains only on embargoed train_df_clean.
-        #             Embargo was applied upstream — no look-ahead here.
+        # PIT Safety: ensemble trains only on embargoed train_actual.
         # ------------------------------------------------------------------
-        if self.use_xgboost and len(train_df_clean) > 0 and len(gated_alphas) > 0:
+        if self.use_xgboost and len(train_actual) > 0 and len(gated_alphas) > 0:
             try:
                 # Convert flat ['date','ticker'] -> MultiIndex ['date','symbol']
                 X_train_multi = (
-                    train_df_clean
+                    train_actual
                     .set_index(['date', 'ticker'])
                     .rename_axis(index={'ticker': 'symbol'})
                 )
@@ -778,8 +1006,10 @@ class Phase35WalkForwardEngine:
                 raw_preds = ensemble.predict(X_test_multi, gated_alphas)
 
                 # Flatten MultiIndex predictions back to flat test_df index
-                # raw_preds index is (date, symbol); align by position to test_df
-                preds_flat = raw_preds.values
+                # Align raw_preds (indexed by date, symbol) with test_df (columns date, ticker) to prevent drift
+                preds_df = raw_preds.reset_index().rename(columns={'symbol': 'ticker', 0: 'pred'})
+                merged = test_df[['date', 'ticker']].merge(preds_df, on=['date', 'ticker'], how='left')
+                preds_flat = merged['pred'].fillna(0.0).values
                 if len(preds_flat) == len(test_df):
                     preds_series = pd.Series(preds_flat, index=test_df.index)
                     # Standardize: zero-mean, unit-std per date cross-section
@@ -803,6 +1033,63 @@ class Phase35WalkForwardEngine:
         else:
             # Baseline: IC-weighted signal (original path, fully preserved)
             portfolio_signal = self.compute_portfolio_signal(test_df, gated_alphas, train_ics)
+
+        # ------------------------------------------------------------------
+        # Evolved Alpha Blending (optional)
+        # If enable_evolved=True, run inline GP evolution on train_actual,
+        # execute best tree on test_df, and blend with hand-crafted signal.
+        # PIT Safety: evolution trains only on train_actual (embargoed).
+        # ------------------------------------------------------------------
+        if self.enable_evolved and len(train_actual) > 0:
+            evolved_signal = self._evolve_inline_signal(train_actual, test_df, return_col)
+            if evolved_signal is not None:
+                # Align evolved signal length with portfolio_signal
+                if len(evolved_signal) == len(portfolio_signal):
+                    w_evo = self.evolved_blend_weight
+                    w_hand = 1.0 - w_evo
+                    portfolio_signal = pd.Series(
+                        w_evo * evolved_signal + w_hand * portfolio_signal.values,
+                        index=portfolio_signal.index
+                    )
+                    logger.info(
+                        f"Fold {fold_id}: Evolved signal blended "
+                        f"(evolved={w_evo:.2f}, handcrafted={w_hand:.2f})"
+                    )
+                else:
+                    logger.warning(
+                        f"Fold {fold_id}: Evolved signal length mismatch "
+                        f"({len(evolved_signal)} vs {len(portfolio_signal)}), skipping blend"
+                    )
+
+        # Strategy filter: mean reversion reverses signal direction
+        if hasattr(self, "strategy") and self.strategy == "mean_reversion":
+            portfolio_signal = -portfolio_signal
+
+        # --- Fix 3+4: Raw signal IC (before Stage 2) + Z-score normalization ---
+        # Apply cross-sectional z-score normalization to raw signal before blending
+        # This prevents scale differences between alphas from dominating weights
+        test_df_copy = test_df.copy()
+        test_df_copy['_raw_signal'] = portfolio_signal
+        # Z-score per date (cross-sectional)
+        test_df_copy['_raw_signal'] = test_df_copy.groupby('date')['_raw_signal'].transform(
+            lambda x: (x - x.mean()) / (x.std() + 1e-9)
+        )
+        portfolio_signal = test_df_copy['_raw_signal']
+
+        # Compute raw signal IC (pre Stage 2) — this is the true predictive power
+        raw_signal_ic = self.compute_ic(portfolio_signal, test_df[return_col])
+        
+        # Compute daily cross-sectional IC for raw signal (more robust metric)
+        test_df_with_signal = test_df.copy()
+        test_df_with_signal['_raw_signal'] = portfolio_signal
+        raw_signal_daily_cs_ic = self.compute_daily_cs_ic(
+            test_df_with_signal, '_raw_signal', return_col
+        )
+        
+        logger.info(
+            f"Fold {fold_id} raw signal IC: {raw_signal_ic:.4f}, "
+            f"daily CS IC: {raw_signal_daily_cs_ic:.4f}"
+        )
 
         # ------------------------------------------------------------------
         # Stage 2 behavioral enforcement (top-N, rebalance cadence, sector cap)
@@ -834,6 +1121,16 @@ class Phase35WalkForwardEngine:
             'p_ret': portfolio_returns
         })
         daily_series = aligned_df.groupby('date')['p_ret'].sum().sort_index()
+
+        # Plumb slippage and commission to actual realized portfolio returns
+        df_weights = pd.DataFrame({'date': test_df['date'], 'ticker': test_df['ticker'], 'weight': portfolio_signal})
+        pivot_weights = df_weights.pivot(index='date', columns='ticker', values='weight').fillna(0.0)
+        daily_turnover = pivot_weights.diff(axis=0).abs().sum(axis=1)
+        if len(daily_turnover) > 0:
+            daily_turnover.iloc[0] = pivot_weights.iloc[0].abs().sum()
+
+        daily_turnover = daily_turnover.reindex(daily_series.index, fill_value=0.0)
+        daily_series = daily_series - (daily_turnover * self.cost_per_turnover)
 
         # Stage 6.3: Active Drawdown Control
         if self.drawdown_control and len(daily_series) > 0:
@@ -869,7 +1166,8 @@ class Phase35WalkForwardEngine:
         # Compute Sharpe and Max DD from daily aggregated returns series
         sharpe = self.compute_sharpe_ratio(daily_series)
         max_dd = self.compute_max_drawdown(daily_series)
-        total_return = portfolio_returns.sum()
+        total_return = daily_series.sum()
+        pnl_val = total_return * self.initial_capital
         
         # Create metrics object
         metrics = FoldMetrics(
@@ -882,14 +1180,22 @@ class Phase35WalkForwardEngine:
             portfolio_sharpe=sharpe,
             portfolio_max_dd=max_dd,
             portfolio_total_return=total_return,
+            portfolio_pnl_vnd=pnl_val,
             portfolio_ic=portfolio_ic,
+            raw_signal_ic=raw_signal_ic,
+            raw_signal_daily_cs_ic=raw_signal_daily_cs_ic,
             n_train_samples=len(train_df_clean),
             n_test_samples=len(test_df),
             gate_results=gate_results,
             gated_alphas=gated_alphas,
         )
         
-        logger.info(f"Fold {fold_id} results: IC={portfolio_ic:.4f}, Sharpe={sharpe:.4f}, MaxDD={max_dd:.2%}")
+        logger.info(
+            f"Fold {fold_id} results: RawIC={raw_signal_ic:.4f}, "
+            f"RawCS_IC={raw_signal_daily_cs_ic:.4f}, "
+            f"PortfolioIC={portfolio_ic:.4f}, "
+            f"Sharpe={sharpe:.4f}, MaxDD={max_dd:.2%}, PnL={pnl_val:+,.0f} VND"
+        )
         
         return metrics
     
@@ -930,8 +1236,11 @@ class Phase35WalkForwardEngine:
             avg_ic_by_alpha[alpha_col] = np.mean(ics)
         
         avg_portfolio_ic = np.mean([m.portfolio_ic for m in fold_metrics])
+        avg_raw_signal_ic = np.mean([m.raw_signal_ic for m in fold_metrics])
+        avg_raw_signal_daily_cs_ic = np.mean([m.raw_signal_daily_cs_ic for m in fold_metrics])
         avg_portfolio_sharpe = np.mean([m.portfolio_sharpe for m in fold_metrics])
         avg_portfolio_max_dd = np.mean([m.portfolio_max_dd for m in fold_metrics])
+        avg_portfolio_pnl_vnd = np.mean([m.portfolio_pnl_vnd for m in fold_metrics])
         
         result = WalkForwardResult(
             fold_metrics=fold_metrics,
@@ -939,6 +1248,9 @@ class Phase35WalkForwardEngine:
             avg_portfolio_sharpe=avg_portfolio_sharpe,
             avg_portfolio_max_dd=avg_portfolio_max_dd,
             avg_portfolio_ic=avg_portfolio_ic,
+            avg_raw_signal_ic=avg_raw_signal_ic,
+            avg_raw_signal_daily_cs_ic=avg_raw_signal_daily_cs_ic,
+            avg_portfolio_pnl_vnd=avg_portfolio_pnl_vnd,
             total_folds=len(fold_metrics),
         )
         
@@ -956,11 +1268,11 @@ if __name__ == "__main__":
     import sys
     from pathlib import Path
     
-    # Add canonical package path
-    workspace = Path(__file__).resolve().parents[5]
-    sys.path.insert(0, str(workspace / "packages" / "quant" / "src"))
-    sys.path.insert(0, str(workspace / "scripts"))
-    
+    workspace = Path(__file__).resolve().parents[3]
+    _REPO_ROOT = workspace
+    if str(_REPO_ROOT / 'src') not in sys.path:
+        sys.path.insert(0, str(_REPO_ROOT / 'src'))
+        
     from omega.quant import phase34_microstructure_alphas
     from phase35_data_loader import Phase35DataLoader
     

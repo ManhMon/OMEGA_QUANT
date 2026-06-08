@@ -38,3 +38,19 @@ __all__ = [
     "get_kill_switch",
     "reset_kill_switch",
 ]
+
+# Auto-wired submodules and subpackages
+try:
+    from . import kill_switch
+except ImportError:
+    pass
+
+try:
+    from . import metrics_collector
+except ImportError:
+    pass
+
+try:
+    from . import sre_logger
+except ImportError:
+    pass

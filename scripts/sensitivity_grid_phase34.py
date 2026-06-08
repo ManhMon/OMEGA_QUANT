@@ -15,7 +15,7 @@ import pandas as pd
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 logger = logging.getLogger("sensitivity_grid")
 REPO_ROOT = Path(__file__).resolve().parent.parent
-QUANT_SRC = REPO_ROOT / "packages/quant/src"
+QUANT_SRC = REPO_ROOT / "src"
 
 def _import(name, rel):
     spec = importlib.util.spec_from_file_location(name, str(QUANT_SRC / rel))

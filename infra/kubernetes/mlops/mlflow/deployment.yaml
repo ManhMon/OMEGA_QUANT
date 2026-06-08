@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlflow
+  namespace: mlops
+  labels:
+    app: mlflow
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlflow
+  template:
+    metadata:
+      labels:
+        app: mlflow
+    spec:
+      initContainers:
+        - name: wait-for-db
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - "until nc -z -w 2 postgres 5432; do echo waiting for postgres; sleep 2; done"
+      containers:
+        - name: mlflow
+          image: ghcr.io/mlflow/mlflow:v2.3.2
+          command:
+            - sh
+            - -c
+            - "mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri postgresql://$DB_USER:$DB_PASS@postgres.mlops.svc.cluster.local:5432/$DB_NAME --default-artifact-root $MLFLOW_ARTIFACT_ROOT"
+          env:
+            - name: DB_USER
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: postgres-user
+            - name: DB_PASS
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: postgres-password
+            - name: DB_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: postgres-db
+            - name: MLFLOW_ARTIFACT_ROOT
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_ARTIFACT_ROOT
+            - name: MLFLOW_S3_ENDPOINT_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: mlflow-config
+                  key: MLFLOW_S3_ENDPOINT_URL
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: minio-root-user
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlops-secrets
+                  key: minio-root-password
+          ports:
+            - containerPort: 5000
+              name: http
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 15
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 5000
+            initialDelaySeconds: 15
+            periodSeconds: 15

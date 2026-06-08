@@ -1,0 +1,79 @@
+{
+  "0. Baseline (No overlays)": {
+    "total_return": -0.870539225822559,
+    "annualized_sharpe": -4.88266638904189,
+    "max_drawdown": -0.8735521474923842,
+    "n_days": 596,
+    "elapsed_sec": 0.193556547164917
+  },
+  "1. Adaptive Sizing Only": {
+    "total_return": -0.9181880660909734,
+    "annualized_sharpe": -3.1212942881999544,
+    "max_drawdown": -0.9203009622051187,
+    "n_days": 596,
+    "elapsed_sec": 0.19066762924194336
+  },
+  "2. Black-Litterman Only": {
+    "total_return": 0.0923805989136377,
+    "annualized_sharpe": 0.2737245450421468,
+    "max_drawdown": -0.373555711959939,
+    "n_days": 596,
+    "elapsed_sec": 0.20253467559814453
+  },
+  "3. Continuous Learning Only": {
+    "total_return": -0.8883498429126921,
+    "annualized_sharpe": -4.966161483331245,
+    "max_drawdown": -0.8909763375757346,
+    "n_days": 596,
+    "elapsed_sec": 0.3239128589630127
+  },
+  "4. Drift Detection Only": {
+    "total_return": -0.8244171618833328,
+    "annualized_sharpe": -4.63508206773277,
+    "max_drawdown": -0.8285034756040125,
+    "n_days": 596,
+    "elapsed_sec": 0.19250750541687012
+  },
+  "5. HMM Regime Only": {
+    "total_return": -0.8670522881595355,
+    "annualized_sharpe": -5.414344566595614,
+    "max_drawdown": -0.870156274826011,
+    "n_days": 596,
+    "elapsed_sec": 3.174046277999878
+  },
+  "6. Regime-Aware WF Only": {
+    "total_return": -0.8239842423548743,
+    "annualized_sharpe": -5.489786215714239,
+    "max_drawdown": -0.8280806313484456,
+    "n_days": 596,
+    "elapsed_sec": 2.0489883422851562
+  },
+  "7. Regime MA/Vol/DD Only": {
+    "total_return": -0.778067806959774,
+    "annualized_sharpe": -4.3369745665932085,
+    "max_drawdown": -0.7821139620263579,
+    "n_days": 596,
+    "elapsed_sec": 0.20548725128173828
+  },
+  "8. Thompson Sampling Only": {
+    "total_return": -0.9170575887641718,
+    "annualized_sharpe": -6.127250280209165,
+    "max_drawdown": -0.9188155476012688,
+    "n_days": 596,
+    "elapsed_sec": 0.336686372756958
+  },
+  "9. Unified V2 (Core 6 overlays)": {
+    "total_return": -0.8142754535465204,
+    "annualized_sharpe": -4.513906662861312,
+    "max_drawdown": -0.8200065114076254,
+    "n_days": 596,
+    "elapsed_sec": 0.3362464904785156
+  },
+  "10. Ultimate Suite (All compatible)": {
+    "total_return": -0.5261284568913727,
+    "annualized_sharpe": -2.145716153394668,
+    "max_drawdown": -0.5277165520076585,
+    "n_days": 596,
+    "elapsed_sec": 0.33129405975341797
+  }
+}

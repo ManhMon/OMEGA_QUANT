@@ -44,3 +44,19 @@ __all__ = [
     "ResourceType",
     "ThrottleLevel",
 ]
+
+# Auto-wired submodules and subpackages
+try:
+    from . import resource_manager
+except ImportError:
+    pass
+
+try:
+    from . import task_queue
+except ImportError:
+    pass
+
+try:
+    from . import worker_pool
+except ImportError:
+    pass

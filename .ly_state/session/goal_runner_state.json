@@ -1,0 +1,11 @@
+{
+  "goal": "OMEGA_QUANT importer cleanup -> canonical namespace rollback -> fresh audit",
+  "batch": "packages/quant importer cleanup/revert",
+  "phase": "awaiting_fresh_l3_audit",
+  "l2_status": "focused tests passed after rollback to omega.quant.*",
+  "l3_previous_verdict": "NEEDS_FIX",
+  "l3_previous_report": ".ly_state/session/audit_reports/role21_importer_cleanup_audit_20260605.md",
+  "last_updated": 1780669925.8652325,
+  "next_action": "run fresh independent L3 audit on current rollback state",
+  "notify_on": "final_verdict_only"
+}

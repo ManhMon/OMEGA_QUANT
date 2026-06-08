@@ -10,11 +10,11 @@ Date: 2026-05-31
 PIT Safety: PASS - All signals use T-1 lagged data only.
 """
 import sys
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\quant\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\core\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\infra\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\data\src')
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 import numpy as np
 import pandas as pd

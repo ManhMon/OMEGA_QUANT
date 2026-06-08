@@ -10,7 +10,7 @@ import numpy as np
 from datetime import datetime
 
 # Add paths
-sys.path.insert(0, 'packages/quant/src')
+sys.path.insert(0, 'src')
 
 from omega.quant.attribution import PerformanceAttribution, AttributionConfig
 

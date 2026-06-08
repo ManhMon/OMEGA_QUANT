@@ -1,0 +1,22 @@
+[L3-Audit:Role21-CodeReviewer]
+Read the following files to verify correctness and safety:
+1. `apps/dashboard/pages/7_🧪_Backtest_Runner.py`
+2. `apps/dashboard/services/regime_service.py`
+3. `apps/dashboard/services/backtest_executor.py`
+4. `src/omega/quant/phase35_walk_forward.py`
+5. `scripts/run_phase35_backtest.py`
+6. `scripts/record_dashboard_gate.py`
+
+Verify that:
+1. P0 Verifier Gate Forgery is resolved. The gate recorder strictly parses explicit structured `VERDICT: [APPROVED]` lines, rejects reports missing real session metadata, removes synthetic defaults, and derives status strictly from validated verdict metadata.
+2. Backtest controls dates, capital, strategy, slippage, commission, quick mode, xgboost are fully plumbed and processed downstream.
+3. Multi-fold walk-forward validation results (avg_portfolio_ic, avg_portfolio_sharpe, avg_portfolio_max_dd, fold_details table & plotly charts, alpha_ics chart) are correctly visualized in Page 7.
+4. Atomic exclusive lock file acquisition, stale process cleaning, and deferred lock release (after result json is read) are implemented correctly.
+5. RegimeService methods `compute_regime_statistics` and `get_regime_timeline` are vectorized.
+
+Print findings to STDOUT in this exact format:
+VERDICT: [APPROVED|NEEDS_FIX]
+ISSUES:
+- <severity> <file:line>: <description> | FIX: <suggestion>
+
+DO NOT WRITE ANY FILES. Output only.

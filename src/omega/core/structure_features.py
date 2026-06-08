@@ -14,9 +14,9 @@ from pathlib import Path
 # Dynamic metadata loading (loads once on import)
 def _get_metadata_path() -> Path:
     """Helper to resolve metadata path relative to project root."""
-    # Current file is OMEGA_QUANT/packages/core/src/omega/core/structure_features.py
-    # Root is OMEGA_QUANT (5 levels up)
-    root = Path(__file__).resolve().parents[5]
+    # Current file is OMEGA_QUANT/src/omega/core/structure_features.py
+    # Root is OMEGA_QUANT (3 levels up)
+    root = Path(__file__).resolve().parents[3]
     return root / 'data' / 'sector_mapping_level2.csv'
 
 _METADATA_PATH = _get_metadata_path()

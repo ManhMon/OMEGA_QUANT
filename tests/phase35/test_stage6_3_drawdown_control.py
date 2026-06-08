@@ -22,7 +22,7 @@ from unittest.mock import patch
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../packages/quant/src')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
 
 
 def _make_fake_alpha_module():
@@ -45,6 +45,7 @@ def _make_engine(drawdown_control=False, drawdown_threshold=0.05):
         use_xgboost=False,
         drawdown_control=drawdown_control,
         drawdown_threshold=drawdown_threshold,
+        cost_per_turnover=0.0,
     )
 
 

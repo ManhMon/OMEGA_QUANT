@@ -1,0 +1,30 @@
+You are Role 14 (Data Scientist) + Role 6 (System Architect) on L2 OpenCode Platform for OMEGA_QUANT - Vietnam Stock Market Quant AI System.
+
+TASK: As a senior quant researcher, suggest ADDITIONAL feature groups for GP Alpha Evolution in Vietnamese stock market.
+
+We currently plan these 10 groups (124 features total):
+1. OHLCV + Technical (39 existing)
+2. Market Structure and Liquidity (5)
+3. Deep Liquidity (6)
+4. Advanced Momentum (6)
+5. Large Money Flow / Whale Detection (6)
+6. Core Technical Indicators (12)
+7. Microstructure (8)
+8. Macro Regime (8)
+9. News and Sentiment Proxy (10)
+10. Fundamental / Financial Ratios PIT (14)
+
+FOCUS AREAS TO REVIEW:
+A. Seasonality & Calendar effects specific to VN market (Tet holiday, T+2.5 cycle, Friday effect, month-end window dressing)
+B. Cross-sectional relative features (sector-relative momentum, size-based, rank-based)
+C. Risk-adjusted features (tail risk, drawdown, skewness, kurtosis)
+D. Pattern recognition features (candlestick patterns, chart patterns proxy)
+E. Volatility surface features (term structure of vol, vol-of-vol, vol skew)
+F. Any other alpha-generating feature groups missing
+
+REQUIREMENTS:
+- All features must be computable from OHLCV + cross-sectional data only
+- PIT safe (T-1 lag mandatory)
+- Vietnam specific: HOSE 7% band, HNX 10% band, UPCoM 15% band, T+2.5 settlement
+- Output markdown tables with feature name, formula, and rationale
+- Be exhaustive and creative

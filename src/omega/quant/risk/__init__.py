@@ -22,3 +22,34 @@ __all__ = [
     "IndividualRiskGuardConfig",
     "IndividualRiskGuardResult"
 ]
+
+# Auto-wired submodules and subpackages
+try:
+    from . import advanced_circuit_breaker
+except ImportError:
+    pass
+
+try:
+    from . import contagion_risk_validator
+except ImportError:
+    pass
+
+try:
+    from . import individual_risk_guard
+except ImportError:
+    pass
+
+try:
+    from . import production_monitor
+except ImportError:
+    pass
+
+try:
+    from . import risk_monitor
+except ImportError:
+    pass
+
+try:
+    from . import risk_monitor_l07
+except ImportError:
+    pass

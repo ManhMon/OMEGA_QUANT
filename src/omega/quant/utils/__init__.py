@@ -13,3 +13,9 @@ def winsorize(s: pd.Series, lower=0.01, upper=0.99) -> pd.Series:
 def zscore(s: pd.Series) -> pd.Series:
     std = s.std()
     return (s - s.mean()) / std if std > 0 else s * 0
+
+# Auto-wired submodules and subpackages
+try:
+    from . import math
+except ImportError:
+    pass

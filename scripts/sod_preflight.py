@@ -10,7 +10,7 @@ Enforces hard stops before any code write/modification:
 4. Block writes to protected paths without proper session
 
 Usage:
-    python scripts/sod_preflight.py --check-before-write packages/quant/src/omega/quant/new_file.py
+    python scripts/sod_preflight.py --check-before-write src/omega/quant/new_file.py
     python scripts/sod_preflight.py --check-before-approve phase11
 """
 
@@ -69,10 +69,10 @@ class SODPreflight:
     """Preflight checker for SOD compliance"""
     
     PROTECTED_PATHS = [
-        "packages/quant/src/omega/quant/",
-        "packages/data/src/omega/data/",
-        "packages/core/src/omega/core/",
-        "packages/risk/src/omega/risk/",
+        "src/omega/quant/",
+        "src/omega/data/",
+        "src/omega/core/",
+        "src/omega/risk/",
         "tests/phase",
     ]
     

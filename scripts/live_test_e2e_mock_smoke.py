@@ -11,9 +11,9 @@ import numpy as np
 from datetime import datetime, timedelta
 
 # Add paths
-sys.path.insert(0, 'packages/quant/src')
-sys.path.insert(0, 'packages/core/src')
-sys.path.insert(0, 'packages/data/src')
+sys.path.insert(0, 'src')
+sys.path.insert(0, 'src')
+sys.path.insert(0, 'src')
 
 from omega.quant.alpha_discovery import AlphaDiscoveryEngine
 from omega.quant.portfolio.portfolio_optimizer import PortfolioOptimizer

@@ -1,0 +1,20 @@
+[L3-Audit:Role21-CodeReviewer]
+Read the following files to verify correctness and safety:
+1. `apps/dashboard/pages/7_🧪_Backtest_Runner.py`
+2. `apps/dashboard/services/regime_service.py`
+3. `apps/dashboard/services/backtest_executor.py`
+4. `scripts/record_dashboard_gate.py`
+
+Verify that:
+1. P0 Verifier Gate Forgery is resolved. No hardcoded approvals allowed.
+2. Backtest controls dates, capital, strategy, slippage, commission, quick mode, xgboost are fully plumbed.
+3. Multi-fold walk-forward validation results (avg_portfolio_ic, avg_portfolio_sharpe, avg_portfolio_max_dd, fold_details table & plotly charts, alpha_ics chart) are correctly visualized in Page 7.
+4. Atomic exclusive lock file acquisition and stale process cleaning are implemented correctly.
+5. RegimeService methods `compute_regime_statistics` and `get_regime_timeline` are vectorized.
+
+Print findings to STDOUT in this exact format:
+VERDICT: [APPROVED|NEEDS_FIX]
+ISSUES:
+- <severity> <file:line>: <description> | FIX: <suggestion>
+
+DO NOT WRITE ANY FILES. Output only.

@@ -5,7 +5,11 @@ from datetime import datetime
 from pathlib import Path
 
 WORKSPACE = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(WORKSPACE / "packages" / "quant" / "src"))
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 sys.path.insert(0, str(WORKSPACE / "scripts"))
 
 import numpy as np

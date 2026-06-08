@@ -28,11 +28,11 @@ import numpy as np
 import pandas as pd
 
 # Add packages to path
-sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "core" / "src"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "data" / "src"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "quant" / "src"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "risk" / "src"))
-sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "observability" / "src"))
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 from omega.core.pipeline import OmegaPipeline, PipelineConfig
 

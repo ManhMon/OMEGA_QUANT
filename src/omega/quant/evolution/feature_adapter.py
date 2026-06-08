@@ -37,15 +37,14 @@ import pandas as pd
 
 # --------------------------------------------------------------------------
 # sys.path bootstrap — make both alpha source trees importable.
-# packages/quant/src  -> phase34_microstructure_alphas
+# src  -> phase34_microstructure_alphas
 # src/                 -> ultimate_alpha_arsenal
 # --------------------------------------------------------------------------
 _THIS_FILE = Path(__file__).resolve()
-# .../packages/quant/src/omega/quant/evolution/feature_adapter.py
-#                       ^_pkg_src                            ^_this
-_PKG_SRC = _THIS_FILE.parents[3]                # .../packages/quant/src
-_REPO_ROOT = _PKG_SRC.parents[2]                # workspace root
-_LEGACY_SRC = _REPO_ROOT / "src"                # .../src
+# .../src/omega/quant/evolution/feature_adapter.py
+_PKG_SRC = _THIS_FILE.parents[3]                # .../src
+_REPO_ROOT = _PKG_SRC.parent                    # workspace root
+_LEGACY_SRC = _PKG_SRC                          # .../src
 
 # FIX v5: Guarantee _PKG_SRC at sys.path[0]
 for _p in (_LEGACY_SRC, _PKG_SRC):

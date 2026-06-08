@@ -12,22 +12,32 @@
     "stage2_top_n_stocks": 8,
     "stage2_rebalance_freq": 7,
     "stage2_sector_cap_pct": 0.3,
-    "use_xgboost": true
+    "use_xgboost": true,
+    "initial_capital": 1000000000.0,
+    "strategy": "multi_factor",
+    "slippage_bps": 10.0,
+    "commission_bps": 20.0,
+    "quick_mode": false,
+    "drawdown_control": true,
+    "drawdown_threshold": 0.15,
+    "enable_evolved": true,
+    "evolved_blend_weight": 0.5
   },
   "summary": {
-    "avg_portfolio_ic": -0.001831585936056328,
-    "avg_portfolio_sharpe": 0.47244795712230203,
-    "avg_portfolio_max_dd": -0.7025169895890586,
+    "avg_portfolio_ic": -0.0015080000806140562,
+    "avg_portfolio_sharpe": 0.7789878421776765,
+    "avg_portfolio_max_dd": -0.18733768864832107,
+    "avg_portfolio_pnl_vnd": 184786447.63500202,
     "total_folds": 8
   },
   "alpha_ics": {
-    "alpha_p34_volatility_compression_5": -0.02176499174300985,
-    "alpha_p34_volume_clock_acceleration_10": -0.01753160148543018,
-    "alpha_p34_kyle_lambda_20": -0.009905270031740958,
-    "alpha_p34_tick_signed_volume_imbalance_5": -0.00763423413860195,
-    "alpha_p34_close_auction_drift_10": 0.007380565519015291,
-    "alpha_p34_liquidity_provision_ratio_10": -0.002254426447694936,
-    "alpha_p34_micro_momentum_5_20": 0.01913396069064445
+    "alpha_p34_volatility_compression_5": -0.026920959012503357,
+    "alpha_p34_volume_clock_acceleration_10": -0.01948811464758231,
+    "alpha_p34_kyle_lambda_20": -0.008383966921289954,
+    "alpha_p34_tick_signed_volume_imbalance_5": -0.009674969090037323,
+    "alpha_p34_close_auction_drift_10": 0.006542696501379763,
+    "alpha_p34_liquidity_provision_ratio_10": -0.0012781409883817823,
+    "alpha_p34_micro_momentum_5_20": 0.007050462844860755
   },
   "fold_details": [
     {
@@ -36,21 +46,22 @@
       "train_end": "2018-01-03",
       "test_start": "2018-01-04",
       "test_end": "2019-01-03",
-      "portfolio_ic": -0.011435212249172209,
-      "portfolio_sharpe": -0.5928301075282951,
-      "portfolio_max_dd": -0.8148827029712615,
-      "portfolio_total_return": -1.093508184435251,
+      "portfolio_ic": 0.023634961963678414,
+      "portfolio_sharpe": 1.7794014376012202,
+      "portfolio_max_dd": -0.1538603307821597,
+      "portfolio_total_return": 0.38755955384709306,
+      "portfolio_pnl_vnd": 387559553.84709305,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": -0.02001222751455553,
-        "alpha_p34_volume_clock_acceleration_10": 0.049351569760519125,
-        "alpha_p34_kyle_lambda_20": -0.018471000153267067,
-        "alpha_p34_tick_signed_volume_imbalance_5": -0.02312698969349961,
-        "alpha_p34_close_auction_drift_10": -0.01493893328611785,
-        "alpha_p34_liquidity_provision_ratio_10": -0.021440948717041074,
-        "alpha_p34_micro_momentum_5_20": 0.048297217033222845
+        "alpha_p34_volatility_compression_5": -0.01981854070641388,
+        "alpha_p34_volume_clock_acceleration_10": 0.049991870514913016,
+        "alpha_p34_kyle_lambda_20": -0.019742533352811564,
+        "alpha_p34_tick_signed_volume_imbalance_5": -0.024043663305199556,
+        "alpha_p34_close_auction_drift_10": 0.0074091313245359235,
+        "alpha_p34_liquidity_provision_ratio_10": -0.015852356892987352,
+        "alpha_p34_micro_momentum_5_20": -0.002387892004656308
       },
-      "n_train_samples": 15303,
-      "n_test_samples": 6483
+      "n_train_samples": 16109,
+      "n_test_samples": 6323
     },
     {
       "fold_id": 2,
@@ -58,21 +69,22 @@
       "train_end": "2019-01-03",
       "test_start": "2019-01-04",
       "test_end": "2020-01-03",
-      "portfolio_ic": 0.0214888133549215,
-      "portfolio_sharpe": 0.4322631075668686,
-      "portfolio_max_dd": -0.4246048314538809,
-      "portfolio_total_return": 0.41035402454983566,
+      "portfolio_ic": -0.005076106802803671,
+      "portfolio_sharpe": 1.6771574312141642,
+      "portfolio_max_dd": -0.1835588937146405,
+      "portfolio_total_return": 0.3921367915429015,
+      "portfolio_pnl_vnd": 392136791.54290146,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": 0.018964011447834505,
-        "alpha_p34_volume_clock_acceleration_10": -0.021846809579400297,
-        "alpha_p34_kyle_lambda_20": 0.0571488952437542,
-        "alpha_p34_tick_signed_volume_imbalance_5": -0.018768926316966996,
-        "alpha_p34_close_auction_drift_10": 0.01839852302030114,
-        "alpha_p34_liquidity_provision_ratio_10": -0.00028281185759668475,
-        "alpha_p34_micro_momentum_5_20": 0.004920659079276187
+        "alpha_p34_volatility_compression_5": 0.02473202845281903,
+        "alpha_p34_volume_clock_acceleration_10": -0.014878075594333053,
+        "alpha_p34_kyle_lambda_20": -0.004312188176142568,
+        "alpha_p34_tick_signed_volume_imbalance_5": -0.029595839096988843,
+        "alpha_p34_close_auction_drift_10": -0.004503430235765614,
+        "alpha_p34_liquidity_provision_ratio_10": -0.0003686893410176734,
+        "alpha_p34_micro_momentum_5_20": 0.018380906364349792
       },
-      "n_train_samples": 16994,
-      "n_test_samples": 6725
+      "n_train_samples": 17280,
+      "n_test_samples": 6383
     },
     {
       "fold_id": 3,
@@ -80,21 +92,22 @@
       "train_end": "2020-01-03",
       "test_start": "2020-01-06",
       "test_end": "2020-12-31",
-      "portfolio_ic": 0.021667611708214917,
-      "portfolio_sharpe": 1.792995436087087,
-      "portfolio_max_dd": -0.7717458169685665,
-      "portfolio_total_return": 3.458471881491425,
+      "portfolio_ic": -0.02053573659928969,
+      "portfolio_sharpe": 0.6665742154753653,
+      "portfolio_max_dd": -0.15020323942958763,
+      "portfolio_total_return": 0.09050768879652331,
+      "portfolio_pnl_vnd": 90507688.7965233,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": -0.024637665311313645,
-        "alpha_p34_volume_clock_acceleration_10": -0.038965037034674084,
-        "alpha_p34_kyle_lambda_20": -0.050518201623240194,
-        "alpha_p34_tick_signed_volume_imbalance_5": -0.005166862786593037,
-        "alpha_p34_close_auction_drift_10": -0.027362134079427686,
-        "alpha_p34_liquidity_provision_ratio_10": -0.01303544167113674,
-        "alpha_p34_micro_momentum_5_20": -0.014389250729150297
+        "alpha_p34_volatility_compression_5": -0.03538784566514981,
+        "alpha_p34_volume_clock_acceleration_10": -0.04224945952420332,
+        "alpha_p34_kyle_lambda_20": -0.018479229126045212,
+        "alpha_p34_tick_signed_volume_imbalance_5": -0.01423687641629712,
+        "alpha_p34_close_auction_drift_10": -0.029067712934210677,
+        "alpha_p34_liquidity_provision_ratio_10": -0.013949400075809621,
+        "alpha_p34_micro_momentum_5_20": -0.023554288496026147
       },
-      "n_train_samples": 18693,
-      "n_test_samples": 6744
+      "n_train_samples": 18277,
+      "n_test_samples": 6337
     },
     {
       "fold_id": 4,
@@ -102,21 +115,22 @@
       "train_end": "2020-12-31",
       "test_start": "2021-01-04",
       "test_end": "2021-12-31",
-      "portfolio_ic": 0.004060696845584096,
-      "portfolio_sharpe": 1.7506806521491687,
-      "portfolio_max_dd": -0.5334469760847933,
-      "portfolio_total_return": 3.4129438389499116,
+      "portfolio_ic": -0.021386944850432976,
+      "portfolio_sharpe": 0.14597666966036074,
+      "portfolio_max_dd": -0.2300655610929444,
+      "portfolio_total_return": 0.0280578768239369,
+      "portfolio_pnl_vnd": 28057876.823936902,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": -0.016981680594717427,
-        "alpha_p34_volume_clock_acceleration_10": -0.0675004163311579,
-        "alpha_p34_kyle_lambda_20": -0.048530062675556755,
-        "alpha_p34_tick_signed_volume_imbalance_5": -0.02258590362885379,
-        "alpha_p34_close_auction_drift_10": 0.02369734622361372,
-        "alpha_p34_liquidity_provision_ratio_10": -0.0069058482574995105,
-        "alpha_p34_micro_momentum_5_20": 0.10051235465520156
+        "alpha_p34_volatility_compression_5": -0.03559182513926361,
+        "alpha_p34_volume_clock_acceleration_10": -0.08348204300687996,
+        "alpha_p34_kyle_lambda_20": -0.017428869578787042,
+        "alpha_p34_tick_signed_volume_imbalance_5": -0.03229797609040886,
+        "alpha_p34_close_auction_drift_10": 0.036831314506927844,
+        "alpha_p34_liquidity_provision_ratio_10": -0.0017528505185077903,
+        "alpha_p34_micro_momentum_5_20": 0.009555481544980433
       },
-      "n_train_samples": 19817,
-      "n_test_samples": 6737
+      "n_train_samples": 18908,
+      "n_test_samples": 6297
     },
     {
       "fold_id": 5,
@@ -124,21 +138,22 @@
       "train_end": "2021-12-31",
       "test_start": "2022-01-04",
       "test_end": "2022-12-30",
-      "portfolio_ic": -0.02351368467306714,
-      "portfolio_sharpe": -1.360853800110941,
-      "portfolio_max_dd": -0.9894070453731136,
-      "portfolio_total_return": -3.191527865465073,
+      "portfolio_ic": -0.003147670728015951,
+      "portfolio_sharpe": -1.8135651731525573,
+      "portfolio_max_dd": -0.1848450544835156,
+      "portfolio_total_return": -0.19469903563115076,
+      "portfolio_pnl_vnd": -194699035.63115075,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": 0.06382588848964257,
-        "alpha_p34_volume_clock_acceleration_10": -0.00966623587580592,
-        "alpha_p34_kyle_lambda_20": 0.0037336878856642198,
-        "alpha_p34_tick_signed_volume_imbalance_5": 0.04021684622743934,
-        "alpha_p34_close_auction_drift_10": 0.062267232734523066,
-        "alpha_p34_liquidity_provision_ratio_10": -0.009388275749963162,
-        "alpha_p34_micro_momentum_5_20": -0.01608261633193838
+        "alpha_p34_volatility_compression_5": 0.05917724579393636,
+        "alpha_p34_volume_clock_acceleration_10": -0.022733981663117752,
+        "alpha_p34_kyle_lambda_20": -0.00887246831221683,
+        "alpha_p34_tick_signed_volume_imbalance_5": 0.03823340805043499,
+        "alpha_p34_close_auction_drift_10": 0.06963166472344072,
+        "alpha_p34_liquidity_provision_ratio_10": -0.007558414039108321,
+        "alpha_p34_micro_momentum_5_20": -0.019217631879056462
       },
-      "n_train_samples": 20071,
-      "n_test_samples": 6723
+      "n_train_samples": 18882,
+      "n_test_samples": 6124
     },
     {
       "fold_id": 6,
@@ -146,21 +161,22 @@
       "train_end": "2022-12-30",
       "test_start": "2023-01-03",
       "test_end": "2024-01-02",
-      "portfolio_ic": -0.023980851663034902,
-      "portfolio_sharpe": 0.5883369773743152,
-      "portfolio_max_dd": -0.7765867477121167,
-      "portfolio_total_return": 0.9167229980679512,
+      "portfolio_ic": -0.0049606105124037885,
+      "portfolio_sharpe": 0.014584800694948025,
+      "portfolio_max_dd": -0.2157673372489498,
+      "portfolio_total_return": 0.002242659259613311,
+      "portfolio_pnl_vnd": 2242659.259613311,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": -0.01667985529884387,
-        "alpha_p34_volume_clock_acceleration_10": -0.05942920628687677,
-        "alpha_p34_kyle_lambda_20": -0.028559256256773576,
-        "alpha_p34_tick_signed_volume_imbalance_5": 0.0027094263674696958,
-        "alpha_p34_close_auction_drift_10": -0.0272413937702366,
-        "alpha_p34_liquidity_provision_ratio_10": 0.015811060257584317,
-        "alpha_p34_micro_momentum_5_20": -0.03448779179869947
+        "alpha_p34_volatility_compression_5": -0.021694415091896655,
+        "alpha_p34_volume_clock_acceleration_10": -0.062402907480308786,
+        "alpha_p34_kyle_lambda_20": 0.0006584434875627395,
+        "alpha_p34_tick_signed_volume_imbalance_5": 0.0056001391624172555,
+        "alpha_p34_close_auction_drift_10": -0.05141799348230396,
+        "alpha_p34_liquidity_provision_ratio_10": 0.018336549034957413,
+        "alpha_p34_micro_momentum_5_20": 0.02807868951811279
       },
-      "n_train_samples": 20069,
-      "n_test_samples": 6750
+      "n_train_samples": 18623,
+      "n_test_samples": 6147
     },
     {
       "fold_id": 7,
@@ -168,21 +184,22 @@
       "train_end": "2024-01-02",
       "test_start": "2024-01-03",
       "test_end": "2024-12-31",
-      "portfolio_ic": -0.021258198754296638,
-      "portfolio_sharpe": -0.565727341871481,
-      "portfolio_max_dd": -0.7284000610709269,
-      "portfolio_total_return": -0.6633511347674836,
+      "portfolio_ic": -0.011203425882556541,
+      "portfolio_sharpe": 1.5534075623756507,
+      "portfolio_max_dd": -0.16239132511980434,
+      "portfolio_total_return": 0.3037043926975904,
+      "portfolio_pnl_vnd": 303704392.6975904,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": -0.11642224549228844,
-        "alpha_p34_volume_clock_acceleration_10": -0.021223654601787864,
-        "alpha_p34_kyle_lambda_20": 0.00267015306342087,
-        "alpha_p34_tick_signed_volume_imbalance_5": -0.027595150073423797,
-        "alpha_p34_close_auction_drift_10": -0.005822418233499317,
-        "alpha_p34_liquidity_provision_ratio_10": 0.005360958775879673,
-        "alpha_p34_micro_momentum_5_20": 0.05317542326123956
+        "alpha_p34_volatility_compression_5": -0.12641623784795142,
+        "alpha_p34_volume_clock_acceleration_10": -0.027491174175379413,
+        "alpha_p34_kyle_lambda_20": -0.014544717513105933,
+        "alpha_p34_tick_signed_volume_imbalance_5": -0.029430147463340134,
+        "alpha_p34_close_auction_drift_10": -0.008920081664830869,
+        "alpha_p34_liquidity_provision_ratio_10": 0.003375210117515673,
+        "alpha_p34_micro_momentum_5_20": 0.05354185914048539
       },
-      "n_train_samples": 20075,
-      "n_test_samples": 6723
+      "n_train_samples": 18433,
+      "n_test_samples": 6078
     },
     {
       "fold_id": 8,
@@ -190,22 +207,23 @@
       "train_end": "2024-12-31",
       "test_start": "2025-01-02",
       "test_end": "2025-12-31",
-      "portfolio_ic": 0.018318137942399743,
-      "portfolio_sharpe": 1.7347187333116938,
-      "portfolio_max_dd": -0.5810617350778092,
-      "portfolio_total_return": 3.0613914897151746,
+      "portfolio_ic": 0.030611532766911753,
+      "portfolio_sharpe": 2.208365793552259,
+      "portfolio_max_dd": -0.21800976731496657,
+      "portfolio_total_return": 0.4687816537435084,
+      "portfolio_pnl_vnd": 468781653.7435084,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": -0.06217615966983695,
-        "alpha_p34_volume_clock_acceleration_10": 0.02902697806574228,
-        "alpha_p34_kyle_lambda_20": 0.0032836242620706483,
-        "alpha_p34_tick_signed_volume_imbalance_5": -0.006756313204387407,
-        "alpha_p34_close_auction_drift_10": 0.030046301542965854,
-        "alpha_p34_liquidity_provision_ratio_10": 0.011845895638213698,
-        "alpha_p34_micro_momentum_5_20": 0.011125690356003604
+        "alpha_p34_volatility_compression_5": -0.06036808189610689,
+        "alpha_p34_volume_clock_acceleration_10": 0.04734085374865078,
+        "alpha_p34_kyle_lambda_20": 0.015649827201226787,
+        "alpha_p34_tick_signed_volume_imbalance_5": 0.008371202439083675,
+        "alpha_p34_close_auction_drift_10": 0.03237867977324474,
+        "alpha_p34_liquidity_provision_ratio_10": 0.007544823807903417,
+        "alpha_p34_micro_momentum_5_20": -0.007993421429303446
       },
-      "n_train_samples": 20061,
-      "n_test_samples": 6777
+      "n_train_samples": 18214,
+      "n_test_samples": 6138
     }
   ],
-  "timestamp": "2026-05-26T12:40:00.555913"
+  "timestamp": "2026-06-09T05:32:16.971084"
 }

@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).parent.parent / "packages/quant/src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from omega.quant.universe.feature_computer import UniverseFeatureComputer  # noqa: E402
 from omega.quant.universe.xgb_classifier import UniverseClassifier  # noqa: E402

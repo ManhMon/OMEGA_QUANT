@@ -32,9 +32,11 @@ import numpy as np
 # Add project root to path
 PROJECT_ROOT = Path(__file__).parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
-sys.path.insert(0, str(PROJECT_ROOT / "packages" / "core" / "src"))
-sys.path.insert(0, str(PROJECT_ROOT / "packages" / "data" / "src"))
-sys.path.insert(0, str(PROJECT_ROOT / "packages" / "observability" / "src"))
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 from omega.core.portfolio_manager import PortfolioManager
 from omega.core.risk_manager import RiskManager

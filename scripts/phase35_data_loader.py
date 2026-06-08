@@ -30,7 +30,7 @@ class Phase35DataLoader:
     
     def __init__(
         self,
-        warehouse_path: str = r"C:\Users\GHC\.openclaw\workspace\OMEGA_QUANT\data\market_2015_now.parquet",
+        warehouse_path: Optional[str] = None,
         min_price: float = 1.0,
         min_volume: float = 1000.0,
         min_history_days: int = 60,
@@ -39,8 +39,8 @@ class Phase35DataLoader:
         
         Parameters
         ----------
-        warehouse_path : str
-            Path to warehouse parquet file
+        warehouse_path : str, optional
+            Path to warehouse parquet file. Defaults to repo data/market_2015_now.parquet.
         min_price : float
             Minimum price filter (VND)
         min_volume : float
@@ -48,6 +48,8 @@ class Phase35DataLoader:
         min_history_days : int
             Minimum history required per symbol
         """
+        if warehouse_path is None:
+            warehouse_path = Path(__file__).resolve().parent.parent / "data" / "market_2015_now.parquet"
         self.warehouse_path = Path(warehouse_path)
         self.min_price = min_price
         self.min_volume = min_volume
@@ -197,34 +199,42 @@ class Phase35DataLoader:
         top_n: int = 30,
         metric: str = 'volume',
     ) -> List[str]:
-        """Get top N symbols by average volume or market cap proxy.
+        """Get top N symbols using ADTV > 5B and price > 5k filter, ranked by value."""
+        df = df.copy()
         
-        Parameters
-        ----------
-        df : pd.DataFrame
-            OHLCV data
-        top_n : int
-            Number of top symbols to return
-        metric : str
-            Ranking metric: 'volume' or 'value' (close * volume)
+        # Calculate daily trading value (close * volume)
+        df['value'] = df['close'] * df['volume']
         
-        Returns
-        -------
-        list of str
-            Top N symbols
-        """
-        if metric == 'volume':
-            symbol_metric = df.groupby('ticker')['volume'].mean()
-        elif metric == 'value':
-            df['value'] = df['close'] * df['volume']
-            symbol_metric = df.groupby('ticker')['value'].mean()
-        else:
-            raise ValueError(f"Unknown metric: {metric}")
+        # Calculate average daily values and prices per symbol
+        symbol_stats = df.groupby('ticker').agg({
+            'value': 'mean',
+            'close': 'mean'
+        })
         
-        top_symbols = symbol_metric.nlargest(top_n).index.tolist()
+        # Apply filters: ADTV > 5B VND and average close > 5,000 VND
+        min_adtv = 5_000_000_000.0
+        min_price = 5000.0
         
-        logger.info(f"Selected top {top_n} symbols by {metric}: {top_symbols[:10]}...")
+        filtered_stats = symbol_stats[
+            (symbol_stats['value'] >= min_adtv) &
+            (symbol_stats['close'] >= min_price)
+        ]
         
+        # Fallback if too few stocks pass the filter
+        if len(filtered_stats) < 10:
+            logger.warning(
+                f"Too few symbols passed ADTV/Price filter ({len(filtered_stats)}), "
+                f"falling back to sorting raw universe."
+            )
+            filtered_stats = symbol_stats
+            
+        # Select top N sorted by ADTV value descending
+        top_symbols = filtered_stats['value'].nlargest(top_n).index.tolist()
+        
+        logger.info(
+            f"Selected {len(top_symbols)} symbols (max {top_n}) with ADTV > 5B, price > 5k. "
+            f"Top 10: {top_symbols[:10]}..."
+        )
         return top_symbols
     
     def create_walk_forward_splits(

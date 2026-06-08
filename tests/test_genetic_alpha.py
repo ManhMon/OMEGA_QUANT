@@ -6,8 +6,8 @@ import pandas as pd
 import numpy as np
 import pytest
 
-from src.evolution.genetic_alpha import Node, Genome, enforce_t_minus_1_lag
-from src.evolution.fitness import FitnessEvaluator
+from omega.quant.evolution.genetic_alpha import Node, Genome, enforce_t_minus_1_lag
+from omega.quant.evolution.fitness import FitnessEvaluator
 
 
 @pytest.fixture

@@ -1,4 +1,4 @@
-﻿"""
+"""
 OMEGA_QUANT Optuna Nested CV for Regime Params
 Inner loop: Optuna tunes regime params on inner folds
 Outer loop: Evaluate tuned params on held-out outer fold
@@ -63,7 +63,10 @@ class OptunaRegimeNestedCV:
     ) -> np.ndarray:
         """Compute exposure array from regime params (PIT-safe)."""
         import sys
-        sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\quant\src\omega\quant\portfolio')
+        from pathlib import Path
+        _REPO_ROOT = Path(__file__).resolve().parents[4]
+        if str(_REPO_ROOT / 'src') not in sys.path:
+            sys.path.insert(0, str(_REPO_ROOT / 'src'))
         from regime_overlay import compute_regime_exposure
 
         raw = compute_regime_exposure(

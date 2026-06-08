@@ -1,0 +1,27 @@
+[L3-Audit:Role21-CodeReview] Goal mode. Audit only. No implementation.
+
+You are running as L3 Codex for OMEGA_QUANT. Continue until final verdict.
+
+Task:
+Audit current importer cleanup/revert state in packages/quant after rollback to canonical omega.quant imports. Determine if batch is APPROVED or NEEDS_FIX under SOD.
+
+Focus:
+- Verify no split-module identity issue remains
+- Verify focused tests evidence remains valid
+- Only review touched scope and direct implications
+- Do not roam repo beyond necessary importers/tests/state/report files
+
+Known evidence:
+- packages/quant/tests/test_pipeline.py passed
+- packages/quant/tests/test_execution_engine.py passed
+- packages/quant/tests/test_phase16_risk_guard_and_router.py passed
+- rollback returned imports to omega.quant.*
+
+Required final output fields:
+- l3_session_id
+- l3_session_key
+- audit_report_path
+- final_verdict
+- brief findings/summary
+
+Do not wait for user turns. Produce final verdict and exit.

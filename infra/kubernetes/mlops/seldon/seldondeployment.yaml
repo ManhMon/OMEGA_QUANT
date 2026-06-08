@@ -1,0 +1,26 @@
+apiVersion: machinelearning.seldon.io/v1
+kind: SeldonDeployment
+metadata:
+  name: mlflow-model
+  namespace: mlops
+spec:
+  name: mlflow-model-serving
+  predictors:
+    - name: default
+      replicas: 1
+      graph:
+        name: mlflow-model-container
+        implementation: MLFLOW_SERVER
+        modelUri: s3://mlflow-artifacts/0/models/champion
+        envSecretRefName: mlops-secrets
+      componentSpecs:
+        - spec:
+            containers:
+              - name: mlflow-model-container
+                resources:
+                  requests:
+                    cpu: 100m
+                    memory: 256Mi
+                  limits:
+                    cpu: 500m
+                    memory: 1Gi

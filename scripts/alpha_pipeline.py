@@ -18,7 +18,7 @@ import numpy as np
 from typing import Dict, List, Tuple, Optional
 from pathlib import Path
 
-sys.path.insert(0, 'packages/quant/src')
+sys.path.insert(0, 'src')
 
 from omega.quant.factory.discovery_engine import DiscoveryEngine
 from omega.quant.alpha_discovery import AlphaJudge

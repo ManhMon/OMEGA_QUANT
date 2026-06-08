@@ -13,8 +13,33 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from src.pipeline.alpha_discovery_pipeline import run_alpha_discovery_pipeline
-from src.features.pit_guard import verify_no_lookahead, enforce_t_minus_1_lag
+from omega.quant.pit_guard import verify_no_lookahead, enforce_t_minus_1_lag
+from omega.quant.alpha_discovery import build_alpha_signals
+
+def run_alpha_discovery_pipeline(price_df: pd.DataFrame) -> pd.DataFrame:
+    required = {"timestamp", "close"}
+    missing = required.difference(price_df.columns)
+    if missing:
+        raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+    df = price_df.copy()
+    df = df.sort_values("timestamp", kind="mergesort").reset_index(drop=True)
+
+    verify_no_lookahead(df, time_col="timestamp")
+
+    features = build_alpha_signals(df)
+
+    ordered_cols = [
+        "timestamp",
+        "close",
+        "alpha_rsi",
+        "alpha_macd",
+        "alpha_macd_signal",
+        "alpha_macd_hist",
+    ]
+    features = features.loc[:, ordered_cols]
+
+    return features
 
 
 @pytest.fixture

@@ -1,0 +1,12 @@
+You are Role 14 (Data Scientist) + Role 6 (System Architect) on L2 OpenCode Platform for OMEGA_QUANT.
+
+TASK:
+Suggest specific point-in-time (PIT) features, mathematical formulas, and rationales for the Vietnam stock market (HOSE, HNX, UPCoM) under two groups:
+1. News and Sentiment Group (Nhóm tin tức, tâm lý): Including NLP/ViBERT-based sentiment scores (daily rolled, sentiment decay) and price-volume proxies for retail/institutional sentiment (ATC volume ratio, morning gap, volume trend shocks).
+2. Fundamental Metrics Group (Nhóm chỉ số cơ bản doanh nghiệp): PIT-safe financial ratio features (P/E, P/B, EV/EBITDA, ROE, Debt/Equity, Earnings growth) that only update on the publication date (available_at/as_of mapping) to prevent look-ahead bias, plus market-to-fundamental drift features.
+
+REQUIREMENTS:
+- All features must be point-in-time (PIT) safe: using data up to t-1 only, no look-ahead.
+- Provide concrete mathematical formulas for each feature.
+- Explain why it is important or specific to the Vietnamese stock market (e.g. retail dominance, corporate reporting lags).
+- Output your response as a clean markdown table.

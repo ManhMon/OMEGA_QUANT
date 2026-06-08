@@ -1,9 +1,10 @@
 """Run Alpha Self-Evolution Pipeline demo."""
 import sys
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\quant\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\core\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\infra\src')
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 import numpy as np
 import pandas as pd

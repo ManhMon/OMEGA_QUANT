@@ -1,0 +1,68 @@
+{
+  "run_date": "2026-06-07T00:55:54.293709",
+  "regimes_run": [
+    "uptrend",
+    "downtrend",
+    "sideways",
+    "covid_crash",
+    "bull_20_21",
+    "bear_22",
+    "recovery_23",
+    "sideways_24_26",
+    "bull_17_18",
+    "bear_18_19"
+  ],
+  "results": {
+    "uptrend": [],
+    "downtrend": [],
+    "sideways": [],
+    "covid_crash": [],
+    "bull_20_21": [
+      {
+        "alpha_id": "gp_alpha_20260607_000",
+        "formula": "sigmoid(vn_volume_shock_reversal)",
+        "ic": 0.052564,
+        "sharpe": 0.207185,
+        "fitness": 0.073771,
+        "horizon": 5,
+        "train_end_date": "2026-06-07 00:00:00",
+        "promoted_at": "2026-06-07T00:38:07.105536"
+      },
+      {
+        "alpha_id": "gp_alpha_20260607_001",
+        "formula": "sigmoid(log(neg(vn_liquidity_provision_ratio_10)))",
+        "ic": 0.057995,
+        "sharpe": 0.180855,
+        "fitness": 0.070357,
+        "horizon": 5,
+        "train_end_date": "2026-06-07 00:00:00",
+        "promoted_at": "2026-06-07T00:38:07.113346"
+      },
+      {
+        "alpha_id": "gp_alpha_20260607_003",
+        "formula": "(vn_volume_shock_reversal decay_linear 10)",
+        "ic": 0.05015,
+        "sharpe": 0.160648,
+        "fitness": 0.055078,
+        "horizon": 5,
+        "train_end_date": "2026-06-07 00:00:00",
+        "promoted_at": "2026-06-07T00:38:07.123435"
+      },
+      {
+        "alpha_id": "gp_alpha_20260607_004",
+        "formula": "sigmoid((vol_ratio decay_linear 20))",
+        "ic": 0.06601,
+        "sharpe": 0.203132,
+        "fitness": 0.045551,
+        "horizon": 5,
+        "train_end_date": "2026-06-07 00:00:00",
+        "promoted_at": "2026-06-07T00:38:07.129371"
+      }
+    ],
+    "bear_22": [],
+    "recovery_23": [],
+    "sideways_24_26": [],
+    "bull_17_18": [],
+    "bear_18_19": []
+  }
+}

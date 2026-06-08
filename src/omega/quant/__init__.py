@@ -159,3 +159,594 @@ except ImportError as e:
     import logging
     logging.warning("Failed to import pipeline_v2: %s", e)
 
+
+try:
+    from . import _portfolio_legacy
+except ImportError:
+    pass
+
+try:
+    from . import ab_tester
+except ImportError:
+    pass
+
+try:
+    from . import adaptive_portfolio_sizing
+except ImportError:
+    pass
+
+try:
+    from . import advanced_features
+except ImportError:
+    pass
+
+try:
+    from . import alpha_decay
+except ImportError:
+    pass
+
+try:
+    from . import alpha_discovery
+except ImportError:
+    pass
+
+try:
+    from . import alpha_discovery_integration
+except ImportError:
+    pass
+
+try:
+    from . import alpha_ensemble_xgboost
+except ImportError:
+    pass
+
+try:
+    from . import alpha_factory_legacy
+except ImportError:
+    pass
+
+try:
+    from . import alpha_factory_optimized
+except ImportError:
+    pass
+
+try:
+    from . import alpha_preprocessing
+except ImportError:
+    pass
+
+try:
+    from . import alpha_primitives
+except ImportError:
+    pass
+
+try:
+    from . import alpha_sanitizer
+except ImportError:
+    pass
+
+try:
+    from . import atomic_snapshot_manager
+except ImportError:
+    pass
+
+try:
+    from . import attribution
+except ImportError:
+    pass
+
+try:
+    from . import autotune_optimizer
+except ImportError:
+    pass
+
+try:
+    from . import backtest_engine
+except ImportError:
+    pass
+
+try:
+    from . import constraint_solver
+except ImportError:
+    pass
+
+try:
+    from . import continuous_learning
+except ImportError:
+    pass
+
+try:
+    from . import core_alphas
+except ImportError:
+    pass
+
+try:
+    from . import corporate_action
+except ImportError:
+    pass
+
+try:
+    from . import covariance_estimator
+except ImportError:
+    pass
+
+try:
+    from . import cv_splitter
+except ImportError:
+    pass
+
+try:
+    from . import dashboard
+except ImportError:
+    pass
+
+try:
+    from . import data_module
+except ImportError:
+    pass
+
+try:
+    from . import data_sanitizer
+except ImportError:
+    pass
+
+try:
+    from . import data_source_config
+except ImportError:
+    pass
+
+try:
+    from . import data_validator
+except ImportError:
+    pass
+
+try:
+    from . import decorrelation_engine
+except ImportError:
+    pass
+
+try:
+    from . import deployment
+except ImportError:
+    pass
+
+try:
+    from . import drift_detector
+except ImportError:
+    pass
+
+try:
+    from . import dynamic_universe
+except ImportError:
+    pass
+
+try:
+    from . import ensemble_builder
+except ImportError:
+    pass
+
+try:
+    from . import evolution_engine
+except ImportError:
+    pass
+
+try:
+    from . import execution_sim
+except ImportError:
+    pass
+
+try:
+    from . import expression_generator
+except ImportError:
+    pass
+
+try:
+    from . import factor_exposure
+except ImportError:
+    pass
+
+try:
+    from . import factor_neutralization
+except ImportError:
+    pass
+
+try:
+    from . import feature_discovery
+except ImportError:
+    pass
+
+try:
+    from . import feature_engineering
+except ImportError:
+    pass
+
+try:
+    from . import feature_module
+except ImportError:
+    pass
+
+try:
+    from . import feature_pruning
+except ImportError:
+    pass
+
+try:
+    from . import high_alpha_filter
+except ImportError:
+    pass
+
+try:
+    from . import hyperopt_layer
+except ImportError:
+    pass
+
+try:
+    from . import label_engine
+except ImportError:
+    pass
+
+try:
+    from . import lightweight_neutralization
+except ImportError:
+    pass
+
+try:
+    from . import live_execution_bridge
+except ImportError:
+    pass
+
+try:
+    from . import live_ingestor
+except ImportError:
+    pass
+
+try:
+    from . import live_trading_pipeline
+except ImportError:
+    pass
+
+try:
+    from . import macro_alphas
+except ImportError:
+    pass
+
+try:
+    from . import macro_context
+except ImportError:
+    pass
+
+try:
+    from . import market_microstructure
+except ImportError:
+    pass
+
+try:
+    from . import market_regime
+except ImportError:
+    pass
+
+try:
+    from . import markowitz_optimizer
+except ImportError:
+    pass
+
+try:
+    from . import math_utils
+except ImportError:
+    pass
+
+try:
+    from . import microstructure_alphas
+except ImportError:
+    pass
+
+try:
+    from . import midas_filters
+except ImportError:
+    pass
+
+try:
+    from . import ml_engine
+except ImportError:
+    pass
+
+try:
+    from . import ml_gate_validator
+except ImportError:
+    pass
+
+try:
+    from . import multi_horizon_labels
+except ImportError:
+    pass
+
+try:
+    from . import multi_symbol_router
+except ImportError:
+    pass
+
+try:
+    from . import neutralization
+except ImportError:
+    pass
+
+try:
+    from . import neutralization_engine
+except ImportError:
+    pass
+
+try:
+    from . import observability
+except ImportError:
+    pass
+
+try:
+    from . import paper_trading_engine
+except ImportError:
+    pass
+
+try:
+    from . import parallel_backtest
+except ImportError:
+    pass
+
+try:
+    from . import performance_tracker
+except ImportError:
+    pass
+
+try:
+    from . import phase34_microstructure_alphas
+except ImportError:
+    pass
+
+try:
+    from . import phase35_walk_forward
+except ImportError:
+    pass
+
+try:
+    from . import phase6_evolution_engine
+except ImportError:
+    pass
+
+try:
+    from . import pit_guard
+except ImportError:
+    pass
+
+try:
+    from . import pit_guardian
+except ImportError:
+    pass
+
+try:
+    from . import pnl_monitor
+except ImportError:
+    pass
+
+try:
+    from . import portfolio_optimizer
+except ImportError:
+    pass
+
+try:
+    from . import position_sizer
+except ImportError:
+    pass
+
+try:
+    from . import promoted_alphas
+except ImportError:
+    pass
+
+try:
+    from . import promotion
+except ImportError:
+    pass
+
+try:
+    from . import realtime_risk_guard
+except ImportError:
+    pass
+
+try:
+    from . import rebalancer
+except ImportError:
+    pass
+
+try:
+    from . import regime_aware_walk_forward
+except ImportError:
+    pass
+
+try:
+    from . import regime_detector_hmm
+except ImportError:
+    pass
+
+try:
+    from . import regime_switcher
+except ImportError:
+    pass
+
+try:
+    from . import registry
+except ImportError:
+    pass
+
+try:
+    from . import sanitization
+except ImportError:
+    pass
+
+try:
+    from . import sector_classifier
+except ImportError:
+    pass
+
+try:
+    from . import sentiment_alpha
+except ImportError:
+    pass
+
+try:
+    from . import signal_blender
+except ImportError:
+    pass
+
+try:
+    from . import signal_sanitizer
+except ImportError:
+    pass
+
+try:
+    from . import smart_money_features
+except ImportError:
+    pass
+
+try:
+    from . import smart_money_microstructure
+except ImportError:
+    pass
+
+try:
+    from . import strategy_engine
+except ImportError:
+    pass
+
+try:
+    from . import stress_testing
+except ImportError:
+    pass
+
+try:
+    from . import structure_features
+except ImportError:
+    pass
+
+try:
+    from . import target_module
+except ImportError:
+    pass
+
+try:
+    from . import thompson_sampling
+except ImportError:
+    pass
+
+try:
+    from . import trading_engine
+except ImportError:
+    pass
+
+try:
+    from . import transaction_cost
+except ImportError:
+    pass
+
+try:
+    from . import transaction_cost_optimizer
+except ImportError:
+    pass
+
+try:
+    from . import ultimate_alpha_arsenal
+except ImportError:
+    pass
+
+try:
+    from . import vci_integration
+except ImportError:
+    pass
+
+try:
+    from . import vn_alphas
+except ImportError:
+    pass
+
+try:
+    from . import vn_market_flow_datasource
+except ImportError:
+    pass
+
+try:
+    from . import vn_trading_calendar
+except ImportError:
+    pass
+
+try:
+    from . import vnstock_datasource
+except ImportError:
+    pass
+
+try:
+    from . import vnstock_vci_datasource
+except ImportError:
+    pass
+
+try:
+    from . import vnstock_vci_ingest
+except ImportError:
+    pass
+
+try:
+    from . import voting_stacking_ensemble
+except ImportError:
+    pass
+
+try:
+    from . import walk_forward_alpha_ensemble_integration
+except ImportError:
+    pass
+
+try:
+    from . import walk_forward_engine
+except ImportError:
+    pass
+
+try:
+    from . import walk_forward_ensemble
+except ImportError:
+    pass
+
+# Auto-wired submodules and subpackages
+try:
+    from . import pipeline
+except ImportError:
+    pass
+
+try:
+    from . import factory
+except ImportError:
+    pass
+
+try:
+    from . import features
+except ImportError:
+    pass
+
+try:
+    from . import models
+except ImportError:
+    pass
+
+try:
+    from . import risk
+except ImportError:
+    pass
+
+try:
+    from . import universe
+except ImportError:
+    pass
+
+try:
+    from . import utils
+except ImportError:
+    pass
+
+try:
+    from . import validation
+except ImportError:
+    pass

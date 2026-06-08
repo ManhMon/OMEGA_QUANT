@@ -28,3 +28,14 @@ __all__ = [
     "AdaptiveConfig",
     "AdaptivePortfolioSizingEngine",
 ]
+
+# Auto-wired submodules and subpackages
+try:
+    from . import benchmark_provider
+except ImportError:
+    pass
+
+try:
+    from . import engine
+except ImportError:
+    pass

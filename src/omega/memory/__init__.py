@@ -25,3 +25,13 @@ __all__ = [
     "Compression",
     "CompressionResult",
 ]
+
+try:
+    from . import context_assembler
+except ImportError:
+    pass
+
+try:
+    from . import memory_module
+except ImportError:
+    pass

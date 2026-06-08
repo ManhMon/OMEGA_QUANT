@@ -14,7 +14,11 @@ import numpy as np
 
 # Add packages to path
 repo_root = Path(__file__).parent.parent
-sys.path.insert(0, str(repo_root / "packages" / "quant" / "src"))
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 from omega.quant.evolution.continuous_learning import ContinuousLearningEngine, ContinuousLearningConfig
 from omega.quant.evolution.drift_detector import DriftDetectorEnsemble, DriftDetectorConfig

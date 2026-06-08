@@ -15,7 +15,11 @@ from datetime import datetime
 from scipy.stats import spearmanr
 
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "packages" / "quant" / "src"))
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 from omega.quant.evolution.genetic_engine import GeneticEngine, GPConfig
 

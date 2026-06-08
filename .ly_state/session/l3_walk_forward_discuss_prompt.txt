@@ -1,0 +1,14 @@
+[L3-Audit:Role21-CodeReviewer] Review only. Do not implement.
+Scope: Walk-forward validation (Train/Validate/Test) split design and expanded feature base proposed for the weekly GP evolution engine.
+
+Please review the proposed design in implementation_plan.md:
+1. Feature additions: `RSI_14`, `RSI_5`, `ma_ratio_5_20`, and `vol_std_10` to FEATURE_COLUMNS.
+2. Split logic: 3-way time-ordered split (60% Train, 20% Validate, 20% Test).
+3. Selection process: Evolve on Train, cull on Validate, promote on Test (OOS) using standard thresholds.
+
+Questions for L3 Auditor:
+- Is this 3-way time-split robust against look-ahead bias and overfitting?
+- Are the new feature formulas suitable for time-series GP primitives?
+- Does this design comply with OMEGA L4 SOD standards?
+
+Please provide a detailed L3 verdict and review comments.

@@ -10,7 +10,7 @@ import argparse
 from datetime import datetime
 
 # Add paths
-sys.path.insert(0, str(Path(__file__).parent.parent / "packages" / "quant" / "src"))
+sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).parent))
 
 from phase35_data_loader import Phase35DataLoader
@@ -33,6 +33,69 @@ def main():
         action="store_true",
         help="Disable Stage 4 optional XGBoost signal path",
     )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default="2015-01-05",
+        help="Start date for data loading",
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default="2026-05-14",
+        help="End date for data loading",
+    )
+    parser.add_argument(
+        "--initial-capital",
+        type=float,
+        default=1_000_000_000.0,
+        help="Initial capital in VND",
+    )
+    parser.add_argument(
+        "--strategy",
+        type=str,
+        default="multi_factor",
+        help="Trading strategy",
+    )
+    parser.add_argument(
+        "--slippage-bps",
+        type=float,
+        default=10.0,
+        help="Slippage in basis points",
+    )
+    parser.add_argument(
+        "--commission-bps",
+        type=float,
+        default=20.0,
+        help="Commission in basis points",
+    )
+    parser.add_argument(
+        "--quick-mode",
+        action="store_true",
+        help="Run quickly with 1 symbol, 2 folds, 1 train year, 1 test year",
+    )
+    parser.add_argument(
+        "--drawdown-control",
+        action="store_true",
+        help="Enable active drawdown control stop-out",
+    )
+    parser.add_argument(
+        "--drawdown-threshold",
+        type=float,
+        default=0.05,
+        help="Drawdown threshold (e.g. 0.05 for 5 pct)",
+    )
+    parser.add_argument(
+        "--enable-evolved",
+        action="store_true",
+        help="Enable inline GP evolution per fold and blend evolved signal with hand-crafted alphas",
+    )
+    parser.add_argument(
+        "--evolved-blend-weight",
+        type=float,
+        default=0.5,
+        help="Weight of evolved signal in blend (0-1), remainder is hand-crafted (default: 0.5)",
+    )
     args = parser.parse_args()
     args.use_xgboost = not args.no_xgboost
 
@@ -40,20 +103,32 @@ def main():
     logger.info("Phase 3.5 Walk-Forward Backtest - Real VN Market Data")
     logger.info("=" * 80)
     
-    # Configuration
-    START_DATE = "2015-01-05"
-    END_DATE = "2026-05-14"
-    TOP_N_SYMBOLS = 30
-    N_FOLDS = 8
-    TRAIN_YEARS = 3
-    TEST_YEARS = 1
+    # Configuration translation
+    START_DATE = args.start_date
+    END_DATE = args.end_date
+    
+    if args.quick_mode:
+        TOP_N_SYMBOLS = 1
+        N_FOLDS = 2
+        TRAIN_YEARS = 1
+        TEST_YEARS = 1
+    else:
+        TOP_N_SYMBOLS = 30
+        N_FOLDS = 8
+        TRAIN_YEARS = 3
+        TEST_YEARS = 1
+        
     MIN_IC_THRESHOLD = 0.02
     TOP_N_ALPHAS = 5
     RETURN_HORIZON = 5  # T+5
-    # Stage 2 diversification parameters (Phase 2 risk & drawdown optimization)
     STAGE2_TOP_N_STOCKS = 8
     STAGE2_REBALANCE_FREQ = 7
     STAGE2_SECTOR_CAP_PCT = 0.30
+    
+    # Calculate transaction costs from slippage and commission inputs
+    tcost_bps = args.slippage_bps + args.commission_bps
+    cost_per_turnover = tcost_bps / 10000.0
+    cost_aware = tcost_bps > 0
     
     logger.info(f"Configuration:")
     logger.info(f"  Date Range: {START_DATE} to {END_DATE}")
@@ -68,6 +143,10 @@ def main():
     logger.info(f"  [Stage2] Rebalance Freq: every {STAGE2_REBALANCE_FREQ} days")
     logger.info(f"  [Stage2] Sector Cap: {STAGE2_SECTOR_CAP_PCT:.0%}")
     logger.info(f"  [Stage4] Use XGBoost: {args.use_xgboost}")
+    logger.info(f"  [Stage6.2] Cost Aware: {cost_aware} (tcost={tcost_bps} bps)")
+    logger.info(f"  [Stage6.3] Drawdown Control: {args.drawdown_control} (threshold={args.drawdown_threshold:.1%})")
+    logger.info(f"  [Evolved] Enable: {args.enable_evolved} (blend_weight={args.evolved_blend_weight:.2f})")
+    logger.info(f"  [UI Context] Initial Capital: {args.initial_capital:,.0f} VND | Strategy: {args.strategy}")
     logger.info("")
     
     # Step 1: Load and prepare data
@@ -99,7 +178,7 @@ def main():
     
     if len(splits) == 0:
         logger.error("No valid splits created. Exiting.")
-        return
+        sys.exit(1)
     
     # Step 3: Run walk-forward backtest
     logger.info("Step 3: Running walk-forward backtest...")
@@ -111,6 +190,14 @@ def main():
         rebalance_freq=STAGE2_REBALANCE_FREQ,
         sector_cap_pct=STAGE2_SECTOR_CAP_PCT,
         use_xgboost=args.use_xgboost,
+        cost_aware=cost_aware,
+        cost_per_turnover=cost_per_turnover,
+        drawdown_control=args.drawdown_control,
+        drawdown_threshold=args.drawdown_threshold,
+        strategy=args.strategy,
+        initial_capital=args.initial_capital,
+        enable_evolved=args.enable_evolved,
+        evolved_blend_weight=args.evolved_blend_weight,
     )
     
     alpha_cols = list(phase34_microstructure_alphas.PHASE34_ALPHA_COLUMNS)
@@ -147,11 +234,21 @@ def main():
             "stage2_rebalance_freq": STAGE2_REBALANCE_FREQ,
             "stage2_sector_cap_pct": STAGE2_SECTOR_CAP_PCT,
             "use_xgboost": args.use_xgboost,
+            "initial_capital": args.initial_capital,
+            "strategy": args.strategy,
+            "slippage_bps": args.slippage_bps,
+            "commission_bps": args.commission_bps,
+            "quick_mode": args.quick_mode,
+            "drawdown_control": args.drawdown_control,
+            "drawdown_threshold": args.drawdown_threshold,
+            "enable_evolved": args.enable_evolved,
+            "evolved_blend_weight": args.evolved_blend_weight,
         },
         "summary": {
             "avg_portfolio_ic": result.avg_portfolio_ic,
             "avg_portfolio_sharpe": result.avg_portfolio_sharpe,
             "avg_portfolio_max_dd": result.avg_portfolio_max_dd,
+            "avg_portfolio_pnl_vnd": getattr(result, "avg_portfolio_pnl_vnd", 0.0),
             "total_folds": result.total_folds,
         },
         "alpha_ics": result.avg_ic_by_alpha,
@@ -166,6 +263,7 @@ def main():
                 "portfolio_sharpe": m.portfolio_sharpe,
                 "portfolio_max_dd": m.portfolio_max_dd,
                 "portfolio_total_return": m.portfolio_total_return,
+                "portfolio_pnl_vnd": getattr(m, "portfolio_pnl_vnd", 0.0),
                 "alpha_ics": m.alpha_ics,
                 "n_train_samples": m.n_train_samples,
                 "n_test_samples": m.n_test_samples,

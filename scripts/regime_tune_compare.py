@@ -5,12 +5,19 @@ Config 2 (Moderate): bear=0.5, sideways=0.8, hysteresis=5 (current)
 Config 3 (Aggressive): bear=0.3, sideways=0.7, hysteresis=3
 """
 import sys, json
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\quant\src')
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 import numpy as np
 import pandas as pd
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\quant\src\omega\quant\portfolio')
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 from regime_overlay import compute_regime_exposure, apply_regime_overlay
 
 # Load CPCV results to get market returns
@@ -18,7 +25,7 @@ from regime_overlay import compute_regime_exposure, apply_regime_overlay
 # This is faster than re-running full CPCV 3 times
 
 # Load market data for regime detection
-df = pd.read_parquet(r'C:\Users\GHC\.openclaw\workspace\data\market_2015_now.parquet')
+df = pd.read_parquet(str(Path(__file__).resolve().parents[1] / 'data' / 'market_2015_now.parquet'))
 df['date'] = pd.to_datetime(df['date'])
 df = df.sort_values(['ticker', 'date'])
 df = df.dropna(subset=['close', 'volume'])

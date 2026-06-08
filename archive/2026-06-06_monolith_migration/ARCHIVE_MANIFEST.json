@@ -1,0 +1,8 @@
+{
+  "archived_at": "2026-06-06T06:33:33.395233",
+  "reason": "monolith migration - packages/ replaced by src/omega/ canonical monolith",
+  "source": "c:\\Users\\GHC\\repos\\OMEGA_QUANT\\packages",
+  "destination": "c:\\Users\\GHC\\repos\\OMEGA_QUANT\\archive\\2026-06-06_monolith_migration\\packages",
+  "file_count": 393,
+  "notes": "118 files were identical to src/omega/; 36 differed (src/omega/ version retained as canonical); 26 PKG-ONLY files already existed in src/omega/."
+}

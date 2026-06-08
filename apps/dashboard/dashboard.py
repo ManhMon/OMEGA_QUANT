@@ -272,7 +272,7 @@ class ProductionMonitor:
         self.state = SystemState.RUNNING
         self.last_alert_time: Optional[datetime] = None
         self.alert_history: List[Dict[str, Any]] = []
-        self.export_path = r"C:\Users\GHC\.openclaw\workspace\OMEGA_QUANT\OMEGA_QUANT\.ly_state\session\risk_status.json"
+        self.export_path = str(Path(__file__).resolve().parents[2] / ".ly_state" / "session" / "risk_status.json")
 
     def evaluate_circuit_breakers(self, current_time: datetime) -> SystemState:
         """

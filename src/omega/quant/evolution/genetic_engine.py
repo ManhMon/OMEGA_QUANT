@@ -82,10 +82,11 @@ def _ts_rank(x: np.ndarray, window: int = 10) -> np.ndarray:
     """Time-series rank within rolling window."""
     if len(x) < window:
         return np.zeros_like(x)
-    return pd.Series(x).rolling(window).apply(
-        lambda w: pd.Series(w).rank(pct=True).iloc[-1] if len(w) == window else np.nan,
-        raw=True
-    ).fillna(0.0).values
+    # Fast vectorized rolling rank using sliding window view
+    windows = np.lib.stride_tricks.sliding_window_view(x, window)
+    current_elements = windows[:, -1][:, np.newaxis]
+    ranks = np.sum(windows <= current_elements, axis=1) / window
+    return np.concatenate([np.full(window - 1, 0.5), ranks])
 
 
 def _ts_std(x: np.ndarray, window: int = 10) -> np.ndarray:
@@ -107,10 +108,9 @@ def _decay_linear(x: np.ndarray, window: int = 10) -> np.ndarray:
     if len(x) < window:
         return np.zeros_like(x)
     weights = np.arange(1, window + 1)
-    return pd.Series(x).rolling(window).apply(
-        lambda w: np.dot(w, weights) / weights.sum() if len(w) == window else np.nan,
-        raw=True
-    ).fillna(0.0).values
+    weights = weights / weights.sum()
+    res = np.convolve(x, weights[::-1], mode='valid')
+    return np.concatenate([np.zeros(window - 1), res])
 
 
 # =============================================================================
@@ -216,6 +216,7 @@ class GPConfig:
     # n_jobs: number of parallel threads for population evaluation.
     # -1 = use all CPUs, 1 = sequential fallback.
     n_jobs: int = -1
+    random_seed: Optional[int] = None
 
 
 # =============================================================================
@@ -393,7 +394,11 @@ class GPIndividual:
             if node.value in features:
                 return features[node.value].copy()
             else:
-                return np.zeros(len(next(iter(features.values()))))
+                try:
+                    val = float(node.value)
+                    return np.full(len(next(iter(features.values()))), val)
+                except ValueError:
+                    return np.zeros(len(next(iter(features.values()))))
         
         if len(node.children) == 1:
             child_val = self._execute_tree(node.children[0], features)
@@ -545,22 +550,39 @@ class GeneticEngine:
         features: Dict[str, np.ndarray],
         target: np.ndarray
     ) -> List[GPIndividual]:
-        """Run genetic programming evolution."""
+        if self.config.random_seed is not None:
+            np.random.seed(self.config.random_seed)
+            random.seed(self.config.random_seed)
+            
         self.feature_names = list(features.keys())
         
         logger.info(f"Starting GP evolution: pop={self.config.population_size}, gen={self.config.generations}")
         self.initialize_population()
         
         for generation in range(self.config.generations):
+            # Stochastic GP: Subsample training data to 100,000 rows per generation to speed up evaluations
+            if len(target) > 100000:
+                if self.config.random_seed is not None:
+                    # Deterministically vary indices per generation using seeded generator
+                    rng = np.random.RandomState(self.config.random_seed + generation)
+                    sample_idx = rng.choice(len(target), size=100000, replace=False)
+                else:
+                    sample_idx = np.random.choice(len(target), size=100000, replace=False)
+                gen_features = {k: v[sample_idx] for k, v in features.items()}
+                gen_target = target[sample_idx]
+            else:
+                gen_features = features
+                gen_target = target
+
             if self.config.n_jobs == 1:
                 for individual in self.population:
-                    individual.evaluate(features, target, self.hall_of_fame, self.config)
+                    individual.evaluate(gen_features, gen_target, self.hall_of_fame, self.config)
             else:
                 self.population = list(Parallel(
                     n_jobs=self.config.n_jobs, prefer='threads', batch_size='auto'
                 )(
                     delayed(_evaluate_individual)(
-                        ind, features, target, self.hall_of_fame, self.config
+                        ind, gen_features, gen_target, self.hall_of_fame, self.config
                     )
                     for ind in self.population
                 ))

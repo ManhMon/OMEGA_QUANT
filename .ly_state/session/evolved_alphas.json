@@ -1,0 +1,12 @@
+{
+  "run_date": "2026-06-07T10:30:43.190151",
+  "total_promoted": 0,
+  "target_horizon": 5,
+  "train_ratio": 0.7,
+  "pit_safety": {
+    "t1_lag": true,
+    "chronological_split": true,
+    "no_lookahead": true
+  },
+  "alphas": []
+}

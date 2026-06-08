@@ -30,3 +30,64 @@ __all__ = [
     "RLPortfolioAgent", "RLConfig",
     "TransactionCostAnalyzer", "VNSlippageModel", "TransactionCostAnalysis",
 ]
+
+# Auto-wired submodules and subpackages
+try:
+    from . import alpha_ensemble
+except ImportError:
+    pass
+
+try:
+    from . import black_litterman
+except ImportError:
+    pass
+
+try:
+    from . import dl_models
+except ImportError:
+    pass
+
+try:
+    from . import ml_hyperopt
+except ImportError:
+    pass
+
+try:
+    from . import ml_models
+except ImportError:
+    pass
+
+try:
+    from . import model_trainer
+except ImportError:
+    pass
+
+try:
+    from . import multi_model_ensemble
+except ImportError:
+    pass
+
+try:
+    from . import oos_walk_forward_validator
+except ImportError:
+    pass
+
+try:
+    from . import purged_cv
+except ImportError:
+    pass
+
+try:
+    from . import regime_conditional
+except ImportError:
+    pass
+
+try:
+    from . import rl_agent
+except ImportError:
+    pass
+
+try:
+    from . import transaction_cost_analyzer
+except ImportError:
+    pass

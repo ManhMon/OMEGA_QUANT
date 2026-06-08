@@ -44,7 +44,21 @@ logger = logging.getLogger("weekly_evolution")
 # --- Constants ---
 MARKET_DATA_PATH = PROJECT_ROOT / "data" / "market_2015_now.parquet"
 OUTPUT_PATH = PROJECT_ROOT / ".ly_state" / "session" / "evolved_alphas.json"
+
+REGIME_MAP = {
+    "uptrend": ("2020-01-01", "2022-04-30"),
+    "downtrend": ("2022-05-01", "2023-04-30"),
+    "sideways": ("2023-05-01", "2026-06-01"),
+    "covid_crash": ("2020-01-01", "2020-03-31"),
+    "bull_20_21": ("2020-04-01", "2021-12-31"),
+    "bear_22": ("2022-01-01", "2022-11-15"),
+    "recovery_23": ("2022-11-16", "2023-12-31"),
+    "sideways_24_26": ("2024-01-01", "2026-06-01"),
+    "bull_17_18": ("2017-01-01", "2018-04-09"),
+    "bear_18_19": ("2018-04-10", "2019-12-31"),
+}
 FEATURE_COLUMNS = [
+    # 1. OHLCV gốc + Technical (đã có - 39)
     "open", "high", "low", "close", "volume",
     "returns_1d", "returns_5d", "returns_10d", "returns_3d", "vol_ratio", "vol_trend_5_20",
     "hl_range", "oc_range", "rsi_14", "rsi_5", "rsi_21", "ma_ratio_5_20",
@@ -54,19 +68,67 @@ FEATURE_COLUMNS = [
     "cci_14", "obv_norm", "force_index_13", "ma_ratio_10_50",
     "close_to_ema_10", "close_to_ema_20",
     "vn_vol_shock_5d", "vn_ceil_limit_proximity", "vn_floor_limit_proximity",
-    "vn_hit_ceil", "vn_hit_floor"
+    "vn_hit_ceil", "vn_hit_floor",
+    
+    # 2. Cấu trúc TT & Thanh khoản (5)
+    "vn_atc_vol_ratio", "vn_liquidity_concentration", "vn_price_continuity", "vn_intraday_reversal", "vn_gap_fill_ratio",
+    
+    # 3. Thanh khoản sâu (6)
+    "vn_amihud_liq_reversal", "vn_volume_shock_reversal", "vn_turnover_exhaustion", "vn_trapped_inventory_2d", "vn_cash_release_t3", "vn_freeze_ratio_20",
+    
+    # 4. Động lượng nâng cao (6)
+    "vn_sector_rel_momentum_20", "vn_sector_rel_momentum_60", "vn_mom_5_20", "vn_mom_20_60", "vn_mom_60_120", "vn_acceleration_index",
+    
+    # 5. Dòng tiền lớn / Whale (6)
+    "vn_smart_money_proxy", "vn_retail_panic_proxy", "vn_accumulation_dist", "vn_volume_weighted_return", "vn_obv_change_20", "vn_whale_net_flow",
+    
+    # 6. Chỉ số kỹ thuật cơ bản (12)
+    "vn_rsi_7", "vn_rsi_28", "vn_rsi_crossover_5_20", "vn_rsi_crossover_20_120", "vn_rsi_crossover_60_120", "vn_bb_dist_10", "vn_bb_dist_20", "vn_bb_dist_40", "vn_bb_dist_60", "vn_bb_dist_120", "vn_macd_crossover", "vn_bollinger_snapback",
+    
+    # 7. Vi mô (Microstructure) (8)
+    "vn_kyle_lambda_20", "vn_liquidity_provision_ratio_10", "vn_tick_signed_volume_imbalance_5", "vn_volume_clock_acceleration_10", "vn_price_impact", "vn_atr_14_norm", "vn_yang_zhang_vol_20", "vn_wick_ratio",
+    
+    # 8. Vĩ mô (Macro Regime) (8)
+    "vn_market_correlation", "vn_pair_correlation", "vn_stock_sector_corr", "vn_market_regime", "vn_leverage_proxy", "vn_squeeze_signal", "vn_expiry_effect", "vn_sector_neutral_residual_reversion",
+    
+    # 9. Tin tức & Tâm lý (10)
+    "vn_sentiment_vibert_1d", "vn_sentiment_vibert_5d_decay", "vn_sentiment_vibert_20d_ma", "vn_news_volume_shock", "vn_atc_vol_ratio_v2", "vn_morning_gap_v2", "vn_vol_trend_shock_v2", "vn_intraday_vol_morning", "vn_foreign_net_flow_5d", "vn_retail_sentiment_proxy",
+    
+    # 10. Cơ bản doanh nghiệp (14)
+    "vn_pe_ratio_pit", "vn_pb_ratio_pit", "vn_ev_ebitda_pit", "vn_roe_pit", "vn_debt_equity_pit", "vn_roa_pit", "vn_earnings_growth_yoy", "vn_earnings_growth_qoq", "vn_ps_ratio_pit", "vn_dividend_yield_pit", "vn_asset_turnover_pit", "vn_current_ratio_pit", "vn_accruals_quality", "vn_market_fundamental_drift"
 ]
 TRAIN_RATIO = 0.70
 TARGET_HORIZON = 5  # T+5 forward returns
 
 
-def load_market_data() -> pd.DataFrame:
+def load_market_data(regime: str = "all", start_date: str = None, end_date: str = None) -> pd.DataFrame:
     """Load market data from parquet. Validates existence and minimum rows."""
     if not MARKET_DATA_PATH.exists():
         logger.error(f"Market data not found: {MARKET_DATA_PATH}")
         sys.exit(1)
 
     df = pd.read_parquet(MARKET_DATA_PATH)
+    
+    # Pre-filter dates to save memory under 16GB RAM limit
+    if "date" in df.columns:
+        df["date"] = pd.to_datetime(df["date"])
+        s_date = None
+        e_date = None
+        if start_date or end_date:
+            s_date = pd.to_datetime(start_date) if start_date else df["date"].min()
+            e_date = pd.to_datetime(end_date) if end_date else df["date"].max()
+        elif regime in REGIME_MAP:
+            s_str, e_str = REGIME_MAP[regime]
+            s_date = pd.to_datetime(s_str)
+            e_date = pd.to_datetime(e_str)
+        
+        if s_date is not None:
+            # 370-day warmup buffer for rolling calculation (supporting 252 business day lookbacks)
+            warmup_start = s_date - pd.Timedelta(days=370)
+            df = df[(df["date"] >= warmup_start) & (df["date"] <= e_date)].copy()
+            import gc
+            gc.collect()
+
     logger.info(f"Loaded market data: {len(df)} rows, columns: {list(df.columns)}")
 
     if len(df) < 1000:
@@ -245,6 +307,14 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
         
     result = pd.concat(temp_dfs).sort_values(["ticker", "date"]).reset_index(drop=True)
 
+    # Compute 75 additional VN alphas in batch and join to result
+    from omega.quant.vn_alphas import compute_all_vn_alphas
+    vn_features_df = compute_all_vn_alphas(result)
+    new_cols = [c for c in vn_features_df.columns if c not in ["ticker", "date"]]
+    # Align by ticker and date to prevent feature/label corruption due to sorting mismatch
+    result = result.drop(columns=[c for c in new_cols if c in result.columns])
+    result = result.merge(vn_features_df[["ticker", "date"] + new_cols], on=["ticker", "date"], how="left")
+
     # PIT SAFETY: Apply T-1 lag to ALL features strictly per ticker (no shift bleed across symbols)
     for col in FEATURE_COLUMNS:
         if col in result.columns:
@@ -259,31 +329,71 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def walk_forward_split(df: pd.DataFrame, horizon: int = 5):
-    """Sequential 3-way split: 60% Train, 20% Validate, 20% Test (OOS), with boundary purging."""
-    n = len(df)
-    idx_val = int(n * 0.6)
-    idx_test = int(n * 0.8)
+def walk_forward_split(df: pd.DataFrame, horizon: int = 5, regime: str = "all", start_date: str = None, end_date: str = None):
+    """
+    Chronological date-based split (sliding timeline) to prevent cross-ticker leakage.
+    """
+    df = df.copy()
+    df["date"] = pd.to_datetime(df["date"])
     
-    # Train split (purge horizon boundary)
-    train = df.iloc[:idx_val - horizon].copy()
-    # Validate split (purge horizon boundary)
-    validate = df.iloc[idx_val:idx_test - horizon].copy()
-    # Test split
-    test = df.iloc[idx_test:].copy()
+    if regime == "custom" or (start_date is not None or end_date is not None):
+        s_date = pd.to_datetime(start_date) if start_date else df["date"].min()
+        e_date = pd.to_datetime(end_date) if end_date else df["date"].max()
+        phase_df = df[(df["date"] >= s_date) & (df["date"] <= e_date)].copy()
+        regime_label = f"custom ({s_date.strftime('%Y-%m-%d')} to {e_date.strftime('%Y-%m-%d')})"
+    elif regime in REGIME_MAP:
+        s_str, e_str = REGIME_MAP[regime]
+        phase_df = df[(df["date"] >= s_str) & (df["date"] <= e_str)].copy()
+        regime_label = regime
+    else:
+        phase_df = df.copy()
+        regime_label = "all"
+        
+    unique_dates = sorted(phase_df["date"].unique())
+    n_dates = len(unique_dates)
     
-    logger.info(f"Walk-forward split: train={len(train)}, validate={len(validate)}, test={len(test)}")
+    if n_dates < 20:
+        logger.warning(f"Too few dates for regime '{regime_label}' ({n_dates} dates), falling back to full dataset.")
+        phase_df = df.copy()
+        unique_dates = sorted(phase_df["date"].unique())
+        n_dates = len(unique_dates)
+        regime_label = "all (fallback)"
+        
+    val_idx = int(n_dates * 0.6)
+    test_idx = int(n_dates * 0.8)
+    
+    val_date_threshold = unique_dates[val_idx]
+    test_date_threshold = unique_dates[test_idx]
+    
+    # Filter subsets chronologically
+    train = phase_df[phase_df["date"] < val_date_threshold].copy()
+    validate = phase_df[(phase_df["date"] >= val_date_threshold) & (phase_df["date"] < test_date_threshold)].copy()
+    test = phase_df[phase_df["date"] >= test_date_threshold].copy()
+    
+    # Apply chronological boundary purging to prevent leakage across splits
+    train_dates_to_keep = unique_dates[:val_idx - horizon]
+    train = train[train["date"].isin(train_dates_to_keep)].copy()
+    
+    val_dates_to_keep = unique_dates[val_idx:test_idx - horizon]
+    validate = validate[validate["date"].isin(val_dates_to_keep)].copy()
+    
+    logger.info(
+        f"Sliding walk-forward split [Regime: {regime_label}]: "
+        f"train={len(train)} rows (up to {train['date'].max().date() if len(train) > 0 else 'N/A'}), "
+        f"validate={len(validate)} rows (up to {validate['date'].max().date() if len(validate) > 0 else 'N/A'}), "
+        f"test={len(test)} rows (up to {test['date'].max().date() if len(test) > 0 else 'N/A'})"
+    )
     return train, validate, test
 
 
-def run_evolution(train_df: pd.DataFrame) -> list:
+def run_evolution(train_df: pd.DataFrame, generations: int = 30, population_size: int = 100) -> list:
     """Run GP evolution on training data."""
     features = {col: train_df[col].values for col in FEATURE_COLUMNS}
     target = train_df["target"].values
 
     config = GPConfig(
-        population_size=100,
-        generations=30,
+        population_size=population_size,
+        generations=generations,
         max_depth=5,
         tournament_size=5,
         crossover_rate=0.7,
@@ -387,20 +497,69 @@ def save_results(promoted_alphas: list) -> None:
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Weekly GP Alpha Discovery")
+    parser.add_argument(
+        "--regime",
+        type=str,
+        default="all",
+        choices=[
+            "all", "uptrend", "downtrend", "sideways",
+            "covid_crash", "bull_20_21", "bear_22", "recovery_23", "sideways_24_26",
+            "bull_17_18", "bear_18_19", "custom"
+        ],
+        help="Select specific market regime for evolution"
+    )
+    parser.add_argument(
+        "--start-date",
+        type=str,
+        default=None,
+        help="Start date for custom regime (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--end-date",
+        type=str,
+        default=None,
+        help="End date for custom regime (YYYY-MM-DD)"
+    )
+    parser.add_argument(
+        "--generations",
+        type=int,
+        default=30,
+        help="Number of GP generations (default: 30)"
+    )
+    parser.add_argument(
+        "--population-size",
+        type=int,
+        default=100,
+        help="GP population size (default: 100)"
+    )
+    args = parser.parse_args()
+
     logger.info("=== WEEKLY GP ALPHA EVOLUTION START ===")
 
     # Step 1: Load data
-    df = load_market_data()
+    df = load_market_data(regime=args.regime, start_date=args.start_date, end_date=args.end_date)
 
     # Step 2: Prepare features with T-1 lag
     df_prepared = prepare_features(df)
     logger.info(f"Prepared data: {len(df_prepared)} rows after lag/dropna")
 
     # Step 3: Walk-forward split (3-way)
-    train_df, val_df, test_df = walk_forward_split(df_prepared, horizon=TARGET_HORIZON)
+    train_df, val_df, test_df = walk_forward_split(
+        df_prepared, 
+        horizon=TARGET_HORIZON, 
+        regime=args.regime,
+        start_date=args.start_date,
+        end_date=args.end_date
+    )
 
     # Step 4: Run GP evolution on training set
-    hall_of_fame = run_evolution(train_df)
+    hall_of_fame = run_evolution(
+        train_df,
+        generations=args.generations,
+        population_size=args.population_size
+    )
 
     if not hall_of_fame:
         logger.warning("No alphas discovered. Exiting.")

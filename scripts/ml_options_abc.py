@@ -8,11 +8,11 @@ Author: Backend Engineer (Role 09)
 Date: 2026-05-31
 """
 import sys
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\quant\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\core\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\infra\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\data\src')
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 import numpy as np
 import pandas as pd
@@ -34,7 +34,7 @@ from omega.quant.parallel_backtest import ParallelBacktestRunner
 # ============================================================
 # DATA (same as all versions)
 # ============================================================
-df = pd.read_parquet(r'C:\Users\GHC\.openclaw\workspace\data\market_2015_now.parquet')
+df = pd.read_parquet(str(Path(__file__).resolve().parents[1] / 'data' / 'market_2015_now.parquet'))
 df['date'] = pd.to_datetime(df['date'])
 ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
 df = df.sort_values(['ticker', 'date']).reset_index(drop=True)

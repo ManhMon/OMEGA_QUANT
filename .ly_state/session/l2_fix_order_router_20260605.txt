@@ -1,0 +1,20 @@
+[L2-Impl:Role7-BackendEngineer] Implement only. No audit/gate. Fix exactly issue from L3 at src/omega/execution/order_router.py:395.
+
+Bug:
+- apply_adv_cap() can clamp quantity down to <100 or 0
+- submit_order() does not re-validate after cap
+- risk: paper/live may accept odd/zero/non-tradable quantity incorrectly
+
+Scope allowed:
+- src/omega/execution/order_router.py
+- minimal touched tests only under packages/execution/tests and/or packages/quant/tests if needed
+
+Required behavior:
+1) After ADV/POV cap, quantity must be re-validated before submit/fill.
+2) Reject capped quantity <= 0.
+3) Enforce board-lot / odd-lot contract after cap.
+4) Keep changes surgical. No unrelated refactor.
+5) Run focused tests for touched scope and report exact commands/results.
+6) Output concise summary with changed files.
+
+Repo: C:\Users\GHC\repos\OMEGA_QUANT

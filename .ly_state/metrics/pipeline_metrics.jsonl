@@ -1,0 +1,16 @@
+{'timestamp': '2026-06-04T11:41:37.539940', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-04T11:42:42.069959', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-04T11:42:55.072768', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-04T11:43:40.740759', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-04T14:47:05.608847', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-04T15:13:53.118410', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T06:43:28.980649', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T06:46:25.279264', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T08:25:26.379472', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T08:28:07.229007', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T12:15:34.824588', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T12:19:46.336462', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T12:23:24.162671', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T12:39:30.453046', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T12:58:22.794072', 'metric': 'test_metric', 'value': 42.0}
+{'timestamp': '2026-06-05T14:11:06.456415', 'metric': 'test_metric', 'value': 42.0}

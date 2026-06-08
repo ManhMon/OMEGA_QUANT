@@ -8,132 +8,132 @@ from pathlib import Path
 PHASE_MAP = {
     1: {
         "name": "Foundation & Infrastructure",
-        "code": ["packages/core/src/omega/core/worker.py"],
-        "tests": ["packages/core/tests/test_db_models.py"],
+        "code": ["src/omega/core/worker.py"],
+        "tests": ["tests/core_test_db_models.py"],
         "gate_keys": ["OMEGA_GAP_PHASE1_FOUNDATION"]
     },
     2: {
         "name": "Data & Storage Layer",
-        "code": ["packages/data/src/omega/data/loader.py"],
-        "tests": ["packages/data/tests/test_sanitizer.py"],
+        "code": ["src/omega/data/loader.py"],
+        "tests": ["tests/data_test_sanitizer.py"],
         "gate_keys": ["OMEGA_GAP_PHASE2_DATA_STORAGE"]
     },
     3: {
         "name": "Quant Math Engine",
-        "code": ["packages/quant/src/omega/quant/phase35_walk_forward.py"],
+        "code": ["src/omega/quant/phase35_walk_forward.py"],
         "tests": ["tests/phase35/"],
         "gate_keys": ["PHASE_35_CANONICAL_MIGRATION_20260521"]
     },
     4: {
         "name": "Signal Generation",
-        "code": ["packages/quant/src/omega/quant/"],
+        "code": ["src/omega/quant/"],
         "tests": ["tests/phase35/"],
         "gate_keys": ["OMEGA_GAP_PHASE4_SIGNAL_GENERATION", "PHASE_4_SIGNAL_MIGRATION_20260522"]
     },
     5: {
         "name": "Advanced Risk Management",
-        "code": ["packages/risk/src/"],
-        "tests": ["packages/risk/tests/"],
+        "code": ["src/"],
+        "tests": ["tests/risk_test_circuit_breaker_sre.py"],
         "gate_keys": ["OMEGA_GAP_PHASE5_ADVANCED_RISK_MANAGEMENT"]
     },
     6: {
         "name": "Self-Evolving Engine",
-        "code": ["packages/quant/src/omega/quant/evolution/"],
-        "tests": [],
+        "code": ["src/omega/quant/evolution/"],
+        "tests": ["tests/quant_test_evolution_modules.py"],
         "gate_keys": ["OMEGA_GAP_PHASE6_1_CONTINUOUS_LEARNING", "OMEGA_GAP_PHASE6_SELF_EVOLVING_ENGINE"]
     },
     7: {
         "name": "SRE & Observability",
-        "code": ["packages/observability/src/"],
-        "tests": ["packages/observability/tests/"],
+        "code": ["src/"],
+        "tests": ["tests/quant_test_observability.py"],
         "gate_keys": ["OMEGA_SRE_ALERTING_ROLLBACK_ENGINE"]
     },
     8: {
         "name": "Security & Governance",
-        "code": ["packages/governance/src/"],
-        "tests": ["packages/core/tests/"],
+        "code": ["src/"],
+        "tests": ["tests/core_test_db_models.py"],
         "gate_keys": ["OMEGA_GAP_PHASE8_SECURITY_GOVERNANCE"]
     },
     9: {
         "name": "Integration Testing",
         "code": [],
-        "tests": ["packages/core/tests/"],
+        "tests": ["tests/core_test_db_models.py"],
         "gate_keys": ["OMEGA_GAP_PHASE9_INTEGRATION_TESTING"]
     },
     10: {
         "name": "Database Persistence",
-        "code": ["packages/core/src/omega/core/database.py"],
-        "tests": ["packages/core/tests/test_db_models.py"],
+        "code": ["src/omega/core/database.py"],
+        "tests": ["tests/core_test_db_models.py"],
         "gate_keys": ["OMEGA_GAP_PHASE10_DATABASE_PERSISTENCE_LAYER"]
     },
     11: {
         "name": "Task State Machine",
-        "code": ["packages/core/src/omega/core/task_state_machine.py"],
-        "tests": ["packages/core/tests/test_task_machine.py"],
+        "code": ["src/omega/core/task_state_machine.py"],
+        "tests": ["tests/core_test_task_machine.py"],
         "gate_keys": ["OMEGA_GAP_PHASE11_TASK_STATE_MACHINE"]
     },
     12: {
         "name": "Model Registry",
-        "code": ["packages/core/src/omega/core/model_registry.py"],
-        "tests": ["packages/core/tests/test_registry_context.py"],
+        "code": ["src/omega/core/model_registry.py"],
+        "tests": ["tests/core_test_registry_context.py"],
         "gate_keys": ["OMEGA_GAP_PHASE12_MODEL_REGISTRY"]
     },
     13: {
         "name": "Machine Learning Engine",
-        "code": ["packages/quant/src/omega/quant/ml/"],
-        "tests": ["packages/quant/tests/test_ml_engine.py"],
+        "code": ["src/omega/quant/ml/"],
+        "tests": ["tests/quant_test_ml_engine.py"],
         "gate_keys": ["OMEGA_GAP_PHASE13_MACHINE_LEARNING_ENGINE"]
     },
     14: {
         "name": "Market Data Pipeline",
-        "code": ["packages/data/src/omega/data/vnstock_vci.py"],
-        "tests": ["packages/data/tests/"],
+        "code": ["src/omega/data/vnstock_vci.py"],
+        "tests": ["tests/data_test_sanitizer.py"],
         "gate_keys": ["OMEGA_GAP_PHASE14_MARKET_DATA_PIPELINE"]
     },
     15: {
         "name": "Ensemble & Voting",
-        "code": ["packages/quant/src/omega/quant/voting_stacking_ensemble.py"],
-        "tests": ["packages/quant/tests/test_voting_stacking_ensemble.py"],
+        "code": ["src/omega/quant/voting_stacking_ensemble.py"],
+        "tests": ["tests/quant_test_voting_stacking_ensemble.py"],
         "gate_keys": ["OMEGA_GAP_PHASE15_ENSEMBLE_VOTING"]
     },
     16: {
         "name": "Live Trading",
         "code": [
-            "packages/quant/src/omega/quant/realtime_risk_guard.py",
-            "packages/quant/src/omega/quant/live_trading_pipeline.py",
-            "packages/quant/src/omega/quant/live_execution_bridge.py",
+            "src/omega/quant/realtime_risk_guard.py",
+            "src/omega/quant/live_trading_pipeline.py",
+            "src/omega/quant/live_execution_bridge.py",
         ],
-        "tests": ["packages/quant/tests/test_phase16_risk_guard_and_router.py"],
+        "tests": ["tests/quant_test_phase16_risk_guard_and_router.py"],
         "gate_keys": ["OMEGA_GAP_PHASE16_LIVE_TRADING"]
     },
     17: {
         "name": "Monitoring Dashboard",
-        "code": ["packages/observability/src/"],
-        "tests": ["packages/observability/tests/"],
+        "code": ["src/"],
+        "tests": ["tests/quant_test_observability.py"],
         "gate_keys": ["OMEGA_GAP_PHASE17_MONITORING_DASHBOARD"]
     },
     18: {
         "name": "Portfolio Rebalancer",
-        "code": ["packages/quant/src/omega/quant/rebalancer.py"],
-        "tests": ["packages/quant/tests/"],
+        "code": ["src/omega/quant/rebalancer.py"],
+        "tests": ["tests/quant_test_rebalancer.py"],
         "gate_keys": ["STAGE2_BEHAVIORAL_AUDIT_20260522"]
     },
     19: {
         "name": "Transaction Cost Optimizer",
-        "code": ["packages/quant/src/omega/quant/transaction_cost_optimizer.py"],
-        "tests": ["packages/quant/tests/"],
+        "code": ["src/omega/quant/transaction_cost_optimizer.py"],
+        "tests": ["tests/quant_test_transaction_cost_optimizer.py"],
         "gate_keys": ["STAGE6_2_COST_AWARE_AUDIT_20260522"]
     },
     20: {
         "name": "Constraint Solver",
-        "code": ["packages/quant/src/omega/quant/constraint_solver.py"],
-        "tests": ["packages/quant/tests/"],
+        "code": ["src/omega/quant/constraint_solver.py"],
+        "tests": ["tests/quant_test_constraint_solver.py"],
         "gate_keys": ["STAGE6_3_ACTIVE_DRAWDOWN_CONTROL_20260523"]
     },
     21: {
         "name": "Performance Attribution",
-        "code": ["packages/quant/src/omega/quant/attribution.py"],
-        "tests": ["packages/quant/tests/test_attribution.py"],
+        "code": ["src/omega/quant/attribution.py"],
+        "tests": ["tests/quant_test_attribution.py"],
         "gate_keys": ["OMEGA_GAP_PHASE21_PERFORMANCE_ATTRIBUTION"]
     },
     22: {
@@ -227,8 +227,20 @@ def main():
     gates_file = omega_root / ".ly_state" / "session" / "phase_gates.json"
     
     with open(gates_file, 'r', encoding='utf-8-sig') as f:
-        gates_data = json.load(f)
+        gates_list = json.load(f)
     
+    gates_data = {}
+    if isinstance(gates_list, list):
+        for item in gates_list:
+            if isinstance(item, dict):
+                if "gate_id" in item:
+                    gates_data[item["gate_id"]] = item
+                else:
+                    for k, v in item.items():
+                        gates_data[k] = v
+    else:
+        gates_data = gates_list
+
     all_results = []
     for phase_num in range(1, 23):
         phase_info = PHASE_MAP[phase_num]

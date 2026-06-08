@@ -1,6 +1,10 @@
 ﻿"""Full pipeline: Raw data -> Sanitize -> Features -> Alpha -> Parallel Backtest."""
 import sys
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\src')
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 import numpy as np
 import pandas as pd

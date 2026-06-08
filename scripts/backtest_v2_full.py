@@ -17,11 +17,11 @@ Date: 2026-05-31
 Version: 2.1
 """
 import sys
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\quant\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\core\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\infra\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\data\src')
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 import numpy as np
 import pandas as pd
@@ -46,7 +46,7 @@ logger.info("PHASE A: DATA PIPELINE")
 logger.info("=" * 70)
 
 # A1: Load real OHLCV
-df = pd.read_parquet(r'C:\Users\GHC\.openclaw\workspace\data\market_2015_now.parquet')
+df = pd.read_parquet(str(Path(__file__).resolve().parents[1] / 'data' / 'market_2015_now.parquet'))
 df['date'] = pd.to_datetime(df['date'])
 logger.info("Loaded: %d rows, %d tickers, date range: %s to %s",
             len(df), df['ticker'].nunique(), df['date'].min().date(), df['date'].max().date())

@@ -59,3 +59,8 @@ __all__ = [
     "AccessController",
     "get_access_controller",
 ]
+
+try:
+    from . import core
+except ImportError:
+    pass

@@ -20,7 +20,7 @@ from unittest.mock import patch, MagicMock
 import numpy as np
 import pandas as pd
 
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../packages/quant/src')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
 
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,36 @@
+[L3-Audit:Role21-CodeReview] Audit only. Do not implement. Independent review of recent L2 fix for OMEGA_QUANT.
+
+Task:
+Review only touched scope for bug previously found at src/omega/execution/order_router.py around ADV cap post-validation.
+
+Context:
+- Prior L3 verdict: [NEEDS_FIX]
+- Bug: apply_adv_cap() could clamp quantity to <100 or 0, and submit_order() did not re-validate after cap.
+- L2 claims fix added post-cap validation for <=0 and board-lot compliance when odd-lot disabled.
+
+Touched files to audit:
+- src/omega/execution/order_router.py
+- relevant tests if touched or relied upon:
+  - packages/execution/tests/test_order_router.py
+  - packages/quant/tests/test_execution_engine.py
+  - packages/quant/tests/test_phase16_risk_guard_and_router.py
+  - packages/quant/tests/test_pipeline.py
+
+Verification evidence already available:
+- python -m pytest packages/execution/tests/test_order_router.py -q  -> pass
+- python -m pytest packages/quant/tests/test_execution_engine.py packages/quant/tests/test_phase16_risk_guard_and_router.py packages/quant/tests/test_pipeline.py -q -> pass (1 warning in observability.py unrelated)
+
+Audit instructions:
+- Check only whether L2 fix resolves prior defect and introduces any new issue in touched scope.
+- No repo wandering. No unrelated findings. No implementation.
+- If adequate, approve.
+- Output final result to STDOUT in exact contract format below.
+
+l3_session_id: <value>
+l3_session_key: <value>
+audit_report_path: <repo-relative or absolute path>
+final_verdict: [APPROVED|NEEDS_FIX]
+summary:
+- <bullet>
+findings:
+- <severity> <file:line or n/a>: <issue or 'none'>

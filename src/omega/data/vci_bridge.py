@@ -16,13 +16,13 @@ warnings.filterwarnings('ignore')
 
 @dataclass
 class VCIDataQualityMetrics:
+    timestamp: datetime
     total_records: int = 0
     missing_records: int = 0
     missing_rate: float = 0.0
     latency_ms: float = 0.0
     max_missing_rate: float = 0.05
     max_latency_ms: float = 100.0
-    timestamp: datetime  # No default, mandatory parameter
     validation_passed: bool = False
     
     def __post_init__(self):

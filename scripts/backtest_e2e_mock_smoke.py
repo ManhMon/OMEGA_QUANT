@@ -9,7 +9,7 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 
-sys.path.insert(0, 'packages/quant/src')
+sys.path.insert(0, 'src')
 
 from omega.quant.alpha_discovery import AlphaDiscoveryEngine
 from omega.quant.attribution import PerformanceAttribution, AttributionConfig

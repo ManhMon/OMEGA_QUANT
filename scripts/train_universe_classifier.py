@@ -28,7 +28,7 @@ import numpy as np  # noqa: F401  (kept for downstream parity / future ops)
 import pandas as pd
 
 PROJECT_ROOT = Path(__file__).parent.parent
-sys.path.insert(0, str(PROJECT_ROOT / "packages/quant/src"))
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from omega.quant.universe.feature_computer import UniverseFeatureComputer  # noqa: E402
 from omega.quant.universe.xgb_classifier import UniverseClassifier  # noqa: E402

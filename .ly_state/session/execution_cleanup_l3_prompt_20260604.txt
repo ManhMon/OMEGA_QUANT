@@ -1,0 +1,34 @@
+[L3-Audit:Role21-CodeReviewer] Audit only. No implementation. Scope: execution namespace cleanup + archive step.
+Files changed:
+- src/omega/execution/order_router.py
+- src/omega/quant/pipeline.py
+- src/omega/quant/live_execution_bridge.py
+- packages/quant/src/omega/quant/pipeline.py
+- packages/quant/src/omega/quant/live_execution_bridge.py
+- packages/quant/tests/test_execution_engine.py
+- packages/quant/tests/test_phase16_risk_guard_and_router.py
+- packages/quant/tests/test_pipeline.py
+Archive moves performed:
+- src/omega/quant/execution/__init__.py -> archive/2026-06-04/src_omega_quant_execution/__init__.py
+- src/omega/quant/execution/broker_gateway.py -> archive/2026-06-04/src_omega_quant_execution/broker_gateway.py
+- src/omega/quant/execution/order_router.py -> archive/2026-06-04/src_omega_quant_execution/order_router.py
+- packages/quant/src/omega/quant/execution/__init__.py -> archive/2026-06-04/packages_quant_execution/__init__.py
+- packages/quant/src/omega/quant/execution/broker_gateway.py -> archive/2026-06-04/packages_quant_execution/broker_gateway.py
+- packages/quant/src/omega/quant/execution/order_router.py -> archive/2026-06-04/packages_quant_execution/order_router.py
+Evidence:
+- Focused tests PASS:
+  python -m pytest packages/quant/tests/test_execution_engine.py packages/quant/tests/test_phase16_risk_guard_and_router.py packages/quant/tests/test_pipeline.py -q
+- Focused execution tests PASS individually before combined run:
+  python -m pytest packages/execution/tests/test_order_router.py -q
+  python -m pytest packages/execution/tests/test_execution_engine.py -q
+- Combined cross-package pytest currently hits pre-existing collection collision due to duplicate test basenames under packages/execution/tests and packages/quant/tests.
+Tasks:
+1) Audit code correctness and namespace cleanup.
+2) Determine if cleanup batch is APPROVED despite pre-existing pytest collection collision.
+3) If NEEDS_FIX, point only to real issues in touched code, not generic repo debt.
+Output to STDOUT only in exact format:
+VERDICT: [APPROVED|NEEDS_FIX]
+ISSUES:
+- <severity> <file:line or n/a>: <description> | FIX: <suggestion>
+STRENGTHS:
+- <bullet>

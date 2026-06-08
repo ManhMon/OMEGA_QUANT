@@ -11,7 +11,7 @@ from datetime import datetime
 from pathlib import Path
 from real_data_loader import load_real_vn_data
 
-sys.path.insert(0, 'packages/quant/src')
+sys.path.insert(0, 'src')
 
 def _prev_business_day(dt: datetime) -> datetime:
     """Return the previous business day (Mon-Fri) relative to dt."""

@@ -12,8 +12,12 @@ import argparse
 import logging
 from datetime import datetime, date
 
-# Wire packages/quant/src into path
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'packages', 'quant', 'src'))
+# Wire src into path
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 logging.basicConfig(
     level=logging.INFO,

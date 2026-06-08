@@ -1,10 +1,10 @@
 """Test P2+P3: Unified adapter with microstructure/macro + orchestrator bridge."""
 import sys
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\quant\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\core\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\infra\src')
-sys.path.insert(0, r'C:\Users\GHC\.openclaw\workspace\packages\data\src')
+from pathlib import Path
+import sys
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(_REPO_ROOT / 'src') not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT / 'src'))
 
 import pandas as pd
 import logging
@@ -14,7 +14,7 @@ from omega.quant.evolution.unified_feature_adapter import UnifiedFeatureAdapter
 from omega.quant.evolution.orchestrator_bridge import OmegaQuantOrchestrator
 
 # Load small sample
-df = pd.read_parquet(r'C:\Users\GHC\.openclaw\workspace\data\market_2015_now.parquet')
+df = pd.read_parquet(str(Path(__file__).resolve().parents[1] / 'data' / 'market_2015_now.parquet'))
 df['date'] = pd.to_datetime(df['date'])
 top10 = df.groupby('ticker')['volume'].mean().sort_values(ascending=False).head(10).index.tolist()
 df = df[df['ticker'].isin(top10)]

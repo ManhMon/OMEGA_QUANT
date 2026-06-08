@@ -285,7 +285,11 @@ class GPIndividual:
             if node.value in features:
                 return features[node.value].copy()
             else:
-                return np.zeros(len(next(iter(features.values()))))
+                try:
+                    val = float(node.value)
+                    return np.full(len(next(iter(features.values()))), val)
+                except ValueError:
+                    return np.zeros(len(next(iter(features.values()))))
         
         # Unary operators
         if len(node.children) == 1:
@@ -309,7 +313,7 @@ class GPIndividual:
                 return child_val
         
         # Binary operators
-        elif len(node.children) == 2:
+        elif len(node.children) == 2 and node.operator in ['+', '-', '*', '/', 'max', 'min']:
             left_val = self._execute_tree(node.children[0], features)
             right_val = self._execute_tree(node.children[1], features)
             

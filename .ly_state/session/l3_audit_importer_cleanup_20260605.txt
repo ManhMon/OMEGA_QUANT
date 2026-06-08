@@ -1,0 +1,17 @@
+[L3-Audit:Role21-CodeReview] Audit only. No implementation. Scope: importer cleanup batch in packages/quant after migration of live_trading_pipeline.py, dashboard.py, and pipeline.py to src.omega canonical imports.
+
+Goal:
+Determine whether current importer-cleanup batch is APPROVED or NEEDS_FIX under /ac. Review only touched scope and verify no regression in current focused tests.
+
+Evidence to consider:
+- packages/quant/tests/test_pipeline.py -> pass
+- packages/quant/tests/test_execution_engine.py + packages/quant/tests/test_phase16_risk_guard_and_router.py -> pass
+- warning in observability.py is unrelated
+
+Needed contract fields in final output:
+- l3_session_id
+- l3_session_key
+- audit_report_path
+- final_verdict
+
+Keep audit focused. Do not implement. Do not roam repo.

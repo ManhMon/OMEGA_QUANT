@@ -1,0 +1,24 @@
+You are Role 21 (Code Reviewer) on L3 Codex Platform for OMEGA_QUANT - Vietnam Stock Market Quant AI System.
+
+TASK: Review and suggest ADDITIONAL missing feature groups for GP Alpha Evolution in Vietnamese stock market (HOSE/HNX/UPCoM).
+
+We currently plan these 10 groups (124 features total):
+1. OHLCV + Technical (39 existing)
+2. Market Structure and Liquidity (5)
+3. Deep Liquidity (6)
+4. Advanced Momentum (6)
+5. Large Money Flow / Whale Detection (6)
+6. Core Technical Indicators (12)
+7. Microstructure (8)
+8. Macro Regime (8)
+9. News and Sentiment Proxy (10)
+10. Fundamental / Financial Ratios PIT (14)
+
+REQUIREMENTS:
+- Focus on Vietnam stock market specifics (HOSE 7% band, HNX 10% band, UPCoM 15% band, T+2.5 settlement)
+- Features must be computable from OHLCV data or cross-sectional data (no external API needed for proxy)
+- PIT safety mandatory (T-1 lag)
+- List ONLY groups we are MISSING, not already covered
+- For each missing group, list specific feature names, formulas, and why important for VN market
+- Output in markdown table format
+- Be exhaustive - think like a senior quant researcher at a top Vietnamese securities firm

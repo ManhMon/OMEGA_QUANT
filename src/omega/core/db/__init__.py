@@ -60,3 +60,9 @@ __all__ = [
     "canonicalize_payload",
     "compute_chain_hash",
 ]
+
+# Auto-wired submodules and subpackages
+try:
+    from . import queries
+except ImportError:
+    pass
