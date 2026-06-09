@@ -778,11 +778,116 @@ class Phase35WalkForwardEngine:
         
         return max_dd if not np.isnan(max_dd) else 0.0
     
+    def _compute_sequential_dynamic_freq(
+        self,
+        train_df: pd.DataFrame,
+        available_test_df: pd.DataFrame,
+        base_freq: int = 7,
+    ) -> int:
+        """Compute dynamic rebalance frequency for a specific point in time.
+        
+        P9 v4 (PIT-safe): Adjust rebalance frequency based on market volatility regime
+        using only data available up to the decision point.
+        
+        - Compare CURRENT volatility (recent available data) vs HISTORICAL baseline (train period)
+        - High volatility (current > 1.5x baseline): rebalance more often (freq=5)
+        - Low volatility (current < 0.67x baseline): rebalance less often (freq=10)
+        - Medium volatility: use base_freq (7)
+        
+        Parameters
+        ----------
+        train_df : pd.DataFrame
+            Training period data with 'close' and 'date' columns (historical baseline)
+        available_test_df : pd.DataFrame
+            Test period data available up to (but not including) the decision date.
+            Must contain only rows with date < decision_date for PIT safety.
+        base_freq : int
+            Default rebalance frequency
+            
+        Returns
+        -------
+        int
+            Adjusted rebalance frequency
+            
+        Notes
+        -----
+        PIT safety: This function only uses train_df and available_test_df (strictly
+        prior dates). The caller is responsible for filtering test_df to exclude
+        current and future dates relative to the decision point.
+        """
+        # Guard: if train_df not provided, cannot compute baseline
+        if train_df is None or train_df.empty:
+            logger.warning("P9: train_df is None/empty, cannot compute baseline vol, using base_freq")
+            return base_freq
+        
+        # Compute baseline volatility from TRAINING period (historical).
+        # Sort first: pct_change is order-sensitive inside each ticker group.
+        train_work = train_df.sort_values(['ticker', 'date'])
+        train_returns = train_work.groupby('ticker')['close'].pct_change().clip(-0.5, 0.5)
+        train_daily_vol = train_returns.groupby(train_work['date']).std()
+        train_median_vol = train_daily_vol.median()
+        
+        if pd.isna(train_median_vol) or train_median_vol < 1e-9:
+            logger.warning("P9: Cannot compute baseline volatility from train_df, using base_freq")
+            return base_freq
+        
+        # Compute current volatility from AVAILABLE test data (strictly prior dates).
+        # If no test data available yet (first OOS date), use train baseline only.
+        if available_test_df is None or available_test_df.empty:
+            # No OOS data available yet: use train median as current estimate
+            current_vol = train_median_vol
+            logger.debug("P9: No available test data, using train baseline as current vol")
+        else:
+            # Sort first: pct_change is order-sensitive inside each ticker group.
+            # Clip like forward returns to avoid corporate-action/data jumps dominating regime.
+            test_work = available_test_df.sort_values(['ticker', 'date'])
+            test_returns = test_work.groupby('ticker')['close'].pct_change().clip(-0.5, 0.5)
+            test_daily_vol = test_returns.groupby(test_work['date']).std()
+            
+            # Use recent 20-day rolling average for stability
+            if len(test_daily_vol) >= 20:
+                current_vol = test_daily_vol.rolling(window=20, min_periods=10).mean().iloc[-1]
+            else:
+                current_vol = test_daily_vol.median()
+            
+            if pd.isna(current_vol):
+                current_vol = test_daily_vol.median()
+            
+            # Fallback to train baseline if still invalid
+            if pd.isna(current_vol):
+                current_vol = train_median_vol
+                logger.debug("P9: Could not compute current vol from available test data, using train baseline")
+        
+        # Compare current vs baseline
+        vol_ratio = current_vol / train_median_vol
+        
+        if vol_ratio > 1.5:
+            # High volatility regime: rebalance more often
+            adjusted_freq = max(5, base_freq - 2)
+            regime = "HIGH"
+        elif vol_ratio < 0.67:
+            # Low volatility regime: rebalance less often
+            adjusted_freq = min(10, base_freq + 3)
+            regime = "LOW"
+        else:
+            # Medium volatility regime: use base frequency
+            adjusted_freq = base_freq
+            regime = "MEDIUM"
+        
+        logger.debug(
+            f"P9 Sequential Dynamic: regime={regime}, current_vol={current_vol:.6f}, "
+            f"baseline_vol={train_median_vol:.6f}, ratio={vol_ratio:.2f}, freq={base_freq}->{adjusted_freq}"
+        )
+        
+        return adjusted_freq
+    
     def _apply_stage2_constraints(
         self,
         test_df: pd.DataFrame,
         raw_signal: pd.Series,
         top_alphas: List[str],
+        dynamic_rebalance: bool = False,
+        train_df: Optional[pd.DataFrame] = None,
     ) -> pd.Series:
         """Apply Stage 2 behavioral constraints to the raw IC-weighted signal.
 
@@ -800,6 +905,11 @@ class Phase35WalkForwardEngine:
             IC-weighted combined signal, indexed identically to test_df.index.
         top_alphas : list of str
             Selected alpha column names (used only for logging context).
+        dynamic_rebalance : bool
+            If True, adjust rebalance frequency based on market volatility regime.
+            P9 v4: Uses sequential PIT-safe frequency computation.
+        train_df : pd.DataFrame, optional
+            Training data for baseline volatility computation (P9 dynamic rebalance).
 
         Returns
         -------
@@ -810,10 +920,10 @@ class Phase35WalkForwardEngine:
         Notes
         -----
         PIT safety: test_df signals are already T-1 lagged by compute_alphas().
-        No forward information is introduced here — we only reshape weights.
+        P9 v4: Dynamic rebalance frequency is computed sequentially per rebalance
+        checkpoint using only train_df + strictly prior test dates.
         """
         top_n = self.top_n_stocks
-        rebal_freq = self.rebalance_freq
         sector_cap = self.sector_cap_pct
 
         # Attach raw signal to a working frame aligned by position
@@ -850,13 +960,42 @@ class Phase35WalkForwardEngine:
 
         last_weights: Optional[pd.Series] = None
         apply_sector_caps = _import_apply_sector_caps()
+        
+        # P9 v4 fix: Track current rebalance frequency (updated sequentially at checkpoints)
+        # Drive both frequency recompute and rebalance eligibility from elapsed distance
+        current_rebal_freq = self.rebalance_freq
+        last_rebal_checkpoint_idx = None
 
         for idx, date in enumerate(sorted_dates):
             if date not in signal_wide.index:
                 continue
 
-            if idx % rebal_freq == 0:
-                # Rebalance: select top-N by signal, build equal-weight, apply sector cap
+            # P9 v4 fix: Determine if we should rebalance at this date FIRST
+            # Use elapsed distance from last actual checkpoint
+            if last_rebal_checkpoint_idx is None:
+                # First checkpoint: always rebalance
+                should_rebalance = (idx == 0)
+            else:
+                # Check if enough dates have passed since last checkpoint
+                elapsed = idx - last_rebal_checkpoint_idx
+                should_rebalance = (elapsed >= current_rebal_freq)
+
+            if should_rebalance:
+                # P9 v4 fix: At rebalance dates, recompute frequency using PIT-safe data
+                # BEFORE executing rebalance, so new frequency applies to NEXT interval
+                if dynamic_rebalance:
+                    # Use only data available strictly BEFORE this date (train_df + prior test dates)
+                    # This ensures no lookahead: decision at date D uses data < D only
+                    available_test = test_df[test_df['date'] < date]
+                    current_rebal_freq = self._compute_sequential_dynamic_freq(
+                        train_df, available_test, self.rebalance_freq
+                    )
+                    logger.debug(
+                        f"P9 v4: Rebalance at idx={idx}, date={date}, "
+                        f"updated freq to {current_rebal_freq} for next interval"
+                    )
+                
+                # Execute rebalance: select top-N by signal, build equal-weight, apply sector cap
                 alpha_row = signal_wide.loc[date].dropna()
                 if len(alpha_row) > 0:
                     top_stocks = alpha_row.nlargest(min(top_n, len(alpha_row)))
@@ -865,14 +1004,18 @@ class Phase35WalkForwardEngine:
                     # Apply sector caps (reuse alpha_pipeline logic, no duplication)
                     target = apply_sector_caps(target, sector_map, resolved_caps)
                     last_weights = target
+                
+                # Update checkpoint tracker AFTER rebalance
+                last_rebal_checkpoint_idx = idx
 
             if last_weights is not None:
                 weight_wide.loc[date] = last_weights
 
+        # Log final applied frequency (may have changed during fold)
         logger.info(
             f"Stage 2 constraints applied: top_n={top_n}, "
-            f"rebal_freq={rebal_freq}, sector_cap={sector_cap:.0%}, "
-            f"alphas={top_alphas}"
+            f"final_rebal_freq={current_rebal_freq}, sector_cap={sector_cap:.0%}, "
+            f"alphas={top_alphas}, dynamic={'YES' if dynamic_rebalance else 'NO'}"
         )
 
         # Flatten back to per-row Series aligned with original test_df index
@@ -1172,11 +1315,28 @@ class Phase35WalkForwardEngine:
         # Applied AFTER IC-weighted signal combination, BEFORE return computation.
         # PIT safety preserved: test_df signals are already T-1 lagged upstream.
         # ------------------------------------------------------------------
-        portfolio_signal = self._apply_stage2_constraints(
-            test_df=test_df,
-            raw_signal=portfolio_signal,
-            top_alphas=gated_alphas,
-        )
+        try:
+            portfolio_signal = self._apply_stage2_constraints(
+                test_df=test_df,
+                raw_signal=portfolio_signal,
+                top_alphas=gated_alphas,
+                dynamic_rebalance=True,
+                train_df=train_df,
+            )
+        except TypeError as exc:
+            if "unexpected keyword argument" not in str(exc):
+                raise
+            # Backward-compatible path for tests or external monkeypatches that
+            # still expose the original 3-argument Stage 2 hook signature.
+            logger.warning(
+                "Stage 2 constraints hook does not accept P9 kwargs; "
+                "falling back to legacy call signature"
+            )
+            portfolio_signal = self._apply_stage2_constraints(
+                test_df=test_df,
+                raw_signal=portfolio_signal,
+                top_alphas=gated_alphas,
+            )
 
         # Compute test IC for each alpha
         test_ics = self.compute_alpha_ics(test_df, alpha_cols, return_col)

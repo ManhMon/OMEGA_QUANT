@@ -1,6 +1,6 @@
 {
-  "session_id": "02e7b19c-eb61-4ef5-aa42-82f8d11315e9",
-  "loaded_at": "2026-06-09T09:57:33.9527149+07:00",
+  "session_id": "0e6878e9-1eed-41e0-91af-1b1346048366",
+  "loaded_at": "2026-06-09T14:35:40+07:00",
   "skills": [
     {
       "name": "team",
@@ -15,7 +15,7 @@
     {
       "name": "karpathy-auditor",
       "version": "2.1",
-      "path": "C:/Users/GHC/.openclaw/skills/elite_karpathy/karpathy-auditor/SKILL.md"
+      "path": "C:/Users/GHC/.agents/skills/karpathy-auditor/SKILL.md"
     }
   ]
 }
