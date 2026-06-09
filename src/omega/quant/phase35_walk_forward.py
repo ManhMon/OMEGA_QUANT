@@ -439,8 +439,39 @@ class Phase35WalkForwardEngine:
                 ics[alpha_col] = 0.0
                 continue
             
-            ic = self.compute_ic(df[alpha_col], df[return_col])
-            ics[alpha_col] = ic
+            # P8: IC-Decay Weighting - compute IC on 3 sub-windows with exponential decay
+            # Weights: [0.2, 0.3, 0.5] for [old, middle, recent] thirds of training data
+            dates = sorted(df['date'].unique())
+            n_dates = len(dates)
+            
+            if n_dates >= 30:  # Only apply decay if enough history
+                third = n_dates // 3
+                windows = [
+                    (0, third, 0.2),           # oldest third
+                    (third, 2*third, 0.3),     # middle third
+                    (2*third, n_dates, 0.5)    # most recent third
+                ]
+                
+                weighted_ic = 0.0
+                weight_sum = 0.0
+                
+                for start_idx, end_idx, weight in windows:
+                    window_dates = dates[start_idx:end_idx]
+                    window_df = df[df['date'].isin(window_dates)]
+                    
+                    if len(window_df) > 0:
+                        ic_val = self.compute_ic(window_df[alpha_col], window_df[return_col])
+                        weighted_ic += ic_val * weight
+                        weight_sum += weight
+                
+                if weight_sum > 0:
+                    ics[alpha_col] = weighted_ic / weight_sum
+                else:
+                    ics[alpha_col] = self.compute_ic(df[alpha_col], df[return_col])
+            else:
+                # Fallback to simple IC if insufficient history
+                ic = self.compute_ic(df[alpha_col], df[return_col])
+                ics[alpha_col] = ic
         
         return ics
     

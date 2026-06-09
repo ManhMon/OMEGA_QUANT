@@ -1,0 +1,47 @@
+You are Role 21 (Code Reviewer) in the OMEGA_QUANT SOD protocol.
+
+## Context
+- Previous audit: V5+L3 fixes APPROVED (commit 31d8123)
+- P8: IC-Decay Weighting - new improvement to compute_alpha_ics()
+- Tests: 100/100 PASSED
+- Backtest results show significant improvement
+
+## P8 Changes
+File: src/omega/quant/phase35_walk_forward.py
+Method: compute_alpha_ics()
+
+BEFORE: Single IC computed on entire training period
+AFTER: IC computed on 3 sub-windows with exponential decay weights [0.2, 0.3, 0.5]
+  - Oldest third: weight 0.2
+  - Middle third: weight 0.3  
+  - Most recent third: weight 0.5
+  
+Rationale: Recent alpha performance is more predictive of future performance.
+Decay weighting favors alphas with improving IC trajectory.
+
+## PIT Safety Analysis
+- No forward-looking data used
+- Sub-windows are backward-looking portions of training data
+- Same compute_ic() method used, just on subsets
+
+## Backtest Results
+- Portfolio IC: +0.0070 → +0.0120 (+71% improvement)
+- Sharpe: 0.57 → 0.90 (+57% improvement)
+- MaxDD: -8.26% → -8.32% (stable)
+- 100/100 tests PASSED
+
+## Your Task
+1. Read compute_alpha_ics() in src/omega/quant/phase35_walk_forward.py (lines 412-475)
+2. Verify PIT safety: no look-ahead bias in sub-window computation
+3. Verify correctness: decay weights sum to 1.0, fallback for short history
+4. Check edge cases: empty windows, NaN handling
+5. Issue verdict: [APPROVED] or [NEEDS_FIX]
+
+## Output Format
+Write audit report to: .ly_state/session/audit_reports/role21_p8_ic_decay_audit_20260609.md
+
+Include:
+- VERDICT: [APPROVED] or [NEEDS_FIX]
+- PIT Safety: PASS/FAIL
+- Role Compliance: PASS/FAIL
+- Session ID and Session Key
