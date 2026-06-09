@@ -741,5 +741,18 @@
     "status": "APPROVED",
     "report_checksum": "041f5fbeb466",
     "notes": "Verified and locked via record_dashboard_gate.py. Checksum: 041f5fbeb466"
+  },
+  {
+    "phase_name": "PHASE35_P8_IC_DECAY_WEIGHTING",
+    "l2_session_id": "7b12fca1-ad6e-43b8-b1b7-295dfdf9e66c",
+    "l2_completed": true,
+    "l3_session_id": "02e7b19c-eb61-4ef5-aa42-82f8d11315e9",
+    "l3_session_key": "codex:role21:p8-ic-decay-audit:20260609T095733+0700",
+    "audit_report_path": ".ly_state\\session\\audit_reports\\role21_p8_ic_decay_audit_20260609.md",
+    "final_verdict": "[APPROVED]",
+    "timestamp": 1780974343.1884682,
+    "status": "APPROVED",
+    "report_checksum": "4068a384ee2f",
+    "notes": "Verified and locked via record_dashboard_gate.py. Checksum: 4068a384ee2f"
   }
 ]
