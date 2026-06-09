@@ -96,8 +96,35 @@ def main():
         default=0.5,
         help="Weight of evolved signal in blend (0-1), remainder is hand-crafted (default: 0.5)",
     )
+    parser.add_argument(
+        "--multi-horizon-blend",
+        action="store_true",
+        help="P10: Enable multi-horizon signal blending (T+1, T+3, T+5)",
+    )
+    parser.add_argument(
+        "--blend-horizons",
+        type=str,
+        default="1,3,5",
+        help="P10: Comma-separated list of horizons to blend (default: 1,3,5)",
+    )
+    parser.add_argument(
+        "--blend-weight-method",
+        type=str,
+        default="validation_ic",
+        help="P10: Method for computing blend weights (validation_ic or train_ic, default: validation_ic)",
+    )
     args = parser.parse_args()
     args.use_xgboost = not args.no_xgboost
+    
+    # Parse blend_horizons string into list of integers
+    if args.multi_horizon_blend:
+        try:
+            args.blend_horizons_list = [int(h.strip()) for h in args.blend_horizons.split(',')]
+        except ValueError:
+            logger.error(f"Invalid --blend-horizons format: {args.blend_horizons}. Expected comma-separated integers.")
+            sys.exit(1)
+    else:
+        args.blend_horizons_list = None
 
     logger.info("=" * 80)
     logger.info("Phase 3.5 Walk-Forward Backtest - Real VN Market Data")
@@ -146,8 +173,21 @@ def main():
     logger.info(f"  [Stage6.2] Cost Aware: {cost_aware} (tcost={tcost_bps} bps)")
     logger.info(f"  [Stage6.3] Drawdown Control: {args.drawdown_control} (threshold={args.drawdown_threshold:.1%})")
     logger.info(f"  [Evolved] Enable: {args.enable_evolved} (blend_weight={args.evolved_blend_weight:.2f})")
+    logger.info(f"  [P10] Multi-Horizon Blend: {args.multi_horizon_blend} (horizons={args.blend_horizons}, method={args.blend_weight_method})")
     logger.info(f"  [UI Context] Initial Capital: {args.initial_capital:,.0f} VND | Strategy: {args.strategy}")
     logger.info("")
+    
+    # FIX 7: Quick-mode smoke-test warning
+    if args.quick_mode or TOP_N_SYMBOLS < 5:
+        logger.warning("=" * 80)
+        logger.warning("SMOKE TEST MODE - NOT PERFORMANCE EVIDENCE")
+        logger.warning("=" * 80)
+        logger.warning(f"Running with top_n_symbols={TOP_N_SYMBOLS} (< 5 symbols)")
+        logger.warning("Cross-sectional metrics (z-score, IC, Sharpe) may collapse to zero/NaN")
+        logger.warning("This is a SMOKE TEST to verify code execution, not proof of strategy quality")
+        logger.warning("For performance validation, use top_n_symbols >= 30 with full fold configuration")
+        logger.warning("=" * 80)
+        logger.warning("")
     
     # Step 1: Load and prepare data
     logger.info("Step 1: Loading and preparing data...")
@@ -198,6 +238,9 @@ def main():
         initial_capital=args.initial_capital,
         enable_evolved=args.enable_evolved,
         evolved_blend_weight=args.evolved_blend_weight,
+        multi_horizon_blend=args.multi_horizon_blend,
+        blend_horizons=args.blend_horizons_list,
+        blend_weight_method=args.blend_weight_method,
     )
     
     alpha_cols = list(phase34_microstructure_alphas.PHASE34_ALPHA_COLUMNS)
@@ -243,6 +286,9 @@ def main():
             "drawdown_threshold": args.drawdown_threshold,
             "enable_evolved": args.enable_evolved,
             "evolved_blend_weight": args.evolved_blend_weight,
+            "multi_horizon_blend": args.multi_horizon_blend,
+            "blend_horizons": args.blend_horizons,
+            "blend_weight_method": args.blend_weight_method,
         },
         "summary": {
             "avg_portfolio_ic": result.avg_portfolio_ic,
