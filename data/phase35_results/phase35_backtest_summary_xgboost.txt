@@ -4,11 +4,11 @@ Phase 3.5 Walk-Forward Backtest Results
 
 Walk-Forward Backtest Results (8 folds)
 ============================================================
-Average Portfolio IC (post Stage 2): 0.0003
-Average Raw Signal IC (pre Stage 2):  0.0050
-Average Raw Signal Daily CS IC:       0.0051
-Average Portfolio Sharpe: 1.5198
-Average Max Drawdown: -67.18%
+Average Portfolio IC (post Stage 2): 0.0070
+Average Raw Signal IC (pre Stage 2):  0.0048
+Average Raw Signal Daily CS IC:       0.0047
+Average Portfolio Sharpe: 0.5682
+Average Max Drawdown: -8.26%
 
 Alpha IC Summary:
   alpha_p34_volatility_compression_5: -0.0269
@@ -25,63 +25,63 @@ Fold Details:
 Fold 1:
   Train: 2015-01-05 to 2018-01-03 (16,109 samples)
   Test:  2018-01-04 to 2019-01-03 (6,323 samples)
-  Portfolio IC: -0.0002
-  Portfolio Sharpe: -0.5449
-  Portfolio Max DD: -76.61%
-  Portfolio Total Return: -36.74%
+  Portfolio IC: 0.0657
+  Portfolio Sharpe: 2.1189
+  Portfolio Max DD: -10.55%
+  Portfolio Total Return: 39.01%
 
 Fold 2:
   Train: 2016-01-05 to 2019-01-03 (17,280 samples)
   Test:  2019-01-04 to 2020-01-03 (6,383 samples)
-  Portfolio IC: 0.0213
-  Portfolio Sharpe: -0.3586
-  Portfolio Max DD: -55.79%
-  Portfolio Total Return: -11.67%
+  Portfolio IC: -0.0052
+  Portfolio Sharpe: -0.1657
+  Portfolio Max DD: -5.64%
+  Portfolio Total Return: -0.61%
 
 Fold 3:
   Train: 2017-01-04 to 2020-01-03 (18,277 samples)
   Test:  2020-01-06 to 2020-12-31 (6,337 samples)
-  Portfolio IC: -0.0292
-  Portfolio Sharpe: 4.3684
-  Portfolio Max DD: -68.93%
-  Portfolio Total Return: 284.03%
+  Portfolio IC: -0.0386
+  Portfolio Sharpe: 1.2383
+  Portfolio Max DD: -9.28%
+  Portfolio Total Return: 14.02%
 
 Fold 4:
   Train: 2018-01-04 to 2020-12-31 (18,908 samples)
   Test:  2021-01-04 to 2021-12-31 (6,297 samples)
-  Portfolio IC: -0.0196
-  Portfolio Sharpe: 4.1454
-  Portfolio Max DD: -56.68%
-  Portfolio Total Return: 263.20%
+  Portfolio IC: -0.0121
+  Portfolio Sharpe: 1.1411
+  Portfolio Max DD: -12.94%
+  Portfolio Total Return: 21.60%
 
 Fold 5:
   Train: 2019-01-04 to 2021-12-31 (18,882 samples)
   Test:  2022-01-04 to 2022-12-30 (6,124 samples)
-  Portfolio IC: 0.0232
-  Portfolio Sharpe: -2.2865
-  Portfolio Max DD: -97.02%
-  Portfolio Total Return: -207.94%
+  Portfolio IC: 0.0504
+  Portfolio Sharpe: -2.0955
+  Portfolio Max DD: -8.15%
+  Portfolio Total Return: -11.26%
 
 Fold 6:
   Train: 2020-01-06 to 2022-12-30 (18,623 samples)
   Test:  2023-01-03 to 2024-01-02 (6,147 samples)
-  Portfolio IC: -0.0011
-  Portfolio Sharpe: 1.9221
-  Portfolio Max DD: -73.09%
-  Portfolio Total Return: 122.49%
+  Portfolio IC: 0.0009
+  Portfolio Sharpe: 1.7127
+  Portfolio Max DD: -7.74%
+  Portfolio Total Return: 23.70%
 
 Fold 7:
   Train: 2021-01-04 to 2024-01-02 (18,433 samples)
   Test:  2024-01-03 to 2024-12-31 (6,078 samples)
-  Portfolio IC: -0.0145
-  Portfolio Sharpe: -0.2410
-  Portfolio Max DD: -60.57%
-  Portfolio Total Return: -10.03%
+  Portfolio IC: -0.0020
+  Portfolio Sharpe: 2.5958
+  Portfolio Max DD: -5.18%
+  Portfolio Total Return: 33.23%
 
 Fold 8:
   Train: 2022-01-04 to 2024-12-31 (18,214 samples)
   Test:  2025-01-02 to 2025-12-31 (6,138 samples)
-  Portfolio IC: 0.0222
-  Portfolio Sharpe: 5.1535
-  Portfolio Max DD: -48.74%
-  Portfolio Total Return: 298.29%
+  Portfolio IC: -0.0026
+  Portfolio Sharpe: -2.0001
+  Portfolio Max DD: -6.60%
+  Portfolio Total Return: -8.90%

@@ -51,7 +51,7 @@ def verify_and_record():
     
     # Try parsing session info strictly - MUST exist, no synthetic defaults allowed
     session_id_match = re.search(r'^\s*(?:-\s*)?Session ID\s*:\s*([a-zA-Z0-9\-_\:\.]+)\s*$', content, re.MULTILINE)
-    session_key_match = re.search(r'^\s*(?:-\s*)?Session Key\s*:\s*([a-zA-Z0-9\-_\:\.]+)\s*$', content, re.MULTILINE)
+    session_key_match = re.search(r'^\s*(?:-\s*)?Session Key\s*:\s*([a-zA-Z0-9\-_\:\.\+]+)\s*$', content, re.MULTILINE)
     l2_session_match = re.search(r'^\s*(?:-\s*)?L2 Session ID\s*:\s*([a-zA-Z0-9\-_\:\.]+)\s*$', content, re.MULTILINE)
     
     if not session_id_match or not session_key_match or not l2_session_match:

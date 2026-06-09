@@ -384,6 +384,10 @@ class Phase35WalkForwardEngine:
             for individual in hall_of_fame:
                 signal = individual._execute_tree(individual.tree, train_features)
                 signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
+                # Normalize each signal to zero mean, unit std (same as test side for parity)
+                train_std = np.std(signal)
+                if train_std > 1e-9:
+                    signal = (signal - np.mean(signal)) / train_std
                 train_ensemble_signals.append(signal)
             
             train_signal = np.mean(train_ensemble_signals, axis=0)

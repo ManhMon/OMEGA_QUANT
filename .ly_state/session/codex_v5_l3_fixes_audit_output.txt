@@ -1,0 +1,13 @@
+APPROVED.
+
+Report written: [.ly_state/session/audit_reports/role21_phase35_v5_l3_fixes_reaudit_20260609.md](C:/Users/GHC/repos/OMEGA_QUANT/.ly_state/session/audit_reports/role21_phase35_v5_l3_fixes_reaudit_20260609.md)
+
+Verified:
+- Train/test per-tree normalization parity: PASS
+- PIT safety: PASS
+- Role compliance: PASS
+- Targeted tests: `9 passed`
+- Current full suite: `285 passed`
+
+Audit log appended. `phase_gates.json` untouched; L1 owns gate update.
+

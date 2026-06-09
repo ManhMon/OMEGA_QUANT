@@ -1,0 +1,53 @@
+# L3 Codex Audit Prompt - Phase35 V5 (P1 Ensemble + P2 Ceiling + P3 Revert)
+
+Role: Code Reviewer (L3 - Codex)
+Date: 2026-06-09
+Scope: Audit V5 improvements to phase35_walk_forward.py
+
+## Changes Under Review
+
+### P1: GP Ensemble (commit b0eaff9)
+- File: `src/omega/quant/phase35_walk_forward.py` lines ~362-407
+- Change: Replace single best GP tree with ensemble of top 3 hall_of_fame trees
+- Average normalized signals from all HoF individuals
+- Compute train IC on ensemble signal for adaptive blending
+- Return type changed from `Optional[np.ndarray]` to `Tuple[Optional[np.ndarray], float]`
+
+### P2: Adaptive Blend Ceiling (commit b0eaff9)
+- File: `src/omega/quant/phase35_walk_forward.py` lines ~1080-1090
+- Change: Add ceiling=0.25 to cap evolved blend weight
+- Formula: w_evo = min(adaptive_weight, 0.25), floor at 10% of user weight
+- Ensures hand-crafted signal dominates (≥75%)
+
+### P3 Revert (commit 138d9b0)
+- Reverted top_n_stocks: 10→15, sector_cap_pct: 0.35→0.40
+- P3 caused -67% MaxDD due to position concentration
+- Files: phase35_walk_forward.py, run_phase35_backtest.py, test_stage2_wiring.py
+
+## Audit Checklist
+
+1. **PIT Safety**: Verify no look-ahead bias in ensemble signal computation
+   - All GP trees trained on lagged_train (T-1 per ticker)
+   - Test features use lagged_test (T-1 per ticker)
+   - No forward return columns in feature set
+
+2. **Signal Alignment**: Verify evolved signal length matches portfolio_signal
+   - Ensemble averaging preserves array length
+   - Tuple return (signal, train_ic) handled correctly by caller
+
+3. **Blend Weight Bounds**: Verify ceiling logic is correct
+   - w_evo in [floor, ceiling] where floor=0.04, ceiling=0.25 (for user_weight=0.4)
+   - w_hand = 1.0 - w_evo always positive
+
+4. **Test Coverage**: 91/91 phase35 tests PASS
+   - test_stage2_wiring.py: assertions match V5 values (15, 0.40)
+
+5. **Backtest Metrics**: 
+   - Portfolio IC: +0.0034 (vs V4 +0.0031)
+   - Sharpe: 0.5792 (vs V4 0.4999)
+   - MaxDD: -8.83% (vs V4 -8.55%)
+
+## Expected Verdict Format
+VERDICT: [APPROVED] or [NEEDS_FIX]
+PIT Safety: PASS or FAIL
+Role Compliance: PASS or FAIL

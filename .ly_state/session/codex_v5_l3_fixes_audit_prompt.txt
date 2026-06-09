@@ -1,0 +1,54 @@
+You are Role 21 (Code Reviewer) in the OMEGA_QUANT SOD protocol.
+
+## Context
+- Previous audit verdict: [NEEDS_FIX] (2 findings)
+- Both findings have been addressed
+- Your job: verify the fixes and issue a new verdict
+
+## Finding 1: Train/Test Normalization Parity — FIXED
+File: src/omega/quant/phase35_walk_forward.py, lines 384-390
+
+BEFORE (L3 found this bug):
+  Train ensemble averaged raw tree outputs without normalization.
+  Test side normalized per-tree before averaging.
+
+AFTER (fix applied):
+  train_std = np.std(signal)
+  if train_std > 1e-9:
+      signal = (signal - np.mean(signal)) / train_std
+  # Now normalized BEFORE appending to train_ensemble_signals
+
+VERIFY: Check that train side normalization matches test side (lines 384-390 vs lines 421-426).
+
+## Finding 2: P1/P2 Unit Test Coverage — FIXED
+File: tests/phase35/test_evolved_signal.py (NEW FILE)
+
+9 test cases covering:
+- P1 (Ensemble): test_ensemble_averages_multiple_trees, test_ensemble_normalization, test_single_tree_fallback
+- P2 (Ceiling): test_blend_ceiling_caps_at_25_percent, test_blend_ceiling_floor_at_10_percent, test_adaptive_weight_scaling
+- Integration: test_train_test_normalization_parity, test_evolved_signal_shape_and_type, test_zero_train_ic_gives_minimal_weight
+
+TEST RESULTS: 9/9 PASSED
+FULL SUITE: 100/100 PASSED (91 original + 9 new)
+
+## Backtest Metrics (Go/No-Go)
+- Portfolio IC: +0.0070 (V5 baseline: +0.0034) — IMPROVED +106%
+- Sharpe: 0.5682 (V5 baseline: 0.58) — STABLE
+- MaxDD: -8.26% (V5 baseline: -8.83%) — IMPROVED
+- Tests: 100/100 PASSED
+
+## Your Task
+1. Read the fixed code in src/omega/quant/phase35_walk_forward.py (lines 362-430)
+2. Read the new tests in tests/phase35/test_evolved_signal.py
+3. Verify normalization parity between train and test paths
+4. Check PIT safety: no look-ahead bias in the fixes
+5. Issue verdict: [APPROVED] or [NEEDS_FIX]
+
+## Output Format
+Write your audit report to: .ly_state/session/audit_reports/role21_phase35_v5_l3_fixes_reaudit_20260609.md
+
+Include:
+- Verdict: [APPROVED] or [NEEDS_FIX]
+- PIT Safety: PASS/FAIL
+- Role Compliance: PASS/FAIL
+- Findings (if any)
