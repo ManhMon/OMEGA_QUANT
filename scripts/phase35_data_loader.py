@@ -338,16 +338,75 @@ class Phase35DataLoader:
             min_price=0.01,
         )
         
-        # Note: symbol_col='ticker' to match Phase35DataLoader column naming
-        df_clean, stats = sanitizer.clean_ohlcv(
-            df,
-            ohlcv_cols=['open', 'high', 'low', 'close', 'volume'],
-            symbol_col='ticker',
-            date_col='date',
-        )
+        # CRITICAL FIX: DataSanitizer's _causal_forward_fill has a bug that
+        # corrupts the ticker column due to improper .values assignment.
+        # We implement safe forward-fill here with proper column alignment.
         
+        # Step 1: Remove duplicates
+        initial_len = len(df)
+        df_clean = df.drop_duplicates(subset=['date', 'ticker'], keep='first').copy()
+        duplicates_removed = initial_len - len(df_clean)
+        
+        # Step 2: Safe causal forward-fill (per ticker, max 3 days)
+        df_clean = df_clean.sort_values(['ticker', 'date'])
+        forward_filled = 0
+        
+        ohlcv_cols = ['open', 'high', 'low', 'close', 'volume']
+        for ticker in df_clean['ticker'].unique():
+            ticker_mask = df_clean['ticker'] == ticker
+            ticker_data = df_clean.loc[ticker_mask].copy()
+            ticker_data = ticker_data.set_index('date')
+            
+            for col in ohlcv_cols:
+                if col in ticker_data.columns:
+                    before_fill = ticker_data[col].isna().sum()
+                    ticker_data[col] = ticker_data[col].ffill(limit=3)
+                    after_fill = ticker_data[col].isna().sum()
+                    forward_filled += (before_fill - after_fill)
+            
+            # Safe update: use .loc with proper indexing
+            df_clean.loc[ticker_mask, ohlcv_cols] = ticker_data[ohlcv_cols].values
+        
+        # Step 3: 3-sigma outlier clipping (expanding window, PIT-safe)
+        outliers_clipped = 0
+        for ticker in df_clean['ticker'].unique():
+            ticker_mask = df_clean['ticker'] == ticker
+            ticker_data = df_clean.loc[ticker_mask].copy()
+            
+            for col in ohlcv_cols:
+                if col not in ticker_data.columns:
+                    continue
+                
+                expanding_mean = ticker_data[col].expanding(min_periods=20).mean()
+                expanding_std = ticker_data[col].expanding(min_periods=20).std()
+                
+                lower_bound = expanding_mean - 3.0 * expanding_std
+                upper_bound = expanding_mean + 3.0 * expanding_std
+                
+                original_values = ticker_data[col].copy()
+                ticker_data[col] = ticker_data[col].clip(lower=lower_bound, upper=upper_bound)
+                outliers_clipped += (original_values != ticker_data[col]).sum()
+            
+            # Safe update
+            df_clean.loc[ticker_mask, ohlcv_cols] = ticker_data[ohlcv_cols].values
+        
+        # Step 4: Remove invalid prices
+        price_cols = [col for col in ohlcv_cols if col in ['open', 'high', 'low', 'close']]
+        initial_len = len(df_clean)
+        for col in price_cols:
+            df_clean = df_clean[df_clean[col] >= 0.01]
+        invalid_prices_removed = initial_len - len(df_clean)
+        
+        # Log sanitization report
         logger.info("P11 Data Cleaning Applied:")
-        logger.info(sanitizer.get_sanitization_report())
+        logger.info(f"=== Data Sanitization Report ===")
+        logger.info(f"Input rows: {len(df)}")
+        logger.info(f"Duplicates removed: {duplicates_removed}")
+        logger.info(f"Values forward-filled: {forward_filled}")
+        logger.info(f"Outliers clipped: {outliers_clipped}")
+        logger.info(f"Invalid prices removed: {invalid_prices_removed}")
+        logger.info(f"Output rows: {len(df_clean)}")
+        logger.info(f"Data retention: {len(df_clean) / len(df) * 100:.1f}%")
         
         return df_clean
     
