@@ -308,12 +308,56 @@ class Phase35DataLoader:
         
         return splits
     
+    def _apply_sanitization(self, df: pd.DataFrame) -> pd.DataFrame:
+        """P11: Apply DataSanitizer with PIT-safe expanding window.
+        
+        Uses clean_ohlcv() which applies expanding window statistics
+        (only past data) for outlier clipping — strictly no look-ahead.
+        
+        Pipeline:
+        1. Remove duplicates (keep first occurrence)
+        2. Causal forward-fill (max 3 days gap)
+        3. 3-sigma outlier clipping (per-symbol, expanding window)
+        4. Remove invalid prices (< 0.01 VND)
+        
+        Parameters
+        ----------
+        df : pd.DataFrame
+            Raw OHLCV data with 'ticker' and 'date' columns
+        
+        Returns
+        -------
+        pd.DataFrame
+            Sanitized OHLCV data
+        """
+        from omega.quant.data_sanitizer import DataSanitizer
+        
+        sanitizer = DataSanitizer(
+            max_fill_days=3,
+            outlier_sigma=3.0,
+            min_price=0.01,
+        )
+        
+        # Note: symbol_col='ticker' to match Phase35DataLoader column naming
+        df_clean, stats = sanitizer.clean_ohlcv(
+            df,
+            ohlcv_cols=['open', 'high', 'low', 'close', 'volume'],
+            symbol_col='ticker',
+            date_col='date',
+        )
+        
+        logger.info("P11 Data Cleaning Applied:")
+        logger.info(sanitizer.get_sanitization_report())
+        
+        return df_clean
+    
     def load_and_prepare(
         self,
         start_date: str = "2015-01-01",
         end_date: str = "2026-05-08",
         top_n_symbols: int = 30,
         forward_horizons: List[int] = [1, 3, 5],
+        enable_data_cleaning: bool = False,
     ) -> pd.DataFrame:
         """Load, filter, and prepare data for walk-forward backtest.
         
@@ -327,6 +371,8 @@ class Phase35DataLoader:
             Number of top symbols to select
         forward_horizons : list of int
             Forward return horizons
+        enable_data_cleaning : bool
+            P11: If True, apply DataSanitizer before filtering (default: False)
         
         Returns
         -------
@@ -335,6 +381,10 @@ class Phase35DataLoader:
         """
         # Load raw data
         df = self.load_raw_data(start_date=start_date, end_date=end_date)
+        
+        # P11: Data cleaning (opt-in, PIT-safe expanding window)
+        if enable_data_cleaning:
+            df = self._apply_sanitization(df)
         
         # Apply filters
         df = self.apply_filters(df)

@@ -181,6 +181,11 @@ def main():
         action="store_true",
         help="P10 Gate Tuning: allow horizons with non-empty top_alphas to proceed even if gate passes < min_pass (relaxed mode only)",
     )
+    parser.add_argument(
+        "--enable-data-cleaning",
+        action="store_true",
+        help="P11: Enable DataSanitizer cleaning before alpha computation (opt-in, default-off)",
+    )
     args = parser.parse_args()
     args.use_xgboost = not args.no_xgboost
     
@@ -267,6 +272,7 @@ def main():
         end_date=END_DATE,
         top_n_symbols=TOP_N_SYMBOLS,
         forward_horizons=[1, 3, 5],
+        enable_data_cleaning=args.enable_data_cleaning,
     )
     
     logger.info(f"Data loaded: {len(df):,} rows, {df['ticker'].nunique()} symbols")
