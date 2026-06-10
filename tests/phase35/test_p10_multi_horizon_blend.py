@@ -138,7 +138,7 @@ class TestHorizonReturnColMatching(unittest.TestCase):
         # Call _compute_horizon_signal for horizon 3
         with patch('omega.quant.phase35_walk_forward.validate_research_gate',
                    return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}):
-            signal, val_ic, gated, gate_res = engine._compute_horizon_signal(
+            signal, val_ic, gated, gate_res, _ = engine._compute_horizon_signal(
                 fold_id=1,
                 train_df=train_df,
                 test_df=test_df,
@@ -181,7 +181,7 @@ class TestHorizonSpecificEmbargo(unittest.TestCase):
         # Horizon 1 should remove 1 row per ticker
         with patch('omega.quant.phase35_walk_forward.validate_research_gate',
                    return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}):
-            signal_h1, _, _, _ = engine._compute_horizon_signal(
+            signal_h1, _, _, _, _ = engine._compute_horizon_signal(
                 fold_id=1, train_df=train_df, test_df=test_df,
                 alpha_cols=alpha_cols, return_col='fwd_ret_1',
                 horizon=1, cost_aware=False,
@@ -190,7 +190,7 @@ class TestHorizonSpecificEmbargo(unittest.TestCase):
         # Horizon 3 should remove 3 rows per ticker
         with patch('omega.quant.phase35_walk_forward.validate_research_gate',
                    return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}):
-            signal_h3, _, _, _ = engine._compute_horizon_signal(
+            signal_h3, _, _, _, _ = engine._compute_horizon_signal(
                 fold_id=1, train_df=train_df, test_df=test_df,
                 alpha_cols=alpha_cols, return_col='fwd_ret_3',
                 horizon=3, cost_aware=False,
@@ -281,8 +281,8 @@ class TestMissingHorizonFallback(unittest.TestCase):
         test_df = engine.compute_alphas(test_df)
         
         # Try to compute signal for horizon 1 (missing fwd_ret_1)
-        # Updated to unpack quality_metrics dict
-        signal, quality_metrics, gated, gate_res = engine._compute_horizon_signal(
+        # Updated to unpack quality_metrics dict and gate_metadata
+        signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
             fold_id=1,
             train_df=train_df,
             test_df=test_df,
@@ -542,7 +542,7 @@ class TestGateVerdictTruthiness(unittest.TestCase):
         # Mock gate to return FAIL verdicts for all alphas
         with patch('omega.quant.phase35_walk_forward.validate_research_gate',
                    return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
-            signal, quality_metrics, gated, gate_res = engine._compute_horizon_signal(
+            signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
                 fold_id=1,
                 train_df=train_df,
                 test_df=test_df,
@@ -745,6 +745,712 @@ class TestRole21ReauditFixes(unittest.TestCase):
             dist_to_sig5, dist_to_sig1,
             "Blend should be closer to sig5 (high final-objective IC) than sig1"
         )
+
+
+# ---------------------------------------------------------------------------
+# Test 10: P10 Gate Tuning (2026-06-09)
+# ---------------------------------------------------------------------------
+
+class TestP10GateTuning(unittest.TestCase):
+    """Verify P10 Research Gate tuning knobs behavior."""
+    
+    def test_strict_mode_excludes_zero_passes_default_behavior(self):
+        """Strict mode (default) excludes horizon with zero gate passes."""
+        engine = _make_engine(multi_horizon_blend=True, blend_horizons=[1, 3, 5])
+        
+        # Verify default values
+        self.assertEqual(engine.p10_gate_mode, "strict")
+        self.assertEqual(engine.p10_gate_min_pass, 1)
+        self.assertFalse(engine.p10_gate_allow_fallback_candidates)
+        
+        df = _make_df(n_dates=100, include_horizons=[1, 3, 5])
+        n = len(df)
+        train_df = df.iloc[:int(n * 0.7)].copy()
+        test_df = df.iloc[int(n * 0.7):].copy()
+        
+        train_df = engine.compute_alphas(train_df)
+        test_df = engine.compute_alphas(test_df)
+        
+        alpha_cols = ['alpha_a', 'alpha_b']
+        
+        # Mock gate to return FAIL verdicts for all alphas
+        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+                   return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
+            signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
+                fold_id=1,
+                train_df=train_df,
+                test_df=test_df,
+                alpha_cols=alpha_cols,
+                return_col='fwd_ret_3',
+                horizon=3,
+                cost_aware=False,
+            )
+        
+        # Strict mode should exclude horizon (return None)
+        self.assertIsNone(signal, "Strict mode should exclude horizon with 0 gate passes")
+        self.assertEqual(len(gated), 0, "Gated alphas should be empty")
+    
+    def test_relaxed_mode_without_fallback_still_excludes_zero_passes(self):
+        """Relaxed mode without fallback candidates still excludes if min_pass unmet."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        engine = Phase35WalkForwardEngine(
+            alpha_module=_make_fake_alpha_module(),
+            min_ic_threshold=0.0,
+            top_n_alphas=2,
+            multi_horizon_blend=True,
+            blend_horizons=[1, 3, 5],
+            p10_gate_mode="relaxed",
+            p10_gate_min_pass=1,
+            p10_gate_allow_fallback_candidates=False,  # Explicitly disabled
+        )
+        
+        df = _make_df(n_dates=100, include_horizons=[1, 3, 5])
+        n = len(df)
+        train_df = df.iloc[:int(n * 0.7)].copy()
+        test_df = df.iloc[int(n * 0.7):].copy()
+        
+        train_df = engine.compute_alphas(train_df)
+        test_df = engine.compute_alphas(test_df)
+        
+        alpha_cols = ['alpha_a', 'alpha_b']
+        
+        # Mock gate to return FAIL verdicts for all alphas (0 passes)
+        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+                   return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
+            signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
+                fold_id=1,
+                train_df=train_df,
+                test_df=test_df,
+                alpha_cols=alpha_cols,
+                return_col='fwd_ret_3',
+                horizon=3,
+                cost_aware=False,
+            )
+        
+        # Relaxed mode without fallback candidates should still exclude (0 < min_pass=1)
+        self.assertIsNone(signal, "Relaxed mode without fallback should exclude horizon with 0 passes < min_pass=1")
+        self.assertEqual(len(gated), 0, "Gated alphas should be empty")
+    
+    def test_relaxed_mode_with_fallback_allows_horizon_with_candidates(self):
+        """Relaxed mode with allow_fallback_candidates=True allows horizon to proceed."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        engine = Phase35WalkForwardEngine(
+            alpha_module=_make_fake_alpha_module(),
+            min_ic_threshold=0.0,
+            top_n_alphas=2,
+            multi_horizon_blend=True,
+            blend_horizons=[1, 3, 5],
+            p10_gate_mode="relaxed",
+            p10_gate_min_pass=1,
+            p10_gate_allow_fallback_candidates=True,  # Enabled
+        )
+        
+        df = _make_df(n_dates=100, include_horizons=[1, 3, 5])
+        n = len(df)
+        train_df = df.iloc[:int(n * 0.7)].copy()
+        test_df = df.iloc[int(n * 0.7):].copy()
+        
+        train_df = engine.compute_alphas(train_df)
+        test_df = engine.compute_alphas(test_df)
+        
+        alpha_cols = ['alpha_a', 'alpha_b']
+        
+        # Mock gate to return FAIL verdicts for all alphas (0 passes)
+        # But fallback candidates should allow horizon to proceed
+        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+                   return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
+            signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
+                fold_id=1,
+                train_df=train_df,
+                test_df=test_df,
+                alpha_cols=alpha_cols,
+                return_col='fwd_ret_3',
+                horizon=3,
+                cost_aware=False,
+            )
+        
+        # Relaxed mode with fallback candidates enabled should allow horizon (top_alphas non-empty)
+        self.assertIsNotNone(signal, "Relaxed mode with fallback candidates should allow horizon with non-empty top_alphas")
+        self.assertEqual(len(signal), len(test_df), "Signal length should match test_df")
+        self.assertGreater(len(gated), 0, "Gated alphas should not be empty (fallback to top_alphas)")
+    
+    def test_relaxed_mode_with_min_pass_met_proceeds(self):
+        """Relaxed mode allows horizon if gate_passed_count >= min_pass."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        engine = Phase35WalkForwardEngine(
+            alpha_module=_make_fake_alpha_module(),
+            min_ic_threshold=0.0,
+            top_n_alphas=2,
+            multi_horizon_blend=True,
+            blend_horizons=[1, 3, 5],
+            p10_gate_mode="relaxed",
+            p10_gate_min_pass=1,  # Require at least 1 pass
+            p10_gate_allow_fallback_candidates=False,
+        )
+        
+        df = _make_df(n_dates=100, include_horizons=[1, 3, 5])
+        n = len(df)
+        train_df = df.iloc[:int(n * 0.7)].copy()
+        test_df = df.iloc[int(n * 0.7):].copy()
+        
+        train_df = engine.compute_alphas(train_df)
+        test_df = engine.compute_alphas(test_df)
+        
+        alpha_cols = ['alpha_a', 'alpha_b']
+        
+        # Mock gate to return mixed verdicts: 1 PASS, 1 FAIL
+        gate_results = [
+            {'passed': True, 'verdict': 'PASS', 'n_samples': 20},  # alpha_a passes
+            {'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5},  # alpha_b fails
+        ]
+        call_count = [0]
+        
+        def mock_gate(val_ic, rolling_ic):
+            result = gate_results[call_count[0] % len(gate_results)]
+            call_count[0] += 1
+            return result
+        
+        with patch('omega.quant.phase35_walk_forward.validate_research_gate', side_effect=mock_gate):
+            signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
+                fold_id=1,
+                train_df=train_df,
+                test_df=test_df,
+                alpha_cols=alpha_cols,
+                return_col='fwd_ret_3',
+                horizon=3,
+                cost_aware=False,
+            )
+        
+        # Relaxed mode should allow horizon (1 pass >= min_pass=1)
+        self.assertIsNotNone(signal, "Relaxed mode should allow horizon with gate_passed_count >= min_pass")
+        self.assertEqual(len(signal), len(test_df), "Signal length should match test_df")
+    
+    def test_relaxed_horizon_with_non_positive_quality_triggers_fallback(self):
+        """Relaxed admitted horizon with non-positive final-objective quality gets zero weight."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        engine = Phase35WalkForwardEngine(
+            alpha_module=_make_fake_alpha_module(),
+            min_ic_threshold=0.0,
+            top_n_alphas=2,
+            multi_horizon_blend=True,
+            blend_horizons=[1, 3],
+            blend_weight_method="validation_ic",
+            p10_gate_mode="relaxed",
+            p10_gate_min_pass=1,
+            p10_gate_allow_fallback_candidates=True,
+        )
+        
+        # Create horizon results where relaxed gate allowed h1 to proceed,
+        # but its final-objective validation_ic is non-positive
+        sig1 = pd.Series([1.0, 2.0, 3.0], index=[0, 1, 2])
+        sig3 = pd.Series([4.0, 5.0, 6.0], index=[0, 1, 2])
+        
+        horizon_results = {
+            1: (sig1, {
+                'train_ic': 0.05,
+                'validation_ic': -0.02,  # Non-positive final-objective IC
+                'final_objective_validation_ic': -0.02,
+            }),
+            3: (sig3, {
+                'train_ic': 0.08,
+                'validation_ic': -0.01,  # Also non-positive
+                'final_objective_validation_ic': -0.01,
+            }),
+        }
+        
+        # Blend should return None (all non-positive quality)
+        result = engine._blend_horizon_signals(horizon_results, method='validation_ic')
+        self.assertIsNone(result, "Blend should return None when all horizons have non-positive final-objective quality")
+    
+    def test_invalid_gate_mode_raises_error(self):
+        """Invalid p10_gate_mode value should raise ValueError."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        with self.assertRaises(ValueError) as context:
+            engine = Phase35WalkForwardEngine(
+                alpha_module=_make_fake_alpha_module(),
+                min_ic_threshold=0.0,
+                top_n_alphas=2,
+                p10_gate_mode="invalid_mode",  # Invalid
+            )
+        
+        self.assertIn("p10_gate_mode", str(context.exception))
+        self.assertIn("strict", str(context.exception))
+        self.assertIn("relaxed", str(context.exception))
+    
+    def test_invalid_gate_min_pass_raises_error(self):
+        """Invalid p10_gate_min_pass value should raise ValueError."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        # Negative value should raise
+        with self.assertRaises(ValueError) as context:
+            engine = Phase35WalkForwardEngine(
+                alpha_module=_make_fake_alpha_module(),
+                min_ic_threshold=0.0,
+                top_n_alphas=2,
+                p10_gate_min_pass=-1,  # Invalid
+            )
+        
+        self.assertIn("p10_gate_min_pass", str(context.exception))
+    
+    def test_gate_mode_parameters_stored_correctly(self):
+        """Gate tuning parameters should be stored as instance variables."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        engine = Phase35WalkForwardEngine(
+            alpha_module=_make_fake_alpha_module(),
+            min_ic_threshold=0.0,
+            top_n_alphas=2,
+            p10_gate_mode="relaxed",
+            p10_gate_min_pass=2,
+            p10_gate_allow_fallback_candidates=True,
+        )
+        
+        self.assertEqual(engine.p10_gate_mode, "relaxed")
+        self.assertEqual(engine.p10_gate_min_pass, 2)
+        self.assertTrue(engine.p10_gate_allow_fallback_candidates)
+    
+    def test_relaxed_fallback_produces_correct_gate_metadata(self):
+        """Role21 Fix 2026-06-10: Relaxed fallback candidates produce correct gate_metadata."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        engine = Phase35WalkForwardEngine(
+            alpha_module=_make_fake_alpha_module(),
+            min_ic_threshold=0.0,
+            top_n_alphas=2,
+            multi_horizon_blend=True,
+            blend_horizons=[1, 3, 5],
+            p10_gate_mode="relaxed",
+            p10_gate_min_pass=1,
+            p10_gate_allow_fallback_candidates=True,
+        )
+        
+        df = _make_df(n_dates=100, include_horizons=[1, 3, 5])
+        n = len(df)
+        train_df = df.iloc[:int(n * 0.7)].copy()
+        test_df = df.iloc[int(n * 0.7):].copy()
+        
+        train_df = engine.compute_alphas(train_df)
+        test_df = engine.compute_alphas(test_df)
+        
+        alpha_cols = ['alpha_a', 'alpha_b']
+        
+        # Mock gate to return FAIL verdicts for all alphas (0 passes)
+        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+                   return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
+            signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
+                fold_id=1,
+                train_df=train_df,
+                test_df=test_df,
+                alpha_cols=alpha_cols,
+                return_col='fwd_ret_3',
+                horizon=3,
+                cost_aware=False,
+            )
+        
+        # Verify signal is not None (fallback allowed)
+        self.assertIsNotNone(signal, "Signal should not be None when fallback is allowed")
+        
+        # Verify gate_metadata structure
+        self.assertIsNotNone(gate_meta, "gate_metadata should not be None")
+        self.assertIn('selection_source', gate_meta)
+        self.assertIn('used_fallback_candidates', gate_meta)
+        self.assertIn('gate_passed_count', gate_meta)
+        self.assertIn('gate_total', gate_meta)
+        self.assertIn('gate_required_passes', gate_meta)
+        self.assertIn('gate_mode', gate_meta)
+        self.assertIn('gate_passed_alphas', gate_meta)
+        
+        # Verify fallback candidate metadata values
+        self.assertEqual(gate_meta['selection_source'], 'fallback_candidate',
+                        "selection_source should be 'fallback_candidate' when using relaxed fallback")
+        self.assertTrue(gate_meta['used_fallback_candidates'],
+                       "used_fallback_candidates should be True when fallback is used")
+        self.assertEqual(gate_meta['gate_passed_count'], 0,
+                        "gate_passed_count should be 0 when all alphas fail")
+        self.assertEqual(gate_meta['gate_mode'], 'relaxed')
+        self.assertEqual(gate_meta['gate_required_passes'], 1)
+        self.assertEqual(len(gate_meta['gate_passed_alphas']), 0,
+                        "gate_passed_alphas should be empty when all alphas fail")
+    
+    def test_strict_gate_pass_produces_correct_gate_metadata(self):
+        """Role21 Fix 2026-06-10: Strict gate pass produces correct gate_metadata."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        engine = Phase35WalkForwardEngine(
+            alpha_module=_make_fake_alpha_module(),
+            min_ic_threshold=0.0,
+            top_n_alphas=2,
+            multi_horizon_blend=True,
+            blend_horizons=[1, 3, 5],
+            p10_gate_mode="strict",
+            p10_gate_min_pass=1,
+            p10_gate_allow_fallback_candidates=False,
+        )
+        
+        df = _make_df(n_dates=100, include_horizons=[1, 3, 5])
+        n = len(df)
+        train_df = df.iloc[:int(n * 0.7)].copy()
+        test_df = df.iloc[int(n * 0.7):].copy()
+        
+        train_df = engine.compute_alphas(train_df)
+        test_df = engine.compute_alphas(test_df)
+        
+        alpha_cols = ['alpha_a', 'alpha_b']
+        
+        # Mock gate to return mixed verdicts: 1 PASS, 1 FAIL
+        gate_results = [
+            {'passed': True, 'verdict': 'PASS', 'n_samples': 20},  # alpha_a passes
+            {'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5},  # alpha_b fails
+        ]
+        call_count = [0]
+        
+        def mock_gate(val_ic, rolling_ic):
+            result = gate_results[call_count[0] % len(gate_results)]
+            call_count[0] += 1
+            return result
+        
+        with patch('omega.quant.phase35_walk_forward.validate_research_gate', side_effect=mock_gate):
+            signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
+                fold_id=1,
+                train_df=train_df,
+                test_df=test_df,
+                alpha_cols=alpha_cols,
+                return_col='fwd_ret_3',
+                horizon=3,
+                cost_aware=False,
+            )
+        
+        # Verify signal is not None (at least 1 alpha passed)
+        self.assertIsNotNone(signal, "Signal should not be None when alphas pass gate")
+        
+        # Verify gate_metadata structure
+        self.assertIsNotNone(gate_meta, "gate_metadata should not be None")
+        
+        # Verify research gate metadata values (not fallback)
+        self.assertEqual(gate_meta['selection_source'], 'research_gate',
+                        "selection_source should be 'research_gate' when alphas pass gate")
+        self.assertFalse(gate_meta['used_fallback_candidates'],
+                        "used_fallback_candidates should be False when not using fallback")
+        self.assertEqual(gate_meta['gate_passed_count'], 1,
+                        "gate_passed_count should be 1 when one alpha passes")
+        self.assertEqual(gate_meta['gate_mode'], 'strict')
+        self.assertEqual(gate_meta['gate_required_passes'], 1)
+        self.assertGreater(len(gate_meta['gate_passed_alphas']), 0,
+                          "gate_passed_alphas should not be empty when alphas pass")
+    
+    def test_fold_metrics_includes_gate_metadata(self):
+        """Role21 Fix 2026-06-10: FoldMetrics includes gate_metadata field."""
+        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        
+        engine = Phase35WalkForwardEngine(
+            alpha_module=_make_fake_alpha_module(),
+            min_ic_threshold=0.0,
+            top_n_alphas=2,
+            multi_horizon_blend=True,
+            blend_horizons=[3],
+            p10_gate_mode="relaxed",
+            p10_gate_min_pass=1,
+            p10_gate_allow_fallback_candidates=True,
+        )
+        
+        df = _make_df(n_dates=50, include_horizons=[3])
+        n = len(df)
+        train_df = df.iloc[:int(n * 0.7)].copy()
+        test_df = df.iloc[int(n * 0.7):].copy()
+        
+        alpha_cols = ['alpha_a', 'alpha_b']
+        
+        # Mock gate to trigger fallback
+        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+                   return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
+            metrics = engine.run_fold(
+                fold_id=1,
+                train_df=train_df,
+                test_df=test_df,
+                alpha_cols=alpha_cols,
+                return_col='fwd_ret_3',
+                cost_aware=False,
+            )
+        
+        # Verify FoldMetrics has gate_metadata field
+        self.assertTrue(hasattr(metrics, 'gate_metadata'), "FoldMetrics should have gate_metadata field")
+        
+        # Verify gate_metadata is present and has correct structure
+        if metrics.gate_metadata is not None:
+            self.assertIn('selection_source', metrics.gate_metadata)
+            self.assertIn('used_fallback_candidates', metrics.gate_metadata)
+            self.assertIn('gate_mode', metrics.gate_metadata)
+
+
+class TestP10GateTuningCLIPersist(unittest.TestCase):
+    """
+    F2: CLI parse/pass/persist tests for P10 gate tuning configuration.
+    
+    Verifies that:
+    1. run_phase35_backtest.py argparse includes P10 gate config keys
+    2. serialize_fold_details() persists gate_metadata to JSON
+    3. Serialization includes all required fields and convenience aliases
+    """
+    
+    def test_cli_parser_includes_p10_gate_config_keys(self):
+        """Verify argparse includes p10_gate_mode, p10_gate_min_pass, p10_gate_allow_fallback_candidates."""
+        import sys
+        import os
+        import argparse
+        
+        # Import the script module
+        script_path = os.path.join(os.path.dirname(__file__), '../../scripts/run_phase35_backtest.py')
+        script_path = os.path.abspath(script_path)
+        
+        # Read the script source to verify config keys are present
+        with open(script_path, 'r') as f:
+            script_source = f.read()
+        
+        # Verify P10 gate config keys are in the script
+        self.assertIn('p10_gate_mode', script_source, 
+                     "Script should include p10_gate_mode config key")
+        self.assertIn('p10_gate_min_pass', script_source,
+                     "Script should include p10_gate_min_pass config key")
+        self.assertIn('p10_gate_allow_fallback_candidates', script_source,
+                     "Script should include p10_gate_allow_fallback_candidates config key")
+        
+        # Verify the config keys appear in argparse section
+        self.assertIn('--p10-gate-mode', script_source,
+                     "Script should have --p10-gate-mode CLI argument")
+        self.assertIn('--p10-gate-min-pass', script_source,
+                     "Script should have --p10-gate-min-pass CLI argument")
+        self.assertIn('--p10-gate-allow-fallback-candidates', script_source,
+                     "Script should have --p10-gate-allow-fallback-candidates CLI argument")
+        
+        # Verify the config keys appear in results_dict/config section for persistence
+        # Look for the config dict section
+        config_section_start = script_source.find('"config": {')
+        config_section_end = script_source.find('},', config_section_start)
+        config_section = script_source[config_section_start:config_section_end]
+        
+        self.assertIn('"p10_gate_mode":', config_section,
+                     "Config dict should persist p10_gate_mode")
+        self.assertIn('"p10_gate_min_pass":', config_section,
+                     "Config dict should persist p10_gate_min_pass")
+        self.assertIn('"p10_gate_allow_fallback_candidates":', config_section,
+                     "Config dict should persist p10_gate_allow_fallback_candidates")
+    
+    def test_serialize_fold_details_with_gate_metadata(self):
+        """Verify serialize_fold_details() includes gate_metadata when present on FoldMetrics."""
+        import sys
+        import os
+        
+        # Import the serialize_fold_details function from the script
+        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../scripts')))
+        from run_phase35_backtest import serialize_fold_details
+        
+        # Create a mock FoldMetrics object with gate_metadata
+        class MockFoldMetrics:
+            def __init__(self):
+                self.fold_id = 1
+                self.train_start = "2020-01-01"
+                self.train_end = "2020-12-31"
+                self.test_start = "2021-01-01"
+                self.test_end = "2021-12-31"
+                self.portfolio_ic = 0.15
+                self.portfolio_sharpe = 1.5
+                self.portfolio_max_dd = -0.10
+                self.portfolio_total_return = 0.25
+                self.portfolio_pnl_vnd = 250000000.0
+                self.alpha_ics = {"alpha_a": 0.20, "alpha_b": 0.10}
+                self.n_train_samples = 1000
+                self.n_test_samples = 200
+                self.gate_metadata = {
+                    "selection_source": "fallback_candidate",
+                    "used_fallback_candidates": True,
+                    "gate_passed_count": 0,
+                    "gate_total": 2,
+                    "gate_required_passes": 1,
+                    "gate_mode": "relaxed",
+                    "gate_passed_alphas": []
+                }
+        
+        mock_metrics = MockFoldMetrics()
+        result = serialize_fold_details(mock_metrics)
+        
+        # Verify basic fields are present
+        self.assertEqual(result["fold_id"], 1)
+        self.assertEqual(result["portfolio_ic"], 0.15)
+        
+        # Verify gate_metadata is present in serialized output
+        self.assertIn("gate_metadata", result, 
+                     "Serialized fold should include gate_metadata")
+        self.assertIsNotNone(result["gate_metadata"],
+                            "gate_metadata should not be None when present on FoldMetrics")
+        
+        # Verify convenience aliases are present
+        self.assertIn("selection_source", result,
+                     "Serialized fold should include selection_source convenience alias")
+        self.assertIn("used_fallback_candidates", result,
+                     "Serialized fold should include used_fallback_candidates convenience alias")
+        self.assertIn("gate_passed_count", result,
+                     "Serialized fold should include gate_passed_count convenience alias")
+        self.assertIn("gate_total", result,
+                     "Serialized fold should include gate_total convenience alias")
+        self.assertIn("gate_required_passes", result,
+                     "Serialized fold should include gate_required_passes convenience alias")
+        self.assertIn("gate_mode", result,
+                     "Serialized fold should include gate_mode convenience alias")
+        self.assertIn("gate_passed_alphas", result,
+                     "Serialized fold should include gate_passed_alphas convenience alias")
+        
+        # Verify values match
+        self.assertEqual(result["selection_source"], "fallback_candidate")
+        self.assertTrue(result["used_fallback_candidates"])
+        self.assertEqual(result["gate_passed_count"], 0)
+        self.assertEqual(result["gate_mode"], "relaxed")
+    
+    def test_serialize_fold_details_without_gate_metadata(self):
+        """Verify serialize_fold_details() works correctly when gate_metadata is None (backward compat)."""
+        import sys
+        import os
+        
+        # Import the serialize_fold_details function from the script
+        sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../scripts')))
+        from run_phase35_backtest import serialize_fold_details
+        
+        # Create a mock FoldMetrics object without gate_metadata
+        class MockFoldMetrics:
+            def __init__(self):
+                self.fold_id = 1
+                self.train_start = "2020-01-01"
+                self.train_end = "2020-12-31"
+                self.test_start = "2021-01-01"
+                self.test_end = "2021-12-31"
+                self.portfolio_ic = 0.15
+                self.portfolio_sharpe = 1.5
+                self.portfolio_max_dd = -0.10
+                self.portfolio_total_return = 0.25
+                self.portfolio_pnl_vnd = 250000000.0
+                self.alpha_ics = {"alpha_a": 0.20, "alpha_b": 0.10}
+                self.n_train_samples = 1000
+                self.n_test_samples = 200
+                # No gate_metadata attribute
+        
+        mock_metrics = MockFoldMetrics()
+        result = serialize_fold_details(mock_metrics)
+        
+        # Verify basic fields are present
+        self.assertEqual(result["fold_id"], 1)
+        self.assertEqual(result["portfolio_ic"], 0.15)
+        
+        # Verify gate_metadata fields are NOT present when not on FoldMetrics
+        self.assertNotIn("gate_metadata", result,
+                        "Serialized fold should not include gate_metadata when not present on FoldMetrics")
+        self.assertNotIn("selection_source", result,
+                        "Convenience aliases should not be present when gate_metadata is None")
+
+
+# ---------------------------------------------------------------------------
+# Role20 P10 Fix: Partial Horizon Success Metadata Selection
+# ---------------------------------------------------------------------------
+
+class TestP10PartialHorizonMetadataSelection(unittest.TestCase):
+    """
+    Role20 P10 Fix 2026-06-10: Verify run_fold() selects metadata from first 
+    included horizon, not first requested horizon, in partial-success scenarios.
+    
+    Bug: If horizon 1 is excluded but horizon 3 is included, FoldMetrics 
+    should report horizon 3's gate_metadata, not horizon 1's.
+    """
+    
+    def test_metadata_from_first_included_not_first_requested(self):
+        """
+        Scenario: Request horizons [1, 3, 5], but fwd_ret_1 is missing.
+        Expected: FoldMetrics.gate_metadata comes from horizon 3 (first included),
+                  not horizon 1 (first requested but excluded).
+        
+        Verification approach:
+        - Horizon 1 (excluded due to missing fwd_ret_1) would have:
+          selection_source='excluded', exclusion_reason='return_col_not_found'
+        - Horizon 3 (included) would have:
+          selection_source='research_gate' or 'fallback_candidate', 
+          gate_passed_count > 0 (or at least gate_total > 0)
+        """
+        # Create engine requesting horizons [1, 3, 5]
+        engine = _make_engine(
+            multi_horizon_blend=True,
+            blend_horizons=[1, 3, 5],
+            blend_weight_method="validation_ic",
+            min_ic_threshold=0.0,
+            top_n_alphas=2,
+            top_n_stocks=5,
+        )
+        
+        # Create data with only horizons [3, 5] - horizon 1 missing
+        df = _make_df(n_dates=100, include_horizons=[3, 5], seed=42)
+        
+        n = len(df)
+        train_df = df.iloc[:int(n * 0.7)].copy()
+        test_df = df.iloc[int(n * 0.7):].copy()
+        
+        # Compute alphas
+        train_df = engine.compute_alphas(train_df)
+        test_df = engine.compute_alphas(test_df)
+        
+        alpha_cols = ['alpha_a', 'alpha_b']
+        
+        # Mock gate validation to return PASS
+        def mock_gate_validation(alphas, returns, **kwargs):
+            return {
+                'passed': True,
+                'verdict': 'PASS',
+                'n_samples': len(returns),
+            }
+        
+        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+                   side_effect=mock_gate_validation):
+            # Run fold - horizon 1 should be excluded, horizons 3 and 5 included
+            result = engine.run_fold(
+                fold_id=1,
+                train_df=train_df,
+                test_df=test_df,
+                alpha_cols=alpha_cols,
+                return_col='fwd_ret_5',  # Default objective
+                cost_aware=False,
+            )
+        
+        # Verify FoldMetrics was returned
+        self.assertIsNotNone(result, "run_fold should return FoldMetrics")
+        
+        # Verify gate_metadata is present
+        self.assertIsNotNone(result.gate_metadata, 
+                            "FoldMetrics should have gate_metadata")
+        
+        # Key assertion 1: selection_source should NOT be 'excluded'
+        # If it were 'excluded', it would mean we selected metadata from horizon 1
+        selection_source = result.gate_metadata.get('selection_source', '')
+        self.assertNotEqual(selection_source, 'excluded',
+                           f"gate_metadata.selection_source should not be 'excluded' "
+                           f"(which would indicate horizon 1). Got: {selection_source}")
+        
+        # Key assertion 2: Should NOT have exclusion_reason field
+        # excluded horizons have this field, included horizons don't
+        self.assertNotIn('exclusion_reason', result.gate_metadata,
+                        "gate_metadata should not have 'exclusion_reason' field "
+                        "(which only appears in excluded horizons)")
+        
+        # Key assertion 3: gate_total should be > 0
+        # Excluded horizons (missing data) have gate_total=0
+        gate_total = result.gate_metadata.get('gate_total', 0)
+        self.assertGreater(gate_total, 0,
+                          f"gate_total should be > 0 for included horizon. Got: {gate_total}")
+        
+        # Additional verification: gated_alphas should not be empty
+        self.assertIsNotNone(result.gated_alphas,
+                            "FoldMetrics should have gated_alphas")
+        self.assertGreater(len(result.gated_alphas), 0,
+                          "gated_alphas should not be empty for included horizon")
 
 
 if __name__ == '__main__':

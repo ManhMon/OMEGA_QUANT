@@ -129,6 +129,8 @@ class FoldMetrics:
     # Stage 3 ML Gate fields
     gate_results: Dict[str, dict] = field(default_factory=dict)
     gated_alphas: List[str] = field(default_factory=list)
+    # P10 Gate Tuning: structured fallback-candidate labeling (Role21 Fix 2026-06-10)
+    gate_metadata: Optional[Dict[str, any]] = field(default_factory=lambda: None)
 
 
 @dataclass
@@ -187,6 +189,9 @@ class Phase35WalkForwardEngine:
         multi_horizon_blend: bool = False,
         blend_horizons: Optional[List[int]] = None,
         blend_weight_method: str = "validation_ic",
+        p10_gate_mode: str = "strict",
+        p10_gate_min_pass: int = 1,
+        p10_gate_allow_fallback_candidates: bool = False,
     ):
         """Initialize walk-forward engine.
         
@@ -231,6 +236,16 @@ class Phase35WalkForwardEngine:
         blend_weight_method : str
             P10: Method for computing blend weights (default 'validation_ic').
             Options: 'validation_ic', 'train_ic'
+        p10_gate_mode : str
+            P10 Research Gate tuning: gate policy mode (default 'strict').
+            Valid values: 'strict' (current behavior), 'relaxed' (allow fallback candidates).
+        p10_gate_min_pass : int
+            P10 Research Gate tuning: minimum gate passes required for horizon eligibility
+            in relaxed mode (default 1). Ignored in strict mode.
+        p10_gate_allow_fallback_candidates : bool
+            P10 Research Gate tuning: if True in relaxed mode, allow horizons with non-empty
+            top_alphas to proceed even if robust gate pass count < min_pass (default False).
+            Quality guard at blend stage still rejects non-positive final-objective IC.
         """
         self.alpha_module = alpha_module
         self.min_ic_threshold = min_ic_threshold
@@ -255,6 +270,29 @@ class Phase35WalkForwardEngine:
         self.multi_horizon_blend = multi_horizon_blend
         self.blend_horizons = blend_horizons if blend_horizons is not None else [1, 3, 5]
         self.blend_weight_method = blend_weight_method
+        
+        # P10: Research Gate tuning parameters (v2: opt-in relaxed gate)
+        # Validate p10_gate_mode
+        valid_gate_modes = ["strict", "relaxed"]
+        if p10_gate_mode not in valid_gate_modes:
+            raise ValueError(
+                f"p10_gate_mode must be one of {valid_gate_modes}, got '{p10_gate_mode}'"
+            )
+        self.p10_gate_mode = p10_gate_mode
+        
+        # Validate p10_gate_min_pass
+        if not isinstance(p10_gate_min_pass, int) or p10_gate_min_pass < 0:
+            raise ValueError(
+                f"p10_gate_min_pass must be a non-negative integer, got {p10_gate_min_pass}"
+            )
+        self.p10_gate_min_pass = p10_gate_min_pass
+        
+        # Store p10_gate_allow_fallback_candidates
+        if not isinstance(p10_gate_allow_fallback_candidates, bool):
+            raise ValueError(
+                f"p10_gate_allow_fallback_candidates must be a boolean, got {p10_gate_allow_fallback_candidates}"
+            )
+        self.p10_gate_allow_fallback_candidates = p10_gate_allow_fallback_candidates
         
         # Store reference alpha columns for feature whitelist
         self.alpha_cols_ref = getattr(alpha_module, 'PHASE34_ALPHA_COLUMNS', [])
@@ -734,14 +772,20 @@ class Phase35WalkForwardEngine:
             )
 
         # Fallback: if all alphas fail gate, use original top_alphas
+        used_fallback = False
         if not gated_alphas:
             logger.warning(
                 "All alphas failed Research Gate — falling back to top_alphas "
                 f"({top_alphas})"
             )
             gated_alphas = list(top_alphas)
+            used_fallback = True
 
-        logger.info(f"Gated alphas ({len(gated_alphas)}/{len(top_alphas)}): {gated_alphas}")
+        # Role21 Fix 2026-06-10: Clarify selection source in logs
+        if used_fallback:
+            logger.info(f"Selected alphas (fallback candidates) ({len(gated_alphas)}/{len(top_alphas)}): {gated_alphas}")
+        else:
+            logger.info(f"Selected alphas (gate-passed) ({len(gated_alphas)}/{len(top_alphas)}): {gated_alphas}")
         return gated_alphas, gate_results
     
     def compute_portfolio_signal(
@@ -1178,7 +1222,17 @@ class Phase35WalkForwardEngine:
         # Check if return_col exists in data
         if return_col not in train_df.columns or return_col not in test_df.columns:
             logger.warning(f"[P10] Return column {return_col} not found, skipping horizon {horizon}")
-            return None, quality_metrics, [], {}
+            empty_gate_metadata = {
+                'selection_source': 'excluded',
+                'exclusion_reason': 'return_col_not_found',
+                'used_fallback_candidates': False,
+                'gate_passed_count': 0,
+                'gate_total': 0,
+                'gate_required_passes': self.p10_gate_min_pass,
+                'gate_mode': self.p10_gate_mode,
+                'gate_passed_alphas': [],
+            }
+            return None, quality_metrics, [], {}, empty_gate_metadata
         
         # Horizon-specific embargo: drop last h rows per ticker from train IC computation
         _tail_rank = train_df.groupby('ticker').cumcount(ascending=False)
@@ -1190,7 +1244,17 @@ class Phase35WalkForwardEngine:
         
         if len(train_df_clean) < 10:
             logger.warning(f"[P10] Insufficient train data after embargo for horizon {horizon}")
-            return None, quality_metrics, [], {}
+            empty_gate_metadata = {
+                'selection_source': 'excluded',
+                'exclusion_reason': 'insufficient_train_data',
+                'used_fallback_candidates': False,
+                'gate_passed_count': 0,
+                'gate_total': 0,
+                'gate_required_passes': self.p10_gate_min_pass,
+                'gate_mode': self.p10_gate_mode,
+                'gate_passed_alphas': [],
+            }
+            return None, quality_metrics, [], {}, empty_gate_metadata
         
         # Split into train_actual and validation for IC computation
         unique_dates = sorted(train_df_clean['date'].unique())
@@ -1227,20 +1291,93 @@ class Phase35WalkForwardEngine:
             return_col=return_col,
         )
         
-        # FIX 2: Check if research gate actually passed any alphas
-        # If all alphas failed gate (all verdict=False), exclude this horizon
+        # FIX 2 + P10 Gate Tuning: Check horizon eligibility based on gate mode
         # Use robust verdict checker to avoid truthiness bugs (P10 hotfix 2026-06-09)
         gate_passed_count = sum(1 for res in gate_results.values() if _is_gate_verdict_pass(res.get('verdict')))
-        if gate_passed_count == 0:
-            logger.warning(
-                f"[P10] Research gate failed all alphas for horizon {horizon} "
-                f"({len(gate_results)} alphas tested, 0 passed) - excluding horizon"
+        
+        # P10 Gate Tuning: Determine if horizon should be excluded based on gate mode
+        horizon_excluded = False
+        used_fallback_candidates = False
+        exclusion_reason = None
+        
+        if self.p10_gate_mode == "strict":
+            # Strict mode: exclude if no gates passed (current behavior)
+            if gate_passed_count == 0:
+                horizon_excluded = True
+                exclusion_reason = "strict_mode_zero_passes"
+        elif self.p10_gate_mode == "relaxed":
+            # Relaxed mode: check if horizon meets relaxed eligibility criteria
+            meets_min_pass = gate_passed_count >= self.p10_gate_min_pass
+            has_fallback_candidates = (
+                self.p10_gate_allow_fallback_candidates 
+                and len(top_alphas) > 0
             )
-            return None, quality_metrics, [], gate_results
+            
+            if meets_min_pass:
+                # Horizon passes minimum gate threshold
+                horizon_excluded = False
+            elif has_fallback_candidates:
+                # Horizon allowed via fallback candidates
+                horizon_excluded = False
+                used_fallback_candidates = True
+                logger.info(
+                    f"[P10] Horizon {horizon} relaxed gate: using fallback candidates "
+                    f"(gate_passed={gate_passed_count}/{self.p10_gate_min_pass}, "
+                    f"top_alphas={len(top_alphas)})"
+                )
+            else:
+                # Horizon does not meet any eligibility criteria
+                horizon_excluded = True
+                exclusion_reason = "relaxed_mode_insufficient_passes_no_fallback"
+        
+        # Log comprehensive gate diagnostics
+        logger.info(
+            f"[P10] Horizon {horizon} gate diagnostics: "
+            f"mode={self.p10_gate_mode}, "
+            f"passed={gate_passed_count}/{len(gate_results)}, "
+            f"required={self.p10_gate_min_pass}, "
+            f"fallback_enabled={self.p10_gate_allow_fallback_candidates}, "
+            f"used_fallback={used_fallback_candidates}, "
+            f"excluded={horizon_excluded}"
+        )
+        
+        if horizon_excluded:
+            logger.warning(
+                f"[P10] Research gate excluded horizon {horizon}: "
+                f"reason={exclusion_reason}, "
+                f"gate_passed={gate_passed_count}/{len(gate_results)}"
+            )
+            # Build gate_metadata for excluded horizon
+            gate_passed_alphas = [
+                alpha for alpha, res in gate_results.items() 
+                if _is_gate_verdict_pass(res.get('verdict'))
+            ]
+            excluded_gate_metadata = {
+                'selection_source': 'excluded',
+                'exclusion_reason': exclusion_reason,
+                'used_fallback_candidates': False,
+                'gate_passed_count': gate_passed_count,
+                'gate_total': len(gate_results),
+                'gate_required_passes': self.p10_gate_min_pass,
+                'gate_mode': self.p10_gate_mode,
+                'gate_passed_alphas': gate_passed_alphas,
+            }
+            return None, quality_metrics, [], gate_results, excluded_gate_metadata
         
         if len(gated_alphas) == 0:
             logger.warning(f"[P10] No alphas passed gate for horizon {horizon}")
-            return None, quality_metrics, [], gate_results
+            # Build gate_metadata for no-alphas case
+            no_alphas_gate_metadata = {
+                'selection_source': 'excluded',
+                'exclusion_reason': 'no_alphas_passed_gate',
+                'used_fallback_candidates': False,
+                'gate_passed_count': gate_passed_count,
+                'gate_total': len(gate_results),
+                'gate_required_passes': self.p10_gate_min_pass,
+                'gate_mode': self.p10_gate_mode,
+                'gate_passed_alphas': [],
+            }
+            return None, quality_metrics, [], gate_results, no_alphas_gate_metadata
         
         # Compute raw portfolio signal (IC-weighted, no XGBoost for multi-horizon)
         # XGBoost is disabled in multi-horizon mode to keep implementation simple
@@ -1284,15 +1421,36 @@ class Phase35WalkForwardEngine:
             'own_target_validation_ic': own_target_validation_ic,
         }
         
+        # P10 Gate Tuning Role21 Fix: Build structured gate metadata
+        # Extract alphas that actually passed the gate (not fallback candidates)
+        gate_passed_alphas = [
+            alpha for alpha, res in gate_results.items() 
+            if _is_gate_verdict_pass(res.get('verdict'))
+        ]
+        
+        # Determine selection source
+        selection_source = "fallback_candidate" if used_fallback_candidates else "research_gate"
+        
+        gate_metadata = {
+            'selection_source': selection_source,
+            'used_fallback_candidates': used_fallback_candidates,
+            'gate_passed_count': gate_passed_count,
+            'gate_total': len(gate_results),
+            'gate_required_passes': self.p10_gate_min_pass,
+            'gate_mode': self.p10_gate_mode,
+            'gate_passed_alphas': gate_passed_alphas,
+        }
+        
         logger.info(
             f"[P10] Horizon {horizon} complete: "
             f"gated_alphas={len(gated_alphas)}, "
             f"own_val_ic={own_target_validation_ic:.4f}, "
             f"final_obj_val_ic={final_objective_validation_ic:.4f}, "
-            f"gate_passed={gate_passed_count}/{len(gate_results)}"
+            f"gate_passed={gate_passed_count}/{len(gate_results)}, "
+            f"selection_source={selection_source}"
         )
         
-        return portfolio_signal, quality_metrics, gated_alphas, gate_results
+        return portfolio_signal, quality_metrics, gated_alphas, gate_results, gate_metadata
     
     def _blend_horizon_signals(
         self,
@@ -1499,7 +1657,8 @@ class Phase35WalkForwardEngine:
                 horizon_return_col = f'fwd_ret_{horizon}'
                 
                 # FIX 1, 2, 5: Updated signature with quality_metrics dict and final_objective_return_col
-                signal, quality_metrics, gated, gate_res = self._compute_horizon_signal(
+                # Role21 Fix 2026-06-10: Now returns gate_metadata as 5th value
+                signal, quality_metrics, gated, gate_res, gate_meta = self._compute_horizon_signal(
                     fold_id=fold_id,
                     train_df=train_df,
                     test_df=test_df,
@@ -1513,22 +1672,26 @@ class Phase35WalkForwardEngine:
                 if signal is not None:
                     horizon_results[horizon] = (signal, quality_metrics)
                     # FIX 6: Store comprehensive diagnostics
+                    # Role21 Fix 2026-06-10: Added gate_metadata to horizon_details
                     horizon_details[horizon] = {
                         'gated_alphas': gated,
                         'gate_results': gate_res,
                         'quality_metrics': quality_metrics,
                         'horizon_return_col': horizon_return_col,
                         'included': True,
+                        'gate_metadata': gate_meta,
                     }
                 else:
                     # FIX 6: Track excluded horizons in diagnostics
+                    # Role21 Fix 2026-06-10: Added gate_metadata to horizon_details
                     horizon_details[horizon] = {
                         'gated_alphas': [],
                         'gate_results': gate_res,
                         'quality_metrics': quality_metrics,
                         'horizon_return_col': horizon_return_col,
                         'included': False,
-                        'exclusion_reason': 'gate_failed_or_missing_data',
+                        'exclusion_reason': gate_meta.get('exclusion_reason', 'gate_failed_or_missing_data') if gate_meta else 'gate_failed_or_missing_data',
+                        'gate_metadata': gate_meta,
                     }
             
             # FIX 3: All-horizon failure fallback to single-horizon baseline
@@ -1592,9 +1755,13 @@ class Phase35WalkForwardEngine:
             # Normal multi-horizon path (blend succeeded)
             # For FoldMetrics reporting: use first successful horizon's details
             # (FoldMetrics doesn't yet support per-horizon reporting)
-            first_horizon = list(horizon_details.keys())[0]
+            # Role21 Fix 2026-06-10: Also extract gate_metadata
+            # Role20 P10 Fix 2026-06-10: Use first included horizon, not first requested
+            # horizon_results only contains successful horizons where signal != None
+            first_horizon = list(horizon_results.keys())[0]
             gated_alphas = horizon_details[first_horizon]['gated_alphas']
             gate_results = horizon_details[first_horizon]['gate_results']
+            gate_metadata = horizon_details[first_horizon].get('gate_metadata', None)
             
             # Compute raw signal IC using default return_col (for P9 comparison)
             raw_signal_ic = self.compute_ic(portfolio_signal, test_df[return_col])
@@ -1844,6 +2011,9 @@ class Phase35WalkForwardEngine:
                 f"Fold {fold_id} raw signal IC: {raw_signal_ic:.4f}, "
                 f"daily CS IC: {raw_signal_daily_cs_ic:.4f}"
             )
+            
+            # Role21 Fix 2026-06-10: Single-horizon path doesn't use structured gate metadata
+            gate_metadata = None
         
         # ==============================================================================
         # Both paths converge here: Stage 2 constraints apply to both single-horizon
@@ -1946,6 +2116,7 @@ class Phase35WalkForwardEngine:
         pnl_val = total_return * self.initial_capital
         
         # Create metrics object
+        # Role21 Fix 2026-06-10: Added gate_metadata field
         metrics = FoldMetrics(
             fold_id=fold_id,
             train_start=str(train_df['date'].min().date()),
@@ -1964,6 +2135,7 @@ class Phase35WalkForwardEngine:
             n_test_samples=len(test_df),
             gate_results=gate_results,
             gated_alphas=gated_alphas,
+            gate_metadata=gate_metadata,
         )
         
         logger.info(
