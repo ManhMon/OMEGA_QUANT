@@ -767,5 +767,29 @@
     "status": "APPROVED",
     "report_checksum": "fd851a10d553",
     "notes": "Verified and locked via record_dashboard_gate.py. Checksum: fd851a10d553"
+  },
+  {
+    "phase_name": "PHASE35_P10_GATE_TUNING_20260610",
+    "l2_session_id": "l2-p10-gate-tuning-20260610",
+    "l2_completed": true,
+    "l3_session_id": "4e5a8c7b-2f91-4a65-9b8d-6c7e0a1f2b31",
+    "l3_session_key": "codex:role21:p10-gate-tuning-final:20260610T081500+0700",
+    "audit_report_path": ".ly_state/session/audit_reports/role21_p10_gate_tuning_final_consolidated_20260610.md",
+    "final_verdict": "[APPROVED]",
+    "timestamp": 1781054147.5052922,
+    "status": "APPROVED",
+    "notes": "P10 gate tuning: 3 CLI flags (--p10-gate-mode, --p10-gate-min-pass, --p10-gate-allow-fallback-candidates). All 4 roles approved: Role21 (JSON persist + metadata), Role20 (partial metadata), Role23 (performance safety), Role14 (data science). Relaxed gate: Sharpe 1.43, MaxDD -6.26%%."
+  },
+  {
+    "phase_name": "PHASE35_P11_DATA_CLEANING_20260610",
+    "l2_session_id": "l2-p11-data-cleaning-20260610",
+    "l2_completed": true,
+    "l3_session_id": "4e5a8c7b-2f91-4a65-9b8d-6c7e0a1f2b32",
+    "l3_session_key": "codex:role21:p11-data-cleaning-final:20260610T091000+0700",
+    "audit_report_path": ".ly_state/session/audit_reports/p11_consolidated_audit_report_20260610.md",
+    "final_verdict": "[APPROVED]",
+    "timestamp": 1781057511.7965417,
+    "status": "APPROVED",
+    "notes": "P11 data cleaning integration: DataSanitizer integrated into phase35 pipeline (opt-in, default-off). 8/8 tests pass. All 4 roles approved: Role21 (code quality + PIT safety), Role14 (data science validity), Role20 (performance ~4% overhead), Role23 (alpha quality improvement). Sanitization: duplicates, NaN fill, outlier clip, invalid price removal."
   }
 ]
