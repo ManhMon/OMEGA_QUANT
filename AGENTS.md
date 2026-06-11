@@ -81,6 +81,8 @@ Mọi skill được load phải ghi log vào `.ly_state/session/loaded_skills.j
    - `audit_report_path` (required)
    - `final_verdict` = `[APPROVED]` hoặc `[NEEDS_FIX]`
    Nếu thiếu bất kỳ trường nào -> Gate INVALID, bắt buộc set `PENDING_AUDIT`.
+7. **Platform Routing**: Các task implementation thuộc L2 BẮT BUỘC phải chạy trên runtime **OpenCode**. Các task audit, review và verification thuộc L3 BẮT BUỘC phải chạy trên runtime **Codex**. L1 Orchestrator không được phép tự thực thi viết code hoặc tự audit trực tiếp.
+
 
 ## 📋 QUY TRÌNH SOD BẮT BUỘC (HARDCODED WORKFLOW)
 
