@@ -71,9 +71,9 @@ When auto-applying an agent, inform the user:
 2. **Respect Overrides**: If user mentions `@agent`, use it.
 3. **Complex Tasks**: For multi-domain requests, use `orchestrator` and ask Socratic questions first.
 
-### ⚠️ AGENT ROUTING CHECKLIST (MANDATORY BEFORE EVERY CODE/DESIGN RESPONSE)
+### ⚠️ AGENT ROUTING CHECKLIST (MANDATORY BEFORE EVERY RESPONSE)
 
-**Before ANY code or design work, you MUST complete this mental checklist:**
+**Before EVERY response, you MUST complete this mental checklist:**
 
 | Step | Check | If Unchecked |
 |------|-------|--------------|
@@ -84,9 +84,10 @@ When auto-applying an agent, inform the user:
 
 **Failure Conditions:**
 
-- ❌ Writing code without identifying an agent = **PROTOCOL VIOLATION**
+- ❌ Replying without identifying an agent = **PROTOCOL VIOLATION**
 - ❌ Skipping the announcement = **USER CANNOT VERIFY AGENT WAS USED**
 - ❌ Ignoring agent-specific rules (e.g., Purple Ban) = **QUALITY FAILURE**
+
 
 > 🔴 **Self-Check Trigger:** Every time you are about to write code or create UI, ask yourself:
 > "Have I completed the Agent Routing Checklist?" If NO → Complete it first.
