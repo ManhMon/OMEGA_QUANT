@@ -53,6 +53,8 @@ Mọi skill được load phải ghi log vào `.ly_state/session/loaded_skills.j
 4. **Nền tảng (Platform)** chỉ là môi trường chạy (runtime), không phải là Agent.
    - Ly (Orchestrator L1) giữ gate decision, điều phối audit vòng lặp -> Spawn Agent con độc lập.
    - Agent con chạy -> Trả kết quả -> Tự hủy.
+5. **AG Kit Integration**: Tất cả các Agent khi được khởi chạy bắt buộc phải sử dụng các công cụ, kịch bản kiểm tra (như `checklist.py`, `verify_all.py`), và tuân thủ các quy trình slash command được định nghĩa trong AG Kit.
+
 
 | Platform Runtime | Tier | Chức năng Runtime | Agents chạy trên Platform này |
 | :--- | :--- | :--- | :--- |
@@ -82,6 +84,8 @@ Mọi skill được load phải ghi log vào `.ly_state/session/loaded_skills.j
    - `final_verdict` = `[APPROVED]` hoặc `[NEEDS_FIX]`
    Nếu thiếu bất kỳ trường nào -> Gate INVALID, bắt buộc set `PENDING_AUDIT`.
 7. **Platform Routing**: Các task implementation thuộc L2 BẮT BUỘC phải chạy trên runtime **OpenCode**. Các task audit, review và verification thuộc L3 BẮT BUỘC phải chạy trên runtime **Codex**. L1 Orchestrator không được phép tự thực thi viết code hoặc tự audit trực tiếp.
+8. **AG Kit Compliance**: Mọi hoạt động của Agent phải tuân thủ hướng dẫn vận hành của AG Kit. L2 Agent phải chạy kiểm định chất lượng (lint, unit tests, security scans) qua master scripts của AG Kit trước khi bàn giao. L3 Agent phải viết báo cáo kiểm toán theo đúng chuẩn Markdown của AG Kit.
+
 
 
 ## 📋 QUY TRÌNH SOD BẮT BUỘC (HARDCODED WORKFLOW)
