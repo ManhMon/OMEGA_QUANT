@@ -106,3 +106,70 @@ def validate_production_gate(val_ic: float) -> dict:
         "val_ic": val_ic,
         "verdict": f"FAIL: val_ic {val_ic:.4f} < 0.08",
     }
+
+
+class MLGateValidator:
+    """
+    Backward-compatible class wrapper around gate validation functions.
+
+    Provides the class-based interface expected by run_portfolio_optimizer.py
+    and other callers while delegating to the functional implementations above.
+
+    L2 Note: This is a shim — do not add business logic here.
+    Business logic lives in validate_research_gate() and validate_production_gate().
+    """
+
+    def __init__(
+        self,
+        min_val_ic: float = 0.05,
+        min_stability_ratio: float = 1.5,
+        min_samples: int = 60,
+        production_ic_floor: float = 0.08,
+    ):
+        self.min_val_ic = min_val_ic
+        self.min_stability_ratio = min_stability_ratio
+        self.min_samples = min_samples
+        self.production_ic_floor = production_ic_floor
+
+    def validate_research(
+        self,
+        val_ic: float,
+        rolling_ic_series: "pd.Series",
+    ) -> dict:
+        """Validate research gate. Delegates to validate_research_gate()."""
+        return validate_research_gate(
+            val_ic=val_ic,
+            rolling_ic_series=rolling_ic_series,
+            min_samples=self.min_samples,
+        )
+
+    def validate_production(self, val_ic: float) -> dict:
+        """Validate production gate. Delegates to validate_production_gate()."""
+        return validate_production_gate(val_ic=val_ic)
+
+    def validate(
+        self,
+        val_ic: float,
+        rolling_ic_series: "pd.Series | None" = None,
+        gate: str = "production",
+    ) -> dict:
+        """
+        Unified entry point.
+
+        Args:
+            val_ic: Validation IC score.
+            rolling_ic_series: Required for research gate.
+            gate: 'research' or 'production' (default).
+
+        Returns:
+            dict with keys: passed, verdict, val_ic, ...
+        """
+        if gate == "research":
+            if rolling_ic_series is None:
+                return {
+                    "passed": False,
+                    "val_ic": val_ic,
+                    "verdict": "FAIL: rolling_ic_series required for research gate",
+                }
+            return self.validate_research(val_ic, rolling_ic_series)
+        return self.validate_production(val_ic)
