@@ -8,9 +8,9 @@ tests = [
     ("omega.core.pipeline", "OmegaPipeline"),
     ("omega.core.event_bus", "EventBus"),
     ("omega.core.database", None),
-    ("omega.quant.alpha_discovery", None),
+    ("omega.quant.alpha.discovery", None),       # was: omega.quant.alpha_discovery (deprecated)
     ("omega.quant.portfolio_optimizer", None),
-    ("omega.quant.pit_guard", None),
+    ("omega.quant.risk.pit_guard", None),         # was: omega.quant.pit_guard (deprecated)
     ("omega.risk.risk_manager", None),
     ("omega.risk.circuit_breaker", None),
     ("omega.data.loader", None),
