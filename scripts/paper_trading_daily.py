@@ -1,17 +1,26 @@
-﻿"""
+"""
 OMEGA_QUANT Paper Trading - Daily Signal Generation
-Integrates: Alt Features + Alt Data + Regime Detector + HRP Weighting
+Integrates: Alt Features + Alt Data + VN-Specific Alphas (Arsenal)
+          + Latent AE Alphas + LLM Symbolic Alphas + Regime Detector + HRP Weighting
+
+Gate: STRONG_ALPHAS_INTEGRATION_20260618
 
 Usage: Run daily after market close to generate next-day signals.
 Output: data/paper_trading/signals_YYYY-MM-DD.json
 
-Author: Backend Engineer (Role 09)
-Date: 2026-05-31
+Author: Backend Engineer (Role 09) / Data Scientist (Role 14)
+Date: 2026-06-18
 PIT Safety: PASS - All signals use T-1 lagged data only.
+
+Alpha Sources (STRONG_ALPHAS_INTEGRATION_20260618):
+  1. Alt Features (AlternativeFeatureGenerator) - 25 derived OHLCV features
+  2. Alt Data (AlternativeDataFetcher) - 8 proxy signals
+  3. VN-Specific Alphas (arsenal.compute_ultimate_alphas) - 27 VN-specific alphas
+  4. Latent AE Alphas (data/latent_alphas_components.parquet) - top IR components
+  5. LLM Symbolic Alphas (UnifiedFeatureAdapter, opt-in) - LLM-synthesized formulas
 """
 import sys
 from pathlib import Path
-import sys
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT / 'src') not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / 'src'))
@@ -22,15 +31,20 @@ import logging
 import json
 from pathlib import Path
 from datetime import datetime, date
+from typing import List, Optional
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
+# Legacy direct imports kept as fallback
 from omega.quant.evolution.alternative_features import AlternativeFeatureGenerator
 from omega.quant.evolution.alternative_data_fetcher import AlternativeDataFetcher
 from omega.quant.evolution.regime_detector import RegimeDetector, RegimeConfig
 from omega.quant.evolution.hrp_weighter import HRPWeighter
 from omega.quant.evolution.genetic_alpha import enforce_t_minus_1_lag
+
+# STRONG_ALPHAS_INTEGRATION_20260618: New alpha source imports
+from omega.quant.evolution.unified_feature_adapter import UnifiedFeatureAdapter
 
 # ============================================================
 # CONFIG
@@ -42,7 +56,18 @@ TURNOVER_CAP = 0.0119       # 1.19%/day
 OUTPUT_DIR = Path('data/paper_trading')
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Signals to use (from v2.5 ensemble - validated)
+# STRONG_ALPHAS_INTEGRATION_20260618: Latent AE parquet path (repo-relative)
+LATENT_ALPHAS_PATH = _REPO_ROOT / "data" / "latent_alphas_components.parquet"
+
+# STRONG_ALPHAS_INTEGRATION_20260618: Strong latent AE components (|IR| >= 0.3)
+# From latent_alphas_report_20260617.md:
+#   latent_ae_00: IR=-0.83, latent_ae_01: IR=+0.84, latent_ae_11: IR~=-0.87
+STRONG_LATENT_AE_COLS = ['latent_ae_00', 'latent_ae_01', 'latent_ae_11']
+
+# STRONG_ALPHAS_INTEGRATION_20260618: LLM alpha opt-in flag
+USE_LLM_ALPHAS = False  # Set True or pass --use-llm-alphas to enable
+
+# Legacy signals (from v2.5 ensemble - validated)
 SIGNAL_FEATURES = [
     {'feature': 'distance_from_ma20', 'horizon': 10, 'ic': 0.4053},
     {'feature': 'clv_ma', 'horizon': 10, 'ic': 0.2207},
@@ -61,11 +86,195 @@ ALT_DATA_FEATURES = [
     'foreign_flow_ma5', 'margin_trend', 'rotation_momentum', 'order_imbalance',
 ]
 
+# STRONG_ALPHAS_INTEGRATION_20260618: VN-Specific strong alphas from arsenal
+# These are the 27 VN-specific alpha columns produced by compute_ultimate_alphas()
+# with prefix "alpha_vn_*" plus core VN alphas. IC values from vn_alphas_evaluation.json.
+VN_SPECIFIC_SIGNAL_FEATURES = [
+    # BATCH 1: VN Liquidity Alphas
+    {'feature': 'alpha_vn_amihud_liq_reversal', 'horizon': 5, 'ic': 0.06},
+    {'feature': 'alpha_vn_illiq_regime_penalty', 'horizon': 10, 'ic': -0.05},
+    {'feature': 'alpha_vn_volume_shock_reversal', 'horizon': 5, 'ic': 0.05},
+    {'feature': 'alpha_vn_turnover_exhaustion', 'horizon': 5, 'ic': 0.04},
+    # BATCH 2: Advanced Mean Reversion
+    {'feature': 'alpha_vn_bollinger_snapback', 'horizon': 5, 'ic': 0.07},
+    {'feature': 'alpha_vn_rsi_divergence_reversal', 'horizon': 5, 'ic': 0.05},
+    {'feature': 'alpha_vn_sector_neutral_residual_reversion', 'horizon': 5, 'ic': 0.06},
+    {'feature': 'alpha_vn_close_location_reversion', 'horizon': 5, 'ic': 0.04},
+    # BATCH 3: Microstructure & Foreign Flows
+    {'feature': 'alpha_vn_foreign_flow_persistence', 'horizon': 5, 'ic': 0.08},
+    {'feature': 'alpha_vn_foreign_absorption_reversal', 'horizon': 10, 'ic': 0.05},
+    {'feature': 'alpha_vn_foreign_room_squeeze', 'horizon': 5, 'ic': 0.06},
+    {'feature': 'alpha_vn_limit_lock_continuation', 'horizon': 3, 'ic': 0.07},
+    # Core VN
+    {'feature': 'alpha_limit_lock_streak', 'horizon': 3, 'ic': 0.08},
+    {'feature': 'alpha_t2_momentum_adj', 'horizon': 5, 'ic': 0.06},
+    {'feature': 'alpha_penny_trap_score', 'horizon': 10, 'ic': -0.05},
+    {'feature': 'alpha_smart_money_lite', 'horizon': 10, 'ic': 0.07},
+    # BATCH 4: T+2 Settlement & Limit Mechanics
+    {'feature': 'alpha_vn_limit_unlock_exhaustion', 'horizon': 5, 'ic': 0.05},
+    {'feature': 'alpha_vn_t2_settlement_supply_overhang', 'horizon': 10, 'ic': -0.04},
+    {'feature': 'alpha_vn_t2_cash_recycling_bounce', 'horizon': 5, 'ic': 0.05},
+    # PHASE 3.4: VN Microstructure
+    {'feature': 'alpha_vn_001_post_settlement_momentum', 'horizon': 5, 'ic': 0.06},
+    {'feature': 'alpha_vn_002_limit_band_reversion', 'horizon': 5, 'ic': 0.05},
+    {'feature': 'alpha_vn_003_foreign_flow_divergence', 'horizon': 10, 'ic': 0.06},
+    {'feature': 'alpha_vn_004_intraday_persistence', 'horizon': 3, 'ic': 0.04},
+    # RESCUE P3 WEEK 1
+    {'feature': 'alpha_vn_t2_momentum_diff', 'horizon': 5, 'ic': 0.05},
+    {'feature': 'alpha_vn_penny_trap_risk', 'horizon': 10, 'ic': -0.04},
+]
+
+# STRONG_ALPHAS_INTEGRATION_20260618: Latent AE signal features (strong |IR| >= 0.3)
+LATENT_AE_SIGNAL_FEATURES = [
+    {'feature': 'latent_ae_00', 'horizon': 5, 'ic': -0.29},   # IR=-0.83
+    {'feature': 'latent_ae_01', 'horizon': 5, 'ic': 0.31},    # IR=+0.84
+    {'feature': 'latent_ae_11', 'horizon': 5, 'ic': -0.31},   # IR~=-0.87
+]
+
+# ============================================================
+# STRONG ALPHAS HELPERS (STRONG_ALPHAS_INTEGRATION_20260618)
+# ============================================================
+
+def _inject_latent_alphas(
+    panel: pd.DataFrame,
+    parquet_path: Path,
+    strong_cols: List[str] = None,
+) -> pd.DataFrame:
+    """Load pre-computed latent AE components and merge into the panel.
+
+    PIT Safety: Merged columns are treated as raw features and will be
+    T-1 lagged downstream alongside all other signals.
+
+    Parameters
+    ----------
+    panel : DataFrame
+        MultiIndex [date, symbol] panel with existing features.
+    parquet_path : Path
+        Path to ``data/latent_alphas_components.parquet``.
+    strong_cols : list[str] or None
+        Specific latent columns to inject. Defaults to STRONG_LATENT_AE_COLS.
+
+    Returns
+    -------
+    DataFrame
+        Panel with additional ``latent_ae_XX`` columns (NaN for dates
+        outside the latent parquet range).
+    """
+    if strong_cols is None:
+        strong_cols = STRONG_LATENT_AE_COLS
+
+    if not parquet_path.exists():
+        logger.warning(
+            "Latent AE parquet not found at %s — skipping latent alpha injection.",
+            parquet_path,
+        )
+        return panel
+
+    try:
+        latent_df = pd.read_parquet(parquet_path)
+        latent_df['date'] = pd.to_datetime(latent_df['date'])
+
+        # Filter to strong columns that actually exist in the parquet
+        available_cols = [c for c in strong_cols if c in latent_df.columns]
+        if not available_cols:
+            logger.warning("No strong latent AE columns found in parquet. Skipping.")
+            return panel
+
+        # Build a (date, ticker) keyed DataFrame for merging
+        ticker_col = 'ticker' if 'ticker' in latent_df.columns else 'symbol'
+        latent_slim = latent_df[['date', ticker_col] + available_cols].copy()
+        latent_slim = latent_slim.rename(columns={ticker_col: 'symbol'})
+        latent_slim = latent_slim.set_index(['date', 'symbol'])
+
+        # Merge into panel (left join — NaN for dates outside latent range)
+        n_before = len(panel.columns)
+        panel = panel.join(latent_slim[available_cols], how='left')
+        n_after = len(panel.columns)
+
+        # Diagnostics
+        coverage = {}
+        for col in available_cols:
+            non_null_pct = panel[col].notna().mean()
+            coverage[col] = round(non_null_pct * 100, 1)
+        logger.info(
+            "Latent AE injection: +%d columns from %s. Coverage: %s",
+            n_after - n_before,
+            parquet_path.name,
+            coverage,
+        )
+        return panel
+
+    except Exception as e:
+        logger.error("Latent AE injection failed: %s", e)
+        return panel
+
+
+def _generate_features_unified(
+    panel: pd.DataFrame,
+    use_arsenal: bool = True,
+    use_llm: bool = False,
+) -> pd.DataFrame:
+    """Generate features using UnifiedFeatureAdapter (includes VN-specific alphas).
+
+    Falls back to legacy direct generators if UnifiedFeatureAdapter fails.
+
+    Parameters
+    ----------
+    panel : DataFrame
+        MultiIndex [date, symbol] panel with OHLCV data.
+    use_arsenal : bool
+        Whether to include arsenal (VN-specific) alphas.
+    use_llm : bool
+        Whether to include LLM-synthesized alphas (opt-in, defaults off).
+
+    Returns
+    -------
+    DataFrame
+        Panel with all generated features.
+    """
+    try:
+        adapter = UnifiedFeatureAdapter(
+            use_arsenal=use_arsenal,
+            use_alt_features=True,
+            use_alt_data=True,
+            use_llm_synth=use_llm,
+            llm_provider='mock',  # Safety: mock provider for paper trading
+        )
+        result = adapter.generate_all(panel)
+        groups = adapter.get_feature_groups()
+        logger.info(
+            "UnifiedFeatureAdapter: alt=%d, alt_data=%d, arsenal=%d, llm=%d",
+            len(groups.get('alt_features', [])),
+            len(groups.get('alt_data', [])),
+            len(groups.get('arsenal', [])),
+            len(groups.get('llm_synth', [])),
+        )
+        return result
+    except Exception as e:
+        logger.warning(
+            "UnifiedFeatureAdapter failed (%s), falling back to legacy generators.",
+            e,
+        )
+        # Legacy fallback
+        feat_gen = AlternativeFeatureGenerator()
+        panel = feat_gen.generate_all(panel)
+        alt_fetcher = AlternativeDataFetcher()
+        panel = alt_fetcher.generate_all(panel)
+        logger.info("Legacy features generated: %d columns", len(panel.columns))
+        return panel
+
+
 # ============================================================
 # MAIN PIPELINE
 # ============================================================
-def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\market_2015_now.parquet'):
-    """Generate daily trading signals."""
+def run_daily_signal(data_path: str = None, use_llm_alphas: bool = False):
+    """Generate daily trading signals.
+    
+    PATH-01 FIX: Default data path is repo-relative data/market_2015_now.parquet
+    instead of hardcoded external .openclaw workspace path.
+    """
+    if data_path is None:
+        data_path = str(_REPO_ROOT / "data" / "market_2015_now.parquet")
     today = date.today()
     logger.info("=" * 60)
     logger.info("PAPER TRADING - Signal Generation for %s", today)
@@ -113,12 +322,17 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
     panel['returns'] = panel.groupby(level='symbol')['close'].pct_change()
 
     # 3. Generate features
-    feat_gen = AlternativeFeatureGenerator()
-    panel = feat_gen.generate_all(panel)
+    # STRONG_ALPHAS_INTEGRATION_20260618: Use UnifiedFeatureAdapter which includes
+    # VN-specific alphas (arsenal), alt features, alt data, and optional LLM alphas.
+    panel = _generate_features_unified(
+        panel,
+        use_arsenal=True,
+        use_llm=use_llm_alphas,
+    )
 
-    alt_fetcher = AlternativeDataFetcher()
-    panel = alt_fetcher.generate_all(panel)
-    logger.info("Features generated: %d columns", len(panel.columns))
+    # STRONG_ALPHAS_INTEGRATION_20260618: Inject pre-computed latent AE components
+    panel = _inject_latent_alphas(panel, LATENT_ALPHAS_PATH)
+    logger.info("Total features after all injections: %d columns", len(panel.columns))
 
     # 4. Regime detection
     market_prices = panel['close'].groupby(level='date').mean()  # Equal-weight market proxy
@@ -133,7 +347,50 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
     signal_returns = pd.DataFrame(index=test_prices.index)
     signal_exposures = {}
 
-    all_features = SIGNAL_FEATURES + [{'feature': f, 'horizon': 5, 'ic': 0.05} for f in ALT_DATA_FEATURES if f in panel.columns]
+    # STRONG_ALPHAS_INTEGRATION_20260618: Build combined feature list from all sources
+    # 1. Legacy alt features (SIGNAL_FEATURES)
+    # 2. Alt data features (ALT_DATA_FEATURES)
+    # 3. VN-specific alphas (VN_SPECIFIC_SIGNAL_FEATURES)
+    # 4. Latent AE strong components (LATENT_AE_SIGNAL_FEATURES)
+    # 5. LLM alphas (dynamically detected alpha_llm_* columns)
+    all_features = list(SIGNAL_FEATURES)
+
+    # Alt data features
+    all_features.extend(
+        [{'feature': f, 'horizon': 5, 'ic': 0.05}
+         for f in ALT_DATA_FEATURES if f in panel.columns]
+    )
+
+    # VN-specific alphas from arsenal
+    vn_added = 0
+    for sf in VN_SPECIFIC_SIGNAL_FEATURES:
+        if sf['feature'] in panel.columns:
+            all_features.append(sf)
+            vn_added += 1
+    logger.info("VN-specific alphas active: %d / %d", vn_added, len(VN_SPECIFIC_SIGNAL_FEATURES))
+
+    # Latent AE strong components
+    la_added = 0
+    for sf in LATENT_AE_SIGNAL_FEATURES:
+        if sf['feature'] in panel.columns and panel[sf['feature']].notna().any():
+            all_features.append(sf)
+            la_added += 1
+    logger.info("Latent AE alphas active: %d / %d", la_added, len(LATENT_AE_SIGNAL_FEATURES))
+
+    # LLM alphas (dynamically detected)
+    llm_cols = [c for c in panel.columns if c.startswith('alpha_llm_')]
+    for i, col in enumerate(llm_cols):
+        all_features.append({'feature': col, 'horizon': 5, 'ic': 0.03})
+    if llm_cols:
+        logger.info("LLM alphas active: %d (%s)", len(llm_cols), ', '.join(llm_cols[:5]))
+
+    logger.info(
+        "Total signal candidates: %d (legacy=%d, alt_data=%d, vn=%d, latent_ae=%d, llm=%d)",
+        len(all_features),
+        len(SIGNAL_FEATURES),
+        len([f for f in ALT_DATA_FEATURES if f in panel.columns]),
+        vn_added, la_added, len(llm_cols),
+    )
 
     for sf in all_features:
         feat = sf['feature']
@@ -223,7 +480,8 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
     
     # --- Phân ngành & Hạn chế Tập trung Ngành (Sector Concentration Control) ---
     # Tải dữ liệu phân ngành để tránh bỏ trứng vào một giỏ
-    sector_file = Path(r"C:\Users\GHC\.openclaw\workspace\data\sector_mapping_level2.csv")
+    # PATH-01 FIX: repo-relative sector mapping path
+    sector_file = _REPO_ROOT / "data" / "sector_mapping_level2.csv"
     if sector_file.exists():
         try:
             sector_df = pd.read_csv(sector_file)
@@ -379,6 +637,15 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
     signal_output = {
         'date': str(today),
         'generated_at': datetime.utcnow().isoformat(),
+        'gate': 'STRONG_ALPHAS_INTEGRATION_20260618',
+        'alpha_sources': {
+            'legacy_alt': len(SIGNAL_FEATURES),
+            'alt_data': len([f for f in ALT_DATA_FEATURES if f in panel.columns]),
+            'vn_specific_active': vn_added,
+            'latent_ae_active': la_added,
+            'llm_active': len(llm_cols),
+            'total_signal_candidates': len(all_features),
+        },
         'regime': {
             'state': regime_state.regime.value,
             'confidence': round(regime_state.confidence, 3),
@@ -415,4 +682,11 @@ def run_daily_signal(data_path: str = r'C:\Users\GHC\.openclaw\workspace\data\ma
 
 
 if __name__ == '__main__':
-    run_daily_signal()
+    import argparse
+    parser = argparse.ArgumentParser(description='OMEGA_QUANT Paper Trading Daily Signal Generator')
+    parser.add_argument('--data-path', type=str, default=None,
+                        help='Path to market data parquet (default: data/market_2015_now.parquet)')
+    parser.add_argument('--use-llm-alphas', action='store_true', default=False,
+                        help='Enable LLM-synthesized alpha formulas (opt-in, uses mock provider)')
+    args = parser.parse_args()
+    run_daily_signal(data_path=args.data_path, use_llm_alphas=args.use_llm_alphas)
