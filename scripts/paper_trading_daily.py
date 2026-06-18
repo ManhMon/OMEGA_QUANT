@@ -678,7 +678,32 @@ def run_daily_signal(data_path: str = None, use_llm_alphas: bool = False):
     logger.info("  Saved: %s", output_file)
     logger.info("=" * 60)
 
+    # DASHBOARD_PORTFOLIO_SYNC_20260618: Auto-sync to dashboard artefacts
+    _sync_dashboard_hook(str(output_file))
+
     return signal_output
+
+
+def _sync_dashboard_hook(signal_file: str) -> None:
+    """Post-signal hook: sync trading signals to risk_status.json and pnl_latest.json.
+
+    Called automatically at the end of ``run_daily_signal`` after the signal
+    JSON has been persisted.  Failures are logged but never propagate so that
+    the main pipeline is not disrupted by dashboard sync errors.
+    """
+    try:
+        from scripts.update_dashboard_portfolio import sync_dashboard_portfolio
+        success, summary = sync_dashboard_portfolio(signal_file=signal_file)
+        if success:
+            logger.info("Dashboard sync OK: %s", summary)
+        else:
+            logger.warning("Dashboard sync FAILED: %s", summary)
+    except ImportError:
+        logger.warning(
+            "update_dashboard_portfolio not importable – skipping dashboard sync hook"
+        )
+    except Exception as exc:
+        logger.error("Dashboard sync hook error: %s", exc)
 
 
 if __name__ == '__main__':
