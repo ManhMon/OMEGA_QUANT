@@ -113,7 +113,7 @@ with tab1:
                         format='%.2f%%'
                     )
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
             
@@ -139,7 +139,7 @@ with tab1:
                 height=500
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
             # Factor attribution
             st.markdown("### 🔬 Factor Attribution")
@@ -163,7 +163,7 @@ with tab1:
             )
             
             fig.update_layout(height=400)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
             # Display factor table
             st.dataframe(
@@ -174,7 +174,7 @@ with tab1:
                     'factor_return': st.column_config.NumberColumn('Factor Return', format='%.2f%%'),
                     'contribution': st.column_config.NumberColumn('Contribution', format='%.2f%%')
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
             
@@ -251,7 +251,7 @@ with tab2:
                 height=500
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
             # Signal lifecycle
             st.markdown("### 🔄 Signal Lifecycle")
@@ -289,7 +289,7 @@ with tab2:
                     'peak_ic': st.column_config.NumberColumn('Peak IC', format='%.4f'),
                     'ic_decay': st.column_config.NumberColumn('IC Decay', format='%.2f%%')
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
             
@@ -311,7 +311,7 @@ with tab2:
             )
             
             fig.update_layout(height=600)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
         except Exception as e:
             st.error(f"❌ Lỗi khi phân tích alpha decay: {str(e)}")
@@ -378,7 +378,7 @@ with tab3:
                 height=400
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
             # Top performing signals
             st.markdown("### 🏆 Top Performing Signals")
@@ -398,7 +398,7 @@ with tab3:
                         'sharpe': st.column_config.NumberColumn('Sharpe', format='%.2f'),
                         'max_drawdown': st.column_config.NumberColumn('Max DD', format='%.2f%%')
                     },
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
             else:
@@ -419,7 +419,7 @@ with tab3:
                 )
                 
                 fig.update_layout(height=600)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             else:
                 st.info("Không đủ signals để tính correlation")
             
@@ -463,7 +463,7 @@ with tab3:
                     height=500
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             
         except Exception as e:
             st.error(f"❌ Lỗi khi đánh giá chất lượng signals: {str(e)}")
