@@ -34,20 +34,20 @@ import numpy as np
 import pandas as pd
 
 # V21 Core Intelligence imports
-from .feature_factory import (
+from omega.quant.feature.factory import (
     MomentumGenerator,
     VolatilityGenerator,
     VolumeLiquidityGenerator as VolumeGenerator,
     LimitLockDetector,
     LeakageAuditor,
 )
-from .alpha_factory import AlphaFactory, compute_core_alphas
-from .model_module import ModelModule, ModelConfig, TrainedModel
-from .signal_module import SignalModule, SignalModuleConfig
+from omega.quant.alpha.factory import AlphaFactory, compute_core_alphas
+from omega.quant.ml.model_module import ModelModule, ModelConfig, TrainedModel
+from omega.quant.signal.module import SignalModule, SignalModuleConfig
 from .ensemble_optimizer import EnsembleOptimizer, WeightsConfig
-from .genetic_programming import GeneticProgrammingEngine, GPConfig
-from .experiment_tracker import ExperimentTracker, ExperimentMetadata
-from .pit_manager import PITManager
+from omega.quant.evolution.genetic_programming import GeneticProgrammingEngine, GPConfig
+from omega.quant.monitoring.experiment_tracker import ExperimentTracker, ExperimentMetadata
+from omega.quant.risk.pit_manager import PITManager, PITConfig
 
 # Strategy Logic (upgraded from V21 layer_02)
 from .strategy.alpha_ensemble import AlphaEnsemble
@@ -62,7 +62,7 @@ from .strategy.rl_agent import RLPortfolioAgent, RLConfig
 from .strategy.transaction_cost_analyzer import TransactionCostAnalyzer, VNSlippageModel
 
 # Portfolio & Governance (upgraded from V21 layer_05/06)
-from .performance_tracker import PerformanceTracker
+from omega.quant.monitoring.performance_tracker import PerformanceTracker
 from .portfolio import PortfolioOptimizer
 # NOTE: OnlineModelUpdater, validate_ly_state moved to lazy imports (circular import fix)
 # NOTE: VnStockLiveDataProvider, ProductionDataPipeline moved to lazy imports (circular import fix)
@@ -175,7 +175,7 @@ class QuantEngine:
             self.gp_engine = GeneticProgrammingEngine(gp_config)
         
         # PIT Manager
-        self.pit_manager = PITManager(lag_days=self.config.pit_lag_days)
+        self.pit_manager = PITManager(PITConfig())
         
         # Experiment Tracker
         self.experiment_tracker: Optional[ExperimentTracker] = None

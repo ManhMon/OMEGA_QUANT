@@ -13,8 +13,8 @@ import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 
-from omega.quant.pit_guard import verify_no_lookahead, enforce_t_minus_1_lag
-from omega.quant.alpha_discovery import build_alpha_signals
+from omega.quant.risk.pit_guard import verify_no_lookahead, enforce_t_minus_1_lag
+from omega.quant.alpha.discovery import build_alpha_signals
 
 def run_alpha_discovery_pipeline(price_df: pd.DataFrame) -> pd.DataFrame:
     required = {"timestamp", "close"}

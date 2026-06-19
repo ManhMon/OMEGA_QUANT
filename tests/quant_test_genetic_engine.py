@@ -72,7 +72,8 @@ def test_genetic_engine_evolution(sample_data):
     config = GPConfig(
         population_size=20,
         generations=2,
-        min_observations=100
+        min_observations=100,
+        n_jobs=1,  # TEST-01 FIX: single-threaded to avoid Windows joblib/multiprocessing ACL
     )
     engine = GeneticEngine(config)
     

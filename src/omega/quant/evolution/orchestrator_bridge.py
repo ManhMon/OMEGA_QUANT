@@ -30,7 +30,7 @@ class OmegaQuantOrchestrator:
         from omega.quant.evolution.regime_detector import RegimeDetector
         from omega.quant.evolution.hrp_weighter import HRPWeighter
         from omega.quant.evolution.ml_alpha_integration import MLAlphaIntegration
-        from omega.quant.parallel_backtest import ParallelBacktestRunner
+        from omega.quant.backtest.parallel import ParallelBacktestRunner
 
         self.feature_adapter = UnifiedFeatureAdapter()
         self.regime_detector = RegimeDetector()

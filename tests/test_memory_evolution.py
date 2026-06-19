@@ -9,7 +9,7 @@ import json
 import os
 
 from omega.observability.neural_memory import NeuralMemory
-from omega.quant.evolution_engine import EvolutionEngine, EvolutionConfig
+from omega.quant.evolution.evolution_engine import EvolutionEngine, EvolutionConfig
 
 @pytest.fixture
 def mock_audit_dir(tmp_path):

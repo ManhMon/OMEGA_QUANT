@@ -72,6 +72,11 @@ except ImportError:
     pass
 
 try:
+    from . import hybrid_alpha_miner
+except ImportError:
+    pass
+
+try:
     from . import ml_alpha_integration
 except ImportError:
     pass

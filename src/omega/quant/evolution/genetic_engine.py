@@ -13,6 +13,8 @@ Key Features:
 - Diversity enforcement via Hall of Fame
 - Numerical stability (winsorization, z-score normalization)
 - Point-in-time compliance (no look-ahead bias)
+- Option D: Orthogonalization penalty with configurable baseline set
+  (penalizes alphas correlated with existing signals to ensure novelty)
 
 Author: Backend Engineer (Role 09)
 Date: 2026-05-13
@@ -23,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import random
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -212,6 +215,15 @@ class GPConfig:
     multi_target_horizons: List[int] = field(default_factory=lambda: [5])
     multi_target_weights: List[float] = field(default_factory=lambda: [1.0])
 
+    # Option D: Orthogonalization penalty with configurable baseline set
+    # Ensures evolved alphas are orthogonal (uncorrelated) to existing baseline signals.
+    # ortho_baseline_set maps signal_name -> np.ndarray of baseline alpha values.
+    # When non-empty, each candidate alpha is penalized proportionally to its
+    # maximum absolute Spearman correlation against any baseline signal.
+    ortho_baseline_set: Optional[Dict[str, np.ndarray]] = None
+    ortho_penalty_weight: float = 0.05          # max penalty magnitude
+    ortho_correlation_threshold: float = 0.5     # |corr| above which penalty kicks in
+
     # Parallel evaluation (Phase 2.4)
     # n_jobs: number of parallel threads for population evaluation.
     # -1 = use all CPUs, 1 = sequential fallback.
@@ -233,6 +245,7 @@ class GPIndividual:
     complexity_penalty: float = 0.0
     diversity_penalty: float = 0.0
     transaction_cost_penalty: float = 0.0
+    orthogonalization_penalty: float = 0.0
     turnover_rate: float = 0.0
     
     def evaluate(
@@ -331,8 +344,46 @@ class GPIndividual:
                     except Exception:
                         continue
             
+            # Option D: Orthogonalization penalty against configurable baseline set
+            # Penalizes alphas whose Spearman |correlation| with any baseline signal
+            # exceeds the configured threshold.  Penalty scales linearly from 0 at
+            # threshold to ortho_penalty_weight at |corr| == 1.0.
+            self.orthogonalization_penalty = 0.0
+            baseline_set = getattr(config, 'ortho_baseline_set', None) or {}
+            if baseline_set:
+                threshold = getattr(config, 'ortho_correlation_threshold', 0.5)
+                max_abs_corr = 0.0
+                for _bl_name, bl_signal in baseline_set.items():
+                    if bl_signal is None or len(bl_signal) == 0:
+                        continue
+                    try:
+                        bl_df = pd.DataFrame({
+                            'a': alpha_series,
+                            'b': bl_signal[:len(alpha_series)]
+                        }).dropna()
+                        if len(bl_df) < 100:
+                            continue
+                        bl_corr, _ = spearmanr(bl_df['a'], bl_df['b'])
+                        if not np.isnan(bl_corr):
+                            max_abs_corr = max(max_abs_corr, abs(bl_corr))
+                    except Exception:
+                        continue
+                # Linear penalty: 0 when max_abs_corr <= threshold,
+                # scales to ortho_penalty_weight when max_abs_corr == 1.0
+                if max_abs_corr > threshold and threshold < 1.0:
+                    penalty_frac = (max_abs_corr - threshold) / (1.0 - threshold)
+                    self.orthogonalization_penalty = (
+                        getattr(config, 'ortho_penalty_weight', 0.05) * penalty_frac
+                    )
+            
             # Final fitness
-            self.fitness = self.ic_score - self.complexity_penalty - self.diversity_penalty - self.transaction_cost_penalty
+            self.fitness = (
+                self.ic_score
+                - self.complexity_penalty
+                - self.diversity_penalty
+                - self.transaction_cost_penalty
+                - self.orthogonalization_penalty
+            )
             
         except Exception as e:
             logger.debug(f"Fitness evaluation failed: {e}")
@@ -554,11 +605,24 @@ class GeneticEngine:
             np.random.seed(self.config.random_seed)
             random.seed(self.config.random_seed)
             
-        self.feature_names = list(features.keys())
+        self.feature_names = [k for k in features.keys() if not k.startswith('target')]
         
         logger.info(f"Starting GP evolution: pop={self.config.population_size}, gen={self.config.generations}")
+        
+        # Log Option D orthogonalization baseline configuration
+        ortho_set = getattr(self.config, 'ortho_baseline_set', None) or {}
+        if ortho_set:
+            logger.info(
+                f"Option D orthogonalization: {len(ortho_set)} baseline signal(s) configured, "
+                f"weight={self.config.ortho_penalty_weight}, "
+                f"threshold={self.config.ortho_correlation_threshold}"
+            )
+        else:
+            logger.info("Option D orthogonalization: disabled (no baseline set)")
+        
         self.initialize_population()
         
+        t_start = time.monotonic()
         for generation in range(self.config.generations):
             # Stochastic GP: Subsample training data to 100,000 rows per generation to speed up evaluations
             if len(target) > 100000:
@@ -598,5 +662,19 @@ class GeneticEngine:
             })
             
             logger.info(f"Gen {generation+1}: IC={best.ic_score:.4f}, Fitness={best.fitness:.4f}")
+            
+            # Progress metadata with timing and ETA
+            elapsed = time.monotonic() - t_start
+            gen_time = elapsed / (generation + 1)
+            remaining = gen_time * (self.config.generations - generation - 1)
+            self.history[-1]['elapsed_sec'] = round(elapsed, 2)
+            self.history[-1]['gen_time_sec'] = round(gen_time, 3)
+            self.history[-1]['eta_sec'] = round(remaining, 1)
+            if (generation + 1) % max(1, self.config.generations // 5) == 0 or generation == 0:
+                logger.info(
+                    f"  Progress: {generation+1}/{self.config.generations} "
+                    f"({100*(generation+1)/self.config.generations:.0f}%) "
+                    f"elapsed={elapsed:.1f}s eta={remaining:.1f}s"
+                )
         
         return self.hall_of_fame

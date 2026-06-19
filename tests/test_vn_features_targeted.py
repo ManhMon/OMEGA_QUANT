@@ -10,7 +10,7 @@ sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 import numpy as np
 import pandas as pd
 import pytest
-from omega.quant.vn_alphas import compute_all_vn_alphas
+from omega.quant.alpha.vn import compute_all_vn_alphas
 import run_weekly_evolution as rwe
 
 def test_vn_alphas_computation():
