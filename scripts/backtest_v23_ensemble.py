@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 from omega.quant.evolution.genetic_alpha import Genome, Node, enforce_t_minus_1_lag
 from omega.quant.evolution.alpha_evolution_pipeline import AlphaEvolutionPipeline, AlphaCandidate, EvolutionConfig
-from omega.quant.parallel_backtest import ParallelBacktestRunner
+from omega.quant.backtest.parallel import ParallelBacktestRunner
 
 # ============================================================
 # PHASE A: DATA (same pipeline)

@@ -1,201 +1,217 @@
-# AGENTS.md - OMEGA_QUANT Protocol (Per Spec Section 17)
-**Version**: 2.4
-**Status**: PD v4.2 (Progressive Disclosure + Auto Skill Injection)
-**Last Updated**: 2026-05-11
+# AGENTS.md - OMEGA_QUANT Protocol
+**Version**: 2.9 | **Updated**: 2026-06-12
 
-Dự án OMEGA_QUANT: Hệ thống Quant AI Institutional Grade, vận hành bởi 25 Agent Roles chuyên biệt.
+## Tiers
 
-## 🚀 PD v4.2 - LY AUTO SKILL INJECTION (MỚI)
+| Tier | Platform | Role IDs | Boundary |
+|------|----------|----------|----------|
+| L1 | Ly / Antigravity | 1-5 | Orchestrate, plan, delegate, enforce gates |
+| L2 | OpenCode | 6-16 | Implement, refactor, run tests, write L2 report |
+| L3 | Codex | 17-25 | Independent audit, verdict, gate metadata |
 
-**Progressive Disclosure v4.2**: Ly (L1 Orchestrator) tự động load và inject skills vào Agent context dựa trên task type.
+## AG Kit Loading
 
-### Auto-Loading Protocol
-```python
-# Ly auto-detects task type and injects relevant skills
-if task_type == "implementation":
-    load_skill("OMEGA_QUANT/skills/team/SKILL.md")                    # Always
-    load_skill("OMEGA_QUANT/skills/audit-cycle/SKILL.md")             # Always
-    load_skill("OMEGA_QUANT/skills/elite_karpathy/karpathy-coder/SKILL.md")  # L2 only
-elif task_type == "audit":
-    load_skill("OMEGA_QUANT/skills/team/SKILL.md")                    # Always
-    load_skill("OMEGA_QUANT/skills/audit-cycle/SKILL.md")             # Always
-    load_skill("OMEGA_QUANT/skills/elite_karpathy/karpathy-auditor/SKILL.md") # L3 only
+- Role specs live in `.agents/agent/*.md`.
+- Each role frontmatter defines `role_id`, `tier`, `platform`, `skills`, and `sod_boundary`.
+- `sod_boundary` is binding; L1 must enforce it before delegation.
+- Before delegation, L1 selects exactly one role and loads only declared skills.
+- L2 receives: role spec + task + scope + requirements.
+- L3 receives: audit role spec + scope + checks + verdict contract.
+- **Role boundary evidence**: L2/L3 prompts MUST include role_id and role_name. L1 MUST verify writer != auditor before delegation.
+
+## Repo-Local Skill Source Contract (STRICT_REPO_LOCAL_SKILL_LOADING_20260612)
+
+**Effective**: 2026-06-12. All L2/L3 dispatches MUST use repo-local role/skill sources only.
+
+### Authoritative Paths
+
+| Constant | Value | Purpose |
+|----------|-------|---------|
+| `REPO_AGENT_ROOT` | `{REPO_ROOT}/.agents/agent` | Role spec files (`*.md`) |
+| `REPO_SKILL_ROOT` | `{REPO_ROOT}/.agents/skills` | Skill definition files (`*/SKILL.md`) |
+
+### Loading Protocol (MANDATORY for L2 and L3)
+
+1. **First**: Read role spec from `REPO_AGENT_ROOT/<role_name>.md` and parse frontmatter.
+2. **Parse skills**: Extract `skills` list from frontmatter.
+3. **Read skills**: For each declared skill, read `REPO_SKILL_ROOT/<skill_name>/SKILL.md` only.
+4. **Report**: L2/L3 reports MUST list exact repo-local role/skill files read.
+5. **Stop condition**: If any required repo-local source is missing/unreadable, stop and report `NEEDS_FIX` unless the role spec intentionally references a missing skill.
+
+### Forbidden Paths (Non-Authoritative)
+
+The following paths are **non-authoritative** for skill/role loading. Mentions are allowed ONLY if explicitly marked as non-authoritative or as forbidden-path scan evidence.
+
+| Forbidden Path | Description |
+|----------------|-------------|
+| `.gemini\antigravity-ide\scratch\ag-kit` | Antigravity IDE scratch |
+| `.openclaw\skills` | OpenClaw skills |
+| `C:\Users\GHC\.agents` | Global Codex agents directory |
+| `.codex\memories` | Codex memory files |
+
+**Enforcement**: `scripts/sod_gate_enforcer.py` validates that post-cutoff gates and audit reports include repo-local skill source evidence and do not rely on forbidden paths as authoritative sources.
+
+## Routing Enforcement
+
+L1 must validate role tier, platform, and role_id ranges before dispatch:
+
+### Pre-Dispatch Role Resolution
+
+Before ANY L2 or L3 dispatch, L1 MUST:
+1. Read the role spec from `.agents/agent/<role_name>.md`
+2. Parse frontmatter and extract: `role_id`, `tier`, `platform`, `role_name`, `sod_boundary`
+3. Validate all fields are present and correctly typed
+4. Verify role_name matches the filename stem exactly (case-sensitive)
+5. Store resolved role metadata in delegation context
+
+**Violation of pre-dispatch resolution blocks dispatch entirely.**
+
+### L2 (OpenCode) Routing Constraints
+
+- role_id MUST be in range 6-16
+- tier MUST be 2
+- platform MUST be "OpenCode"
+- role_name MUST be extracted from `.agents/agent/*.md` frontmatter (exact match)
+- Violation blocks dispatch
+
+### L3 (Codex) Routing Constraints
+
+- role_id MUST be in range 17-25
+- tier MUST be 3
+- platform MUST be "Codex"
+- sod_boundary MUST be defined in frontmatter
+- role_name MUST be extracted from `.agents/agent/*.md` frontmatter (exact match)
+- Violation blocks dispatch
+
+### Writer != Auditor Constraint
+
+- l2_role_id MUST NOT equal l3_role_id
+- Self-approval is forbidden
+- Violation blocks gate approval
+- L1 MUST verify this constraint before L3 dispatch and before gate approval
+
+## SOD Rules
+
+1. **1 Agent = 1 Role = 1 Task**.
+2. **Writer != Auditor**. Self-approval forbidden.
+3. L2 must exit/save state before L3 starts.
+4. L1 never implements or audits; L1 only delegates, records evidence, enforces gates.
+5. All state/evidence must be file-backed in `.ly_state/session/`.
+6. Do not run OpenCode and Codex simultaneously. Platform cap: 4GB.
+7. **L3 write boundary**: L3 may ONLY write to `.ly_state/session/audit_reports/` and update `.ly_state/session/phase_gates.json`. L3 MUST NOT edit production source code, tests, or any files outside `.ly_state/`.
+8. **Scratch path prohibition**: L2 and L3 MUST NOT read or write Antigravity scratch paths. All operations use `REPO_ROOT` with repo-relative paths only.
+9. **No manual override**: Manual approval overrides are forbidden. All gates require valid L3 audit with [APPROVED] verdict and `python scripts/sod_gate_enforcer.py` exit 0.
+10. **L2 session ID format**: L2 session IDs MUST follow format `l2_role{role_id}_{task_slug}_{YYYYMMDD}` (e.g., `l2_role11_agents_md_strict_sod_hardening_20260611`).
+
+## Required Flow
+
+```text
+L2 OpenCode: implement + tests + L2 report
+  -> L3 Codex: independent audit -> [APPROVED] / [NEEDS_FIX]
+  -> L1 Ly: update phase_gates.json + run sod_gate_enforcer.py
+  -> exit 0: safe to push
 ```
 
-### Skill Injection Log
-Mọi skill được load phải ghi log vào `.ly_state/session/loaded_skills.json`:
+A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
+
+### Verdict Handling
+
+- **[APPROVED]**: L1 records gate metadata, runs enforcer, proceeds if exit 0
+- **[NEEDS_FIX]**: L1 creates new L2 session with fix scope, L3 re-audits after fix, cycle repeats until [APPROVED]
+- **No verdict or partial verdict**: Gate remains `PENDING_L3_AUDIT`, no progression
+- **Manual override**: Forbidden. All approvals require valid L3 audit + enforcer exit 0
+
+## Call L2 OpenCode Implementation Work
+
+**Pre-dispatch requirements:**
+1. Read `.agents/agent/<role_name>.md` and extract frontmatter: `role_id`, `tier`, `platform`, `name`
+2. Validate: role_id 6-16, tier=2, platform=OpenCode
+3. Verify filename stem matches frontmatter `name` field exactly
+4. Use extracted `role_id` and `name` in prompt (never hand-type role names)
+
+```powershell
+echo "" | opencode run --pure --dangerously-skip-permissions --dir "C:\Users\GHC\repos\OMEGA_QUANT" -m "9router/qd/qmodel_latest" "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. TASK: [TASK]. GATE: [GATE_NAME]. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result. SCOPE: [FILES]. REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; write L2 report to .ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md. Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing."
+```
+
+**Platform lock protocol:** OpenCode L2 sessions MUST NOT call Codex or any L3 platform directly. L1 controls all cross-platform delegation.
+
+**Strict report naming:** L2 reports MUST follow format: `.ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md`
+
+**Windows requirements:** always use `echo "" |`, `--pure`, `--dangerously-skip-permissions`, and `--dir "C:\Users\GHC\repos\OMEGA_QUANT"`. Prompts must define `REPO_ROOT`; workers must not resolve `.agents` through Antigravity scratch paths.
+
+**Repo-local skill source contract:** L2 prompts MUST include `REPO_AGENT_ROOT`, `REPO_SKILL_ROOT`, instruction to read repo-local role spec first, parse skills, read only repo-local SKILL.md files, and report exact files read. Global/scratch/OpenClaw/Codex memory sources are non-authoritative.
+
+## Call L3 Codex Independent Review
+
+**Pre-dispatch requirements:**
+1. Read `.agents/agent/<role_name>.md` and extract frontmatter: `role_id`, `tier`, `platform`, `name`, `sod_boundary`
+2. Validate: role_id 17-25, tier=3, platform=Codex, sod_boundary defined
+3. Verify filename stem matches frontmatter `name` field exactly
+4. Verify l2_role_id != l3_role_id (writer != auditor)
+5. Use extracted `role_id` and `name` in prompt (never hand-type role names)
+
+```powershell
+echo "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - Codex L3 Independent Review. GATE: {gate_name}. L2_SESSION: {l2_session_id}. L2_ROLE: {l2_role_id} {l2_role_name}. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; read required SKILL.md only from REPO_SKILL_ROOT. Any skill from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local files read and forbidden path scan result. SCOPE: [FILES]. CHECKS: [CHECKLIST]. REQUIREMENTS: first run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; use repo-relative paths from REPO_ROOT only; never read/write Antigravity scratch paths. AUDIT EVIDENCE CHECKLIST: 1. Verify l2_role_id={l2_role_id} != l3_role_id={role_id}. 2. Verify code changes match approved scope. 3. Run all tests. 4. Check PIT safety, no look-ahead bias. 5. Validate SOD boundaries. 6. Verify L2 report lists repo-local skill source evidence. VERDICT: Write [APPROVED] or [NEEDS_FIX] to .ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md. GATE UPDATE: Update ONLY the '{gate_name}' entry in phase_gates.json with: l2_session_id='{l2_session_id}', l2_role_id={l2_role_id}, l2_role_name='{l2_role_name}', l3_session_id='{l3_session_id}', l3_role_id={role_id}, l3_role_name='{role_name}', audit_report_path='.ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md', final_verdict='[verdict]', sod_boundary_checked=true, writer_auditor_separated=true. FINAL STEP: L1 must run 'python scripts/sod_gate_enforcer.py' after gate update." | codex exec --full-auto
+```
+
+**Scoped gate updates:** L3 MUST update only the specific gate being audited. Do not modify other gates or create new gates.
+
+**Audit evidence requirements:** L3 audit reports MUST document:
+- Writer != Auditor verification (l2_role_id != l3_role_id)
+- Scope compliance check
+- Test execution results
+- PIT safety verification
+- SOD boundary compliance
+- Repo-local skill source evidence (L2 report lists exact files read from REPO_AGENT_ROOT/REPO_SKILL_ROOT)
+- Forbidden path scan result (no authoritative reliance on `.gemini\antigravity-ide\scratch\ag-kit`, `.openclaw\skills`, `C:\Users\GHC\.agents`, `.codex\memories`)
+
+**Platform isolation:** Codex L3 sessions MUST NOT call OpenCode or modify production source code directly. L3 writes only to `.ly_state/session/audit_reports/` and updates phase_gates.json.
+
+**Codex requirements:** always pipe prompt via `echo`; never use interactive stdin. Prompt must include `REPO_ROOT` and a first-step `Set-Location` guard.
+
+## Gate Contract
+
+Valid gate requires all fields:
+
 ```json
 {
-  "session_id": "uuid",
-  "loaded_at": "2026-05-11T16:50:00Z",
-  "skills": [
-    {"name": "team", "version": "2.4", "path": "OMEGA_QUANT/skills/team/SKILL.md"},
-    {"name": "audit-cycle", "version": "2.4", "path": "OMEGA_QUANT/skills/audit-cycle/SKILL.md"},
-    {"name": "karpathy-coder", "version": "2.1", "path": "OMEGA_QUANT/skills/elite_karpathy/karpathy-coder/SKILL.md"}
-  ]
+  "l2_session_id": "...",
+  "l2_completed": true,
+  "l2_role_id": 0,
+  "l2_role_name": "...",
+  "l3_session_id": "...",
+  "l3_session_key": "...",
+  "l3_role_id": 0,
+  "l3_role_name": "...",
+  "audit_report_path": "...",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true
 }
 ```
 
-### Benefits
-- **Token Efficiency**: Chỉ load skills cần thiết cho task hiện tại
-- **Context Clarity**: Agent con nhận đúng "Hiến pháp" cho vai trò của mình
-- **Observability**: Log skills giúp trace được Agent đang chạy với bộ luật nào
-- **Consistency**: Đảm bảo mọi Agent đều tuân thủ cùng một bộ quy tắc
+**Field requirements (gates after 2026-06-11)**:
+- `l2_role_id`: Integer role ID (6-16 for OpenCode L2), must exist in `.agents/agent/*.md`
+- `l2_role_name`: Role name from spec (e.g., "backend-engineer", "compliance-officer")
+- `l3_role_id`: Integer role ID (17-25 for Codex L3), validated: tier=3, platform=Codex, has sod_boundary
+- `l3_role_name`: Role name from spec (e.g., "code-reviewer", "compliance-officer")
+- `l2_role_id != l3_role_id`: Writer != Auditor enforcement
+- `audit_report_path`: Must exist as file and contain the verdict string
+- `sod_boundary_checked`: Must be `true`
+- `writer_auditor_separated`: Must be `true`
 
----
+**Field requirements (gates after 2026-06-12, STRICT_REPO_LOCAL_SKILL_LOADING_20260612)**:
+- `repo_local_skill_sources`: List of exact repo-local files read (from REPO_AGENT_ROOT and REPO_SKILL_ROOT)
+- `forbidden_path_scan`: Result of forbidden path scan (must show no authoritative reliance)
+- L2 report MUST list exact repo-local role/skill files read
+- L3 audit MUST verify L2 repo-local skill source evidence
 
-## 🤖 MÔ HÌNH 25 AGENT ĐỘC LẬP (STRICT ISOLATION)
+Missing/invalid fields -> `PENDING_L3_AUDIT`.
 
-**QUY TẮC CỐT LÕI (CORE PRINCIPLES)**:
-1. **1 Agent = 1 Role**: Mỗi session spawn ra là 1 Agent duy nhất, đóng đúng 1 vai. Không có "Multi-role Agent".
-2. **1 Agent = 1 Task**: Mỗi lần gọi, Agent chỉ nhận đúng 1 nhiệm vụ cụ thể, rõ ràng.
-3. **Context Blindness (Sự mù mờ có chủ ý)**: Agent CHỈ được cung cấp đủ Context để làm đúng nhiệm vụ của mình. Tuyệt đối KHÔNG nhồi nhét toàn bộ Master Plan hay Architecture vào prompt của Agent con để tránh nhiễu và ảo giác (hallucination).
-4. **Nền tảng (Platform)** chỉ là môi trường chạy (runtime), không phải là Agent.
-   - Ly (Orchestrator L1) giữ gate decision, điều phối audit vòng lặp -> Spawn Agent con độc lập.
-   - Agent con chạy -> Trả kết quả -> Tự hủy.
-5. **AG Kit Integration**: Tất cả các Agent khi được khởi chạy bắt buộc phải sử dụng các công cụ, kịch bản kiểm tra (như `checklist.py`, `verify_all.py`), và tuân thủ các quy trình slash command được định nghĩa trong AG Kit.
+**Backward compatibility**: Gates created before 2026-06-11 with `[APPROVED]` verdict are grandfathered. New gates (after 2026-06-11) require all fields including role boundary evidence.
 
+## State Directory
 
-| Platform Runtime | Tier | Chức năng Runtime | Agents chạy trên Platform này |
-| :--- | :--- | :--- | :--- |
-| **Ly** | L1 | Orchestrator (Điều phối) | Roles 1-5 (Project/Delivery Management) |
-| **OpenCode** | L2 | Build, Code, Design | Roles 6-16 (Architect to Machine Learning Eng) |
-| **Codex** | L3 | Audit, Review, Security | Roles 17-25 (QA to Auditor) |
-
----
-
-## 🎭 CHIẾN THUẬT CÔ LẬP AGENT (STRICT ISOLATION PROTOCOL)
-
-Để đảm bảo tính chuyên môn hóa và tiết kiệm token, OMEGA áp dụng quy tắc:
-1. **Role Specificity**: Mỗi Agent khi được spawn (via `sessions_spawn`) chỉ được gán đúng 1 Role ID từ danh sách 25 roles.
-   - Session Impl (Writer/Fixer): Label `[L2-Impl:*]`.
-   - Session Audit (Reviewer/Critic): Label `[L3-Audit:*]`.
-2. **Minimal Context Injection**: 
-   - Ly (Orchestrator) sẽ dùng `get_minimal_context` để lọc đúng file cần thiết.
-   - Tuyệt đối KHÔNG gửi toàn bộ Master Plan cho Agent con.
-   - Agent chỉ nhận được: (1) Role Spec, (2) Task Description, (3) Input Files.
-3. **Ephemeral Lifecycle**: Agent con hoàn thành nhiệm vụ -> Trả kết quả -> Session bị đóng ngay lập tức.
-4. **Platform Independence**: OpenCode/Codex chỉ là môi trường thực thi. Agent mới là thực thể có Persona.
-5. **Segregation of Duties (SOD)**: Writer session KHÁC Auditor session. Tuyệt đối cấm self-approval. Impl session PHẢI terminate trước khi Audit session bắt đầu. Review Agent (Role 21) phải từ chối mọi yêu cầu implement/fix.
-6. **Gate Contract (Bắt buộc trước khi APPROVED)**: `phase_gates.json` PHẢI có đủ các trường:
-   - `l3_session_id` (required)
-   - `l3_session_key` (required)
-   - `audit_report_path` (required)
-   - `final_verdict` = `[APPROVED]` hoặc `[NEEDS_FIX]`
-   Nếu thiếu bất kỳ trường nào -> Gate INVALID, bắt buộc set `PENDING_AUDIT`.
-7. **Platform Routing**: Các task implementation thuộc L2 BẮT BUỘC phải chạy trên runtime **OpenCode**. Các task audit, review và verification thuộc L3 BẮT BUỘC phải chạy trên runtime **Codex**. L1 Orchestrator không được phép tự thực thi viết code hoặc tự audit trực tiếp.
-8. **AG Kit Compliance**: Mọi hoạt động của Agent phải tuân thủ hướng dẫn vận hành của AG Kit. L2 Agent phải chạy kiểm định chất lượng (lint, unit tests, security scans) qua master scripts của AG Kit trước khi bàn giao. L3 Agent phải viết báo cáo kiểm toán theo đúng chuẩn Markdown của AG Kit.
-
-
-
-## 📋 QUY TRÌNH SOD BẮT BUỘC (HARDCODED WORKFLOW)
-
-1. **L2 Implementation**: Viết code và unit tests. Chạy `pytest` đạt 100% green.
-2. **L3 Audit**: LUÔN LUÔN gọi Codex audit artifact của L2. Không được skip.
-3. **Verdict**: 
-   - Nếu `[NEEDS_FIX]`: Quay lại bước 1.
-   - Nếu `[APPROVED]`: Ghi evidence vào `.ly_state/session/phase_gates.json`.
-4. **Mandatory Verification**: Chạy `python scripts/sod_gate_enforcer.py` để verify gate lock.
-5. **Release**: Chỉ được `git push` khi script verify PASS.
-
-**Lý do**: Đảm bảo 100% code production được kiểm soát độc lập, tránh bias của người viết code.
-
----
-
-## 🎭 DANH SÁCH 25 AGENT ROLES (STRICT ISOLATION)
-
-### Tier 1: L1 (Ly) - Orchestrator & Management
-| Role ID | Role Name | Platform | Responsibility |
-|:--------|:----------|:---------|:---------------|
-| 1 | Project Manager | Ly (L1) | Strategic orchestration, resource allocation |
-| 2 | Product Owner | Ly (L1) | Feature prioritization, stakeholder alignment |
-| 3 | Scrum Master | Ly (L1) | Agile process, blocker removal |
-| 4 | Release Manager | Ly (L1) | Release coordination, deployment gates |
-| 5 | Delivery Manager | Ly (L1) | Timeline tracking, resource management |
-
-### Tier 2: L2 (OpenCode) - Build, Code, Design
-| Role ID | Role Name | Platform | Responsibility |
-|:--------|:----------|:---------|:---------------|
-| 6 | System Architect | OpenCode (L2) | System design, interface definition |
-| 7 | Tech Lead | OpenCode (L2) | Technical leadership, code standards |
-| 8 | Frontend Engineer | OpenCode (L2) | UI/UX implementation |
-| 9 | Backend Engineer | OpenCode (L2) | API and business logic implementation |
-| 10 | Database Admin | OpenCode (L2) | Schema design, DB performance |
-| 11 | DevOps Engineer | OpenCode (L2) | CI/CD, automation |
-| 12 | Cloud Infra Engineer| OpenCode (L2) | Infrastructure as Code |
-| 13 | UI/UX Integrator | OpenCode (L2) | UI integration, styling |
-| 14 | Data Scientist | OpenCode (L2) | Model research, signal discovery |
-| 15 | Data Engineer | OpenCode (L2) | Data pipelines, ETL |
-| 16 | Machine Learning Eng| OpenCode (L2) | Model training, deployment |
-
-### Tier 3: L3 (Codex) - Audit, Review, Security
-| Role ID | Role Name | Platform | Responsibility |
-|:--------|:----------|:---------|:---------------|
-| 17 | QA Engineer | Codex (L3) | Functional testing |
-| 18 | SDET | Codex (L3) | Test automation, frameworks |
-| 19 | Security Auditor | Codex (L3) | Security scanning, threat modeling |
-| 20 | Compliance Officer | Codex (L3) | Standards compliance, PIT safety check |
-| 21 | Code Reviewer | Codex (L3) | Peer review, audit reports |
-| 22 | Penetration Tester | Codex (L3) | Security testing, exploits |
-| 23 | Performance Tester | Codex (L3) | Load and stress testing |
-| 24 | UAT Validator | Codex (L3) | User acceptance validation |
-| 25 | IT Systems Auditor | Codex (L3) | Overall system audit |
-
----
-
-## 📦 STATE PERSISTENCE (KHÔNG DÙNG RAM)
-
-### Quy tắc Bắt buộc:
-- **Tất cả state phải được lưu vào file**: Không lưu trữ state trong biến RAM.
-- **Thư mục State**: `.ly_state/` trong workspace root.
-- **Cấu trúc State Files**:
-  ```
-  .ly_state/
-  ├── session/
-  │   ├── active_tasks.json    # Task đang chạy (map Role -> Platform)
-  │   ├── agent_locks.json     # Platform locks
-  │   ├── context_cache.json   # Role-specific context
-  │   └── .ly_state/session/audit_log.jsonl      # Audit logs (append-only, hash-chained)
-  ├── memory/
-  │   └── session_*.json      # Role memory snapshots
-  └── checkpoints/
-      └── checkpoint_*.json   # Checkpoint snapshots
-  ```
-
----
-
-## 🛡️ CHIẾN THUẬT QUẢN LÝ TÀI NGUYÊN (16GB RAM)
-
-1. **Check First**: Check RAM > 10GB trước mỗi task.
-2. **Single-Platform Protocol**: Không gọi OpenCode và Codex cùng lúc (trừ khi isolated).
-3. **Platform Capping**: OpenCode/Codex giới hạn 4GB RAM mỗi task.
-4. **Context Pruning**: Xóa context role-specific ngay sau khi hoàn thành task.
-
----
-
-## 🚀 CLI EXECUTION VIA ISOLATED BACKGROUND SESSIONS (PD v4.2)
-
-### Quy trình:
-```powershell
-# 1. Ly (L1) xác định Role & Platform cần dùng
-# 2. Ly gọi exec(background: true) kèm instruction cho Role
-# 3. Platform (OpenCode/Codex) thực thi và ghi state
-# 4. Ly theo dõi qua process(action: "log")
-```
-
----
-
-## 📋 QUY TRÌNH AUDIT CHUẨN HÓA (CODEX FORMAT)
-
-| Trường | Giá trị | Chi tiết |
-| :--- | :--- | :--- |
-| **Role** | Code Reviewer / Compliance Officer / Security Auditor | Role thực hiện audit |
-| **Verdict** | `[APPROVED]` / `[NEEDS_FIX]` | Kết luận cuối cùng |
-| **PIT Safety** | `PASS` / `FAIL` | Kiểm tra T-1 Lag & No Look-ahead |
-| **Role Compliance** | `PASS` / `FAIL` | Kiểm tra thực thi đúng role-spec |
-
----
-
-**Version**: 2.3
-**Status**: R9 (Backend Engineer Role 9 - Role Title Canonicalization)
-**Cập nhật lần cuối**: 10/05/2026 - 17:25 GMT+7 (OMEGA Standard - Strict Isolation v1.0)
+- `.ly_state/session/phase_gates.json`
+- `.ly_state/session/audit_reports/`
+- `.ly_state/session/l2_*.md`

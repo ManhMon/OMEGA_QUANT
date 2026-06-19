@@ -88,7 +88,7 @@ prices_bt = prices_bt.loc[common_dates].fillna(method='ffill')
 print(f"[4] Weights: {weights.shape}, Prices: {prices_bt.shape} (warmup dropped)")
 
 # === STEP 5: Parallel Backtest (4 workers, symbol chunking) ===
-from omega.quant.parallel_backtest import ParallelBacktestRunner
+from omega.quant.backtest.parallel import ParallelBacktestRunner
 
 runner = ParallelBacktestRunner(
     num_workers=4,

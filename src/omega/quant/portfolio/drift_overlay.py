@@ -1,4 +1,4 @@
-﻿"""
+"""
 OMEGA_QUANT Drift Detection Overlay for Pipeline A
 Monitors model performance drift and reduces exposure when detected.
 
@@ -47,8 +47,13 @@ def compute_drift_exposure(
     if T < lookback + 10:
         return exposures
 
+    # PIT T-1 lag: shift signal_returns by 1 bar so rolling Sharpe at bar t
+    # uses only data through t-1. First bar becomes 0 (neutral).
+    lagged_returns = np.zeros(T)
+    lagged_returns[1:] = signal_returns[:-1]
+
     # Rolling Sharpe as drift proxy (simpler than IC, same signal)
-    ret_series = pd.Series(signal_returns)
+    ret_series = pd.Series(lagged_returns)
     rolling_mean = ret_series.rolling(lookback, min_periods=lookback // 2).mean()
     rolling_std = ret_series.rolling(lookback, min_periods=lookback // 2).std()
     rolling_sharpe = (rolling_mean / rolling_std.replace(0, np.nan)).fillna(0)

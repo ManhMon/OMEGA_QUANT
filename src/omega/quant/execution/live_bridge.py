@@ -31,11 +31,13 @@ from omega.execution.broker_gateway import (
     BrokerOrder,
     BrokerOrderResponse,
     BrokerOrderStatus,
+    BrokerCredentials,
     OrderSide,
     OrderStatus,
     OrderType,
     PaperTradingEngine,
 )
+from omega.execution.order_router import SSIBrokerGateway
 
 logger = logging.getLogger("OmegaLiveExecutionBridge")
 
@@ -101,6 +103,7 @@ class BrokerConfig:
     account_id: str
     base_url: str
     paper_trading: bool = True  # Default to paper trading for safety
+    credentials: Optional[BrokerCredentials] = None  # Pre-built credentials for SSI
 
 
 class LiveExecutionBridge:
@@ -143,12 +146,21 @@ class LiveExecutionBridge:
         # Initialize broker connection
         if broker_config.paper_trading:
             self._broker = PaperTradingEngine()
+            self._broker_type = "PAPER"
             logger.info("Initialized with PaperTradingEngine")
         else:
-            # Real broker integration would go here
-            # For now, fall back to paper trading
-            self._broker = PaperTradingEngine()
-            logger.warning("Real broker not implemented, using PaperTradingEngine")
+            # Use SSIBrokerGateway for live/simulated-live trading
+            ssi_creds = broker_config.credentials or BrokerCredentials(
+                broker_name=broker_config.broker_name,
+                api_key=broker_config.api_key,
+                api_secret=broker_config.api_secret,
+                account_id=broker_config.account_id,
+                base_url=broker_config.base_url,
+            )
+            self._broker = SSIBrokerGateway(ssi_creds)
+            self._broker.authenticate()
+            self._broker_type = "SSI"
+            logger.info("Initialized with SSIBrokerGateway (broker=%s)", ssi_creds.broker_name)
 
         logger.info(f"LiveExecutionBridge initialized: {broker_config.broker_name}")
 
@@ -312,7 +324,6 @@ class LiveExecutionBridge:
                     )
                     execution_order.update_state(ExecutionState.FAILED, str(e))
                     return False
-                    return False
 
     def _submit_to_broker(
         self,
@@ -322,6 +333,10 @@ class LiveExecutionBridge:
         """
         Submit order to broker (abstraction layer).
 
+        Routes to the correct gateway API:
+        - PaperTradingEngine: requires current_price for simulated fills
+        - SSIBrokerGateway: submits via SSI API (no current_price needed)
+
         Args:
             broker_order: Broker order to submit
             current_price: Current market price (for paper trading)
@@ -329,9 +344,12 @@ class LiveExecutionBridge:
         Returns:
             BrokerOrderResponse from broker
         """
-        # Use current_price or default to 100.0 for paper trading
-        price = current_price if current_price is not None else 100.0
-        return self._broker.submit_order(broker_order, price)
+        if isinstance(self._broker, PaperTradingEngine):
+            price = current_price if current_price is not None else 100.0
+            return self._broker.submit_order(broker_order, price)
+        else:
+            # SSIBrokerGateway or any BrokerGateway subclass
+            return self._broker.submit_order(broker_order)
 
     def get_order_status(self, order_id: str) -> ExecutionOrder:
         """

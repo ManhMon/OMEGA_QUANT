@@ -23,10 +23,10 @@ from typing import Dict, List, Optional, Any
 import numpy as np
 import pandas as pd
 
-from .alpha_discovery import AlphaDiscoveryEngine
-from .portfolio_optimizer import PortfolioOptimizer, PortfolioConstraints
-from .promotion import PromotionGate
-from .execution_sim import ExecutionSimulator, ExecutionConfig, ExecutionResult
+from omega.quant.alpha.discovery import AlphaDiscoveryEngine
+from omega.quant.portfolio.portfolio_optimizer import PortfolioOptimizer, PortfolioConstraints
+from omega.quant.utils.promotion import PromotionGate
+from omega.quant.execution_sim import ExecutionSimulator, ExecutionConfig, ExecutionResult
 
 logger = logging.getLogger("OmegaTradingEngine")
 

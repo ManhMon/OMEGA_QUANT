@@ -37,7 +37,7 @@ class VNMarketFlowDataSource:
         self._cache: Dict[str, Any] = {}
         
         try:
-            from vnstock_data import Trading
+            from vnstock import Trading
             self.Trading = Trading
         except ImportError:
             self.Trading = None

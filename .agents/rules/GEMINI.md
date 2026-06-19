@@ -104,6 +104,12 @@ When user's prompt is NOT in English:
 2. **Respond in user's language** - match their communication
 3. **Code comments/variables** remain in English
 
+### 🚫 Cấm Hẹn Giờ/Timer (Global Mandatory)
+
+**TUYỆT ĐỐI CẤM sử dụng bất kỳ công cụ hẹn giờ, lập lịch hoặc timer (chẳng hạn như `schedule`, `cron` hoặc bất kỳ timer chạy ngầm nào) dưới mọi hình thức.**
+- Không đặt timer chờ đợi tiến trình chạy ngầm.
+- Không hẹn giờ báo thức hay thông báo định kỳ.
+
 ### 🧹 Clean Code (Global Mandatory)
 
 **ALL code MUST follow `@[skills/clean-code]` rules. No exceptions.**

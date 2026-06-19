@@ -38,13 +38,13 @@ import pandas as pd
 
 warnings.filterwarnings('ignore')
 
-# Try to import vnstock3 for live data fetching
+# Try to import vnstock for live data fetching (vnstock 4.x unified package)
 try:
-    from vnstock3 import Vnstock
+    from vnstock import Vnstock
     VNSTOCK_AVAILABLE = True
 except ImportError:
     VNSTOCK_AVAILABLE = False
-    warnings.warn("vnstock3 not available. Using fallback static mappings.")
+    warnings.warn("vnstock not available. Using fallback static mappings.")
 
 
 def get_structure_data(symbols: List[str]) -> pd.DataFrame:

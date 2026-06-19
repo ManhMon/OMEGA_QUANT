@@ -22,20 +22,20 @@ SmartMoneyFeatures = None
 get_structure_data = None
 
 try:
-    from omega.quant.phase34_microstructure_alphas import compute_phase34_microstructure_alphas, get_phase34_alpha_metadata
+    from omega.quant.alpha.phase34 import compute_phase34_microstructure_alphas, get_phase34_alpha_metadata
     compute_phase34 = compute_phase34_microstructure_alphas
     logger.info("phase34 imported")
 except ImportError as e:
     logger.warning(f"phase34 not available: {e}")
 
 try:
-    from omega.quant.smart_money_features import SmartMoneyFeatures
+    from omega.quant.signal.smart_money import SmartMoneyFeatures
     logger.info("SmartMoneyFeatures imported")
 except ImportError as e:
     logger.warning(f"SmartMoneyFeatures not available: {e}")
 
 try:
-    from omega.quant.structure_features import get_structure_data
+    from omega.quant.utils.structure_features import get_structure_data
     logger.info("get_structure_data imported")
 except ImportError as e:
     logger.warning(f"get_structure_data not available: {e}")

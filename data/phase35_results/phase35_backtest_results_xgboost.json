@@ -4,6 +4,7 @@
     "end_date": "2026-05-14",
     "top_n_symbols": 1,
     "n_folds": 2,
+    "n_folds_executed": 2,
     "train_years": 1,
     "test_years": 1,
     "min_ic_threshold": 0.02,
@@ -22,25 +23,76 @@
     "drawdown_threshold": 0.05,
     "enable_evolved": false,
     "evolved_blend_weight": 0.5,
-    "multi_horizon_blend": true,
+    "multi_horizon_blend": false,
     "blend_horizons": "1,3,5",
-    "blend_weight_method": "validation_ic"
+    "blend_weight_method": "validation_ic",
+    "p10_gate_mode": "strict",
+    "p10_gate_min_pass": 1,
+    "p10_gate_allow_fallback_candidates": false,
+    "risk_adjusted_alpha_selection": false,
+    "risk_adjusted_preset": "balanced",
+    "portfolio_guard_enabled": false,
+    "portfolio_guard_tolerance": 0.005,
+    "research_pool_mode": "full",
+    "enable_formulaic_alphas": false,
+    "formulaic_alpha_set": "small",
+    "formulaic_winner_guard": false,
+    "cpcv_fold_expansion_n_folds": 2,
+    "cpcv_fold_expansion_train_years": 1,
+    "cpcv_fold_expansion_test_years": 1,
+    "cpcv_fold_expansion_top_n_symbols": 1,
+    "cpcv_fold_expansion_output_tag": null,
+    "data_cleaning_enabled": true,
+    "normalization_mode": "expanding_zscore",
+    "data_hygiene_evidence": {
+      "gate": "DEFAULT_DATA_HYGIENE_NORMALIZATION_20260614",
+      "data_cleaning_enabled": true,
+      "normalization_mode": "expanding_zscore",
+      "sanitizer_stats": {
+        "input_rows": 1758591,
+        "duplicates_removed": 0,
+        "forward_filled": 0,
+        "outliers_clipped": 492131,
+        "invalid_prices_removed": 0,
+        "output_rows": 1758591,
+        "data_retention_pct": 100.0
+      },
+      "normalization_stats": {
+        "mode": "expanding_zscore",
+        "columns_normalized": 5,
+        "norm_column_names": [
+          "open_norm",
+          "high_norm",
+          "low_norm",
+          "close_norm",
+          "volume_norm"
+        ],
+        "min_periods_expanding": 20,
+        "pit_safe": true,
+        "note": "expanding_zscore normalization applied. Raw OHLCV columns preserved. Normalized columns suffixed with '_norm'."
+      },
+      "output_rows": 2831,
+      "output_symbols": 1,
+      "date_range": "2015-01-05 00:00:00 to 2026-05-13 00:00:00",
+      "pit_safe": true
+    }
   },
   "summary": {
     "avg_portfolio_ic": 0.0,
     "avg_portfolio_sharpe": 0.0,
     "avg_portfolio_max_dd": 0.0,
     "avg_portfolio_pnl_vnd": 0.0,
-    "total_folds": 2
+    "total_folds": 2,
+    "n_folds_requested": 2
   },
   "alpha_ics": {
-    "alpha_p34_volatility_compression_5": 0.036294360413729285,
-    "alpha_p34_volume_clock_acceleration_10": -0.014917354108351148,
-    "alpha_p34_kyle_lambda_20": 0.02391972236767671,
-    "alpha_p34_tick_signed_volume_imbalance_5": 0.016415671049448483,
-    "alpha_p34_close_auction_drift_10": -0.023496834111985217,
-    "alpha_p34_liquidity_provision_ratio_10": 0.047236554090996564,
-    "alpha_p34_micro_momentum_5_20": -0.07449836647822194
+    "alpha_p34_volatility_compression_5": 0.07974776801556122,
+    "alpha_p34_volume_clock_acceleration_10": 0.14713864352512454,
+    "alpha_p34_kyle_lambda_20": 0.05268189337895826,
+    "alpha_p34_tick_signed_volume_imbalance_5": 0.04278656306970926,
+    "alpha_p34_close_auction_drift_10": -0.0824463223149122,
+    "alpha_p34_liquidity_provision_ratio_10": 0.04597002312195701,
+    "alpha_p34_micro_momentum_5_20": 0.07289121131317554
   },
   "fold_details": [
     {
@@ -55,12 +107,12 @@
       "portfolio_total_return": 0.0,
       "portfolio_pnl_vnd": 0.0,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": 0.0586493374234203,
-        "alpha_p34_volume_clock_acceleration_10": 0.0427166423579909,
-        "alpha_p34_kyle_lambda_20": 0.03024332123393389,
-        "alpha_p34_tick_signed_volume_imbalance_5": -0.0359126170786104,
-        "alpha_p34_close_auction_drift_10": 0.0017076757865218534,
-        "alpha_p34_liquidity_provision_ratio_10": 0.012297150081955241,
+        "alpha_p34_volatility_compression_5": -0.012546197017479544,
+        "alpha_p34_volume_clock_acceleration_10": -0.020924431545166496,
+        "alpha_p34_kyle_lambda_20": -0.0023818651182356404,
+        "alpha_p34_tick_signed_volume_imbalance_5": -0.02934820550767145,
+        "alpha_p34_close_auction_drift_10": 0.005780326039606293,
+        "alpha_p34_liquidity_provision_ratio_10": 0.02625042071339668,
         "alpha_p34_micro_momentum_5_20": 0.0
       },
       "n_train_samples": 244,
@@ -78,17 +130,18 @@
       "portfolio_total_return": 0.0,
       "portfolio_pnl_vnd": 0.0,
       "alpha_ics": {
-        "alpha_p34_volatility_compression_5": 0.013939383404038271,
-        "alpha_p34_volume_clock_acceleration_10": -0.0725513505746932,
-        "alpha_p34_kyle_lambda_20": 0.01759612350141953,
-        "alpha_p34_tick_signed_volume_imbalance_5": 0.06874395917750736,
-        "alpha_p34_close_auction_drift_10": -0.04870134401049229,
-        "alpha_p34_liquidity_provision_ratio_10": 0.08217595810003789,
-        "alpha_p34_micro_momentum_5_20": -0.1489967329564439
+        "alpha_p34_volatility_compression_5": 0.17204173304860199,
+        "alpha_p34_volume_clock_acceleration_10": 0.31520171859541557,
+        "alpha_p34_kyle_lambda_20": 0.10774565187615216,
+        "alpha_p34_tick_signed_volume_imbalance_5": 0.11492133164708997,
+        "alpha_p34_close_auction_drift_10": -0.17067297066943068,
+        "alpha_p34_liquidity_provision_ratio_10": 0.06568962553051735,
+        "alpha_p34_micro_momentum_5_20": 0.14578242262635108
       },
       "n_train_samples": 246,
       "n_test_samples": 251
     }
   ],
-  "timestamp": "2026-06-09T18:49:27.150145"
+  "recovery_pool_evidence": null,
+  "timestamp": "2026-06-14T23:36:00.833923"
 }

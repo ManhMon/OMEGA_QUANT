@@ -6,7 +6,7 @@ import pytest
 import numpy as np
 import pandas as pd
 
-from omega.quant.walk_forward_ensemble import (
+from omega.quant.backtest.walk_forward_ensemble import (
     WalkForwardEnsemble,
     WalkForwardConfig,
     FoldResult,

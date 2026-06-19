@@ -9,7 +9,7 @@ from datetime import datetime, UTC, timezone
 from dataclasses import dataclass, field
 from enum import Enum
 
-from omega.quant.live_execution_bridge import ExecutionOrder, ExecutionState
+from omega.quant.execution.live_bridge import ExecutionOrder, ExecutionState
 
 logger = logging.getLogger(__name__)
 

@@ -23,10 +23,10 @@ import pandas as pd
 from omega.data.loader import DataLoader
 
 # Feature Layer
-from omega.quant.feature_module import FeatureModule, FeatureModuleConfig
+from omega.quant.feature.module import FeatureModule, FeatureModuleConfig
 
 # Alpha Layer
-from omega.quant.alpha_discovery import AlphaDiscoveryEngine, DiscoveryConfig
+from omega.quant.alpha.discovery import AlphaDiscoveryEngine, DiscoveryConfig
 
 # Risk Layer
 from omega.risk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig

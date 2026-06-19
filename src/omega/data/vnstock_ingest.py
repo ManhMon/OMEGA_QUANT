@@ -11,20 +11,19 @@ from typing import List, Optional
 import pandas as pd
 from vnstock import Vnstock
 
+# VND_FULL price-unit contract guard (centralized)
+from omega.data.vnd_price_contract import (
+    VND_FULL,
+    ensure_vnd_scale,
+    RAW_PRICE_THRESHOLD,
+    VND_PRICE_SCALE,
+)
+
 warnings.filterwarnings('ignore')
 
-RAW_PRICE_THRESHOLD = 1_000.0
-VND_PRICE_SCALE = 1_000.0
-
 def normalize_price_columns_to_vnd(df: pd.DataFrame) -> pd.DataFrame:
-    price_cols = [col for col in ['open', 'high', 'low', 'close'] if col in df.columns]
-    if not price_cols:
-        return df
-    ref_col = 'close' if 'close' in price_cols else price_cols[0]
-    ref_price = pd.to_numeric(df[ref_col], errors='coerce').replace([float('inf'), float('-inf')], float('nan')).median()
-    if pd.notna(ref_price) and 0 < float(ref_price) < RAW_PRICE_THRESHOLD:
-        df[price_cols] = df[price_cols].astype(float) * VND_PRICE_SCALE
-    return df
+    """Normalize price columns to VND_FULL using centralized guard."""
+    return ensure_vnd_scale(df, price_cols=["open", "high", "low", "close"])
 
 def ingest_vci_data(symbols: List[str], start_date: str, end_date: str, output_path: str = 'data/v21_market_data.parquet') -> Optional[pd.DataFrame]:
     api_key = os.getenv("VNSTOCK_API_KEY", "dummy_key")

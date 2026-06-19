@@ -4,7 +4,7 @@ description: Model research/signal discovery
 role_id: 14
 tier: 2
 platform: OpenCode
-skills: [python-patterns, clean-code, testing-patterns, systematic-debugging, performance-profiling]
+skills: [python-patterns, clean-code, testing-patterns, systematic-debugging, performance-profiling, quant-research, vietnam-market-data, backtesting-pit-safety, data-science-workflow]
 sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
 ---
 

@@ -362,3 +362,44 @@ class ResourceManager:
                 budget.allocated = 0.0
         self._update_throttle()
         logger.info("All resource allocations reset")
+
+
+def compute_safe_workers(
+    max_fraction_cpu: float = 0.75,
+    min_ram_mb_per_worker: float = 512.0,
+    hard_cap: int = 16,
+) -> int:
+    """Return a safe default worker count based on CPU and available RAM.
+
+    Caps workers to avoid OOM or CPU saturation on shared machines.
+
+    Parameters
+    ----------
+    max_fraction_cpu : float
+        Fraction of logical CPUs to use (default 75 %).
+    min_ram_mb_per_worker : float
+        Minimum RAM in MB reserved per worker (default 512 MB).
+    hard_cap : int
+        Absolute upper bound regardless of hardware (default 16).
+
+    Returns
+    -------
+    int
+        Safe worker count >= 1.
+    """
+    import os
+
+    cpu_count = os.cpu_count() or 2
+    cpu_workers = max(1, int(cpu_count * max_fraction_cpu))
+
+    ram_workers = cpu_workers  # fallback if psutil unavailable
+    try:
+        import psutil  # type: ignore
+
+        available_mb = psutil.virtual_memory().available / (1024 * 1024)
+        ram_workers = max(1, int(available_mb / min_ram_mb_per_worker))
+    except ImportError:
+        pass
+
+    workers = min(cpu_workers, ram_workers, hard_cap)
+    return max(1, workers)

@@ -17,7 +17,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from omega.quant.parallel_backtest import ParallelBacktestRunner, ParallelBacktestResult
+from omega.quant.backtest.parallel import ParallelBacktestRunner, ParallelBacktestResult
 
 
 @pytest.fixture

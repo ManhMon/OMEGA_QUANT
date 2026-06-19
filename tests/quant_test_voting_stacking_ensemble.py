@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import Ridge
 
-from omega.quant.voting_stacking_ensemble import (
+from omega.quant.ml.voting_stacking import (
     VotingEnsemble,
     StackingEnsemble,
     EnsembleConfig,

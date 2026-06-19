@@ -15,7 +15,7 @@ from typing import Optional, Dict, Tuple
 import warnings
 warnings.filterwarnings('ignore')
 
-from .utils.math import clip_outliers
+from omega.quant.utils.math import clip_outliers
 
 
 class DataSanitizer:
@@ -308,10 +308,18 @@ class DataSanitizer:
                     before_fill = symbol_data[col].isna().sum()
                     symbol_data[col] = symbol_data[col].ffill(limit=self.max_fill_days)
                     after_fill = symbol_data[col].isna().sum()
-                    filled_count += (before_fill - after_fill)
+                    # GATE: DEFAULT_DATA_HYGIENE_NORMALIZATION_FIX2_20260614
+                    # int() cast: pd.Series.isna().sum() returns numpy.int64
+                    # which is NOT JSON-serializable.  Convert to Python int.
+                    filled_count += int(before_fill - after_fill)
             
             # Reset index and update main dataframe
             symbol_data = symbol_data.reset_index()
+            # GATE: DEFAULT_DATA_HYGIENE_NORMALIZATION_FIX1_20260614
+            # Reorder columns to match original — reset_index() places the
+            # former index column ('date') at the END, causing position-based
+            # .values assignment to swap date/ticker columns and corrupt dtypes.
+            symbol_data = symbol_data[df_filled.columns]
             df_filled.loc[symbol_mask] = symbol_data.values
         
         stats['forward_filled'] = filled_count
@@ -352,7 +360,9 @@ class DataSanitizer:
                 symbol_data[col] = symbol_data[col].clip(lower=lower_bound, upper=upper_bound)
                 
                 # Count clipped values
-                clipped_count += (original_values != symbol_data[col]).sum()
+                # GATE: DEFAULT_DATA_HYGIENE_NORMALIZATION_FIX2_20260614
+                # int() cast: boolean .sum() returns numpy.int64
+                clipped_count += int((original_values != symbol_data[col]).sum())
             
             # Update main dataframe
             df_clipped.loc[symbol_mask, ohlcv_cols] = symbol_data[ohlcv_cols].values
@@ -398,7 +408,9 @@ class DataSanitizer:
                 symbol_data[col] = symbol_data[col].clip(lower=lower_bound, upper=upper_bound)
                 
                 # Count clipped values
-                clipped_count += (original_values != symbol_data[col]).sum()
+                # GATE: DEFAULT_DATA_HYGIENE_NORMALIZATION_FIX2_20260614
+                # int() cast: boolean .sum() returns numpy.int64
+                clipped_count += int((original_values != symbol_data[col]).sum())
             
             # Update main dataframe
             df_clipped.loc[symbol_mask, ohlcv_cols] = symbol_data[ohlcv_cols].values

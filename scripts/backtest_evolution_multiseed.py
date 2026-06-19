@@ -8,6 +8,7 @@ import sys
 import json
 import logging
 import random
+import argparse
 import numpy as np
 import pandas as pd
 from pathlib import Path
@@ -112,8 +113,78 @@ def compute_metrics(signals, returns, dates, fwd_horizon=5, tickers=None):
             "turnover": round(float(turnover), 4)}
 
 def main():
+    parser = argparse.ArgumentParser(description="Multi-seed ensemble evolution backtest")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help=(
+            "Number of parallel workers for GP evaluation. "
+            "Capped to compute_safe_workers() ceiling and hard cap 16. "
+            "On Windows, forced to 1 (joblib WinError 5 mitigation)."
+        ),
+    )
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        default=False,
+        help="Quick/smoke mode: 2 seeds, pop=20, gen=3 (finishes in ~2-5 min)",
+    )
+    args = parser.parse_args()
+
+    if args.quick:
+        global NUM_SEEDS
+        NUM_SEEDS = 2
+        _quick_pop = 20
+        _quick_gen = 3
+        logger.info("QUICK MODE: seeds=%d, pop=%d, gen=%d", NUM_SEEDS, _quick_pop, _quick_gen)
+    else:
+        _quick_pop = None
+        _quick_gen = None
+
+    # --- Worker resolution (Windows-safe, capped) ---
+    # joblib Parallel with prefer='threads' triggers [WinError 5] Access is
+    # denied on Windows for n_jobs > 1 (genetic_engine.py:583-584).  Force
+    # serial execution on Windows regardless of mode.  On other platforms
+    # honour compute_safe_workers() as a ceiling.
+    import platform
+    _IS_WINDOWS = platform.system() == "Windows"
+    _WORKER_HARD_CAP = 16
+
+    if args.workers is not None:
+        # Explicit --workers: sanitize and cap
+        n_jobs = max(1, args.workers)
+        try:
+            from omega.infra.resource_manager import compute_safe_workers
+            _ceiling = compute_safe_workers()
+        except ImportError:
+            _ceiling = _WORKER_HARD_CAP
+        n_jobs = min(n_jobs, _ceiling, _WORKER_HARD_CAP)
+        if _IS_WINDOWS and n_jobs > 1:
+            logger.warning(
+                "Windows detected: joblib parallel evaluation is unreliable "
+                "(WinError 5). Degrading --workers %d -> 1.", n_jobs
+            )
+            n_jobs = 1
+    else:
+        # Auto-detect safe worker count
+        if _IS_WINDOWS:
+            n_jobs = 1
+            logger.info("Windows detected: forcing n_jobs=1 (joblib WinError 5 mitigation)")
+        else:
+            try:
+                from omega.infra.resource_manager import compute_safe_workers
+                n_jobs = compute_safe_workers()
+            except ImportError:
+                n_jobs = 1
+    logger.info("GP n_jobs=%s", n_jobs)
+
     print("="*80)
-    print(f"MULTI-SEED ENSEMBLE BACKTEST (NUM_SEEDS={NUM_SEEDS})")
+    mode_label = "QUICK/SMOKE" if args.quick else "FULL"
+    print(f"MULTI-SEED ENSEMBLE BACKTEST [{mode_label}] (NUM_SEEDS={NUM_SEEDS})")
+    if not args.quick:
+        print(f"NOTE: Full run expected ~20-60 min depending on data size and CPU.")
+        print(f"      Use --quick for a fast smoke test (~2-5 min).")
     print("="*80)
     df = load_and_prepare_data()
     print(f"Loaded {len(df)} rows, {df['ticker'].nunique()} tickers")
@@ -144,7 +215,9 @@ def main():
             random.seed(seed)
             np.random.seed(seed)
             
-            config = GPConfig(population_size=50, generations=10, min_observations=500, max_depth=4)
+            pop_size = _quick_pop if args.quick else 50
+            n_gens = _quick_gen if args.quick else 10
+            config = GPConfig(population_size=pop_size, generations=n_gens, min_observations=500, max_depth=4, n_jobs=n_jobs)
             engine = GeneticEngine(config)
             try:
                 hof = engine.evolve(features_train, target_train)
@@ -221,6 +294,14 @@ def main():
         print(f"  Baseline Mom20: IC={base_metrics['ic']:.4f} Sharpe={base_metrics['sharpe']:.2f}")
     
     # Summary
+    if not results:
+        print("\n" + "="*80)
+        print("ERROR: No yearly results produced. All seeds/years failed.")
+        print("This typically indicates a data or infrastructure issue, not a strategy failure.")
+        print("Check: data file exists, sufficient rows, GP seeds completing without errors.")
+        print("="*80)
+        return 1
+
     print("\n" + "="*80)
     print(f"{'Year':<6} {'Multi-Seed Evo':<15} {'Mom20':<12} {'Winner'}")
     print(f"{'':6} {'IC / Sharpe':<15} {'IC / Sharpe':<12}")
@@ -233,7 +314,8 @@ def main():
         if winner == "EVOLUTION": evo_wins += 1
         print(f"{r['year']:<6} {r['evolution_ensemble']['ic']:+.3f} / {evo_sh:+.2f}      {r['baseline_mom20']['ic']:+.3f} / {base_sh:+.2f}     {winner}")
     print("="*80)
-    print(f"\nEvolution Win Rate: {evo_wins}/{len(results)} ({100*evo_wins/len(results):.0f}%)")
+    n_years = len(results)
+    print(f"\nEvolution Win Rate: {evo_wins}/{n_years} ({100*evo_wins/n_years:.0f}%)")
     
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     with open(OUTPUT_DIR / "multiseed_backtest_results.json", "w") as f:

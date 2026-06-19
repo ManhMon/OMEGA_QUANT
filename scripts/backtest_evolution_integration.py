@@ -26,7 +26,7 @@ import numpy as np
 import pandas as pd
 
 ROOT = Path(__file__).resolve().parents[1]
-QUANT_SRC = ROOT / "packages" / "quant" / "src"
+QUANT_SRC = ROOT / "src"
 if str(QUANT_SRC) not in sys.path:
     sys.path.insert(0, str(QUANT_SRC))
 

@@ -6,7 +6,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from omega.quant.registry import ModelRegistry, ModelMetadata
+from omega.quant.utils.registry import ModelRegistry, ModelMetadata
 
 logger = logging.getLogger(__name__)
 

@@ -11,6 +11,13 @@ from typing import Any, Callable, Deque, Dict, Iterable, List, Optional
 import pandas as pd
 from vnstock import Quote
 
+# VND_FULL price-unit contract guard (centralized)
+from omega.data.vnd_price_contract import (
+    VND_FULL,
+    RAW_PRICE_THRESHOLD as _RAW_PRICE_THRESHOLD,
+    VND_PRICE_SCALE as _VND_PRICE_SCALE,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
@@ -44,8 +51,8 @@ class RateLimiter:
 class VnstockVCIDataSource:
     """Data source using official vnstock package with VCI provider."""
 
-    RAW_PRICE_THRESHOLD = 1_000.0
-    VND_PRICE_SCALE = 1_000.0
+    RAW_PRICE_THRESHOLD = _RAW_PRICE_THRESHOLD  # VND_FULL contract
+    VND_PRICE_SCALE = _VND_PRICE_SCALE
 
     def __init__(self, rate_limiter: Optional[RateLimiter] = None):
         self.api_key = os.getenv("VNSTOCK_API_KEY", "dummy_key")

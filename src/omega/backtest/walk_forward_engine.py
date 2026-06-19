@@ -24,11 +24,11 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 
 from omega.quant.strategy.purged_cv import PurgedTimeSeriesSplit
-from omega.quant.ensemble_builder import (
+from omega.quant.evolution.ensemble_builder import (
     OOFEnsembleBuilder,
     EnsembleConfig,
 )
-from omega.quant.signal_module import (
+from omega.quant.signal.module import (
     SignalModule,
     SignalModuleConfig,
 )

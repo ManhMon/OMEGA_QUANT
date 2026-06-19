@@ -1,6 +1,6 @@
 import pytest
 
-from omega.quant.signal_module import SignalModule, SignalModuleConfig
+from omega.quant.signal.module import SignalModule, SignalModuleConfig
 
 
 class TestSignalModule:

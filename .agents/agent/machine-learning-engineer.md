@@ -4,7 +4,7 @@ description: Model training/deployment
 role_id: 16
 tier: 2
 platform: OpenCode
-skills: [python-patterns, clean-code, testing-patterns, performance-profiling, systematic-debugging]
+skills: [python-patterns, clean-code, testing-patterns, performance-profiling, systematic-debugging, ml-dl-rl, backtesting-pit-safety, vietnam-market-data]
 sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
 ---
 

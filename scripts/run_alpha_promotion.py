@@ -33,7 +33,7 @@ logger = logging.getLogger("alpha_promotion")
 
 # --- Optional PromotionGate import (graceful degradation) -------------------
 try:
-    from omega.quant.promotion import PromotionGate  # type: ignore
+    from omega.quant.utils.promotion import PromotionGate  # type: ignore
     _HAS_GATE = True
 except Exception as exc:  # pragma: no cover - import-time fallback
     logger.warning("PromotionGate unavailable (%s); using fallback evaluator.", exc)

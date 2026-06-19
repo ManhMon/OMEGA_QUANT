@@ -402,11 +402,487 @@ def compute_explained_variance_ratio(
     """Get explained variance ratio from PCA model.
 
     For ICA, returns uniform placeholder (ICA doesn't have variance explained).
+    For PLS, returns R² per component.
     """
     if method == "pca" and hasattr(model, "explained_variance_ratio_"):
         return [round(float(v), 6) for v in model.explained_variance_ratio_]
-    # ICA: no variance ratio; return uniform
+    if method == "pls" and hasattr(model, "x_scores_"):
+        # PLS: approximate explained variance from x_scores_ (not scores_)
+        # L3-Fix: PLSRegression stores x-scores in model.x_scores_
+        total_var = np.var(model.x_scores_, axis=0).sum()
+        if total_var > 1e-8:
+            component_vars = np.var(model.x_scores_, axis=0)
+            return [round(float(v / total_var), 6) for v in component_vars]
+    # ICA or fallback: uniform
     return [round(1.0 / n_components, 6)] * n_components
+
+
+# ===================================================================
+# Advanced: PLS Regression (supervised latent extraction)
+# ===================================================================
+
+def fit_pls_components(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    n_components: int,
+) -> Tuple[np.ndarray, Any]:
+    """Fit PLS regression on training data using forward returns as target.
+
+    PLS extracts latent components that maximise covariance between
+    the feature space X and the return target y.  Unlike PCA (unsupervised),
+    PLS is supervised and may yield components with higher IC.
+
+    Parameters
+    ----------
+    X_train : ndarray (n_samples, n_features)
+        Training feature matrix.
+    y_train : ndarray (n_samples,)
+        Forward return labels (cross-sectionally neutralised).
+    n_components : int
+        Number of PLS components to extract.
+
+    Returns
+    -------
+    components : ndarray (n_components, n_features)
+        PLS x-loadings.
+    model : PLSRegression
+        Fitted PLS model for OOS projection.
+    """
+    from sklearn.cross_decomposition import PLSRegression
+
+    # PLS requires n_components <= min(n_samples, n_features)
+    max_comp = min(X_train.shape[1], X_train.shape[0], n_components)
+    pls = PLSRegression(n_components=max_comp, scale=False, max_iter=500)
+    y_2d = y_train.reshape(-1, 1) if y_train.ndim == 1 else y_train
+    pls.fit(X_train, y_2d)
+    return pls.x_loadings_.T, pls
+
+
+def project_pls_factors(
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    model: Any,
+    prefix: str = "latent_pls_",
+) -> pd.DataFrame:
+    """Project dataframe rows onto PLS latent components.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Panel data with features.
+    feature_cols : list of str
+        Feature column names.
+    model : PLSRegression
+        Fitted PLS model.
+    prefix : str
+        Prefix for output column names.
+
+    Returns
+    -------
+    DataFrame
+        Original df with added PLS factor columns.
+    """
+    X = df[feature_cols].values
+    X = np.nan_to_num(X, nan=0.0)
+    # PLS transform returns scores (n_samples, n_components)
+    projections = model.transform(X)
+    result = df.copy()
+    n_comp = projections.shape[1]
+    for i in range(n_comp):
+        result[f"{prefix}{i:02d}"] = projections[:, i]
+    return result
+
+
+# ===================================================================
+# Advanced: Cross-sectional target returns neutralization
+# ===================================================================
+
+def neutralize_target_returns(
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    return_col: str = "returns",
+    date_col: str = "date",
+) -> np.ndarray:
+    """Cross-sectionally neutralise target returns against feature exposures.
+
+    For each date, regress returns on the feature cross-section and return
+    the residual.  This removes linear factor exposures from the target,
+    allowing PLS to focus on the non-linear / residual alpha signal.
+
+    PIT-safe: uses only same-date cross-section (no look-ahead).
+
+    Parameters
+    ----------
+    df : DataFrame
+        Panel data with features and returns.
+    feature_cols : list of str
+        Feature columns used as controls.
+    return_col : str
+        Forward return column.
+    date_col : str
+        Date column.
+
+    Returns
+    -------
+    ndarray (n_rows,)
+        Neutralised return residuals aligned to df index.
+    """
+    from numpy.linalg import lstsq
+
+    residuals = pd.Series(0.0, index=df.index)
+    for date, idx in df.groupby(date_col).groups.items():
+        rows = df.loc[idx]
+        X = rows[feature_cols].values
+        X = np.nan_to_num(X, nan=0.0)
+        y = rows[return_col].values.astype(np.float64)
+        # Add intercept
+        X_aug = np.column_stack([np.ones(len(X)), X])
+        try:
+            coef, _, _, _ = lstsq(X_aug, y, rcond=None)
+            y_hat = X_aug @ coef
+            residuals.loc[idx] = y - y_hat
+        except Exception:
+            # If regression fails, keep raw returns
+            residuals.loc[idx] = y
+    return residuals.values
+
+
+# ===================================================================
+# Advanced: Regime-conditional PCA/PLS using rolling HMMs
+# ===================================================================
+
+def detect_regimes_hmm(
+    market_returns: np.ndarray,
+    n_states: int = 3,
+    min_window: int = 60,
+) -> Tuple[np.ndarray, Any]:
+    """Detect market regimes using a rolling Gaussian HMM.
+
+    Fits a Gaussian HMM on trailing market returns and assigns each
+    date to one of n_states regimes (e.g. Bull/Bear/Sideways).
+
+    PIT-safe: uses only trailing data (no future returns).
+
+    If hmmlearn is not available, falls back to a simple heuristic
+    regime detector based on rolling mean and volatility.
+
+    Parameters
+    ----------
+    market_returns : ndarray (T,)
+        Daily market returns (cross-sectional mean or index proxy).
+    n_states : int
+        Number of HMM hidden states.
+    min_window : int
+        Minimum trailing window for HMM fitting.
+
+    Returns
+    -------
+    regime_labels : ndarray (T,)
+        Integer regime label per date (0..n_states-1).
+    hmm_model : GaussianHMM or None
+        Fitted HMM model (None if fitting failed or hmmlearn unavailable).
+    """
+    T = len(market_returns)
+    regime_labels = np.zeros(T, dtype=int)
+
+    if T < min_window:
+        logger.warning(
+            f"HMM: insufficient data ({T} < {min_window}). "
+            "Assigning all to regime 0."
+        )
+        return regime_labels, None
+
+    # Try hmmlearn first
+    try:
+        from hmmlearn.hmm import GaussianHMM
+
+        X_hmm = market_returns.reshape(-1, 1)
+        hmm = GaussianHMM(
+            n_components=n_states,
+            covariance_type="full",
+            n_iter=100,
+            random_state=SEED,
+        )
+        hmm.fit(X_hmm)
+        regime_labels = hmm.predict(X_hmm)
+        return regime_labels, hmm
+    except ImportError:
+        logger.warning(
+            "hmmlearn not available. Falling back to heuristic regime detection."
+        )
+    except Exception as e:
+        logger.warning(f"HMM fitting failed: {e}. Falling back to heuristic.")
+
+    # Heuristic fallback: rolling mean/vol quantile-based regimes
+    window = min(min_window, T // 3)
+    cum_returns = np.cumsum(market_returns)
+    rolling_mean = np.convolve(market_returns, np.ones(window) / window, mode='same')
+    rolling_std = pd.Series(market_returns).rolling(window, min_periods=1).std().values
+
+    # 3 states: Bear (low mean, high vol), Sideways (mid), Bull (high mean, low vol)
+    mean_median = np.median(rolling_mean)
+    vol_median = np.median(rolling_std)
+
+    for i in range(T):
+        if rolling_mean[i] < mean_median and rolling_std[i] > vol_median:
+            regime_labels[i] = 0  # Bear
+        elif rolling_mean[i] > mean_median:
+            regime_labels[i] = 2  # Bull
+        else:
+            regime_labels[i] = 1  # Sideways
+
+    return regime_labels, None
+
+
+def fit_regime_conditional_models(
+    X_train: np.ndarray,
+    y_train: np.ndarray,
+    regime_labels: np.ndarray,
+    n_components: int,
+    method: str = "pca",
+) -> Dict[int, Dict[str, Any]]:
+    """Fit separate PCA/PLS models per HMM regime.
+
+    For each regime, fits a decomposition model on the subset of
+    training data belonging to that regime.
+
+    Parameters
+    ----------
+    X_train : ndarray (n_train, n_features)
+        Training feature matrix.
+    y_train : ndarray (n_train,)
+        Neutralised return targets.
+    regime_labels : ndarray (n_train,)
+        Regime label per training sample.
+    n_components : int
+        Number of components per regime model.
+    method : str
+        'pca' or 'pls'.
+
+    Returns
+    -------
+    dict
+        {regime_id: {"model": fitted_model, "components": ndarray, "prefix": str, "n_samples": int}}
+    """
+    regime_models: Dict[int, Dict[str, Any]] = {}
+    unique_regimes = sorted(set(regime_labels))
+
+    for regime_id in unique_regimes:
+        mask = regime_labels == regime_id
+        X_r = X_train[mask]
+        y_r = y_train[mask]
+        n_r = len(X_r)
+
+        if n_r < n_components + 1:
+            logger.warning(
+                f"Regime {regime_id}: only {n_r} samples, "
+                f"skipping (need >= {n_components + 1})."
+            )
+            continue
+
+        prefix = f"latent_r{regime_id}_{method}_"
+        n_comp = min(n_components, X_r.shape[1], n_r - 1)
+
+        if method == "pls":
+            components, model = fit_pls_components(X_r, y_r, n_comp)
+        else:
+            components, model = fit_pca_components(X_r, n_comp)
+
+        regime_models[regime_id] = {
+            "model": model,
+            "components": components,
+            "prefix": prefix,
+            "n_samples": n_r,
+            "method": method,
+            "n_components": n_comp,
+        }
+        logger.info(
+            f"  Regime {regime_id}: fitted {method.upper()} "
+            f"with {n_comp} components on {n_r} samples"
+        )
+
+    return regime_models
+
+
+def project_regime_conditional(
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    regime_models: Dict[int, Dict[str, Any]],
+    regime_labels_map: Dict,
+    date_col: str = "date",
+) -> pd.DataFrame:
+    """Project data using regime-conditional models.
+
+    For each date, looks up the regime label and applies the
+    corresponding regime model.  If a regime has no fitted model,
+    falls back to regime 0 (or the first available regime).
+
+    Parameters
+    ----------
+    df : DataFrame
+        Panel data with features and date column.
+    feature_cols : list of str
+        Feature column names.
+    regime_models : dict
+        {regime_id: {"model": ..., "prefix": ..., "method": ...}}
+    regime_labels_map : dict
+        {date: regime_id} mapping for projection dates.
+    date_col : str
+        Date column name.
+
+    Returns
+    -------
+    DataFrame
+        df with regime-conditional latent factor columns added.
+    """
+    result = df.copy()
+    # Determine max n_components across regimes for column pre-allocation
+    all_prefixes = set()
+    max_n_comp = 0
+    for info in regime_models.values():
+        all_prefixes.add(info["prefix"])
+        max_n_comp = max(max_n_comp, info["n_components"])
+
+    # Pre-fill all possible latent columns with 0
+    latent_col_names = []
+    for info in regime_models.values():
+        for i in range(info["n_components"]):
+            col_name = f"{info['prefix']}{i:02d}"
+            if col_name not in latent_col_names:
+                latent_col_names.append(col_name)
+                result[col_name] = 0.0
+
+    # Fallback regime
+    fallback_regime = min(regime_models.keys()) if regime_models else 0
+
+    for date, group_idx in df.groupby(date_col).groups.items():
+        regime_id = regime_labels_map.get(date, fallback_regime)
+        if regime_id not in regime_models:
+            regime_id = fallback_regime
+        if regime_id not in regime_models:
+            continue
+
+        info = regime_models[regime_id]
+        model = info["model"]
+        prefix = info["prefix"]
+        method = info["method"]
+        n_comp = info["n_components"]
+
+        X = df.loc[group_idx, feature_cols].values
+        X = np.nan_to_num(X, nan=0.0)
+
+        if method == "pls":
+            projections = model.transform(X)
+        else:
+            projections = model.transform(X)
+
+        idx_arr = group_idx if isinstance(group_idx, np.ndarray) else group_idx.to_numpy()
+        for i in range(n_comp):
+            col_name = f"{prefix}{i:02d}"
+            result.loc[idx_arr, col_name] = projections[:, i]
+
+    return result
+
+
+# ===================================================================
+# Advanced: Deep Nonlinear Autoencoder (GATE: LATENT_ALPHA_MINING_64D_20260617)
+# ===================================================================
+
+def fit_autoencoder_components(
+    X_train: np.ndarray,
+    n_components: int,
+    epochs: int = 20,
+    hidden_dims: Tuple[int, ...] = (256, 128, 64),
+    seed: int = SEED,
+) -> Tuple[Any, Dict[str, float]]:
+    """Train a deep nonlinear autoencoder on training data.
+
+    Uses NonlinearDeepLatentEncoder from omega.quant.models.latent_encoder.
+
+    Parameters
+    ----------
+    X_train : ndarray (n_samples, n_features)
+        Training feature matrix.
+    n_components : int
+        Latent dimension (bottleneck).
+    epochs : int
+        Number of training epochs.
+    hidden_dims : tuple of int
+        Encoder hidden layer sizes (decoder mirrors).
+    seed : int
+        Random seed.
+
+    Returns
+    -------
+    encoder : NonlinearDeepLatentEncoder
+        Fitted encoder for OOS projection.
+    metrics : dict
+        Training metrics (final_loss, n_epochs, reconstruction_loss).
+    """
+    sys.path.insert(0, str(REPO_ROOT / "src"))
+    from omega.quant.models.latent_encoder import (
+        NonlinearDeepLatentEncoder,
+        DeepAutoencoderConfig,
+    )
+
+    cfg = DeepAutoencoderConfig(
+        n_features=X_train.shape[1],
+        latent_dim=n_components,
+        hidden_dims=hidden_dims,
+        epochs=epochs,
+        seed=seed,
+    )
+    encoder = NonlinearDeepLatentEncoder(cfg)
+    encoder.fit(X_train)
+
+    train_loss = encoder._train_loss_history[-1] if encoder._train_loss_history else float("nan")
+    recon_loss = encoder.get_reconstruction_loss(X_train)
+
+    ae_metrics = {
+        "final_train_loss": round(train_loss, 6),
+        "reconstruction_loss": round(recon_loss, 6),
+        "n_epochs_trained": len(encoder._train_loss_history),
+        "input_dim": X_train.shape[1],
+        "latent_dim": n_components,
+        "hidden_dims": list(hidden_dims),
+    }
+    return encoder, ae_metrics
+
+
+def project_autoencoder_factors(
+    df: pd.DataFrame,
+    feature_cols: List[str],
+    encoder: Any,
+    prefix: str = "latent_ae_",
+) -> pd.DataFrame:
+    """Project dataframe rows onto deep autoencoder latent components.
+
+    Parameters
+    ----------
+    df : DataFrame
+        Panel data with feature columns.
+    feature_cols : list of str
+        Feature column names.
+    encoder : NonlinearDeepLatentEncoder
+        Fitted deep autoencoder encoder.
+    prefix : str
+        Prefix for output column names.
+
+    Returns
+    -------
+    DataFrame
+        Original df with added autoencoder latent factor columns.
+    """
+    X = df[feature_cols].values
+    X = np.nan_to_num(X, nan=0.0)
+    projections = encoder.transform(X)  # (N, latent_dim)
+
+    result = df.copy()
+    n_comp = projections.shape[1]
+    for i in range(n_comp):
+        result[f"{prefix}{i:02d}"] = projections[:, i]
+
+    return result
 
 
 # ===================================================================
@@ -419,6 +895,11 @@ def run_latent_alpha_mining(
     train_ratio: float = 0.6,
     quick_mode: bool = False,
     features_path: Optional[Path] = None,
+    enable_pls: bool = False,
+    enable_neutralize: bool = False,
+    enable_regime_conditional: bool = False,
+    n_hmm_states: int = 3,
+    hmm_min_window: int = 60,
 ) -> Dict[str, Any]:
     """Execute the full latent alpha mining pipeline.
 
@@ -427,13 +908,23 @@ def run_latent_alpha_mining(
     n_components : int
         Number of latent components to extract.
     method : str
-        Decomposition method: 'pca', 'ica', or 'both'.
+        Decomposition method: 'pca', 'ica', 'both', or 'pls'.
     train_ratio : float
         Fraction of dates used for training (chronological split).
     quick_mode : bool
         If True, use fewer components and symbols for speed.
     features_path : Path, optional
         Override path to features parquet.
+    enable_pls : bool
+        If True, also run PLS regression (supervised).
+    enable_neutralize : bool
+        If True, cross-sectionally neutralise returns before PLS.
+    enable_regime_conditional : bool
+        If True, fit regime-conditional models via rolling HMM.
+    n_hmm_states : int
+        Number of HMM hidden states for regime detection.
+    hmm_min_window : int
+        Minimum trailing window for HMM fitting.
 
     Returns
     -------
@@ -535,21 +1026,61 @@ def run_latent_alpha_mining(
         methods_to_run.append("pca")
     if method in ("ica", "both"):
         methods_to_run.append("ica")
+    if method == "pls" or enable_pls:
+        methods_to_run.append("pls")
+    if method == "autoencoder":
+        methods_to_run.append("autoencoder")
 
     for m in methods_to_run:
         logger.info(f"  Fitting {m.upper()} with {n_components} components...")
         if m == "pca":
             components, model = fit_pca_components(X_train, n_components)
             prefix = "latent_pca_"
-        else:
+        elif m == "ica":
             components, model = fit_ica_components(X_train, n_components)
             prefix = "latent_ica_"
+        elif m == "pls":
+            # PLS: use returns as target (optionally neutralised)
+            y_train_raw = df_train["returns"].values.astype(np.float64)
+            if enable_neutralize:
+                logger.info("    Neutralising target returns cross-sectionally...")
+                y_train = neutralize_target_returns(
+                    df_train, alpha_cols, "returns", "date"
+                )
+            else:
+                y_train = y_train_raw
+            n_comp_pls = min(n_components, X_train.shape[1], X_train.shape[0])
+            components, model = fit_pls_components(X_train, y_train, n_comp_pls)
+            prefix = "latent_pls_"
+        elif m == "autoencoder":
+            logger.info(f"    Training deep nonlinear autoencoder...")
+            encoder, ae_metrics = fit_autoencoder_components(
+                X_train, n_components, epochs=20, seed=SEED
+            )
+            model = encoder
+            components = None  # Deep AE has no explicit component matrix
+            prefix = "latent_ae_"
+            logger.info(
+                f"    DeepAE: train_loss={ae_metrics['final_train_loss']:.6f}, "
+                f"recon_loss={ae_metrics['reconstruction_loss']:.6f}, "
+                f"epochs={ae_metrics['n_epochs_trained']}"
+            )
+        else:
+            raise ValueError(f"Unknown method: {m}")
 
         models[m] = {"model": model, "components": components, "prefix": prefix}
 
         # Explained variance
-        var_ratio = compute_explained_variance_ratio(model, m, n_components)
-        logger.info(f"    Explained variance (first 5): {var_ratio[:5]}")
+        if m == "autoencoder":
+            # Deep AE: use reconstruction-based proxy instead of variance ratio
+            var_ratio = [round(1.0 / n_components, 6)] * n_components
+            if m == "autoencoder":
+                logger.info(
+                    f"    DeepAE reconstruction loss: {ae_metrics['reconstruction_loss']:.6f}"
+                )
+        else:
+            var_ratio = compute_explained_variance_ratio(model, m, n_components)
+            logger.info(f"    Explained variance (first 5): {var_ratio[:5]}")
         if m == "pca":
             total_var = sum(var_ratio)
             logger.info(f"    Total variance explained ({n_components} comp): {total_var:.4f}")
@@ -562,11 +1093,140 @@ def run_latent_alpha_mining(
         prefix = info["prefix"]
         model = info["model"]
 
-        df_train = project_latent_factors(df_train, alpha_cols, model, m, prefix)
-        df_test = project_latent_factors(df_test, alpha_cols, model, m, prefix)
+        if m == "pls":
+            df_train = project_pls_factors(df_train, alpha_cols, model, prefix)
+            df_test = project_pls_factors(df_test, alpha_cols, model, prefix)
+        elif m == "autoencoder":
+            df_train = project_autoencoder_factors(df_train, alpha_cols, model, prefix)
+            df_test = project_autoencoder_factors(df_test, alpha_cols, model, prefix)
+        else:
+            df_train = project_latent_factors(df_train, alpha_cols, model, m, prefix)
+            df_test = project_latent_factors(df_test, alpha_cols, model, m, prefix)
 
-        latent_cols = [f"{prefix}{i:02d}" for i in range(n_components)]
+        actual_n_comp = (
+            model.x_loadings_.shape[1] if m == "pls" else n_components
+        )
+        latent_cols = [f"{prefix}{i:02d}" for i in range(actual_n_comp)]
         logger.info(f"  {m.upper()}: projected {len(latent_cols)} latent columns")
+
+    # ------------------------------------------------------------------
+    # Step 6b: Regime-conditional PCA/PLS (optional, advanced)
+    # ------------------------------------------------------------------
+    regime_models = {}
+    regime_labels_map = {}
+    regime_evidence = None
+    if enable_regime_conditional:
+        logger.info("Step 6b: Regime-conditional modeling via rolling HMM...")
+        # Compute daily cross-sectional mean returns as market proxy
+        daily_mean_returns = (
+            df_train.groupby("date")["returns"].mean().sort_index()
+        )
+        market_ret = daily_mean_returns.values.astype(np.float64)
+        train_dates_sorted = sorted(df_train["date"].unique())
+
+        # Detect regimes on training data only (PIT-safe)
+        regime_labels_train, hmm_model = detect_regimes_hmm(
+            market_ret, n_states=n_hmm_states, min_window=hmm_min_window
+        )
+        # Build date→regime mapping for train
+        for i, d in enumerate(train_dates_sorted):
+            regime_labels_map[d] = int(regime_labels_train[i])
+
+        # For test dates, predict regime using HMM (PIT-safe, walk-forward).
+        # L3-Fix-R2: For each test date t (at index i in test_dates_sorted),
+        # predict its state using ONLY historical returns up to date t by
+        # concatenating training market returns (market_ret) with OOS returns
+        # up to day i+1 (test_market_ret[:i+1]). Run predict on the combined
+        # history and assign the LAST predicted state preds[-1] to date t.
+        # This prevents the Viterbi algorithm from leaking future OOS data.
+        test_dates_sorted = sorted(df_test["date"].unique())
+        if hmm_model is not None:
+            test_daily_mean = (
+                df_test.groupby("date")["returns"].mean().sort_index()
+            )
+            test_market_ret = test_daily_mean.values.astype(np.float64)
+            test_dates_for_regime = list(test_daily_mean.index)
+            try:
+                for i, d in enumerate(test_dates_sorted):
+                    # PIT-safe: concatenate training returns + OOS returns
+                    # up to and including day i (no future data used).
+                    combined_ret = np.concatenate(
+                        [market_ret, test_market_ret[: i + 1]]
+                    )
+                    X_combined = combined_ret.reshape(-1, 1)
+                    preds = hmm_model.predict(X_combined)
+                    regime_labels_map[d] = int(preds[-1])
+            except Exception as e:
+                logger.warning(
+                    f"HMM OOS predict failed ({e}). "
+                    "Falling back to last training regime."
+                )
+                last_train_regime = int(regime_labels_train[-1])
+                for d in test_dates_sorted:
+                    regime_labels_map[d] = last_train_regime
+        else:
+            for d in test_dates_sorted:
+                regime_labels_map[d] = 0
+
+        # Neutralise targets for regime-conditional PLS
+        rc_method = "pls" if (method == "pls" or enable_pls) else "pca"
+        y_train_rc = df_train["returns"].values.astype(np.float64)
+        if enable_neutralize:
+            y_train_rc = neutralize_target_returns(
+                df_train, alpha_cols, "returns", "date"
+            )
+
+        # Map daily regime labels to row-level so that the label array
+        # matches X_train / y_train_rc in length (one label per stock-date
+        # row, not one per unique date).  Fixes boolean-index size mismatch
+        # inside fit_regime_conditional_models where mask = (regime_labels == k)
+        # is applied directly to X_train[mask].
+        regime_labels_row = (
+            df_train["date"].map(regime_labels_map).values.astype(int)
+        )
+
+        regime_models = fit_regime_conditional_models(
+            X_train=X_train,
+            y_train=y_train_rc,
+            regime_labels=regime_labels_row,
+            n_components=min(n_components, 10),  # cap for regime subsets
+            method=rc_method,
+        )
+
+        if regime_models:
+            # Project train and test using regime-conditional models
+            df_train = project_regime_conditional(
+                df_train, alpha_cols, regime_models, regime_labels_map, "date"
+            )
+            df_test = project_regime_conditional(
+                df_test, alpha_cols, regime_models, regime_labels_map, "date"
+            )
+
+            # Record evidence
+            regime_evidence = {
+                "n_hmm_states": n_hmm_states,
+                "hmm_min_window": hmm_min_window,
+                "method": rc_method,
+                "regime_counts": {
+                    int(k): int((regime_labels_train == k).sum())
+                    for k in set(regime_labels_train)
+                },
+                "n_regime_models": len(regime_models),
+                "regime_model_details": {
+                    int(k): {
+                        "n_samples": v["n_samples"],
+                        "n_components": v["n_components"],
+                        "method": v["method"],
+                    }
+                    for k, v in regime_models.items()
+                },
+            }
+            logger.info(f"  Regime evidence: {regime_evidence}")
+
+            # Add regime model info to models dict for metrics computation
+            for reg_id, rc_info in regime_models.items():
+                rc_key = f"regime_{reg_id}_{rc_method}"
+                models[rc_key] = rc_info
 
     # ------------------------------------------------------------------
     # Step 7: Compute IC per latent component on TEST (OOS) data
@@ -576,7 +1236,15 @@ def run_latent_alpha_mining(
 
     for m, info in models.items():
         prefix = info["prefix"]
-        latent_cols = [f"{prefix}{i:02d}" for i in range(n_components)]
+        # Determine actual component count
+        if m == "pls":
+            actual_n = info["model"].x_loadings_.shape[1]
+        elif m.startswith("regime_"):
+            actual_n = info.get("n_components", n_components)
+        else:
+            actual_n = n_components
+
+        latent_cols = [f"{prefix}{i:02d}" for i in range(actual_n)]
 
         for col in latent_cols:
             # OOS IC
@@ -617,7 +1285,14 @@ def run_latent_alpha_mining(
     logger.info("Step 8: In-sample IC (diagnostic only, NOT for selection)...")
     for m, info in models.items():
         prefix = info["prefix"]
-        latent_cols = [f"{prefix}{i:02d}" for i in range(n_components)]
+        if m == "pls":
+            actual_n = info["model"].x_loadings_.shape[1]
+        elif m.startswith("regime_"):
+            actual_n = info.get("n_components", n_components)
+        else:
+            actual_n = n_components
+
+        latent_cols = [f"{prefix}{i:02d}" for i in range(actual_n)]
 
         for col in latent_cols:
             ic_series_train = compute_per_date_ic(df_train, col)
@@ -656,16 +1331,40 @@ def run_latent_alpha_mining(
     SESSION_DIR.mkdir(parents=True, exist_ok=True)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    # 10a: Save projected components parquet (test set only for backtest integration)
+    # 10a: Save projected components parquet (full period: train + test)
+    # Both df_train and df_test were projected in Step 6 using the same
+    # frozen models (fit on training data only — PIT-safe).  The downstream
+    # walk-forward backtest needs latent values for the ENTIRE date range so
+    # that training/validation ICs can be computed per fold.  Saving only
+    # df_test left the training period with 0.0 values after the left-merge,
+    # preventing the backtest from selecting latent alphas.
     latent_cols_all = []
     for m, info in models.items():
         prefix = info["prefix"]
-        latent_cols_all.extend([f"{prefix}{i:02d}" for i in range(n_components)])
+        if m == "pls":
+            actual_n = info["model"].x_loadings_.shape[1]
+        elif m.startswith("regime_"):
+            actual_n = info.get("n_components", n_components)
+        else:
+            actual_n = n_components
+        latent_cols_all.extend([f"{prefix}{i:02d}" for i in range(actual_n)])
+
+    # Filter to only columns that exist in both df_train and df_test
+    latent_cols_all = [
+        c for c in latent_cols_all
+        if c in df_train.columns and c in df_test.columns
+    ]
 
     output_cols = ["ticker", "date", "returns"] + latent_cols_all
-    df_out = df_test[output_cols].copy()
-    df_out.to_parquet(output_parquet, index=False)
-    logger.info(f"  Saved: {output_parquet} ({len(df_out)} rows, {len(latent_cols_all)} latent cols)")
+    df_full = pd.concat([df_train[output_cols], df_test[output_cols]], ignore_index=True)
+    df_full.sort_values(["date", "ticker"], inplace=True)
+    df_full.reset_index(drop=True, inplace=True)
+    df_full.to_parquet(output_parquet, index=False)
+    logger.info(
+        f"  Saved: {output_parquet} ({len(df_full)} rows, "
+        f"{len(latent_cols_all)} latent cols, "
+        f"train={len(df_train)} + test={len(df_test)})"
+    )
 
     # 10b: Save fitted models
     model_payload = {
@@ -678,6 +1377,13 @@ def run_latent_alpha_mining(
         "train_dates_range": (str(min(train_dates)), str(max(train_dates))),
         "test_dates_range": (str(min(test_dates)), str(max(test_dates))),
         "features_hash": file_hash,
+        # Advanced options
+        "enable_pls": enable_pls or method == "pls",
+        "enable_neutralize": enable_neutralize,
+        "enable_regime_conditional": enable_regime_conditional,
+        "regime_models": regime_models if regime_models else None,
+        "regime_labels_map": regime_labels_map if regime_labels_map else None,
+        "regime_evidence": regime_evidence,
     }
     with open(output_model, "wb") as f:
         pickle.dump(model_payload, f)
@@ -702,6 +1408,13 @@ def run_latent_alpha_mining(
             "ic_min_threshold": IC_MIN_THRESHOLD,
             "ir_min_threshold": IR_MIN_THRESHOLD,
             "turnover_max": TURNOVER_MAX,
+        },
+        "advanced_options": {
+            "enable_pls": enable_pls or method == "pls",
+            "enable_neutralize": enable_neutralize,
+            "enable_regime_conditional": enable_regime_conditional,
+            "n_hmm_states": n_hmm_states if enable_regime_conditional else None,
+            "regime_evidence": regime_evidence,
         },
         "component_metrics": component_metrics,
         "ranking": [
@@ -934,9 +1647,9 @@ def main():
     parser.add_argument(
         "--method",
         type=str,
-        choices=["pca", "ica", "both"],
+        choices=["pca", "ica", "both", "pls", "autoencoder"],
         default="pca",
-        help="Decomposition method (default: pca)",
+        help="Decomposition method (default: pca). 'autoencoder' uses deep nonlinear AE.",
     )
     parser.add_argument(
         "--train-ratio",
@@ -955,6 +1668,44 @@ def main():
         default=None,
         help="Override path to features parquet (default: data/features_advanced_sim.parquet)",
     )
+    # Advanced options
+    parser.add_argument(
+        "--enable-pls",
+        action="store_true",
+        help=(
+            "Enable PLS regression (supervised latent extraction). "
+            "Uses forward returns as target. Can be combined with PCA/ICA."
+        ),
+    )
+    parser.add_argument(
+        "--enable-neutralize",
+        action="store_true",
+        help=(
+            "Cross-sectionally neutralise target returns against feature "
+            "exposures before PLS fitting. Removes linear factor loadings."
+        ),
+    )
+    parser.add_argument(
+        "--enable-regime-conditional",
+        action="store_true",
+        help=(
+            "Fit regime-conditional PCA/PLS models using rolling HMM. "
+            "Detects market regimes on training data and fits separate "
+            "decomposition models per regime."
+        ),
+    )
+    parser.add_argument(
+        "--n-hmm-states",
+        type=int,
+        default=3,
+        help="Number of HMM hidden states for regime detection (default: 3).",
+    )
+    parser.add_argument(
+        "--hmm-min-window",
+        type=int,
+        default=60,
+        help="Minimum trailing window for HMM fitting (default: 60 days).",
+    )
     args = parser.parse_args()
 
     features_path = Path(args.features_path) if args.features_path else FEATURES_PATH
@@ -965,6 +1716,11 @@ def main():
         train_ratio=args.train_ratio,
         quick_mode=args.quick_mode,
         features_path=features_path,
+        enable_pls=args.enable_pls,
+        enable_neutralize=args.enable_neutralize,
+        enable_regime_conditional=args.enable_regime_conditional,
+        n_hmm_states=args.n_hmm_states,
+        hmm_min_window=args.hmm_min_window,
     )
 
 

@@ -3,12 +3,16 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .pytest_tmp/
+.ly_state/session/pytest_basetemp/
+.ly_state/session/pytest_given_basetemp/
+.ly_state/session/pytest_temproots/
+.ly_state/session/pytest_tmp_paths/
 
 # OpenClaw / tool runtime clutter
 .openclaw/
 .code-review-graph/
 .antigravitycli/
-skills/
+/skills/
 pi_skill/
 cache/
 pytest_temp/

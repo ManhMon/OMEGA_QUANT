@@ -12,7 +12,7 @@ from omega.execution.broker_gateway import (
     OrderType,
 )
 from omega.execution.order_router import OrderRouter, OrderRouterConfig, TradingMode
-from omega.quant.realtime_risk_guard import RealtimeRiskGuard, RiskLimits, RiskVerdict
+from omega.quant.risk.realtime_risk import RealtimeRiskGuard, RiskLimits, RiskVerdict
 
 
 @pytest.fixture

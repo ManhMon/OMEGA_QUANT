@@ -1,6 +1,14 @@
 """
 OMEGA_QUANT Model Registry (Institutional Grade)
 
+.. deprecated:: PHASE1_PHASE2_DEEP_AUDIT_FIX1_20260613
+   **Canonical implementation** is ``omega.data.registry.ModelRegistry``
+   (full PIT safety, artifact checksum, promotion workflow, rollback,
+   embargo enforcement).  This module provides an alternative
+   ``ModelRegistry`` with ``ModelStatus`` enum / lineage / search features.
+   It is retained for backward compatibility; new code should prefer
+   ``omega.data.registry.ModelRegistry``.
+
 Purpose:
     Centralized model registry with versioning, metadata, lineage tracking,
     PIT safety enforcement, and rollback support.

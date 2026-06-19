@@ -25,7 +25,7 @@ WalkForwardConfig = None
 run_walk_forward_validation = None
 
 try:
-    from omega.quant.walk_forward_ensemble import (
+    from omega.quant.backtest.walk_forward_ensemble import (
         WalkForwardEnsemble, WalkForwardConfig, run_walk_forward_validation
     )
     logger.info("WalkForwardEnsemble imported")

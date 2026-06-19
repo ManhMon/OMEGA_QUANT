@@ -8,7 +8,7 @@ Version: v21.22.0
 """
 
 import pandas as pd
-from .signal_sanitizer import SignalSanitizer
+from omega.quant.signal.sanitizer import SignalSanitizer
 
 
 def apply_midas_smoothing(df, col, alpha=0.1):

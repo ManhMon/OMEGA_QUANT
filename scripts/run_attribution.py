@@ -20,7 +20,7 @@ logger = logging.getLogger("attribution")
 PerformanceAttribution = None
 AttributionConfig = None
 try:
-    from omega.quant.attribution import PerformanceAttribution, AttributionConfig
+    from omega.quant.monitoring.attribution import PerformanceAttribution, AttributionConfig
     logger.info("PerformanceAttribution imported")
 except ImportError as e:
     logger.warning(f"PerformanceAttribution not available: {e}")

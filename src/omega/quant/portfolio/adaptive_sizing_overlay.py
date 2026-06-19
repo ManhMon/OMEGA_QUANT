@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
@@ -100,7 +100,7 @@ def get_adaptive_params(capital_vnd: float, config: Optional[AdaptiveSizingConfi
 def apply_adaptive_sizing(
     daily_weights: pd.DataFrame,
     capital_vnd: float,
-    adv_series: Optional[pd.Series] = None,
+    adv_series: Optional[Union[pd.Series, pd.DataFrame]] = None,
 ) -> pd.DataFrame:
     """
     Apply adaptive sizing constraints to weights.
@@ -108,7 +108,7 @@ def apply_adaptive_sizing(
     Args:
         daily_weights: T x N DataFrame of weights
         capital_vnd: Portfolio capital
-        adv_series: Optional ADV per symbol for liquidity constraint
+        adv_series: Optional ADV per symbol or date x symbol ADV for liquidity constraint
 
     Returns:
         Adjusted weights with tier-appropriate constraints.
@@ -121,13 +121,18 @@ def apply_adaptive_sizing(
 
     # Liquidity constraint: position < 5% of ADV (vectorized)
     if adv_series is not None:
-        max_w_liq = (0.05 * adv_series) / capital_vnd
-        max_w_liq = max_w_liq.clip(upper=max_w)
-        # Only apply to columns present in both
-        common_cols = adjusted.columns.intersection(max_w_liq.index)
-        if len(common_cols) > 0:
-            limits = max_w_liq[common_cols]
-            adjusted[common_cols] = adjusted[common_cols].clip(lower=-limits, upper=limits, axis=1)
+        if isinstance(adv_series, pd.DataFrame):
+            limits = (0.05 * adv_series.reindex(index=adjusted.index, columns=adjusted.columns)) / capital_vnd
+            limits = limits.clip(lower=0.0, upper=max_w).fillna(max_w)
+            adjusted = adjusted.mask(adjusted > limits, limits).mask(adjusted < -limits, -limits)
+        else:
+            max_w_liq = (0.05 * adv_series) / capital_vnd
+            max_w_liq = max_w_liq.clip(lower=0.0, upper=max_w)
+            # Only apply to columns present in both
+            common_cols = adjusted.columns.intersection(max_w_liq.index)
+            if len(common_cols) > 0:
+                limits = max_w_liq[common_cols]
+                adjusted[common_cols] = adjusted[common_cols].clip(lower=-limits, upper=limits, axis=1)
 
     # Re-normalize preserving input gross exposure
     target_exposure = daily_weights.abs().sum(axis=1)

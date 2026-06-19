@@ -24,8 +24,8 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from omega.quant.cv_splitter import EmbargoedPurgingCV
-from omega.quant.neutralization import FactorNeutralizer
+from omega.quant.backtest.cv_splitter import EmbargoedPurgingCV
+from omega.quant.features.neutralization import FactorNeutralizer
 
 
 @dataclass

@@ -8,8 +8,8 @@ from datetime import datetime, date
 from typing import Dict, List, Any, Optional, Tuple
 
 from omega.data.data_validator import DataValidator, ValidationIssue
-from omega.quant.feature_factory import FeatureFactory
-from omega.quant.neutralization_engine import NeutralizationEngine
+from omega.quant.feature.factory import FeatureFactory
+from omega.quant.features.neutralization import HierarchicalNeutralizer
 from omega.data.corporate_action import CorporateActionAdjuster, CorporateAction
 
 warnings.filterwarnings('ignore')
@@ -84,7 +84,7 @@ class ProductionDataPipeline:
         self.sanitizer = DataSanitizer()
         self.validator = DataValidator()
         self.feature_module = FeatureFactory()
-        self.neutralizer = NeutralizationEngine()
+        self.neutralizer = HierarchicalNeutralizer()
         self.corp_action_adjuster = CorporateActionAdjuster()
         self.pipeline_stats, self.validation_issues = {}, []
 

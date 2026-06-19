@@ -15,12 +15,12 @@ sys.path.insert(0, 'src')
 sys.path.insert(0, 'src')
 sys.path.insert(0, 'src')
 
-from omega.quant.alpha_discovery import AlphaDiscoveryEngine
+from omega.quant.alpha.discovery import AlphaDiscoveryEngine
 from omega.quant.portfolio.portfolio_optimizer import PortfolioOptimizer
-from omega.quant.constraint_solver import ConstraintSolver
-from omega.quant.transaction_cost_optimizer import TransactionCostOptimizer
-from omega.quant.attribution import PerformanceAttribution
-from omega.quant.realtime_risk_guard import RealtimeRiskGuard
+from omega.quant.portfolio.constraint_solver import ConstraintSolver
+from omega.quant.execution.transaction_cost_optimizer import TransactionCostOptimizer
+from omega.quant.monitoring.attribution import PerformanceAttribution
+from omega.quant.risk.realtime_risk import RealtimeRiskGuard
 
 def load_vn_data():
     """Load VN stock data (mock for demo)."""

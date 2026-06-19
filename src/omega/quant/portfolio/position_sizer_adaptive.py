@@ -18,8 +18,8 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 
 from omega.core.vn_market_rules import VnMarketRules
-from omega.quant.constraint_solver import ConstraintConfig
-from omega.quant.portfolio_optimizer import OptimizerConfig
+from omega.quant.portfolio.constraint_solver import ConstraintConfig
+from omega.quant.portfolio.portfolio_optimizer import OptimizerConfig
 
 
 @dataclass

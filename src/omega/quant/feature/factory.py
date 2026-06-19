@@ -285,7 +285,7 @@ class FeatureFactory:
         
         # Import structure and alpha modules
         try:
-            from .structure_features import StructureFeatureEngine
+            from omega.quant.utils.structure_features import StructureFeatureEngine
             self.structure_engine = StructureFeatureEngine()
         except ImportError:
             self.structure_engine = None
@@ -297,14 +297,14 @@ class FeatureFactory:
             # Try multiple import paths for core_alphas
             try:
                 # Try relative import first (same directory)
-                from .core_alphas import compute_core_alphas
+                from omega.quant.alpha.core import compute_core_alphas
                 self.compute_core_alphas = compute_core_alphas
             except ImportError:
                 # Try absolute import from src
                 src_path = str(Path(__file__).parent.parent.parent.parent / "src")
                 if src_path not in sys.path:
                     sys.path.insert(0, src_path)
-                from omega.quant.core_alphas import compute_core_alphas
+                from omega.quant.alpha.core import compute_core_alphas
                 self.compute_core_alphas = compute_core_alphas
         except (ImportError, Exception) as e:
             self.compute_core_alphas = None

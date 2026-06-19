@@ -16,8 +16,11 @@ def _load_holidays_from_json() -> dict:
         dict: Year -> list of date strings mapping, or empty dict if file not found
     """
     try:
-        # Path relative to package root
-        config_path = Path(__file__).parent.parent.parent.parent.parent.parent / "config" / "vn_holidays.json"
+        # Resolve config/vn_holidays.json relative to repo root.
+        # __file__ = src/omega/data/calendar.py  →  4 parents = repo root.
+        here = Path(__file__).resolve()
+        repo_root = here.parent.parent.parent.parent
+        config_path = repo_root / "config" / "vn_holidays.json"
         
         if not config_path.exists():
             return {}

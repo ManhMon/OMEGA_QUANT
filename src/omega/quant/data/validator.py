@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from .vn_trading_calendar import VNTradingCalendar
+from omega.quant.data.vn_trading_calendar import VNTradingCalendar
 
 
 @dataclass(frozen=True)

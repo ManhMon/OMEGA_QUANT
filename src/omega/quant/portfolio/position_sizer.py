@@ -226,8 +226,8 @@ class PositionSizer:
 
         # Institutional Mode: Markowitz Optimization
         if self.config.use_markowitz and returns_history:
-            from .covariance_estimator import CovarianceEstimator
-            from .markowitz_optimizer import MarkowitzOptimizer
+            from omega.quant.portfolio.covariance import CovarianceEstimator
+            from omega.quant.portfolio.markowitz import MarkowitzOptimizer
 
             # 1. Estimate robust covariance
             estimator = CovarianceEstimator()

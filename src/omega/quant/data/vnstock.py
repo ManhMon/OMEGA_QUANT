@@ -61,21 +61,24 @@ class VnstockVCIDataSource:
         
     Requirements:
         - Install vnstock: pip install vnstock
-        - API key: vnstock_e05b9f4c0d4eacd20b900cf99688d3c1 (Default)
+        - API key: set VNSTOCK_API_KEY environment variable
     """
 
     def __init__(self, rate_limiter: Optional[RateLimiter] = None, session=None):
         """Initialize VnstockVCIDataSource.
         
         Args:
-            rate_limiter: Optional custom rate limiter
+            rate_limiter: Optional custom RateLimiter
             session: Deprecated, kept for backward compatibility with tests
         """
-        # Set default API key if not provided in environment
-        self.api_key = os.getenv("VNSTOCK_API_KEY", "vnstock_e05b9f4c0d4eacd20b900cf99688d3c1")
+        # Require VNSTOCK_API_KEY from environment; no hardcoded fallback.
+        # If the env var is unset, vnstock 4.x will raise at call time,
+        # which is the correct fail-fast behavior.
+        self.api_key = os.getenv("VNSTOCK_API_KEY")
         
-        # Set API key for vnstock package
-        os.environ['VNSTOCK_API_KEY'] = self.api_key
+        # Only propagate to os.environ if the user already set it
+        if self.api_key:
+            os.environ['VNSTOCK_API_KEY'] = self.api_key
         
         self.rate_limiter = rate_limiter or RateLimiter()
         self._cache: Dict[str, List[Dict]] = {}
@@ -186,8 +189,16 @@ class VnstockVCIDataSource:
         """
         from vnstock import Listing
         
-        listing = Listing(source="VCI")
-        return listing.symbols_by_exchange(exchange=exchange)
+        # VCI primary, KBS fallback
+        for src in ("VCI", "KBS"):
+            try:
+                listing = Listing(source=src)
+                symbols = listing.symbols_by_exchange(exchange=exchange)
+                if symbols:
+                    return symbols
+            except Exception:
+                continue
+        return []
 
 # Alias for backward compatibility
 VnstockKBSDataSource = VnstockVCIDataSource

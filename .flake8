@@ -1,0 +1,32 @@
+[flake8]
+# PEP 8 standard: 79 chars (strict)
+max-line-length = 79
+
+# Ignore rules that conflict with modern Python style
+extend-ignore = 
+    # W503: line break before binary operator (Black-compatible)
+    W503,
+    # W504: line break after binary operator
+    W504,
+    # E203: whitespace before ':' (Black-compatible)
+    E203,
+
+# Exclude directories that shouldn't be checked
+exclude = 
+    .git,
+    __pycache__,
+    .pytest_cache,
+    .ly_state,
+    archive,
+    build,
+    dist,
+    *.egg-info,
+    venv,
+    .venv,
+
+# Per-file ignores (if needed)
+per-file-ignores =
+    # Tests can have longer lines for readability
+    tests/*: E501
+    # Scripts can have longer lines for one-liners
+    scripts/*: E501

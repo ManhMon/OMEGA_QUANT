@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import pytest
 
-from omega.quant.signal_sanitizer import SignalSanitizer
+from omega.quant.signal.sanitizer import SignalSanitizer
 
 
 class TestSignalSanitizer:

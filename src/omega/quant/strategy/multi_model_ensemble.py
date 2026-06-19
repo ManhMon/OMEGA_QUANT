@@ -16,8 +16,8 @@ from sklearn.neural_network import MLPClassifier
 import warnings
 warnings.filterwarnings('ignore')
 
-import os
-from omega.quant.feature_pruning import FeaturePruning, FeaturePruningConfig
+from omega.quant.feature.pruning_config import FeaturePruningConfig
+from omega.quant.feature.pruning_core import FeaturePruning
 
 try:
     import xgboost as xgb

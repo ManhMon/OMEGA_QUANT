@@ -42,8 +42,14 @@ from omega.core.sre.metrics_collector import (
 from omega.core.sre.kill_switch import (
     KillSwitch,
     get_kill_switch,
+    _reset_kill_switch_for_testing,
     reset_kill_switch,
 )
+
+
+# LIVE-04: helper that uses the guarded API
+def _reset_ks():
+    _reset_kill_switch_for_testing(auth_token="OMEGA_TEST")
 
 
 # ===========================================================================
@@ -401,7 +407,7 @@ class TestKillSwitch:
 
     def setup_method(self):
         """Reset singleton before each test."""
-        reset_kill_switch()
+        _reset_ks()
 
     def test_initial_state_not_activated(self):
         ks = KillSwitch()
@@ -461,36 +467,65 @@ class TestKillSwitch:
         result = ks.wait(timeout=0.05)
         assert result is False
 
-    def test_dumps_metrics_snapshot(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mc = MetricsCollector()
-            mc.record_slippage(3.0)
-            ks = KillSwitch(dump_dir=tmpdir)
-            ks.register_metrics_collector(mc)
-            ks.activate(reason="test_dump")
+    def test_dumps_metrics_snapshot(self, tmp_path):
+        """TEST-01 FIX3: use pytest tmp_path (ACL-safe) instead of tempfile.TemporaryDirectory."""
+        mc = MetricsCollector()
+        mc.record_slippage(3.0)
+        ks = KillSwitch(dump_dir=str(tmp_path))
+        ks.register_metrics_collector(mc)
+        ks.activate(reason="test_dump")
 
-            snap_path = Path(tmpdir) / "metrics_snapshot.json"
-            assert snap_path.exists()
-            data = json.loads(snap_path.read_text())
-            assert data["slippage_bps"]["count"] == 1
+        snap_path = tmp_path / "metrics_snapshot.json"
+        assert snap_path.exists()
+        data = json.loads(snap_path.read_text())
+        assert data["slippage_bps"]["count"] == 1
 
-    def test_dumps_kill_switch_event(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            ks = KillSwitch(dump_dir=tmpdir)
-            ks.activate(reason="emergency_stop")
+    def test_dumps_kill_switch_event(self, tmp_path):
+        """TEST-01 FIX3: use pytest tmp_path (ACL-safe) instead of tempfile.TemporaryDirectory."""
+        ks = KillSwitch(dump_dir=str(tmp_path))
+        ks.activate(reason="emergency_stop")
 
-            event_path = Path(tmpdir) / "kill_switch_event.json"
-            assert event_path.exists()
-            event = json.loads(event_path.read_text())
-            assert event["reason"] == "emergency_stop"
-            assert "activation_id" in event
-            assert "activated_at" in event
+        event_path = tmp_path / "kill_switch_event.json"
+        assert event_path.exists()
+        event = json.loads(event_path.read_text())
+        assert event["reason"] == "emergency_stop"
+        assert "activation_id" in event
+        assert "activated_at" in event
 
     def test_singleton(self):
-        reset_kill_switch()
+        _reset_ks()
         ks1 = get_kill_switch()
         ks2 = get_kill_switch()
         assert ks1 is ks2
+
+    def test_reset_kill_switch_unauthorized_raises(self):
+        """LIVE-04 FIX2: public reset_kill_switch must reject unauthorized calls."""
+        _reset_ks()
+        ks = get_kill_switch()
+        assert ks is not None
+        # Calling without auth_token must raise and NOT clear the singleton
+        with pytest.raises(PermissionError, match="auth_token"):
+            reset_kill_switch()
+        # Singleton must still be the same instance (state not cleared)
+        ks_after = get_kill_switch()
+        assert ks_after is ks
+
+    def test_reset_kill_switch_wrong_token_raises(self):
+        """LIVE-04 FIX2: wrong token must also raise."""
+        _reset_ks()
+        ks = get_kill_switch()
+        with pytest.raises(PermissionError, match="auth_token"):
+            reset_kill_switch(auth_token="WRONG")
+        ks_after = get_kill_switch()
+        assert ks_after is ks
+
+    def test_reset_kill_switch_authorized_clears(self):
+        """LIVE-04 FIX2: authorized call with correct token clears singleton."""
+        _reset_ks()
+        ks1 = get_kill_switch()
+        reset_kill_switch(auth_token="OMEGA_TEST")
+        ks2 = get_kill_switch()
+        assert ks2 is not ks1
 
     def test_thread_safe_activation(self):
         """Multiple threads racing to activate — only one should win."""

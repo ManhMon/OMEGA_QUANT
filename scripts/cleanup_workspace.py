@@ -2,7 +2,9 @@ import shutil
 import os
 from pathlib import Path
 
-workspace = Path('C:/Users/GHC/.openclaw/workspace')
+# PATH-01 FIX: Use repo-relative workspace instead of hardcoded .openclaw path
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+workspace = _REPO_ROOT
 archive = workspace / 'archive' / 'WORKSPACE_CLEANUP_20260509'
 archive.mkdir(parents=True, exist_ok=True)
 

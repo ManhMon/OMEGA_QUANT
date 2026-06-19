@@ -125,17 +125,23 @@ class AlphaAlchemist:
         }
 
     def evaluate(self, expression: str, panel: pd.DataFrame) -> pd.Series:
-        """Evaluate factor expression using lagged base features."""
+        """Evaluate factor expression using lagged base features.
+        
+        EXEC-01 FIX: Uses AST-validated safe_eval_expression instead of raw eval().
+        """
+        from omega.quant.safe_expression_eval import safe_eval_expression, ExpressionRejected
+
         # Step 1: Create lagged environment (PIT Safety)
         env = panel.groupby(level=1).shift(1).to_dict('series')
         env.update(self.safe_functions)
         
         try:
-            # Use limited builtins for safety
-            result = eval(expression, {"__builtins__": {}}, env)
+            result = safe_eval_expression(expression, {"__builtins__": {}}, env)
             if isinstance(result, pd.DataFrame):
                 result = result.iloc[:, 0]
             return result.rename(expression)
+        except ExpressionRejected as e:
+            raise ValueError(f"Rejected alpha expression '{expression}': {e}")
         except Exception as e:
             raise ValueError(f"Invalid alpha expression '{expression}': {e}")
 

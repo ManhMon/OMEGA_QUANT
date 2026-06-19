@@ -21,6 +21,8 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import pandas as pd
 import numpy as np
+# Direct vnstock import retained here for Vnstock().stock().company.profile() chain;
+# higher-level callers should prefer omega.data.vnstock_client.VnstockClient.
 from vnstock import Vnstock
 
 # Configure logging
@@ -164,9 +166,9 @@ class SectorClassifier:
         if self._sector_cache:
             return self._sector_cache
         
-        # Try to fetch from vnstock (VCI source)
+        # Try to fetch from vnstock (VCI source) — vnstock 4.x exposes Listing at top level
         try:
-            from vnstock_data import Listing
+            from vnstock import Listing
             lst = Listing(source='VCI')
             df_industries = lst.industries_icb()
             

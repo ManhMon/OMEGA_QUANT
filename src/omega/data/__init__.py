@@ -77,6 +77,11 @@ except ImportError:
     pass
 
 try:
+    from . import vnstock_client
+except ImportError:
+    pass
+
+try:
     from . import vnstock_adapter
 except ImportError:
     pass
@@ -97,6 +102,22 @@ except ImportError:
     pass
 
 try:
+    from . import vnd_price_contract
+except ImportError:
+    pass
+
+try:
+    from . import exchange_resolver
+except ImportError:
+    pass
+
+try:
     from . import pipeline
+except ImportError:
+    pass
+
+# Explicit re-exports for test collection and public API
+try:
+    from .sanitizer import DataSanitizer
 except ImportError:
     pass

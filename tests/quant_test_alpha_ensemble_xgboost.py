@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-from omega.quant.alpha_ensemble_xgboost import XGBoostAlphaEnsemble, get_ml_alpha_scores
+from omega.quant.ml.ensemble_xgboost import XGBoostAlphaEnsemble, get_ml_alpha_scores
 
 
 @pytest.fixture

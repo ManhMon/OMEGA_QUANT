@@ -6,7 +6,7 @@ Tracks:
 - Daily and cumulative realized/unrealized P&L
 - Intraday slippage in bps (actual fill price vs arrival/benchmark price)
 - Outlier slippage alerts (> thresholds)
-- Scaling for Vietnamese market price units (price * 1000 VND)
+- VND_FULL price-unit contract (default price_scale=1.0 for whole VND)
 
 Strict PIT Safety: Monotonic time sequence checks and T-1 lag validation.
 """
@@ -18,6 +18,14 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 import numpy as np
+
+# VND_FULL price-unit contract
+try:
+    from omega.data.vnd_price_contract import VND_FULL, get_price_multiplier
+except ImportError:
+    VND_FULL = "VND_FULL"
+    def get_price_multiplier(price_unit: str) -> float:
+        return 1.0 if price_unit == "VND_FULL" else 1000.0
 
 logger = logging.getLogger("OmegaPnLMonitor")
 
@@ -55,11 +63,17 @@ class PnLSlippageMonitor:
     def __init__(
         self,
         initial_equity: float = 2_000_000_000.0,  # 2B VND base
-        price_scale: float = 1000.0,             # VN Stock multiplier
+        price_scale: float = 1.0,                # VND_FULL: no multiplier (1.0)
+        price_unit: str = VND_FULL,               # Price unit contract
         max_slippage_alert_threshold: float = 30.0  # 30 bps threshold
     ):
         self.initial_equity = initial_equity
-        self.price_scale = price_scale
+        # price_unit takes precedence: if VND_FULL, scale=1.0; if THOUSANDS, scale=1000.0
+        if price_unit != VND_FULL:
+            self.price_scale = get_price_multiplier(price_unit)
+        else:
+            self.price_scale = price_scale
+        self.price_unit = price_unit
         self.max_slippage_alert_threshold = max_slippage_alert_threshold
         
         self._positions: Dict[str, int] = {}

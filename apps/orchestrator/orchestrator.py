@@ -24,19 +24,17 @@ import pandas as pd
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass, field
 
-from v21_system.layer_01_core_intelligence.alpha_factory import AlphaFactory
-from v21_system.layer_01_core_intelligence.high_alpha_filter import (
-    HighAlphaFilter,
-    HighAlphaFilterConfig
-)
-from v21_system.layer_04_risk_management.individual_risk_guard import (
-    IndividualRiskGuard,
-    IndividualRiskGuardConfig
-)
-from v21_system.layer_03_execution_engine.execution_engine import (
-    ExecutionEngine,
-    ExecutionConfig
-)
+# ---------------------------------------------------------------------------
+# ORPHAN-01 FIX2: Corrected canonical omega namespace imports.
+# alpha_factory -> alpha.factory (the actual module name)
+# execution_engine -> omega.execution.execution_engine (Layer 03 canonical path)
+# All imports now use verified module paths; no v21_system fallback.
+# If any import fails, a clear error is raised at module load time.
+# ---------------------------------------------------------------------------
+from omega.quant.alpha.factory import AlphaFactory
+from omega.quant.alpha.high_alpha_filter import HighAlphaFilter, HighAlphaFilterConfig
+from omega.quant.risk.individual_risk_guard import IndividualRiskGuard, IndividualRiskGuardConfig
+from omega.execution.execution_engine import ExecutionEngine, ExecutionEngineConfig as ExecutionConfig
 
 
 @dataclass

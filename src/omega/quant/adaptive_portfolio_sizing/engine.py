@@ -3,15 +3,18 @@ Adaptive Portfolio Sizing Engine (APSE) - OMEGA_QUANT Layer 08
 Optimizes portfolio structures and alpha settings dynamically by capital scale.
 """
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+logger = logging.getLogger(__name__)
+
 from omega.core.vn_market_rules import VnMarketRules
-from omega.quant.constraint_solver import ConstraintConfig
-from omega.quant.portfolio_optimizer import OptimizerConfig
+from omega.quant.portfolio.constraint_solver import ConstraintConfig
+from omega.quant.portfolio.portfolio_optimizer import OptimizerConfig
 from omega.quant.adaptive_portfolio_sizing.benchmark_provider import (
     get_bank_interest_rate,
     get_vnindex_return,
@@ -250,7 +253,8 @@ class AdaptivePortfolioSizingEngine:
     def optimize(
         self,
         as_of: datetime,
-        vnindex_data: Optional[pd.DataFrame] = None
+        vnindex_data: Optional[pd.DataFrame] = None,
+        focal_stress_score: float = 0.0
     ) -> AdaptiveConfig:
         """
         Optimize portfolio parameters using dynamic benchmark rates for PIT safety.
@@ -277,6 +281,16 @@ class AdaptivePortfolioSizingEngine:
         adv_pct = self._calculate_optimal_adv_pct()
         min_trade_value = self._calculate_min_trade_value()
         
+        # Adjust caps if focal stress is critical (> 60)
+        if focal_stress_score > 60.0:
+            logger.warning(
+                "Critical focal stress detected (%.1f/100). Reducing asset/sector concentration caps by 20%%.",
+                focal_stress_score
+            )
+            asset_cap *= 0.8
+            sector_cap *= 0.8
+            adv_pct *= 0.8
+        
         # Turnover
         min_turn, max_turn = self.tier_params['turnover_range']
         target_turnover = (min_turn + max_turn) / 2
@@ -286,6 +300,14 @@ class AdaptivePortfolioSizingEngine:
         
         # Feature gating
         enabled_alphas, enabled_modules = self._get_feature_gating()
+        
+        # Under critical stress, enforce defensive alphas
+        if focal_stress_score > 60.0:
+            enabled_alphas = [a for a in enabled_alphas if a in ['low_vol', 'quality', 'value']]
+            if not enabled_alphas:
+                enabled_alphas = ['low_vol', 'quality']
+            for alpha in enabled_modules:
+                enabled_modules[alpha] = alpha in enabled_alphas
         
         # Calculate expected performance
         expected_return = self._calculate_expected_return(target_holdings, target_turnover, bank_rate)

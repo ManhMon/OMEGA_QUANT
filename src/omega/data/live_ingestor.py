@@ -21,8 +21,6 @@ except ImportError:
 
 class LiveDataIngestor:
     """Fetch real-time market data and normalize to warehouse format."""
-    RAW_PRICE_THRESHOLD = 1_000.0
-    VND_PRICE_SCALE = 1_000.0
 
     def __init__(self, source: str = "VCI", timeout: int = 10, max_retries: int = 3):
         """
@@ -40,14 +38,9 @@ class LiveDataIngestor:
             self.logger.error("vnstock library not installed. Install with: pip install vnstock")
 
     def _normalize_price_columns_to_vnd(self, df: pd.DataFrame) -> pd.DataFrame:
-        price_cols = [c for c in ["open", "high", "low", "close"] if c in df.columns]
-        if not price_cols:
-            return df
-        ref_col = "close" if "close" in price_cols else price_cols[0]
-        ref_price = pd.to_numeric(df[ref_col], errors="coerce").replace([float("inf"), float("-inf")], float("nan")).median()
-        if pd.notna(ref_price) and 0 < float(ref_price) < self.RAW_PRICE_THRESHOLD:
-            df[price_cols] = df[price_cols].astype(float) * self.VND_PRICE_SCALE
-        return df
+        """Normalize price columns to VND_FULL using centralized guard."""
+        from omega.data.vnd_price_contract import ensure_vnd_scale
+        return ensure_vnd_scale(df, price_cols=["open", "high", "low", "close"])
 
     def fetch_live_price(self, symbol: str, exchange: str) -> Optional[pd.DataFrame]:
         """

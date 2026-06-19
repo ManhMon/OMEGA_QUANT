@@ -93,14 +93,14 @@ class TestOrderGenerator:
     
     def test_convert_signal_to_order(self, default_generator):
         """Test converting single alpha signal to BrokerOrder."""
-        # Target weight 5%, portfolio value 1B VND, price 50 (VND/share)
+        # Target weight 5%, portfolio value 1B VND, price 50000 (VND_FULL)
         # Target notional = 50M VND
-        # Target qty = 50M / (50 * 1000) = 1000 shares
+        # Target qty = 50M / 50000 = 1000 shares
         order = default_generator.convert_signal_to_order(
             symbol="VNM",
             signal_weight=0.05,
             portfolio_value=1_000_000_000.0,
-            current_price=50.0,
+            current_price=50000.0,  # VND_FULL: 50,000 VND
             current_position=0
         )
         
@@ -114,7 +114,7 @@ class TestOrderGenerator:
             symbol="VNM",
             signal_weight=0.05,
             portfolio_value=1_000_000_000.0,
-            current_price=50.0,
+            current_price=50000.0,  # VND_FULL
             current_position=800
         )
         
@@ -142,22 +142,22 @@ class TestOrderGenerator:
     
     def test_validate_compliance(self, default_generator):
         """Test compliance checks."""
-        # 1. Valid order
+        # 1. Valid order (price in VND_FULL)
         order = BrokerOrder("VNM", OrderSide.BUY, 500, OrderType.MARKET)
         is_valid, msg = default_generator.validate_compliance(
             order=order,
-            current_price=50.0,
+            current_price=50000.0,  # VND_FULL: 50,000 VND
             adv=10000,
             portfolio_value=1_000_000_000.0
         )
         assert is_valid is True
         
         # 2. Position weight exceeds limit (max 5%)
-        # Order value = 2000 * 50 * 1000 = 100M VND (10% of 1B)
+        # Order value = 2000 * 50000 = 100M VND (10% of 1B)
         big_order = BrokerOrder("VNM", OrderSide.BUY, 2000, OrderType.MARKET)
         is_valid, msg = default_generator.validate_compliance(
             order=big_order,
-            current_price=50.0,
+            current_price=50000.0,  # VND_FULL: 50,000 VND
             adv=10000,
             portfolio_value=1_000_000_000.0
         )
@@ -168,7 +168,7 @@ class TestOrderGenerator:
         low_adv_order = BrokerOrder("VNM", OrderSide.BUY, 500, OrderType.MARKET)
         is_valid, msg = default_generator.validate_compliance(
             order=low_adv_order,
-            current_price=50.0,
+            current_price=50000.0,  # VND_FULL
             adv=1000,  # ADV = 1000, 20% = 200. Order qty = 500.
             portfolio_value=1_000_000_000.0
         )

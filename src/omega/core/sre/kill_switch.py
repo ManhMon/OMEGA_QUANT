@@ -282,12 +282,55 @@ def get_kill_switch(dump_dir: Optional[str] = None) -> KillSwitch:
     return _kill_switch
 
 
-def reset_kill_switch() -> None:
+def reset_kill_switch(auth_token: str = "") -> None:
     """
-    Reset the singleton — **test use only**.
+    Reset the singleton — **restricted API, fail-closed**.
 
-    Clears the module-level singleton so tests can create a fresh instance.
+    LIVE-04 FIX2: The public ``reset_kill_switch()`` can no longer silently
+    clear the kill-switch state.  Callers **must** supply a valid
+    ``auth_token`` (``"OMEGA_TEST"``) to proceed.  Unauthorized calls
+    raise :class:`PermissionError` and do **not** clear the singleton.
+
+    This prevents accidental or malicious clearing of an active kill switch
+    in production runtime code.
+
+    Args:
+        auth_token: Must equal ``"OMEGA_TEST"`` for the reset to proceed.
+
+    Raises:
+        PermissionError: If auth_token is missing or incorrect.
     """
+    if auth_token != "OMEGA_TEST":
+        raise PermissionError(
+            "reset_kill_switch requires auth_token='OMEGA_TEST' — "
+            "unauthorized call: state NOT cleared."
+        )
+    _do_reset()
+
+
+def _reset_kill_switch_for_testing(auth_token: str = "") -> None:
+    """
+    Reset the singleton — restricted to test/ops authorization.
+
+    LIVE-04 FIX: Requires an explicit auth_token to prevent accidental
+    misuse in production code. Tests must pass the token ``"OMEGA_TEST"``.
+
+    Args:
+        auth_token: Must equal ``"OMEGA_TEST"`` for the reset to proceed.
+
+    Raises:
+        PermissionError: If auth_token is missing or incorrect.
+    """
+    if auth_token != "OMEGA_TEST":
+        raise PermissionError(
+            "reset_kill_switch requires auth_token='OMEGA_TEST' — "
+            "this API is restricted to test/ops authorization."
+        )
+    _do_reset()
+
+
+def _do_reset() -> None:
+    """Internal: clear the module-level singleton."""
     global _kill_switch
     with _ks_lock:
         _kill_switch = None

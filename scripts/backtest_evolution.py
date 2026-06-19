@@ -30,6 +30,7 @@ Run:
 
 from __future__ import annotations
 
+import argparse
 import json
 import logging
 import random
@@ -51,7 +52,7 @@ np.random.seed(42)
 
 # --- Path wiring ------------------------------------------------------------
 ROOT = Path(__file__).resolve().parents[1]
-QUANT_SRC = ROOT / "packages" / "quant" / "src"
+QUANT_SRC = ROOT / "src"
 if str(QUANT_SRC) not in sys.path:
     sys.path.insert(0, str(QUANT_SRC))
 
@@ -87,6 +88,9 @@ FEATURE_NAMES: List[str] = [
 TRAIN_START_YEAR = 2015
 TEST_YEARS = list(range(2017, 2027))  # 2017..2026 inclusive
 TOP_K_ALPHAS = 5
+
+# Module-level worker control (set by main() from --workers CLI flag)
+_GP_N_JOBS: int = -1
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +328,7 @@ def train_gp(panel_train: pd.DataFrame) -> List[GPIndividual]:
         # share the parent process random state, so the n_jobs=10
         # path is deterministic given the same population_size and
         # generations.
-        n_jobs=10,
+        n_jobs=_GP_N_JOBS,
     )
     feats = features_dict(panel_train)
     target = panel_train["target_fwd1d"].to_numpy(dtype="float64", copy=False)
@@ -454,6 +458,26 @@ def save_results(results: List[Dict]) -> None:
 # Entry point
 # ---------------------------------------------------------------------------
 def main() -> int:
+    global _GP_N_JOBS
+    parser = argparse.ArgumentParser(description="Walk-forward evolution backtest")
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=None,
+        help="Number of parallel workers for GP evaluation (default: auto-cap by CPU/RAM)",
+    )
+    args = parser.parse_args()
+
+    if args.workers is not None:
+        _GP_N_JOBS = max(1, args.workers)
+    else:
+        try:
+            from omega.infra.resource_manager import compute_safe_workers
+            _GP_N_JOBS = compute_safe_workers()
+        except ImportError:
+            _GP_N_JOBS = -1
+    logger.info("GP n_jobs=%s", _GP_N_JOBS)
+
     if not DATA_PATH.exists():
         logger.error("Market data not found: %s", DATA_PATH)
         return 2

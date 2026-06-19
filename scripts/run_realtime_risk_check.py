@@ -18,7 +18,7 @@ RealtimeRiskGuard = None
 RiskLimits = None
 RiskVerdict = None
 try:
-    from omega.quant.realtime_risk_guard import RealtimeRiskGuard, RiskLimits, RiskVerdict
+    from omega.quant.risk.realtime_risk import RealtimeRiskGuard, RiskLimits, RiskVerdict
     logger.info("RealtimeRiskGuard imported")
 except ImportError as e:
     logger.warning(f"RealtimeRiskGuard not available: {e}")

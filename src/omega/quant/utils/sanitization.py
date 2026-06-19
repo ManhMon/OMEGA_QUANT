@@ -20,7 +20,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Import shared math utilities from consolidated utils/math.py
-from omega.quant.math_utils import winsorize, zscore
+from omega.quant.utils.math_utils import winsorize, zscore
 
 
 class SanitizationModule:

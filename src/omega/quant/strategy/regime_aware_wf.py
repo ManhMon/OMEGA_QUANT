@@ -25,14 +25,14 @@ from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass, field
 import logging
 
-from omega.quant.walk_forward_engine import (
+from omega.quant.backtest.walk_forward_engine import (
     WalkForwardEngine as L8_WalkForwardEngine,
     WalkForwardConfig as L8_WalkForwardConfig,
     generate_t3_signals_pit,
     generate_t5_signals_pit,
 )
 
-from omega.quant.regime_detector_hmm import (
+from omega.quant.strategy.regime_detector import (
     RegimeDetectorHMM,
     HMMRegimeConfig,
 )

@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from omega.quant.multi_symbol_router import MultiSymbolRouter, RouterConfig
+from omega.quant.execution.multi_symbol_router import MultiSymbolRouter, RouterConfig
 
 
 class RecordingModel:

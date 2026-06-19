@@ -3,7 +3,7 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone
 
-from omega.quant.transaction_cost import VNTransactionCostModel, TransactionCostConfig
+from omega.quant.execution.transaction_cost import VNTransactionCostModel, TransactionCostConfig
 
 
 logger = logging.getLogger(__name__)

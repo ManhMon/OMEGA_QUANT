@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 import numpy as np
 
-from .signal_blender import SignalBlender, BlendedSignal
-from .market_regime import MarketRegimeFilter, RegimeReport, MarketRegime
-from .dynamic_universe import DynamicUniverseSelector, UniverseConfig, SelectedUniverse
-from .position_sizer import PositionSizer, PositionConfig, TargetPortfolio
-from .transaction_cost import TransactionCostModel, CostEstimate
+from omega.quant.signal_blender import SignalBlender, BlendedSignal
+from omega.quant.strategy.market_regime import MarketRegimeFilter, RegimeReport, MarketRegime
+from omega.quant.data.dynamic_universe import DynamicUniverseSelector, UniverseConfig, SelectedUniverse
+from omega.quant.portfolio.position_sizer import PositionSizer, PositionConfig, TargetPortfolio
+from omega.quant.execution.transaction_cost import TransactionCostModel, CostEstimate
 
 
 @dataclass

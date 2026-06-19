@@ -11,8 +11,6 @@ Tests cover:
 """
 
 import pytest
-import tempfile
-import shutil
 import joblib
 from pathlib import Path
 from datetime import datetime, timedelta
@@ -35,11 +33,11 @@ class TestModelRegistry:
     """Test ModelRegistry functionality."""
     
     @pytest.fixture
-    def temp_registry_path(self):
-        """Create temporary registry directory."""
-        temp_dir = tempfile.mkdtemp()
-        yield temp_dir
-        shutil.rmtree(temp_dir)
+    def temp_registry_path(self, tmp_path):
+        """Create temporary registry directory using pytest tmp_path."""
+        registry_dir = tmp_path / "registry"
+        registry_dir.mkdir()
+        yield str(registry_dir)
     
     @pytest.fixture
     def registry(self, temp_registry_path):

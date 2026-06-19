@@ -1,7 +1,7 @@
 """Wrapper module for SmartMoneyMicrostructure.
 Provides backward‑compatible class name expected by institutional_pipeline_v21.
 """
-from .smart_money_features import SmartMoneyFeatures as SmartMoneyMicrostructure
+from omega.quant.signal.smart_money import SmartMoneyFeatures as SmartMoneyMicrostructure
 
 # Add compatibility method to SmartMoneyFeatures
 

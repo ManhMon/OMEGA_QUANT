@@ -29,7 +29,7 @@ if str(_REPO_ROOT / 'src') not in sys.path:
 import numpy as np
 import pandas as pd
 
-from omega.quant.regime_detector_hmm import RegimeDetectorHMM, HMMRegimeConfig
+from omega.quant.strategy.regime_detector import RegimeDetectorHMM, HMMRegimeConfig
 
 # ---------------------------------------------------------------------------
 # Logging

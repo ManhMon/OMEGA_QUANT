@@ -17,13 +17,13 @@ class TestJSONLoading:
     
     def test_json_file_exists(self):
         """Verify vn_holidays.json exists in expected location."""
-        # Path relative to test file: tests -> data -> packages -> OMEGA_QUANT -> config
-        config_path = Path(__file__).parent.parent.parent.parent / "config" / "vn_holidays.json"
+        # tests/data_test_calendar.py -> parent = tests/ -> parent = repo root
+        config_path = Path(__file__).parent.parent / "config" / "vn_holidays.json"
         assert config_path.exists(), f"Holiday JSON not found at {config_path}"
     
     def test_json_structure(self):
         """Verify JSON has correct structure with metadata and holidays."""
-        config_path = Path(__file__).parent.parent.parent.parent / "config" / "vn_holidays.json"
+        config_path = Path(__file__).parent.parent / "config" / "vn_holidays.json"
         
         with open(config_path, 'r', encoding='utf-8') as f:
             data = json.load(f)

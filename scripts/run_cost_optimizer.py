@@ -23,7 +23,7 @@ _WORKSPACE = _SCRIPT_DIR.parent
 _QUANT_SRC = _WORKSPACE / "packages" / "quant" / "src"
 sys.path.insert(0, str(_QUANT_SRC))
 
-from omega.quant.transaction_cost_optimizer import TransactionCostOptimizer  # noqa: E402
+from omega.quant.execution.transaction_cost_optimizer import TransactionCostOptimizer  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Logging

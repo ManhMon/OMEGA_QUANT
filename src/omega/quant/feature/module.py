@@ -38,7 +38,7 @@ except ImportError:
     VNTradingCalendar = None
 
 try:
-    from omega.quant.advanced_features import (
+    from omega.quant.feature.advanced import (
         compute_rsi, compute_macd, compute_bollinger_bands, 
         compute_atr, compute_money_flow, compute_adx
     )
@@ -46,7 +46,7 @@ except ImportError:
     compute_rsi = None
 
 try:
-    from omega.quant.promoted_alphas import compute_promoted_alphas
+    from omega.quant.alpha.promoted import compute_promoted_alphas
 except ImportError:
     compute_promoted_alphas = None
 

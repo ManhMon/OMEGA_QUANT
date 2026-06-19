@@ -1,26 +1,26 @@
 {
-  "sharpe": 2.6442123224720087,
-  "max_drawdown": -0.04180957654086166,
+  "sharpe": 3.2922747414020592,
+  "max_drawdown": -0.0348227866450998,
   "information_ratio": NaN,
   "tracking_error": 0.01,
-  "total_return": 0.15763267473267728,
-  "annual_return": 0.054108898450627496,
-  "annual_volatility": 0.10163657619878988,
-  "total_turnover": 100.19999999999993,
-  "avg_cost_per_rebal_bps": 8.993541160714283,
+  "total_return": 0.2062998516923933,
+  "annual_return": 0.06985248259127053,
+  "annual_volatility": 0.10425332237308643,
+  "total_turnover": 94.79999999999994,
+  "avg_cost_per_rebal_bps": 8.514764553571428,
   "n_rebalances": 140,
   "circuit_breaker_triggers": 0,
   "active_alphas_count": 20,
   "top_alphas": [
     "alpha_zscore",
     "alpha_vn_005_liquidity_adjusted_reversal",
-    "feat_macro_mom_60",
-    "feat_macro_vol_20",
     "alpha_bb_dist_120",
     "alpha_dist_ma_60",
-    "alpha_bb_dist_20",
     "alpha_hist_vol_20",
-    "feat_macro_dispersion",
-    "feat_size_proxy"
+    "feat_size_proxy",
+    "alpha_bb_dist_20",
+    "alpha_dist_ma_50",
+    "alpha_vwap_deviation",
+    "alpha_zero_trade_freq_60"
   ]
 }

@@ -11,7 +11,7 @@ os.chdir(os.path.join(os.path.dirname(__file__), '..'))
 import pandas as pd
 import numpy as np
 from phase35_data_loader import Phase35DataLoader
-from omega.quant.phase34_microstructure_alphas import compute_phase34_microstructure_alphas
+from omega.quant.alpha.phase34 import compute_phase34_microstructure_alphas
 
 print("=" * 80)
 print("ALPHA & RISK TUNING - COARSE GRID SEARCH")

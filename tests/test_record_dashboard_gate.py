@@ -19,7 +19,9 @@ class TestRecordDashboardGate(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures"""
-        self.test_dir = tempfile.mkdtemp()
+        import uuid
+        self.test_dir = os.path.join(tempfile.gettempdir(), f"tmp_gate_test_{uuid.uuid4().hex}")
+        os.makedirs(self.test_dir, exist_ok=True)
         self.original_dir = os.getcwd()
         os.chdir(self.test_dir)
         
@@ -39,8 +41,16 @@ class TestRecordDashboardGate(unittest.TestCase):
     def tearDown(self):
         """Clean up test fixtures"""
         os.chdir(self.original_dir)
-        import shutil
-        shutil.rmtree(self.test_dir)
+        if os.path.exists(self.test_dir):
+            import shutil
+            import stat
+            def _onerror(func, path, exc_info):
+                try:
+                    os.chmod(path, stat.S_IWRITE)
+                    func(path)
+                except Exception:
+                    pass
+            shutil.rmtree(self.test_dir, onerror=_onerror)
     
     def create_audit_report(self, filename, content):
         """Helper to create an audit report file"""

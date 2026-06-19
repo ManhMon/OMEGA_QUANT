@@ -22,12 +22,12 @@ class VNMarketFlowDataSource:
         self.rate_limiter = rate_limiter
         self._cache: Dict[str, Any] = {}
         
-        # Lazy import vnstock
+        # Lazy import vnstock (vnstock 4.x exposes Trading at top level)
         try:
-            from vnstock_data import Trading
+            from vnstock import Trading
             self.Trading = Trading
         except ImportError:
-            raise ImportError("vnstock_data not installed. Run: pip install vnstock")
+            raise ImportError("vnstock not installed or Trading class unavailable. Run: pip install vnstock")
     
     def fetch_foreign_flow(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
         """

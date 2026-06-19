@@ -21,7 +21,7 @@ from pathlib import Path
 sys.path.insert(0, 'src')
 
 from omega.quant.factory.discovery_engine import DiscoveryEngine
-from omega.quant.alpha_discovery import AlphaJudge
+from omega.quant.alpha.discovery import AlphaJudge
 from omega.quant.evolution.genetic_engine import GeneticEngine, GPConfig
 from omega.quant.ml.ml_engine import MLEngine, ModelConfig, MLModelType, get_ml_engine
 

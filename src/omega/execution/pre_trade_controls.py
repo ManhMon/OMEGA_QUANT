@@ -42,6 +42,7 @@ class Order:
     order_type: str  # LIMIT, MARKET, STOP
     account_id: str
     timestamp: datetime = field(default_factory=datetime.utcnow)
+    reference_price: Optional[float] = None  # LIVE-02: last/reference price for market orders
     
     def __hash__(self):
         return hash((self.symbol, self.side, self.quantity, self.price, self.account_id))
@@ -233,15 +234,39 @@ class PreTradeGate:
         return PreTradeCheckResult(passed=True)
     
     def _check_margin(self, order: Order) -> PreTradeCheckResult:
-        """Check margin requirements."""
+        """Check margin requirements.
+        
+        LIVE-02 FIX: For market orders (price=None), use reference_price to
+        compute required margin. If no reference_price is available, reject
+        the order (fail-closed) to prevent zero-margin bypass.
+        """
         with self._margin_lock:
             available_margin = self._account_margins.get(order.account_id, 0.0)
         
+        # Determine effective price for margin computation
+        effective_price = order.price
+        if effective_price is None and order.order_type == "MARKET":
+            effective_price = order.reference_price
+        
+        # LIVE-02: Fail-closed — market order with no price reference is unsafe
+        if effective_price is None or effective_price <= 0:
+            if order.order_type == "MARKET":
+                return PreTradeCheckResult(
+                    passed=False,
+                    reason=RejectionReason.INSUFFICIENT_MARGIN,
+                    message=(
+                        f"Market order for {order.symbol} has no reference price — "
+                        "cannot compute margin (fail-closed)"
+                    ),
+                )
+            # Limit orders without price are caught by _check_price_validity
+            return PreTradeCheckResult(passed=True)
+        
         # Calculate required margin for this order
-        order_value = order.quantity * (order.price or 0.0)
+        order_value = order.quantity * effective_price
         required_margin = order_value * self.margin_requirement
         
-        if order.price and required_margin > available_margin:
+        if required_margin > available_margin:
             return PreTradeCheckResult(
                 passed=False,
                 reason=RejectionReason.INSUFFICIENT_MARGIN,

@@ -34,6 +34,15 @@ except ImportError:
     logging.warning("vnstock package not available. Install with: pip install vnstock")
 
 
+# VND_FULL price-unit contract guard
+from omega.data.vnd_price_contract import (
+    VND_FULL,
+    ensure_vnd_scale,
+    RAW_PRICE_THRESHOLD,
+    VND_PRICE_SCALE,
+)
+
+
 @dataclass
 class VnStockLiveConfig:
     """Configuration for VnStock Live Data Provider"""
@@ -109,12 +118,14 @@ class VnStockLiveDataProvider:
         self.config = config or VnStockLiveConfig()
         self.logger = logging.getLogger(__name__)
         
-        # Set API key
+        # Set API key from config or environment; no hardcoded fallback.
         if self.config.api_key:
             os.environ['VNSTOCK_API_KEY'] = self.config.api_key
         elif 'VNSTOCK_API_KEY' not in os.environ:
-            # Use default API key
-            os.environ['VNSTOCK_API_KEY'] = "vnstock_e05b9f4c0d4eacd20b900cf99688d3c1"
+            self.logger.warning(
+                "VNSTOCK_API_KEY not set in config or environment. "
+                "vnstock 4.x API calls will fail until it is provided."
+            )
         
         # Check vnstock availability
         if not VNSTOCK_AVAILABLE:
@@ -122,7 +133,7 @@ class VnStockLiveDataProvider:
             raise ImportError("vnstock package required. Install with: pip install vnstock")
         
         # Initialize rate limiter
-        from omega.quant.vnstock_datasource import RateLimiter
+        from omega.quant.data.vnstock import RateLimiter
         self.rate_limiter = RateLimiter(
             max_requests=self.config.rate_limit_requests,
             period_seconds=self.config.rate_limit_period
@@ -192,7 +203,10 @@ class VnStockLiveDataProvider:
             # Add ticker column
             df['ticker'] = ticker
             
-            # Compute value (close * volume)
+            # VND_FULL price-unit guard: normalize THOUSANDS -> VND_FULL at ingestion
+            df = ensure_vnd_scale(df, price_cols=["open", "high", "low", "close"])
+            
+            # Compute value (close * volume) — now in VND_FULL units
             df['value'] = df['close'] * df['volume']
             
             # Select and order columns

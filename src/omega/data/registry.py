@@ -11,6 +11,7 @@ Provides versioned registry for datasets and models with:
 import os
 import copy
 import json
+import time
 import shutil
 import pickle
 import joblib
@@ -20,6 +21,31 @@ import numpy as np
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
+
+
+def _robust_makedirs(path: Path, max_retries: int = 3) -> None:
+    """Create directory tree with bounded retry for transient Windows locks.
+
+    On Windows, ``os.makedirs`` can fail with ``PermissionError [WinError 5]``
+    when an antivirus scanner or search indexer momentarily locks the parent.
+    A short retry loop with progressive backoff handles these transient locks.
+
+    This helper does **not** alter filesystem permissions on any parent
+    directory.  If the directory cannot be created after all retries the
+    original exception is re-raised so callers receive a clear, fail-fast
+    diagnostic rather than silently weakening integrity around registry or
+    artifact paths.
+    """
+    target = str(path)
+    for attempt in range(max_retries):
+        try:
+            os.makedirs(target, exist_ok=True)
+            return
+        except PermissionError:
+            if attempt < max_retries - 1:
+                time.sleep(0.1 * (attempt + 1))
+            else:
+                raise
 
 
 class DatasetRegistry:
@@ -49,7 +75,7 @@ class DatasetRegistry:
 
     def _ensure_directories(self):
         """Create necessary directory structure."""
-        self.registry_path.mkdir(parents=True, exist_ok=True)
+        _robust_makedirs(self.registry_path)
         if not self.metadata_file.exists():
             self._save_registry()
 
@@ -293,8 +319,8 @@ class ModelRegistry:
 
     def _ensure_directories(self):
         """Create necessary directory structure."""
-        self.registry_path.mkdir(parents=True, exist_ok=True)
-        self.artifacts_path.mkdir(parents=True, exist_ok=True)
+        _robust_makedirs(self.registry_path)
+        _robust_makedirs(self.artifacts_path)
         if not self.metadata_file.exists():
             self._save_registry()
 
@@ -411,7 +437,7 @@ class ModelRegistry:
 
         # Save artifact
         model_dir = self.artifacts_path / model_name / version
-        model_dir.mkdir(parents=True, exist_ok=True)
+        _robust_makedirs(model_dir)
         artifact_path = model_dir / "model.joblib"
         joblib.dump(model_object, artifact_path)
         

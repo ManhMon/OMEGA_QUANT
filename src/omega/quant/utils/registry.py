@@ -18,8 +18,8 @@ import json
 import numpy as np
 import os
 
-from omega.quant.pit_manager import PITDataManager, PITConfig, PITSlice
-from omega.quant.experiment_tracker import ExperimentTracker, ExperimentMetadata
+from omega.quant.risk.pit_manager import PITDataManager, PITConfig, PITSlice
+from omega.quant.monitoring.experiment_tracker import ExperimentTracker, ExperimentMetadata
 
 
 @dataclass

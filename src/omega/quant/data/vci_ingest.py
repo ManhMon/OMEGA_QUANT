@@ -3,7 +3,7 @@ V21 Data Ingestion - VNStock with VCI Source
 Fetches historical OHLCV data and saves to Parquet format.
 
 Requirements:
-- pip install vnstock3 pyarrow fastparquet
+- pip install vnstock pyarrow fastparquet
 - Valid VNSTOCK_API_KEY
 """
 
@@ -31,7 +31,7 @@ def normalize_price_columns_to_vnd(df):
 
 def ingest_vci_data(symbols, start_date, end_date, output_path='data/v21_market_data.parquet'):
     """
-    Ingest data from VCI source using vnstock3 and save to Parquet.
+    Ingest data from VCI source using vnstock and save to Parquet.
     """
     # Get API Key from environment or prompt
     api_key = os.getenv("VNSTOCK_API_KEY")
@@ -39,7 +39,7 @@ def ingest_vci_data(symbols, start_date, end_date, output_path='data/v21_market_
         print("Error: VNSTOCK_API_KEY not found in environment variables.")
         return None
 
-    # Initialize vnstock3
+    # Initialize vnstock
     stock = Vnstock().stock(symbol=symbols[0], source='vci')
     
     all_data = []
@@ -52,7 +52,7 @@ def ingest_vci_data(symbols, start_date, end_date, output_path='data/v21_market_
             stock = Vnstock().stock(symbol=symbol, source='vci')
             
             # Fetch historical data
-            # vnstock3 history uses start_date and end_date in YYYY-MM-DD
+            # vnstock history uses start_date and end_date in YYYY-MM-DD
             df = stock.quote.history(start=start_date, end=end_date)
             
             if df is not None and not df.empty:
