@@ -50,7 +50,7 @@ def _make_engine(
     rebalance_freq=1,
     sector_cap_pct=1.0,
 ):
-    from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+    from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
     return Phase35WalkForwardEngine(
         alpha_module=_make_fake_alpha_module(),
         min_ic_threshold=min_ic_threshold,
@@ -136,7 +136,7 @@ class TestHorizonReturnColMatching(unittest.TestCase):
         alpha_cols = ['alpha_a', 'alpha_b']
         
         # Call _compute_horizon_signal for horizon 3
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}):
             signal, val_ic, gated, gate_res, _ = engine._compute_horizon_signal(
                 fold_id=1,
@@ -179,7 +179,7 @@ class TestHorizonSpecificEmbargo(unittest.TestCase):
         tickers = train_df['ticker'].nunique()
         
         # Horizon 1 should remove 1 row per ticker
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}):
             signal_h1, _, _, _, _ = engine._compute_horizon_signal(
                 fold_id=1, train_df=train_df, test_df=test_df,
@@ -188,7 +188,7 @@ class TestHorizonSpecificEmbargo(unittest.TestCase):
             )
         
         # Horizon 3 should remove 3 rows per ticker
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}):
             signal_h3, _, _, _, _ = engine._compute_horizon_signal(
                 fold_id=1, train_df=train_df, test_df=test_df,
@@ -339,9 +339,9 @@ class TestDefaultBehaviorUnchanged(unittest.TestCase):
         
         alpha_cols = ['alpha_a', 'alpha_b']
         
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}):
-            with patch('omega.quant.phase35_walk_forward._import_apply_sector_caps',
+            with patch('omega.quant.alpha.phase35._import_apply_sector_caps',
                        return_value=lambda w, sm, sc: w):
                 metrics = engine.run_fold(
                     fold_id=1,
@@ -379,9 +379,9 @@ class TestMultiHorizonIntegration(unittest.TestCase):
         
         alpha_cols = ['alpha_a', 'alpha_b']
         
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}):
-            with patch('omega.quant.phase35_walk_forward._import_apply_sector_caps',
+            with patch('omega.quant.alpha.phase35._import_apply_sector_caps',
                        return_value=lambda w, sm, sc: w):
                 metrics = engine.run_fold(
                     fold_id=1,
@@ -414,9 +414,9 @@ class TestMultiHorizonIntegration(unittest.TestCase):
         
         alpha_cols = ['alpha_a', 'alpha_b']
         
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}):
-            with patch('omega.quant.phase35_walk_forward._import_apply_sector_caps',
+            with patch('omega.quant.alpha.phase35._import_apply_sector_caps',
                        return_value=lambda w, sm, sc: w):
                 metrics = engine.run_fold(
                     fold_id=1,
@@ -467,60 +467,60 @@ class TestGateVerdictTruthiness(unittest.TestCase):
 
     def test_is_gate_verdict_pass_boolean_true(self):
         """Boolean True should count as pass."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertTrue(_is_gate_verdict_pass(True))
 
     def test_is_gate_verdict_pass_boolean_false(self):
         """Boolean False should count as fail."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertFalse(_is_gate_verdict_pass(False))
 
     def test_is_gate_verdict_pass_string_pass(self):
         """String 'PASS' should count as pass."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertTrue(_is_gate_verdict_pass("PASS"))
         self.assertTrue(_is_gate_verdict_pass("pass"))
         self.assertTrue(_is_gate_verdict_pass("  PASS  "))
 
     def test_is_gate_verdict_pass_string_approved(self):
         """String 'APPROVED' should count as pass."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertTrue(_is_gate_verdict_pass("APPROVED"))
         self.assertTrue(_is_gate_verdict_pass("approved"))
 
     def test_is_gate_verdict_pass_string_fail(self):
         """String starting with 'FAIL' should count as fail."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertFalse(_is_gate_verdict_pass("FAIL"))
         self.assertFalse(_is_gate_verdict_pass("FAIL: insufficient samples"))
         self.assertFalse(_is_gate_verdict_pass("fail: low IC"))
 
     def test_is_gate_verdict_pass_string_reject(self):
         """String starting with 'REJECT' should count as fail."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertFalse(_is_gate_verdict_pass("REJECT"))
         self.assertFalse(_is_gate_verdict_pass("REJECT: low IC"))
 
     def test_is_gate_verdict_pass_string_needs_fix(self):
         """String starting with 'NEEDS_FIX' should count as fail."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertFalse(_is_gate_verdict_pass("NEEDS_FIX"))
         self.assertFalse(_is_gate_verdict_pass("NEEDS_FIX: instability"))
 
     def test_is_gate_verdict_pass_none(self):
         """None should count as fail."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertFalse(_is_gate_verdict_pass(None))
 
     def test_is_gate_verdict_pass_empty_string(self):
         """Empty string should count as fail."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertFalse(_is_gate_verdict_pass(""))
         self.assertFalse(_is_gate_verdict_pass("   "))
 
     def test_is_gate_verdict_pass_arbitrary_string(self):
         """Arbitrary non-pass strings should count as fail (conservative)."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         self.assertFalse(_is_gate_verdict_pass("maybe"))
         self.assertFalse(_is_gate_verdict_pass("unknown"))
         self.assertFalse(_is_gate_verdict_pass("pending"))
@@ -540,7 +540,7 @@ class TestGateVerdictTruthiness(unittest.TestCase):
         alpha_cols = ['alpha_a', 'alpha_b']
         
         # Mock gate to return FAIL verdicts for all alphas
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
             signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
                 fold_id=1,
@@ -558,7 +558,7 @@ class TestGateVerdictTruthiness(unittest.TestCase):
 
     def test_gate_passed_count_with_mixed_verdicts(self):
         """Gate passed count should correctly handle mixed PASS/FAIL verdicts."""
-        from omega.quant.phase35_walk_forward import _is_gate_verdict_pass
+        from omega.quant.alpha.phase35 import _is_gate_verdict_pass
         
         # Simulate gate_results with mixed verdicts
         gate_results = {
@@ -774,7 +774,7 @@ class TestP10GateTuning(unittest.TestCase):
         alpha_cols = ['alpha_a', 'alpha_b']
         
         # Mock gate to return FAIL verdicts for all alphas
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
             signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
                 fold_id=1,
@@ -792,7 +792,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_relaxed_mode_without_fallback_still_excludes_zero_passes(self):
         """Relaxed mode without fallback candidates still excludes if min_pass unmet."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         engine = Phase35WalkForwardEngine(
             alpha_module=_make_fake_alpha_module(),
@@ -816,7 +816,7 @@ class TestP10GateTuning(unittest.TestCase):
         alpha_cols = ['alpha_a', 'alpha_b']
         
         # Mock gate to return FAIL verdicts for all alphas (0 passes)
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
             signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
                 fold_id=1,
@@ -834,7 +834,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_relaxed_mode_with_fallback_allows_horizon_with_candidates(self):
         """Relaxed mode with allow_fallback_candidates=True allows horizon to proceed."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         engine = Phase35WalkForwardEngine(
             alpha_module=_make_fake_alpha_module(),
@@ -859,7 +859,7 @@ class TestP10GateTuning(unittest.TestCase):
         
         # Mock gate to return FAIL verdicts for all alphas (0 passes)
         # But fallback candidates should allow horizon to proceed
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
             signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
                 fold_id=1,
@@ -878,7 +878,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_relaxed_mode_with_min_pass_met_proceeds(self):
         """Relaxed mode allows horizon if gate_passed_count >= min_pass."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         engine = Phase35WalkForwardEngine(
             alpha_module=_make_fake_alpha_module(),
@@ -913,7 +913,7 @@ class TestP10GateTuning(unittest.TestCase):
             call_count[0] += 1
             return result
         
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate', side_effect=mock_gate):
+        with patch('omega.quant.alpha.phase35.validate_research_gate', side_effect=mock_gate):
             signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
                 fold_id=1,
                 train_df=train_df,
@@ -930,7 +930,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_relaxed_horizon_with_non_positive_quality_triggers_fallback(self):
         """Relaxed admitted horizon with non-positive final-objective quality gets zero weight."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         engine = Phase35WalkForwardEngine(
             alpha_module=_make_fake_alpha_module(),
@@ -968,7 +968,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_invalid_gate_mode_raises_error(self):
         """Invalid p10_gate_mode value should raise ValueError."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         with self.assertRaises(ValueError) as context:
             engine = Phase35WalkForwardEngine(
@@ -984,7 +984,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_invalid_gate_min_pass_raises_error(self):
         """Invalid p10_gate_min_pass value should raise ValueError."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         # Negative value should raise
         with self.assertRaises(ValueError) as context:
@@ -999,7 +999,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_gate_mode_parameters_stored_correctly(self):
         """Gate tuning parameters should be stored as instance variables."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         engine = Phase35WalkForwardEngine(
             alpha_module=_make_fake_alpha_module(),
@@ -1016,7 +1016,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_relaxed_fallback_produces_correct_gate_metadata(self):
         """Role21 Fix 2026-06-10: Relaxed fallback candidates produce correct gate_metadata."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         engine = Phase35WalkForwardEngine(
             alpha_module=_make_fake_alpha_module(),
@@ -1040,7 +1040,7 @@ class TestP10GateTuning(unittest.TestCase):
         alpha_cols = ['alpha_a', 'alpha_b']
         
         # Mock gate to return FAIL verdicts for all alphas (0 passes)
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
             signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
                 fold_id=1,
@@ -1079,7 +1079,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_strict_gate_pass_produces_correct_gate_metadata(self):
         """Role21 Fix 2026-06-10: Strict gate pass produces correct gate_metadata."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         engine = Phase35WalkForwardEngine(
             alpha_module=_make_fake_alpha_module(),
@@ -1114,7 +1114,7 @@ class TestP10GateTuning(unittest.TestCase):
             call_count[0] += 1
             return result
         
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate', side_effect=mock_gate):
+        with patch('omega.quant.alpha.phase35.validate_research_gate', side_effect=mock_gate):
             signal, quality_metrics, gated, gate_res, gate_meta = engine._compute_horizon_signal(
                 fold_id=1,
                 train_df=train_df,
@@ -1145,7 +1145,7 @@ class TestP10GateTuning(unittest.TestCase):
     
     def test_fold_metrics_includes_gate_metadata(self):
         """Role21 Fix 2026-06-10: FoldMetrics includes gate_metadata field."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         engine = Phase35WalkForwardEngine(
             alpha_module=_make_fake_alpha_module(),
@@ -1166,7 +1166,7 @@ class TestP10GateTuning(unittest.TestCase):
         alpha_cols = ['alpha_a', 'alpha_b']
         
         # Mock gate to trigger fallback
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    return_value={'passed': False, 'verdict': 'FAIL: insufficient samples', 'n_samples': 5}):
             metrics = engine.run_fold(
                 fold_id=1,
@@ -1408,7 +1408,7 @@ class TestP10PartialHorizonMetadataSelection(unittest.TestCase):
                 'n_samples': len(returns),
             }
         
-        with patch('omega.quant.phase35_walk_forward.validate_research_gate',
+        with patch('omega.quant.alpha.phase35.validate_research_gate',
                    side_effect=mock_gate_validation):
             # Run fold - horizon 1 should be excluded, horizons 3 and 5 included
             result = engine.run_fold(

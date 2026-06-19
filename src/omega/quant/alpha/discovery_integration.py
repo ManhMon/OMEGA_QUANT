@@ -29,9 +29,9 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
-from .alpha_preprocessing import AlphaPreprocessor, PreprocessingConfig
-from .macro_alphas import compute_macro_alphas, MACRO_ALPHA_COLUMNS, get_macro_alpha_metadata
-from .alpha_discovery import AlphaJudge, AlphaAlchemist
+from omega.quant.alpha.preprocessing import AlphaPreprocessor, PreprocessingConfig
+from omega.quant.alpha.macro import compute_macro_alphas, MACRO_ALPHA_COLUMNS, get_macro_alpha_metadata
+from omega.quant.alpha.discovery import AlphaJudge, AlphaAlchemist
 
 logger = logging.getLogger(__name__)
 

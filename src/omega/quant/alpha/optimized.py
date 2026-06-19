@@ -18,7 +18,7 @@ COMPLIANCE:
 - Integration: Works with alpha_preprocessing.py
 
 USAGE:
-    from .alpha_factory_optimized import OptimizedAlphaFactory
+    from omega.quant.alpha.optimized import OptimizedAlphaFactory
     
     factory = OptimizedAlphaFactory(chunk_size=50)
     alphas = factory.compute_macro_alphas(df, chunk_mode='symbol')
@@ -34,9 +34,9 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
-from .alpha_preprocessing import AlphaPreprocessor, PreprocessingConfig
-from .neutralization import NeutralizationEngine
-from .utils.math import winsorize, zscore, cross_sectional_zscore
+from omega.quant.alpha.preprocessing import AlphaPreprocessor, PreprocessingConfig
+from omega.quant.features.neutralization import HierarchicalNeutralizer
+from omega.quant.utils.math import winsorize, zscore, cross_sectional_zscore
 
 logger = logging.getLogger(__name__)
 
@@ -256,8 +256,7 @@ class OptimizedAlphaFactory:
         df_work = df.copy()
         alphas_dict = {}
         
-        # Import alpha functions from ultimate_alpha_arsenal
-        from .ultimate_alpha_arsenal import (
+        from omega.quant.alpha.arsenal import (
             compute_roc,
             compute_rsi,
             compute_returns,

@@ -12,7 +12,7 @@ import pytest
 import numpy as np
 import pandas as pd
 from unittest.mock import Mock, MagicMock, patch
-from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
 
 
 class TestP2BlendCeiling:

@@ -33,7 +33,7 @@ from omega.quant.continuous_learning import (
     ContinuousLearningConfig,
     TrainableModel
 )
-from omega.quant.walk_forward_engine import (
+from omega.quant.backtest.walk_forward_engine import (
     WalkForwardEngine,
     WalkForwardConfig,
     WalkForwardResult
@@ -46,7 +46,7 @@ from omega.quant.drift_detector import (
 from omega.quant.atomic_snapshot_manager import (
     AtomicSnapshotManager
 )
-from omega.quant.pit_guardian import PITGuardian
+from omega.quant.risk.pit_guardian import PITGuardian
 
 logger = logging.getLogger(__name__)
 

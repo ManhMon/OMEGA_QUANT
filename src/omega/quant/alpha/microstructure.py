@@ -10,9 +10,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Import from ultimate_alpha_arsenal
 try:
-    from .ultimate_alpha_arsenal import compute_microstructure_alphas
+    from omega.quant.strategy.market_microstructure import compute_microstructure_alphas
 except ImportError as e:
     logger.error(f"Failed to import compute_microstructure_alphas: {e}")
     raise
@@ -28,7 +27,7 @@ def compute_microstructure_alphas(df: pd.DataFrame, lookback: int = 20) -> pd.Da
     Returns:
         DataFrame with microstructure alpha columns
     """
-    from .ultimate_alpha_arsenal import compute_microstructure_alphas as _compute
+    from omega.quant.strategy.market_microstructure import compute_microstructure_alphas as _compute
     return _compute(df, lookback=lookback)
 
 __all__ = ['compute_microstructure_alphas']

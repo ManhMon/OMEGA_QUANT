@@ -15,7 +15,7 @@ from typing import Optional, Dict, Tuple, List
 import warnings
 warnings.filterwarnings('ignore')
 
-from .utils.math import winsorize, zscore
+from omega.quant.utils.math import winsorize, zscore
 
 
 class AlphaSanitizer:

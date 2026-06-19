@@ -32,7 +32,7 @@ class TestP9DynamicRebalancePITSafety(unittest.TestCase):
 
     def _make_engine(self, top_n_stocks=3, rebalance_freq=7, sector_cap_pct=0.30):
         """Build a Phase35WalkForwardEngine with P9 dynamic rebalance enabled."""
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
 
         class _FakeAlphaModule:
             """Minimal alpha module: passes df through, adds a dummy alpha col."""
@@ -268,7 +268,7 @@ class TestP9DynamicRebalancePITSafety(unittest.TestCase):
         _compute_sequential_dynamic_freq should handle empty available_test_df
         and fall back to train baseline.
         """
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         
         engine = self._make_engine(top_n_stocks=3, rebalance_freq=7)
         

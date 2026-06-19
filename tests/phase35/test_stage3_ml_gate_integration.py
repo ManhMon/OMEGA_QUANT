@@ -39,7 +39,7 @@ def _make_fake_alpha_module():
 
 def _make_engine(min_ic_threshold=0.0, top_n_alphas=3, top_n_stocks=5,
                  rebalance_freq=1, sector_cap_pct=1.0):
-    from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+    from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
     return Phase35WalkForwardEngine(
         alpha_module=_make_fake_alpha_module(),
         min_ic_threshold=min_ic_threshold,
@@ -95,28 +95,28 @@ class TestFoldMetricsGateFields(unittest.TestCase):
     """FoldMetrics must have gate_results and gated_alphas fields."""
 
     def test_fold_metrics_has_gate_results_field(self):
-        from omega.quant.phase35_walk_forward import FoldMetrics
+        from omega.quant.alpha.phase35 import FoldMetrics
         import dataclasses
         field_names = {f.name for f in dataclasses.fields(FoldMetrics)}
         self.assertIn('gate_results', field_names,
                       "FoldMetrics must have gate_results field")
 
     def test_fold_metrics_has_gated_alphas_field(self):
-        from omega.quant.phase35_walk_forward import FoldMetrics
+        from omega.quant.alpha.phase35 import FoldMetrics
         import dataclasses
         field_names = {f.name for f in dataclasses.fields(FoldMetrics)}
         self.assertIn('gated_alphas', field_names,
                       "FoldMetrics must have gated_alphas field")
 
     def test_fold_metrics_gate_results_default_empty_dict(self):
-        from omega.quant.phase35_walk_forward import FoldMetrics
+        from omega.quant.alpha.phase35 import FoldMetrics
         m = FoldMetrics(fold_id=1, train_start='2023-01-01', train_end='2023-06-01',
                         test_start='2023-06-02', test_end='2023-12-31')
         self.assertIsInstance(m.gate_results, dict)
         self.assertEqual(len(m.gate_results), 0)
 
     def test_fold_metrics_gated_alphas_default_empty_list(self):
-        from omega.quant.phase35_walk_forward import FoldMetrics
+        from omega.quant.alpha.phase35 import FoldMetrics
         m = FoldMetrics(fold_id=1, train_start='2023-01-01', train_end='2023-06-01',
                         test_start='2023-06-02', test_end='2023-12-31')
         self.assertIsInstance(m.gated_alphas, list)
@@ -127,7 +127,7 @@ class TestValidateAlphaWithResearchGateMethod(unittest.TestCase):
     """Unit tests for validate_alpha_with_research_gate() method."""
 
     def test_method_exists_on_engine(self):
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         self.assertTrue(
             hasattr(Phase35WalkForwardEngine, 'validate_alpha_with_research_gate'),
             "Phase35WalkForwardEngine must have validate_alpha_with_research_gate method"
@@ -241,8 +241,8 @@ class TestValidateAlphaWithResearchGateMethod(unittest.TestCase):
 
         with patch.object(ml_gate_validator, 'validate_research_gate', side_effect=_spy):
             # Re-import to pick up patched reference inside the engine module
-            from omega.quant import phase35_walk_forward
-            with patch.object(phase35_walk_forward, 'validate_research_gate', side_effect=_spy):
+            from omega.quant.alpha import phase35
+            with patch.object(phase35, 'validate_research_gate', side_effect=_spy):
                 engine.validate_alpha_with_research_gate(
                     top_alphas=['alpha_pass'],
                     train_ics=train_ics,
@@ -261,15 +261,15 @@ class TestValidateAlphaWithResearchGateMethod(unittest.TestCase):
         train_ics = {'alpha_pass': 0.10}
 
         captured_series = []
-        from omega.quant import phase35_walk_forward
+        from omega.quant.alpha import phase35
 
-        orig = phase35_walk_forward.validate_research_gate
+        orig = phase35.validate_research_gate
 
         def _spy(val_ic, rolling_ic_series, min_samples=60):
             captured_series.append(rolling_ic_series.copy())
             return orig(val_ic, rolling_ic_series, min_samples)
 
-        with patch.object(phase35_walk_forward, 'validate_research_gate', side_effect=_spy):
+        with patch.object(phase35, 'validate_research_gate', side_effect=_spy):
             engine.validate_alpha_with_research_gate(
                 top_alphas=['alpha_pass'],
                 train_ics=train_ics,

@@ -34,7 +34,7 @@ def _make_fake_alpha_module():
 
 
 def _make_engine(drawdown_control=False, drawdown_threshold=0.05):
-    from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+    from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
     return Phase35WalkForwardEngine(
         alpha_module=_make_fake_alpha_module(),
         min_ic_threshold=0.0,
@@ -80,7 +80,7 @@ class TestStage63DrawdownControl(unittest.TestCase):
         self.alpha_cols = ['alpha_test']
         self.return_col = 'fwd_ret_5'
 
-    @patch('omega.quant.phase35_walk_forward._import_apply_sector_caps')
+    @patch('omega.quant.alpha.phase35._import_apply_sector_caps')
     def test_no_breach_keeps_baseline_behaviour(self, mock_sector_caps):
         mock_sector_caps.return_value = lambda target, sector_map, resolved_caps: target
 
@@ -97,7 +97,7 @@ class TestStage63DrawdownControl(unittest.TestCase):
         self.assertAlmostEqual(base.portfolio_max_dd, ctrl.portfolio_max_dd, places=10)
         self.assertAlmostEqual(base.portfolio_sharpe, ctrl.portfolio_sharpe, places=10)
 
-    @patch('omega.quant.phase35_walk_forward._import_apply_sector_caps')
+    @patch('omega.quant.alpha.phase35._import_apply_sector_caps')
     def test_breach_stops_out_after_first_breach_date(self, mock_sector_caps):
         mock_sector_caps.return_value = lambda target, sector_map, resolved_caps: target
 
@@ -115,7 +115,7 @@ class TestStage63DrawdownControl(unittest.TestCase):
         self.assertGreater(ctrl.portfolio_total_return, base.portfolio_total_return)
         self.assertGreater(ctrl.portfolio_max_dd, base.portfolio_max_dd)
 
-    @patch('omega.quant.phase35_walk_forward._import_apply_sector_caps')
+    @patch('omega.quant.alpha.phase35._import_apply_sector_caps')
     def test_breach_day_return_is_preserved(self, mock_sector_caps):
         mock_sector_caps.return_value = lambda target, sector_map, resolved_caps: target
 
@@ -132,7 +132,7 @@ class TestStage63DrawdownControl(unittest.TestCase):
         expected_total_return = 0.01 + 0.01 + 0.01 - 0.10
         self.assertAlmostEqual(ctrl.portfolio_total_return, expected_total_return, places=10)
 
-    @patch('omega.quant.phase35_walk_forward._import_apply_sector_caps')
+    @patch('omega.quant.alpha.phase35._import_apply_sector_caps')
     def test_control_uses_only_test_fold_realised_returns(self, mock_sector_caps):
         mock_sector_caps.return_value = lambda target, sector_map, resolved_caps: target
 
@@ -147,7 +147,7 @@ class TestStage63DrawdownControl(unittest.TestCase):
         expected_total_return = sum([0.01] * 8)
         self.assertAlmostEqual(ctrl.portfolio_total_return, expected_total_return, places=10)
 
-    @patch('omega.quant.phase35_walk_forward._import_apply_sector_caps')
+    @patch('omega.quant.alpha.phase35._import_apply_sector_caps')
     def test_sharpe_and_maxdd_use_daily_not_row_level_returns(self, mock_sector_caps):
         """Regression: Sharpe and Max DD must be computed from daily aggregated
         returns, not raw row-level (date×ticker) returns.

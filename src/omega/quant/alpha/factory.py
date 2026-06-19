@@ -7,10 +7,11 @@ import pandas as pd
 logger = logging.getLogger(__name__)
 
 try:
-    from .ultimate_alpha_arsenal import compute_ultimate_alphas, get_alpha_metadata
-    from .vn_alphas import compute_vn_alphas
-    from .microstructure_alphas import compute_microstructure_alphas
-    from .promoted_alphas import compute_promoted_alphas
+    from omega.quant.alpha.arsenal import compute_ultimate_alphas
+    from omega.quant.alpha.metadata import get_alpha_metadata
+    from omega.quant.alpha.vn import compute_vn_alphas
+    from omega.quant.alpha.microstructure import compute_microstructure_alphas
+    from omega.quant.alpha.promoted import compute_promoted_alphas
 
     ARSENAL_AVAILABLE = True
     _ARSENAL_IMPORT_ERROR = None
@@ -54,10 +55,7 @@ def compute_core_alphas(
     if ARSENAL_AVAILABLE:
         df_out = compute_ultimate_alphas(df, symbol_col=symbol_col)
     else:
-        logger.warning("Using legacy alpha computation (ultimate_alpha_arsenal not available)")
-        from .alpha_factory_legacy import compute_core_alphas as compute_legacy_core_alphas
-
-        df_out = compute_legacy_core_alphas(df, symbol_col=symbol_col, apply_neutralization=False)
+        raise RuntimeError(f"Alpha arsenal not available: {_ARSENAL_IMPORT_ERROR}")
 
     if apply_neutralization:
         df_out = _apply_neutralization(df_out, symbol_col=symbol_col)
@@ -67,7 +65,7 @@ def compute_core_alphas(
 
 def _apply_neutralization(df: pd.DataFrame, symbol_col: str = "ticker") -> pd.DataFrame:
     try:
-        from omega.quant.neutralization import NeutralizationEngine
+        from omega.quant.features.neutralization import HierarchicalNeutralizer
 
         required_neutral_cols = ["sector", "price_bucket", "liquidity_bucket"]
         existing_neutral_cols = [col for col in required_neutral_cols if col in df.columns]
@@ -213,7 +211,7 @@ def _apply_neutralization(df: pd.DataFrame, symbol_col: str = "ticker") -> pd.Da
         else:
             df_indexed = df
 
-        engine = NeutralizationEngine(
+        engine = HierarchicalNeutralizer(
             min_l3_size=5,
             min_l2_size=10,
             winsorize_lower=0.01,

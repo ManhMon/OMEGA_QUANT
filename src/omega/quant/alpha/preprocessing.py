@@ -16,7 +16,7 @@ COMPLIANCE:
 - Integration: Works with alpha_discovery.py and ultimate_alpha_arsenal.py
 
 USAGE:
-    from .alpha_preprocessing import AlphaPreprocessor
+    from omega.quant.alpha.preprocessing import AlphaPreprocessor
     
     preprocessor = AlphaPreprocessor()
     
@@ -39,8 +39,8 @@ from dataclasses import dataclass
 import pandas as pd
 import numpy as np
 
-from .utils.math import winsorize, zscore, cross_sectional_zscore
-from .neutralization import NeutralizationEngine
+from omega.quant.utils.math import winsorize, zscore, cross_sectional_zscore
+from omega.quant.features.neutralization import HierarchicalNeutralizer
 
 logger = logging.getLogger(__name__)
 
@@ -87,11 +87,11 @@ class AlphaPreprocessor:
         self.config = config or PreprocessingConfig()
         
         if self.config.enable_neutralization:
-            self.neutralization_engine = NeutralizationEngine(
+            self.neutralization_engine = HierarchicalNeutralizer(
                 min_l4_size=self.config.min_l4_size,
                 min_l3_size=self.config.min_l3_size,
                 min_l2_size=self.config.min_l2_size,
-                min_exchange_size=self.config.min_exchange_size,
+                min_l1_size=self.config.min_exchange_size,
                 winsorize_lower=self.config.winsorize_lower,
                 winsorize_upper=self.config.winsorize_upper,
             )

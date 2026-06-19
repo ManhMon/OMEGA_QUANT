@@ -25,14 +25,14 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Import the unified alpha arsenal
+# Import alpha primitives
 try:
-    from .ultimate_alpha_arsenal import compute_returns, compute_rsi
+    from omega.quant.alpha.primitives import compute_returns, compute_rsi
     ARSENAL_AVAILABLE = True
-    logger.info("Successfully imported ultimate_alpha_arsenal for promoted alphas")
+    logger.info("Successfully imported alpha primitives for promoted alphas")
 except ImportError as e:
     ARSENAL_AVAILABLE = False
-    logger.warning(f"Could not import ultimate_alpha_arsenal: {e}. Using legacy implementation.")
+    logger.warning(f"Could not import alpha primitives: {e}. Using legacy implementation.")
 
 
 def compute_promoted_alphas(panel: pd.DataFrame) -> pd.DataFrame:
