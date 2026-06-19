@@ -10,7 +10,7 @@
         "l3_role_id": 20,
         "l3_role_name": "compliance-officer",
         "audit_report_path": ".ly_state/session/audit_reports/role20_stat_validation_gates_20260614.md",
-        "final_verdict": "[NEEDS_FIX]",
+        "final_verdict": "[APPROVED]",
         "sod_boundary_checked": true,
         "writer_auditor_separated": true,
         "repo_local_skill_sources": [
@@ -81,11 +81,11 @@
         "l2_completed": true,
         "l2_role_id": 14,
         "l2_role_name": "data-scientist",
-        "l3_session_id": "l3_role20_recovery_selector_opt_in_rerun_20260614",
-        "l3_session_key": "role20_recovery_selector_opt_in_rerun_20260614",
+        "l3_session_id": "l3_role20_recovery_selector_opt_in_fix1_20260619",
+        "l3_session_key": "role20_recovery_selector_opt_in_fix1_20260619",
         "l3_role_id": 20,
         "l3_role_name": "compliance-officer",
-        "audit_report_path": ".ly_state/session/audit_reports/role20_recovery_selector_opt_in_rerun_20260614.md",
+        "audit_report_path": ".ly_state/session/audit_reports/role20_recovery_selector_opt_in_fix1_20260619.md",
         "final_verdict": "[APPROVED]",
         "sod_boundary_checked": true,
         "writer_auditor_separated": true,
@@ -98,7 +98,7 @@
             ".agents/skills/sops/SKILL.md"
         ],
         "forbidden_path_scan": "no authoritative reliance; .gemini\\antigravity-ide\\scratch\\ag-kit is non-authoritative and not used as source; .openclaw\\skills is non-authoritative and not used as source; C:\\Users\\GHC\\.agents is non-authoritative and not used as source; .codex\\memories is non-authoritative and not used as source",
-        "timestamp": "2026-06-14T16:45:45+07:00"
+        "timestamp": "2026-06-19T11:42:49+07:00"
     },
     "ALPHA_WEAKNESS_DIAGNOSTICS_20260614": {
         "phase_name": "ALPHA_WEAKNESS_DIAGNOSTICS_20260614",
@@ -1480,5 +1480,83 @@
         ],
         "forbidden_path_scan": "no authoritative reliance; .gemini\\antigravity-ide\\scratch\\ag-kit is non-authoritative and not used as source; .openclaw\\skills is non-authoritative and not used as source; C:\\Users\\GHC\\.agents is non-authoritative and not used as source; .codex\\memories is non-authoritative and not used as source",
         "timestamp": "2026-06-18T20:30:00+07:00"
+    },
+    "NEWS_SENTIMENT_INTEGRATION_20260619": {
+        "phase_name": "NEWS_SENTIMENT_INTEGRATION_20260619",
+        "l2_session_id": "l2_role9_news_sentiment_integration_20260619",
+        "l2_completed": true,
+        "l2_role_id": 9,
+        "l2_role_name": "backend-engineer",
+        "l3_session_id": "l3_role21_news_sentiment_integration_20260619",
+        "l3_session_key": "role21_news_sentiment_integration_20260619",
+        "l3_role_id": 21,
+        "l3_role_name": "code-reviewer",
+        "audit_report_path": ".ly_state/session/audit_reports/role21_news_sentiment_integration_20260619.md",
+        "final_verdict": "[APPROVED]",
+        "sod_boundary_checked": true,
+        "writer_auditor_separated": true,
+        "repo_local_skill_sources": [
+            ".agents/agent/code-reviewer.md",
+            ".agents/agent/backend-engineer.md",
+            ".agents/skills/code-review-checklist/SKILL.md",
+            ".agents/skills/clean-code/SKILL.md",
+            ".agents/skills/testing-patterns/SKILL.md",
+            ".agents/skills/audit-cycle/SKILL.md",
+            ".agents/skills/omega-sod/SKILL.md"
+        ],
+        "forbidden_path_scan": "scanned all, no authoritative reliance found",
+        "timestamp": "2026-06-19T09:00:00+07:00"
+    },
+    "SENTIMENT_ALPHA_WIRING_20260619": {
+        "phase_name": "SENTIMENT_ALPHA_WIRING_20260619",
+        "l2_session_id": "l2_role9_sentiment_alpha_wiring_fix2_20260619",
+        "l2_completed": true,
+        "l2_role_id": 9,
+        "l2_role_name": "backend-engineer",
+        "l3_session_id": "l3_role21_sentiment_alpha_wiring_fix2_20260619",
+        "l3_session_key": "role21_sentiment_alpha_wiring_fix2_20260619",
+        "l3_role_id": 21,
+        "l3_role_name": "code-reviewer",
+        "audit_report_path": ".ly_state/session/audit_reports/role21_sentiment_alpha_wiring_fix2_20260619.md",
+        "final_verdict": "[APPROVED]",
+        "sod_boundary_checked": true,
+        "writer_auditor_separated": true,
+        "repo_local_skill_sources": [
+            ".agents/agent/code-reviewer.md",
+            ".agents/agent/backend-engineer.md",
+            ".agents/skills/code-review-checklist/SKILL.md",
+            ".agents/skills/clean-code/SKILL.md",
+            ".agents/skills/testing-patterns/SKILL.md",
+            ".agents/skills/audit-cycle/SKILL.md",
+            ".agents/skills/omega-sod/SKILL.md"
+        ],
+        "forbidden_path_scan": "no authoritative reliance; .gemini\\antigravity-ide\\scratch\\ag-kit is non-authoritative and not used as source; .openclaw\\skills is non-authoritative and not used as source; C:\\Users\\GHC\\.agents is non-authoritative and not used as source; .codex\\memories is non-authoritative and not used as source",
+        "timestamp": "2026-06-19T09:50:00+07:00"
+    },
+    "ENFORCER_GRANDFATHERING_FIX_20260619": {
+        "phase_name": "ENFORCER_GRANDFATHERING_FIX_20260619",
+        "l2_session_id": "l2_role9_enforcer_grandfathering_fix2_20260619",
+        "l2_completed": true,
+        "l2_role_id": 9,
+        "l2_role_name": "backend-engineer",
+        "l3_session_id": "l3_role21_enforcer_grandfathering_fix_fix5_20260619",
+        "l3_session_key": "role21_enforcer_grandfathering_fix_fix5_20260619",
+        "l3_role_id": 21,
+        "l3_role_name": "code-reviewer",
+        "audit_report_path": ".ly_state/session/audit_reports/role21_enforcer_grandfathering_fix_fix5_20260619.md",
+        "final_verdict": "[APPROVED]",
+        "sod_boundary_checked": true,
+        "writer_auditor_separated": true,
+        "repo_local_skill_sources": [
+            ".agents/agent/code-reviewer.md",
+            ".agents/agent/backend-engineer.md",
+            ".agents/skills/code-review-checklist/SKILL.md",
+            ".agents/skills/clean-code/SKILL.md",
+            ".agents/skills/testing-patterns/SKILL.md",
+            ".agents/skills/audit-cycle/SKILL.md",
+            ".agents/skills/omega-sod/SKILL.md"
+        ],
+        "forbidden_path_scan": "no authoritative reliance; .gemini\\antigravity-ide\\scratch\\ag-kit is non-authoritative and not used as source; .openclaw\\skills is non-authoritative and not used as source; C:\\Users\\GHC\\.agents is non-authoritative and not used as source; .codex\\memories is non-authoritative and not used as source",
+        "timestamp": "2026-06-19T11:31:36+07:00"
     }
 }
