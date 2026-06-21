@@ -1,4 +1,29 @@
 {
+    "HYBRID_REGIME_DYNAMIC_BRAKE_FIX_20260621": {
+        "phase_name": "HYBRID_REGIME_DYNAMIC_BRAKE_FIX_20260621",
+        "l2_session_id": "l2_role14_hybrid_regime_dynamic_brake_20260622",
+        "l2_completed": true,
+        "l2_role_id": 14,
+        "l2_role_name": "data-scientist",
+        "l3_session_id": "l3_role21_hybrid_regime_dynamic_brake_reaudit_20260622",
+        "l3_session_key": "role21_hybrid_regime_dynamic_brake_reaudit_20260622",
+        "l3_role_id": 21,
+        "l3_role_name": "code-reviewer",
+        "audit_report_path": ".ly_state/session/audit_reports/role21_hybrid_regime_dynamic_brake_reaudit_20260622.md",
+        "final_verdict": "[APPROVED]",
+        "sod_boundary_checked": true,
+        "writer_auditor_separated": true,
+        "repo_local_skill_sources": [
+            ".agents/agent/code-reviewer.md",
+            ".agents/skills/code-review-checklist/SKILL.md",
+            ".agents/skills/clean-code/SKILL.md",
+            ".agents/skills/testing-patterns/SKILL.md",
+            ".agents/skills/audit-cycle/SKILL.md",
+            ".agents/skills/omega-sod/SKILL.md"
+        ],
+        "forbidden_path_scan": "no authoritative reliance; .gemini\\\\antigravity-ide\\\\scratch\\\\ag-kit is non-authoritative and not used as source; .openclaw\\\\skills is non-authoritative and not used as source; C:\\\\Users\\\\GHC\\\\.agents is non-authoritative and not used as source; .codex\\\\memories is non-authoritative and not used as source",
+        "timestamp": "2026-06-22T06:30:00+07:00"
+    },
     "STAT_VALIDATION_GATES_20260614": {
         "phase_name": "STAT_VALIDATION_GATES_20260614",
         "l2_session_id": "l2_role14_stat_validation_gates_20260614",
