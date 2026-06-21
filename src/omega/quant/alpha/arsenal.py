@@ -92,6 +92,8 @@ def compute_ultimate_alphas(
         "cross_sectional",
         "microstructure",
         "phase34_microstructure",
+        "hybrid_regime",
+        "hybrid_regime_v2",
     ]
     groups_to_compute = (
         alpha_groups if alpha_groups is not None else all_groups
@@ -795,6 +797,48 @@ def compute_ultimate_alphas(
                 f"Failed to compute Phase 3.4 microstructure alphas: {e}"
             )
             raise
+
+    # ========== HYBRID REGIME ALPHAS (v1) ==========
+    if "hybrid_regime" in groups_to_compute:
+        logger.info("Computing hybrid regime alphas (v1)...")
+        try:
+            from .hybrid_regime_alpha import (
+                compute_all_hybrid_regime_alphas,
+                HYBRID_REGIME_ALPHA_COLUMNS,
+            )
+
+            hr_signals = compute_all_hybrid_regime_alphas(
+                df_out, symbol_col=symbol_col
+            )
+            for name, series in hr_signals.items():
+                alphas_dict[name] = series
+            logger.info(
+                f"   Added {len(hr_signals)} hybrid regime v1 alphas"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to compute hybrid regime v1 alphas: {e}")
+
+    # ========== HYBRID REGIME V2 ALPHAS ==========
+    if "hybrid_regime_v2" in groups_to_compute:
+        logger.info("Computing hybrid regime v2 expansion alphas...")
+        try:
+            from .hybrid_regime_alpha import (
+                compute_all_hybrid_regime_v2_alphas,
+                HYBRID_REGIME_V2_COLUMNS,
+            )
+
+            hr_v2_signals = compute_all_hybrid_regime_v2_alphas(
+                df_out, symbol_col=symbol_col
+            )
+            for name, series in hr_v2_signals.items():
+                alphas_dict[name] = series
+            logger.info(
+                f"   Added {len(hr_v2_signals)} hybrid regime v2 alphas"
+            )
+        except Exception as e:
+            logger.warning(
+                f"Failed to compute hybrid regime v2 alphas: {e}"
+            )
 
     # Concatenate all alpha columns to df_out in a single operation
     if alphas_dict:

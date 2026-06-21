@@ -68,6 +68,7 @@ def __getattr__(name):
     - cross_sectional: Cross-sectional alpha functions
     - metadata: Alpha metadata registry
     - arsenal: Main orchestration module
+    - hybrid_regime_alpha: Hybrid regime + v2 expansion alpha signals
     """
     # Map of module names to their import paths
     _module_map = {
@@ -87,6 +88,7 @@ def __getattr__(name):
         "cross_sectional": "cross_sectional",
         "metadata": "metadata",
         "arsenal": "arsenal",
+        "hybrid_regime_alpha": "hybrid_regime_alpha",
     }
 
     if name in _module_map:
