@@ -429,9 +429,9 @@ def build_scenario_overlays(
                 regime_sizing_scale=0.5,
                 latent_gmm_enabled=True,
                 latent_gmm_columns=["latent_ae_00", "latent_ae_01", "latent_ae_11"],
-                latent_gmm_bear_dampening=0.3,
+                latent_gmm_bear_dampening=0.5,
                 latent_gmm_bull_boost=1.1,
-                latent_gmm_sideways_scale=0.8,
+                latent_gmm_sideways_scale=0.9,
                 gmm_model=gmm_model,
                 hmm_params=hmm_params,
             ),
@@ -442,21 +442,22 @@ def build_scenario_overlays(
             TailControlOverlay(target_vol_ann=0.2, max_abs_weight=0.25),
             DrawdownControlOverlay(
                 threshold=-0.05,
-                cooldown_days=5,
+                cooldown_days=3,
                 adaptive_re_entry=True,
                 bocpd_enabled=True,
-                bocpd_threshold=0.35,
-                bocpd_cooldown_extension=3,
+                bocpd_threshold=0.50,
+                bocpd_cooldown_extension=1,
                 bocpd_exposure_scale=0.5,
             ),
             RebalanceFrequencyOverlay(
-                rebalance_every_n_days=5,
+                rebalance_every_n_days=1,
                 mode="fixed_interval",
             ),
             BoardLotRoundingOverlay(lot_size=100, capital_vnd=capital),
             TCostOverlay(
                 cost_per_trade_bps=15.0,
                 min_trade_threshold_bps=20.0,
+                use_dynamic_budgeting=True,
             ),
         ],
     }
@@ -700,9 +701,9 @@ def train_fold_models(
             gmm_config = LatentGMMConfig(
                 n_components=3,
                 latent_columns=available_latent,
-                bear_dampening=0.3,
+                bear_dampening=0.5,
                 bull_boost=1.1,
-                sideways_scale=0.8,
+                sideways_scale=0.9,
             )
             gmm_model = LatentGMMRegime(gmm_config)
             gmm_model.fit(train_feat)

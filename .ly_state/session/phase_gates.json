@@ -1,4 +1,4 @@
-{
+﻿{
     "HYBRID_REGIME_DYNAMIC_BRAKE_FIX_20260621": {
         "phase_name": "HYBRID_REGIME_DYNAMIC_BRAKE_FIX_20260621",
         "l2_session_id": "l2_role14_hybrid_regime_dynamic_brake_20260622",
@@ -1714,5 +1714,57 @@
         ],
         "forbidden_path_scan": "no authoritative reliance; .gemini\\antigravity-ide\\scratch\\ag-kit is non-authoritative and not used as source; .openclaw\\skills is non-authoritative and not used as source; C:\\Users\\GHC\\.agents is non-authoritative and not used as source; .codex\\memories is non-authoritative and not used as source",
         "timestamp": "2026-06-23T09:48:07+07:00"
+    },
+    "HYBRID_REGIME_TACTICAL_REDESIGN_COMPLIANCE_20260623": {
+        "phase_name": "HYBRID_REGIME_TACTICAL_REDESIGN_COMPLIANCE_20260623",
+        "l2_session_id": "l2_role14_tactical_redesign_20260623",
+        "l2_completed": true,
+        "l2_role_id": 14,
+        "l2_role_name": "data-scientist",
+        "l3_session_id": "l3_role20_tactical_redesign_compliance_20260623",
+        "l3_session_key": "role20_tactical_redesign_compliance_20260623",
+        "l3_role_id": 20,
+        "l3_role_name": "compliance-officer",
+        "audit_report_path": ".ly_state/session/audit_reports/role20_tactical_redesign_compliance_20260623.md",
+        "final_verdict": "[APPROVED]",
+        "sod_boundary_checked": true,
+        "writer_auditor_separated": true,
+        "repo_local_skill_sources": [
+            ".agents/agent/compliance-officer.md",
+            ".agents/skills/audit-cycle/SKILL.md",
+            ".agents/skills/vulnerability-scanner/SKILL.md",
+            ".agents/skills/vulnerability-scanner/checklists.md",
+            ".agents/skills/code-review-checklist/SKILL.md",
+            ".agents/skills/omega-sod/SKILL.md",
+            ".agents/skills/sops/SKILL.md"
+        ],
+        "forbidden_path_scan": "scanned all, no authoritative reliance found; .gemini\\antigravity-ide\\scratch\\ag-kit is non-authoritative and not used as source; .openclaw\\skills is non-authoritative and not used as source; C:\\Users\\GHC\\.agents is non-authoritative and not used as source; .codex\\memories is non-authoritative and not used as source",
+        "timestamp": "2026-06-23T12:29:05+07:00"
+    },
+    "HYBRID_REGIME_TACTICAL_REDESIGN_REVIEW_20260623": {
+        "phase_name": "HYBRID_REGIME_TACTICAL_REDESIGN_REVIEW_20260623",
+        "l2_session_id": "l2_role14_tactical_redesign_20260623",
+        "l2_completed": true,
+        "l2_role_id": 14,
+        "l2_role_name": "data-scientist",
+        "l3_session_id": "l3_role21_tactical_redesign_review_20260623",
+        "l3_session_key": "role21_tactical_redesign_review_20260623",
+        "l3_role_id": 21,
+        "l3_role_name": "code-reviewer",
+        "audit_report_path": ".ly_state/session/audit_reports/role21_tactical_redesign_review_20260623.md",
+        "final_verdict": "[APPROVED]",
+        "sod_boundary_checked": true,
+        "writer_auditor_separated": true,
+        "repo_local_skill_sources": [
+            ".agents/agent/code-reviewer.md",
+            ".agents/skills/code-review-checklist/SKILL.md",
+            ".agents/skills/clean-code/SKILL.md",
+            ".agents/skills/testing-patterns/SKILL.md",
+            ".agents/skills/audit-cycle/SKILL.md",
+            ".agents/skills/omega-sod/SKILL.md"
+        ],
+        "forbidden_path_scan": "scanned all, no authoritative reliance found; .gemini\\antigravity-ide\\scratch\\ag-kit is non-authoritative and not used as source; .openclaw\\skills is non-authoritative and not used as source; C:\\Users\\GHC\\.agents is non-authoritative and not used as source; .codex\\memories is non-authoritative and not used as source",
+        "timestamp": "2026-06-23T13:51:23+07:00"
     }
 }
+
