@@ -33,3 +33,8 @@ Only repo-local paths under `C:\Users\GHC\repos\OMEGA_QUANT` used.
 6. Propagated `top_k` from `run_single_fold()` to `build_scenario_overlays()`.
 7. Created unit tests for `LongOnlyConcentratedOverlay` in `tests/phase35/test_hybrid_regime_backtest_perf.py`.
 8. Ran and verified all 42 tests in `tests/phase35/test_hybrid_regime_backtest_perf.py` successfully.
+9. Optimized model default: Set `--model-type` to default to `lightgbm` to capture non-linear alpha interactions, adjusting `_new_alpha_model` and `_feature_values` helper methods.
+10. CPCV label horizon: Tuned default `--label-horizon` from 5 to 60 to capture multi-horizon regime paths and avoid look-ahead bias.
+11. GMM parameter tuning: Retuned `latent_gmm_bear_dampening` from 0.5 to 0.15, `latent_gmm_bull_boost` from 1.1 to 1.25, and introduced `latent_gmm_smooth_transition(_temp)`, `gmm_bull_confidence`, `gmm_partial_reentry_scale`, and `gmm_reentry_cooldown_extension`.
+12. Rebalance frequency: Retuned rebalance frequency from daily to 5-day fixed interval using `RebalanceFrequencyOverlay` to reduce turnover and transaction costs.
+13. Optimization and thread safety: Limited thread pool creation (`OMP_NUM_THREADS`, `MKL_NUM_THREADS`, `OPENBLAS_NUM_THREADS` env vars), implemented float32 conversion in feature generation, and integrated NaN masking for IC correlation.
