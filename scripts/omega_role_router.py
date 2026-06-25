@@ -74,7 +74,7 @@ def read_text(path: Path) -> str:
 
 
 def sha256_file(path: Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+    return hashlib.sha256(path.read_text(encoding="utf-8").encode("utf-8")).hexdigest()
 
 
 def classify_task(text: str) -> str:
