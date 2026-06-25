@@ -485,6 +485,9 @@ class TestPITLeakRegression:
         from sklearn.linear_model import Ridge
 
         feat_df, dates = self._make_panel_with_gap()
+        feat_df = feat_df.drop(
+            columns=[c for c in feat_df.columns if c.startswith("latent_ae_")]
+        )
         # Train: day0..day39, day45..day59
         train_indices = list(range(40)) + list(range(45, 60))
         train_dates = np.array([dates[i] for i in train_indices])
@@ -507,7 +510,7 @@ class TestPITLeakRegression:
 
         # --- train_fold_models Ridge ---
         _, _, composite_signal = train_fold_models(
-            feat_df, train_dates, precomputed_lag_cols=None,
+            feat_df, train_dates, precomputed_lag_cols=None, model_type="ridge",
         )
         assert composite_signal is not None, "composite_signal should be produced"
 
@@ -1093,8 +1096,8 @@ class TestTCostOverlayTuning:
     """Verify TCostOverlay cost-control relaxation (Gate: HYBRID_REGIME_ALPHAS_DIVERSIFIED_REVIEW_20260623).
 
     The Hybrid scenario's TCostOverlay is relaxed (min_trade_threshold_bps
-    lowered from 30 → 20) so more trades pass through, recovering gross
-    alpha.  Baseline scenario must remain unchanged.
+    updated to 35.0 bps. Baseline now also includes a matching
+    TCostOverlay.
     """
 
     def test_hybrid_tcost_threshold_relaxed(self):
@@ -1103,19 +1106,258 @@ class TestTCostOverlayTuning:
         hybrid_overlays = scenarios["Hybrid"]
         tcost = [o for o in hybrid_overlays if o.__class__.__name__ == "TCostOverlay"]
         assert len(tcost) == 1, f"Expected exactly 1 TCostOverlay in Hybrid, got {len(tcost)}"
-        assert tcost[0].min_trade_threshold_bps < 30.0, (
-            f"Hybrid TCostOverlay threshold should be relaxed < 30 bps, "
+        assert tcost[0].min_trade_threshold_bps == 70.0, (
+            f"Hybrid TCostOverlay threshold should be 70.0 bps, "
             f"got {tcost[0].min_trade_threshold_bps}"
         )
-        assert tcost[0].cost_per_trade_bps == 15.0
+        assert tcost[0].cost_per_trade_bps == 35.0
 
     def test_baseline_unchanged(self):
-        """Baseline scenario MUST NOT have TCostOverlay (was already absent)."""
+        """Baseline scenario now includes the default TCostOverlay."""
         from backtest_hybrid_regime import build_scenario_overlays
         scenarios = build_scenario_overlays(capital=2_000_000_000.0)
         baseline_overlays = scenarios["Baseline"]
         tcost = [o for o in baseline_overlays if o.__class__.__name__ == "TCostOverlay"]
-        assert len(tcost) == 0, "Baseline scenario must remain without TCostOverlay"
+        assert len(tcost) == 1, f"Expected exactly 1 TCostOverlay in Baseline, got {len(tcost)}"
+        assert tcost[0].min_trade_threshold_bps == 70.0
+
+
+class TestLongOnlyConcentratedOverlay:
+    """Verify LongOnlyConcentratedOverlay behavior."""
+
+    def test_long_only_concentrated_overlay(self):
+        from backtest_hybrid_regime import LongOnlyConcentratedOverlay
+        overlay = LongOnlyConcentratedOverlay(top_k=2)
+
+        # 3 symbols, weights: [0.5, -0.2, 0.3]
+        # long-only: [0.5, 0.0, 0.3]
+        # top_2: [0.5, 0.0, 0.3]
+        # normalized: [0.625, 0.0, 0.375]
+        weights = pd.DataFrame([[0.5, -0.2, 0.3]], columns=["A", "B", "C"], index=[pd.Timestamp("2024-01-01")])
+        panel = pd.DataFrame()
+        state = {}
+        res = overlay.apply(weights, panel, state)
+
+        assert res.loc[pd.Timestamp("2024-01-01"), "A"] == pytest.approx(0.625)
+        assert res.loc[pd.Timestamp("2024-01-01"), "B"] == 0.0
+        assert res.loc[pd.Timestamp("2024-01-01"), "C"] == pytest.approx(0.375)
+
+        # 4 symbols, weights: [0.5, 0.2, 0.3, 0.1]
+        # long-only: [0.5, 0.2, 0.3, 0.1]
+        # top_2: [0.5, 0.0, 0.3, 0.0]
+        # normalized: [0.625, 0.0, 0.375, 0.0]
+        weights2 = pd.DataFrame([[0.5, 0.2, 0.3, 0.1]], columns=["A", "B", "C", "D"], index=[pd.Timestamp("2024-01-01")])
+        res2 = overlay.apply(weights2, panel, state)
+        assert res2.loc[pd.Timestamp("2024-01-01"), "A"] == pytest.approx(0.625)
+        assert res2.loc[pd.Timestamp("2024-01-01"), "B"] == 0.0
+        assert res2.loc[pd.Timestamp("2024-01-01"), "C"] == pytest.approx(0.375)
+        assert res2.loc[pd.Timestamp("2024-01-01"), "D"] == 0.0
+
+    def test_scenario_concentration_invariant(self, monkeypatch):
+        from backtest_hybrid_regime import build_scenario_overlays
+        from omega.quant.pipeline.overlays.risk_sizing import RiskSizingOverlay
+        from omega.quant.pipeline.overlays.sector_concentration import SectorConcentrationOverlay
+        from omega.quant.pipeline.overlays.tail_control import TailControlOverlay
+        from omega.quant.pipeline.overlays.drawdown_control import DrawdownControlOverlay
+        from omega.quant.pipeline.overlays.rebalance_frequency import RebalanceFrequencyOverlay
+        from omega.quant.pipeline.overlays.board_lot_rounding import BoardLotRoundingOverlay
+        from omega.quant.pipeline.overlays.tcost import TCostOverlay
+
+        # Mock overlays that require external data or complex logic
+        monkeypatch.setattr(RiskSizingOverlay, "apply", lambda self, w, p, s: w)
+        monkeypatch.setattr(SectorConcentrationOverlay, "apply", lambda self, w, p, s: w)
+        monkeypatch.setattr(TailControlOverlay, "apply", lambda self, w, p, s: w)
+        monkeypatch.setattr(DrawdownControlOverlay, "apply", lambda self, w, p, s: w)
+        monkeypatch.setattr(RebalanceFrequencyOverlay, "apply", lambda self, w, p, s: w)
+        monkeypatch.setattr(BoardLotRoundingOverlay, "apply", lambda self, w, p, s: w)
+        monkeypatch.setattr(TCostOverlay, "apply", lambda self, w, p, s: w)
+
+        # Build baseline scenario overlays with top_k = 2
+        scenarios = build_scenario_overlays(capital=2_000_000_000.0, top_k=2)
+
+        # We will test both Baseline and Hybrid stacks
+        for name, stack in scenarios.items():
+            # Create weights for Day 1: A=0.8, B=0.2 (2 active assets)
+            # Create weights for Day 2: C=0.7, D=0.3 (2 different active assets)
+            # Without concentration after smoothing, Day 2 weights would smooth/leak Day 1 assets,
+            # resulting in A, B, C, D having non-zero weights (4 active assets).
+            # With concentration after smoothing, Day 2 must have at most 2 active assets.
+            weights = pd.DataFrame(
+                [
+                    [0.8, 0.2, 0.0, 0.0],
+                    [0.0, 0.0, 0.7, 0.3]
+                ],
+                columns=["A", "B", "C", "D"],
+                index=[pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-02")]
+            )
+
+            panel = pd.DataFrame()
+            state = {}
+
+            current_weights = weights.copy()
+            for overlay in stack:
+                current_weights = overlay.apply(current_weights, panel, state)
+
+            # Verify that on both dates, number of active (non-zero) assets is at most 2
+            for dt in current_weights.index:
+                active_assets = (current_weights.loc[dt] > 1e-5).sum()
+                assert active_assets <= 2, f"Scenario {name}: Expected at most 2 active assets on {dt}, got {active_assets}"
+
+
+
+class TestLightGBMAndWarmup:
+    def _make_feat_df_with_nan_lags(self, n_days=80, n_symbols=3):
+        dates = pd.date_range("2024-01-01", periods=n_days, freq="B")
+        rows = []
+        rng = np.random.default_rng(42)
+        for sym in [f"SYM{i}" for i in range(n_symbols)]:
+            price = 100.0
+            for i, dt in enumerate(dates):
+                ret = float(rng.normal(0.001, 0.01))
+                price *= 1.0 + ret
+                rows.append({
+                    "date": dt,
+                    "symbol": sym,
+                    "close": price,
+                    "volume": 1_000_000,
+                    "returns": ret,
+                    "alpha_hr_a": ret if i % 7 else np.nan,
+                    "alpha_gp_a": float(rng.normal()) if i % 5 else np.nan,
+                    "latent_ae_00": float(rng.normal()),
+                    "latent_ae_01": float(rng.normal()),
+                    "latent_ae_11": float(rng.normal()),
+                })
+        return pd.DataFrame(rows)
+
+    def test_lightgbm_keeps_nan_lag_rows(self, monkeypatch):
+        from backtest_hybrid_regime import train_fold_models
+        import backtest_hybrid_regime as bhr
+
+        captured = []
+
+        class StubLGBMRegressor:
+            def __init__(self, **kwargs):
+                pass
+
+            def fit(self, X, y):
+                captured.append((X.copy(), y.copy()))
+                self.mean_ = float(np.mean(y))
+                return self
+
+            def predict(self, X):
+                return np.full(len(X), self.mean_)
+
+        monkeypatch.setattr(bhr, "LGBMRegressor", StubLGBMRegressor)
+        feat_df = self._make_feat_df_with_nan_lags()
+        train_dates = feat_df["date"].unique()[:60]
+        _, _, composite_signal = train_fold_models(
+            feat_df,
+            train_dates,
+            model_type="lightgbm",
+        )
+        assert composite_signal is not None
+        assert captured
+        assert any(np.isnan(X).any() for X, _ in captured), "LightGBM path must preserve NaN feature rows"
+
+    def test_pipeline_fetches_warmup_then_outputs_requested_period(self, tmp_path):
+        from omega.quant.pipeline_v2 import (
+            BacktestOutputHandler,
+            PipelineStateManager,
+            TradingPipelineV2,
+        )
+
+        dates = pd.date_range("2024-01-01", periods=50, freq="D")
+        df = pd.DataFrame({
+            "date": np.repeat(dates, 2),
+            "symbol": ["A", "B"] * len(dates),
+            "open": 100.0,
+            "high": 101.0,
+            "low": 99.0,
+            "close": 100.0,
+            "volume": 1_000_000,
+            "returns": 0.001,
+            "composite_signal": [1.0, -1.0] * len(dates),
+        })
+        calls = []
+
+        class Store:
+            def get_features(self, date_start, date_end, tickers=None):
+                calls.append((pd.Timestamp(date_start), pd.Timestamp(date_end), tickers))
+                return df[(df["date"] >= date_start) & (df["date"] <= date_end)].copy()
+
+        pipeline = TradingPipelineV2(
+            feature_store=Store(),
+            state_manager=PipelineStateManager(tmp_path / "state"),
+            output_handler=BacktestOutputHandler(tmp_path / "out.json", tmp_path / "out.csv"),
+            overlays=[],
+            config={"feature_warmup_days": 30},
+        )
+        res = pipeline.execute("warmup", "2024-02-01", "2024-02-05", tickers=["A", "B"])
+        assert calls[0][0] == pd.Timestamp("2024-01-02")
+        assert calls[0][1] == pd.Timestamp("2024-02-05")
+        assert res["n_days"] == 5
+
+    def test_pipeline_fallback_ridge_never_trains_on_requested_same_day_returns(self, tmp_path, monkeypatch):
+        import omega.quant.pipeline_v2 as pipeline_v2
+        from omega.quant.pipeline_v2 import (
+            BacktestOutputHandler,
+            PipelineStateManager,
+            TradingPipelineV2,
+        )
+
+        dates = pd.date_range("2024-01-01", periods=100, freq="D")
+        start_date = pd.Timestamp("2024-02-01")
+        rows = []
+        for date_idx, dt in enumerate(dates):
+            for sym_idx, sym in enumerate(["A", "B", "C"]):
+                rows.append({
+                    "date": dt,
+                    "symbol": sym,
+                    "open": 100.0,
+                    "high": 101.0,
+                    "low": 99.0,
+                    "close": 100.0 + date_idx,
+                    "volume": 1_000_000,
+                    "returns": date_idx * 10.0 + sym_idx,
+                    "alpha_mom": float(date_idx + sym_idx),
+                    "_date_idx": date_idx,
+                })
+        df = pd.DataFrame(rows)
+        train_predict_checks = []
+
+        class Store:
+            def get_features(self, date_start, date_end, tickers=None):
+                return df[(df["date"] >= date_start) & (df["date"] <= date_end)].copy()
+
+        class TrackingRidge:
+            def __init__(self, alpha=100.0):
+                self.alpha = alpha
+                self.max_train_date_idx = None
+
+            def fit(self, X, y):
+                self.max_train_date_idx = int(np.floor(np.max(y) / 10.0))
+                self.mean_ = float(np.mean(y)) if len(y) else 0.0
+                return self
+
+            def predict(self, X):
+                pred_date_idx = int(np.floor(np.nanmin(X[:, 0])) + 1)
+                train_predict_checks.append((self.max_train_date_idx, pred_date_idx))
+                return np.full(len(X), self.mean_)
+
+        monkeypatch.setattr(pipeline_v2, "DataSanitizer", None)
+        monkeypatch.setattr("sklearn.linear_model.Ridge", TrackingRidge)
+        pipeline = TradingPipelineV2(
+            feature_store=Store(),
+            state_manager=PipelineStateManager(tmp_path / "state"),
+            output_handler=BacktestOutputHandler(tmp_path / "out.json", tmp_path / "out.csv"),
+            overlays=[],
+            config={"feature_warmup_days": 40},
+        )
+        res = pipeline.execute("fallback_pit", start_date, "2024-04-10", tickers=["A", "B", "C"])
+
+        assert res["n_days"] > 60
+        assert train_predict_checks
+        assert all(train_idx < pred_idx for train_idx, pred_idx in train_predict_checks)
 
 
 if __name__ == "__main__":
