@@ -291,9 +291,9 @@ class TestGMMBullReentryFilter:
         return weights, panel
 
     def test_gmm_reentry_default_enabled(self):
-        """GMM Bull Re-entry Filter is enabled by default."""
+        """GMM Bull Re-entry Filter is disabled by default."""
         overlay = DrawdownControlOverlay()
-        assert overlay.gmm_bull_reentry_enabled is True
+        assert overlay.gmm_bull_reentry_enabled is False
         assert overlay.gmm_bull_confidence == pytest.approx(0.4)
 
     def test_gmm_reentry_disabled_allows_immediate(self):
@@ -478,6 +478,55 @@ class TestGMMBullReentryFilter:
         assert recovery_weights.abs().sum().sum() > 0, (
             "Recovery-phase weights are all zero: portfolio trapped in permanent cash"
         )
+
+    def test_drawdown_control_hmm_reentry_respects_global_dd_floor(self):
+        """Forced HMM re-entry still respects the global DD floor."""
+        dates = pd.date_range("2024-01-01", periods=4, freq="B")
+        weights = pd.DataFrame(
+            np.ones((4, 2)) * 0.05,
+            index=dates,
+            columns=["TK0", "TK1"],
+        )
+        panel = pd.DataFrame(
+            [
+                {"date": dt, "symbol": tk, "returns": 0.0}
+                for dt in dates
+                for tk in ["TK0", "TK1"]
+            ]
+        )
+        hmm_p_bear = {str(dt)[:10]: 0.99 for dt in dates}
+
+        overlay = DrawdownControlOverlay(
+            threshold=-0.03,
+            cooldown_days=3,
+            max_global_dd=-0.09,
+            hmm_reentry_enabled=True,
+            hmm_bear_reentry_threshold=0.5,
+            hmm_reentry_cooldown_extension=5,
+            max_reentry_cooldown_days=4,
+            gmm_bull_reentry_enabled=False,
+            bocpd_enabled=False,
+            adaptive_re_entry=False,
+            regime_re_entry_filter=False,
+            estimated_cost_bps=0.0,
+        )
+        overlay._initial_nav = 1.0
+        overlay._nav = 0.90
+        overlay._hwm = 1.0
+        overlay._in_cooldown = True
+        overlay._stopped_out = True
+        overlay._cooldown_remaining = 1
+        overlay._reentry_cooldown_total = 0
+
+        state = {"hmm_p_bear": hmm_p_bear}
+        result = overlay.apply(weights, panel, state)
+
+        dd_state = state.get("drawdown_control", {})
+        assert dd_state.get("cooldown_remaining") == 5
+        assert dd_state.get("in_cooldown") is True
+        assert dd_state.get("global_dd_blocked") is True
+        assert overlay._reentry_ok is False
+        assert result.iloc[0].abs().sum() == pytest.approx(0.0, abs=1e-10)
 
 
 # =========================================================================
@@ -1567,3 +1616,58 @@ class TestFullStatePersistence:
         assert "batch_start_hwm" in dd_state
         assert dd_state["batch_start_nav"] == pytest.approx(1.0)
         assert dd_state["batch_start_hwm"] == pytest.approx(1.0)
+
+
+def test_hmm_bear_reentry_timeline_sync():
+    """Verify that DrawdownControlOverlay correctly normalizes and matches dates in hmm_p_bear.
+
+    Specifically, checks that keys in 'hmm_p_bear' (which may contain timestamp strings YYYY-MM-DD 00:00:00)
+    properly map to 'YYYY-MM-DD' keys in DrawdownControlOverlay.
+    """
+    import pandas as pd
+    import numpy as np
+    from omega.quant.pipeline.overlays.drawdown_control import DrawdownControlOverlay
+
+    # Setup dates and tickers
+    dates = pd.date_range("2024-01-01", periods=5, freq="D")
+    tickers = ["SYM0"]
+
+    # Create portfolio weights
+    weights = pd.DataFrame(1.0, index=dates, columns=tickers)
+
+    # Panel data: day 1 has normal return, day 2 has massive negative return (stop-out)
+    records = [
+        {"date": dates[0], "symbol": "SYM0", "returns": 0.0},
+        {"date": dates[1], "symbol": "SYM0", "returns": -0.10},  # stop-out
+        {"date": dates[2], "symbol": "SYM0", "returns": 0.0},
+        {"date": dates[3], "symbol": "SYM0", "returns": 0.0},
+        {"date": dates[4], "symbol": "SYM0", "returns": 0.0},
+    ]
+    panel = pd.DataFrame(records)
+
+    # Create DrawdownControlOverlay with HMM bear re-entry filter enabled
+    overlay = DrawdownControlOverlay(
+        bocpd_enabled=False,
+        max_global_dd=0.05,
+        cooldown_days=2,
+        adaptive_re_entry=False,  # disable adaptive extensions so cooldown expires normally
+        regime_re_entry_filter=True,
+        hmm_reentry_enabled=True,
+        hmm_bear_reentry_threshold=0.5,
+    )
+
+    # State containing hmm_p_bear with YYYY-MM-DD keys or timestamp strings
+    state = {
+        "hmm_p_bear": {
+            "2024-01-04": 0.8,  # Day 4 (re-entry day): bear prob = 0.8 (above 0.5 threshold)
+        }
+    }
+
+    # Execute overlay. During day 4 (2024-01-04), it should attempt re-entry but block it
+    # because of p_bear=0.8.
+    overlay.apply(weights, panel, state)
+
+    dd_state = state.get("drawdown_control", {})
+    # Verify HMM bear re-entry blocked count is > 0
+    assert dd_state.get("hmm_reentry_blocked_count", 0) > 0, "HMM bear re-entry block failed to trigger due to date mismatch!"
+

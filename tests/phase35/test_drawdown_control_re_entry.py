@@ -625,9 +625,9 @@ class TestAdaptiveReEntryBearProbability(unittest.TestCase):
         hmm_p_bear_dict = {}
         for i, d in enumerate(dates):
             if i in [4, 5, 6]:  # cooldown days
-                hmm_p_bear_dict[str(d)] = 0.8  # High bear probability
+                hmm_p_bear_dict[str(d)[:10]] = 0.8  # High bear probability
             else:
-                hmm_p_bear_dict[str(d)] = 0.1
+                hmm_p_bear_dict[str(d)[:10]] = 0.1
 
         # Build close_wide for volatility computation
         close_wide = test_df.pivot(index='date', columns='ticker', values='close')

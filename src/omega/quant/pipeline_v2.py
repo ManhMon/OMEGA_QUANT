@@ -889,6 +889,8 @@ class TradingPipelineV2:
             "smooth_ramp_span": int(self.config.get("rebalance_smooth_ramp_span", 3)),
         }
         
+        state["active_dates"] = active_dates
+
         for overlay in self.overlays:
             logger.info("Applying overlay: %s", overlay.__class__.__name__)
             weights = overlay.apply(weights, panel, state)
@@ -924,6 +926,14 @@ class TradingPipelineV2:
             active_dates_mask=active_dates_mask,
         )
 
+        for overlay in self.overlays:
+            if hasattr(overlay, "sync_executed_returns"):
+                overlay.sync_executed_returns(
+                    net_rets[active_dates_mask] if active_dates_mask is not None else net_rets
+                )
+                if hasattr(overlay, "snapshot_state"):
+                    state["drawdown_control"] = overlay.snapshot_state()
+
         # Filter net_rets to active test dates only (CPCV: prevent cost
         # leakage from non-test-date gaps between scattered test blocks)
         if active_dates_mask is not None:
@@ -936,6 +946,8 @@ class TradingPipelineV2:
             "warmup_history": net_rets[-120:] if len(net_rets) >= 120 else net_rets,
             "dynamic_tc_gate": state.get("dynamic_tc_gate", {}),
         }
+        if "drawdown_control" in state:
+            new_state["drawdown_control"] = state["drawdown_control"]
         self.state_manager.save_state(run_id, new_state)
         
         return self.output_handler.handle(weights, net_rets, {"cost_breakdown": cost_breakdown})

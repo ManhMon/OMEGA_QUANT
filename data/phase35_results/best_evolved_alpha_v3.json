@@ -1,8 +1,0 @@
-{
-  "rank": 1,
-  "round": 4,
-  "train_IC": 0.035,
-  "test_IC": 0.0444,
-  "hit_rate": 0.4539,
-  "expression": "GPNode(operator='neg', children=[GPNode(operator='terminal', children=[], value='open')], value=None)"
-}

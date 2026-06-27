@@ -111,7 +111,11 @@ def main():
     # Forward all remaining args to the target script
     forwarded_args = enforce_worker_safety(mode, sys.argv[2:])
     args = [sys.executable, str(script_path)] + forwarded_args
-    sys.exit(subprocess.call(args))
+    exit_code = subprocess.call(args)
+    if exit_code == 0 and mode == "hybrid-regime":
+        report_script = Path(__file__).parent / "generate_report.py"
+        exit_code = subprocess.call([sys.executable, str(report_script)])
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

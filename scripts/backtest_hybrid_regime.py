@@ -203,6 +203,18 @@ def parse_args() -> argparse.Namespace:
         "--top-k", type=int, default=5,
         help="Number of top assets to select in concentrated overlay (default: 5)",
     )
+    parser.add_argument(
+        "--cost-per-trade-bps", type=float, default=35.0,
+        help="Transaction cost per trade in basis points (default: 35.0)",
+    )
+    parser.add_argument(
+        "--min-trade-threshold-bps", type=float, default=150.0,
+        help="Minimum trade threshold in basis points to filter churn (default: 150.0)",
+    )
+    parser.add_argument(
+        "--rebalance-every-n-days", type=int, default=10,
+        help="Number of days between portfolio rebalances (default: 10)",
+    )
     return parser.parse_args()
 
 
@@ -465,6 +477,9 @@ def build_scenario_overlays(
     hmm_params: Optional[dict] = None,
     top_k: int = 5,
     hmm_reentry_threshold: float = 0.6,
+    cost_per_trade_bps: float = 35.0,
+    min_trade_threshold_bps: float = 150.0,
+    rebalance_every_n_days: int = 10,
 ) -> Dict[str, list]:
     """Build scenario overlay stacks with optional pre-fitted models.
 
@@ -496,24 +511,24 @@ def build_scenario_overlays(
                 sector_mapping_file=sector_file,
             ),
             TailControlOverlay(target_vol_ann=0.2, max_abs_weight=0.25),
-            DrawdownControlOverlay(
-                threshold=-0.05,
-                cooldown_days=5,
-                adaptive_re_entry=True,
-                hmm_bear_reentry_threshold=hmm_reentry_threshold,
-                bocpd_enabled=False,
-            ),
             RebalanceFrequencyOverlay(
-                rebalance_every_n_days=5,
+                rebalance_every_n_days=rebalance_every_n_days,
                 mode="fixed_interval",
             ),
             WeightSmoothingOverlay(ema_alpha=0.08),
             LongOnlyConcentratedOverlay(top_k=top_k),
             BoardLotRoundingOverlay(lot_size=100, capital_vnd=capital),
             TCostOverlay(
-                cost_per_trade_bps=35.0,
-                min_trade_threshold_bps=70.0,
+                cost_per_trade_bps=cost_per_trade_bps,
+                min_trade_threshold_bps=min_trade_threshold_bps,
                 use_dynamic_budgeting=True,
+            ),
+            DrawdownControlOverlay(
+                threshold=-0.05,
+                cooldown_days=5,
+                adaptive_re_entry=True,
+                hmm_bear_reentry_threshold=hmm_reentry_threshold,
+                bocpd_enabled=False,
             ),
         ],
         "Hybrid": [
@@ -538,6 +553,18 @@ def build_scenario_overlays(
                 sector_mapping_file=sector_file,
             ),
             TailControlOverlay(target_vol_ann=0.2, max_abs_weight=0.25),
+            RebalanceFrequencyOverlay(
+                rebalance_every_n_days=rebalance_every_n_days,
+                mode="fixed_interval",
+            ),
+            WeightSmoothingOverlay(ema_alpha=0.08),
+            LongOnlyConcentratedOverlay(top_k=top_k),
+            BoardLotRoundingOverlay(lot_size=100, capital_vnd=capital),
+            TCostOverlay(
+                cost_per_trade_bps=cost_per_trade_bps,
+                min_trade_threshold_bps=min_trade_threshold_bps,
+                use_dynamic_budgeting=True,
+            ),
             DrawdownControlOverlay(
                 threshold=-0.05,
                 cooldown_days=3,
@@ -551,32 +578,33 @@ def build_scenario_overlays(
                 gmm_partial_reentry_scale=0.50,
                 gmm_reentry_cooldown_extension=2,
             ),
-            RebalanceFrequencyOverlay(
-                rebalance_every_n_days=5,
-                mode="fixed_interval",
-            ),
-            WeightSmoothingOverlay(ema_alpha=0.08),
-            LongOnlyConcentratedOverlay(top_k=top_k),
-            BoardLotRoundingOverlay(lot_size=100, capital_vnd=capital),
-            TCostOverlay(
-                cost_per_trade_bps=35.0,
-                min_trade_threshold_bps=70.0,
-                use_dynamic_budgeting=True,
-            ),
         ],
     }
 
 
-def build_pipeline_config(capital: float, hmm_reentry_threshold: float = 0.6) -> dict:
+def build_pipeline_config(
+    capital: float,
+    hmm_reentry_threshold: float = 0.6,
+    cost_per_trade_bps: float = 35.0,
+    min_trade_threshold_bps: float = 150.0,
+    rebalance_every_n_days: int = 10,
+) -> dict:
     return {
         "initial_capital_vnd": capital,
         "hmm_reentry_threshold": hmm_reentry_threshold,
+        "cost_per_trade_bps": cost_per_trade_bps,
+        "min_trade_threshold_bps": min_trade_threshold_bps,
+        "rebalance_every_n_days": rebalance_every_n_days,
         "commission_buy": 0.0015,
         "commission_sell": 0.0015,
         "tax_sell": 0.0010,
         "half_spread_bps": 0.0002,
         "slippage_k": 0.1,
         "slippage_nonlinear_exp": 1.0,
+        "expected_alpha_scale": 2.0,  # was 1.0 default - amplify signal in low-vol regimes
+        "expected_alpha_lookback": 60,  # was 20 default - smoother vol estimate
+        "dynamic_tc_gate_multiplier": 4.0,  # was 2.5 default - require higher alpha/cost ratio to trade
+        "no_trade_band": 0.025,  # was 0.01 default - suppress micro-trades causing churning
         "turnover_reduction": {
             "weight_smoothing_enabled": True,
             "weight_smoothing_ema_alpha": 0.10,
@@ -745,6 +773,16 @@ def train_fold_models(
             f"Halt to prevent silent fallback to test-period in-sample fitting."
         )
 
+    # Pre-compute train-local lagged latent features for GMM training and GMM train-date regime prediction (PIT safe)
+    latent_cols = ["latent_ae_00", "latent_ae_01", "latent_ae_11"]
+    available_latent = [c for c in latent_cols if c in train_feat.columns]
+    train_latent_lag = None
+    if available_latent:
+        train_sorted = train_feat.sort_values(["symbol", "date"])
+        train_latent_lag = train_sorted.groupby("symbol")[available_latent].shift(1)
+        train_latent_lag.index = train_sorted.index
+        train_latent_lag["date"] = train_sorted["date"]
+
     # --- 1. HMM: train on train_feat market returns (moved before Ridge) ---
     hmm_params = None
     try:
@@ -812,7 +850,7 @@ def train_fold_models(
                 sideways_scale=0.9,
             )
             gmm_model = LatentGMMRegime(gmm_config)
-            gmm_model.fit(train_feat)
+            gmm_model.fit(train_latent_lag)
             if gmm_model.is_fitted:
                 logger.info("GMM trained on %d train samples.", len(train_feat))
             else:
@@ -998,7 +1036,7 @@ def train_fold_models(
                     avail_latent = [c for c in latent_cols if c in train_feat.columns]
                     if avail_latent:
                         date_latent = (
-                            train_feat.groupby("date")[avail_latent]
+                            train_latent_lag.groupby("date")[avail_latent]
                             .mean()
                             .sort_index()
                         )
@@ -1168,9 +1206,15 @@ def _map_rows_to_gmm_regimes(
         # Get dates for prediction rows
         pred_dates = feat_df.loc[pred_indices, "date"].values
 
-        # Compute per-date mean latent features (from full feat_df, not just pred rows)
+        # Enforce PIT safety: shift latent columns per symbol on full panel before computing daily means
+        feat_sorted = feat_df.sort_values(["symbol", "date"])
+        shifted_latent = feat_sorted.groupby("symbol")[avail_latent].shift(1)
+        shifted_latent.index = feat_sorted.index
+        shifted_latent["date"] = feat_sorted["date"]
+
+        # Compute per-date mean latent features from the shifted (T-1 lagged) latent features
         date_latent = (
-            feat_df.groupby("date")[avail_latent]
+            shifted_latent.groupby("date")[avail_latent]
             .mean()
             .sort_index()
         )
@@ -1445,6 +1489,14 @@ def run_single_fold(
     date_mask = (feat_df["date"] >= warmup_start) & (feat_df["date"] <= max_test_date)
     test_feat = feat_df[date_mask].copy()
 
+    # Enforce test-side prediction PIT safety: shift latent columns on full feat_df and slice them
+    latent_cols = [c for c in feat_df.columns if c.startswith("latent_ae_")]
+    if latent_cols:
+        logger.info("Enforcing test-side prediction PIT safety by shifting %d latent columns", len(latent_cols))
+        full_shifted = feat_df.sort_values(["symbol", "date"]).groupby("symbol")[latent_cols].shift(1)
+        full_shifted.index = feat_df.sort_values(["symbol", "date"]).index
+        test_feat[latent_cols] = full_shifted.loc[test_feat.index]
+
     # Inject per-fold composite_signal into test_feat (thread-safe under threading)
     if composite_signal is not None:
         common_idx = test_feat.index.intersection(composite_signal.index)
@@ -1498,6 +1550,9 @@ def run_single_fold(
         hmm_params=hmm_params,
         top_k=top_k,
         hmm_reentry_threshold=float(config.get("hmm_reentry_threshold", 0.6)),
+        cost_per_trade_bps=float(config.get("cost_per_trade_bps", 35.0)),
+        min_trade_threshold_bps=float(config.get("min_trade_threshold_bps", 150.0)),
+        rebalance_every_n_days=int(config.get("rebalance_every_n_days", 10)),
     )
 
     query = make_query_fn(test_feat, dynamic_schedule)
@@ -2012,8 +2067,13 @@ def main():
     total_combinatorial_folds = cpcv.get_n_folds()
     logger.info("CPCV will generate %d combinatorial folds", total_combinatorial_folds)
 
-    # Scenarios are now built per-fold inside run_single_fold with pre-fitted models.
-    config = build_pipeline_config(args.capital, args.hmm_reentry_threshold)
+    config = build_pipeline_config(
+        args.capital,
+        args.hmm_reentry_threshold,
+        cost_per_trade_bps=args.cost_per_trade_bps,
+        min_trade_threshold_bps=args.min_trade_threshold_bps,
+        rebalance_every_n_days=args.rebalance_every_n_days,
+    )
 
     all_fold_results: List[Dict[str, Dict]] = []
     fold_counter = 0

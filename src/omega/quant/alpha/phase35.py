@@ -2962,7 +2962,7 @@ class Phase35WalkForwardEngine:
                 # GATE: STAGE6_3_DRAWDOWN_ADAPTIVE_RE_ENTRY_20260616
                 # Adaptive cooldown: check HMM bear probability and volatility
                 if self.drawdown_adaptive_re_entry:
-                    _date_str = str(date_idx)
+                    _date_str = str(date_idx)[:10]
                     _current_p_bear = (
                         hmm_p_bear_dict.get(_date_str, 0.0)
                         if hmm_p_bear_dict is not None
@@ -3061,7 +3061,7 @@ class Phase35WalkForwardEngine:
                         # GATE: STAGE6_3_DRAWDOWN_ADAPTIVE_RE_ENTRY_20260616
                         _re_p_bear = 0.0
                         if hmm_p_bear_dict is not None:
-                            _re_p_bear = hmm_p_bear_dict.get(str(date_idx), 0.0)
+                            _re_p_bear = hmm_p_bear_dict.get(str(date_idx)[:10], 0.0)
 
                         re_entry_ev = {
                             "re_entry_day_index": i,

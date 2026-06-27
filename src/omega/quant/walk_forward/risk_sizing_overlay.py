@@ -1233,7 +1233,7 @@ def apply_risk_sizing_overlay(
                     or hmm_ev.get("insufficient_clean_returns")
                     or hmm_ev.get("hmm_exception")
                 ) else 0.0
-                _hmm_p_bear_dates.append(str(dt))
+                _hmm_p_bear_dates.append(str(dt)[:10])
                 _hmm_p_bear_values.append(float(_p_bear_val))
             else:
                 # Heuristic mode (original MA/vol)
