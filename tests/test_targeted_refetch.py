@@ -68,47 +68,65 @@ def _make_new_data(ticker: str, first_close: float, n_days: int = 5, volume: int
     return _make_ohlcv(ticker, dates, first_close, volume=volume)
 
 
+def _make_overlap_data(
+    ticker: str,
+    start: str,
+    canon_close: float,
+    new_close: float,
+    n_days: int = 5,
+    volume: int = 120000,
+):
+    """Build canonical/new frames that share dates for direct overlap tests."""
+    dates = pd.bdate_range(start, periods=n_days)
+    canon = _make_ohlcv(ticker, dates, canon_close, volume=100000)
+    new = _make_ohlcv(ticker, dates, new_close, volume=volume)
+    return canon, new
+
+
 # ---------------------------------------------------------------------------
 # 1. detect_price_anomalies
 # ---------------------------------------------------------------------------
 
 class TestDetectPriceAnomalies:
 
-    def test_no_anomaly_normal_move(self):
-        """Normal ±5% daily move should not trigger detection."""
+    def test_no_anomaly_without_overlap(self):
+        """No shared dates -> no anomaly."""
         canon = _make_canonical_with_boundary("VCB", 50000.0)
-        new = _make_new_data("VCB", 52000.0)  # +4%
+        new = _make_new_data("VCB", 52000.0)
         anomalies = umd.detect_price_anomalies(new, canon)
         assert anomalies == []
 
-    def test_detects_large_price_jump(self):
-        """A 50% price drop should be flagged as anomaly."""
-        canon = _make_canonical_with_boundary("AAA", 50000.0)
-        new = _make_new_data("AAA", 25000.0)  # -50%
+    def test_detects_overlap_price_drop(self):
+        """Shared-date 50% price drop should be flagged."""
+        canon, new = _make_overlap_data("AAA", "2026-06-16", 50000.0, 25000.0)
         anomalies = umd.detect_price_anomalies(new, canon)
         assert len(anomalies) == 1
         assert anomalies[0]["symbol"] == "AAA"
         assert anomalies[0]["return_pct"] == pytest.approx(-50.0, abs=0.1)
+        assert anomalies[0]["classification"] == "PRICE_JUMP"
 
-    def test_detects_large_price_increase(self):
-        """A 30% price increase should be flagged."""
-        canon = _make_canonical_with_boundary("BBB", 30000.0)
-        new = _make_new_data("BBB", 45000.0)  # +50%
+    def test_detects_overlap_price_increase(self):
+        """Shared-date 50% price increase should be flagged."""
+        canon, new = _make_overlap_data("BBB", "2026-06-16", 30000.0, 45000.0)
         anomalies = umd.detect_price_anomalies(new, canon)
         assert len(anomalies) == 1
         assert anomalies[0]["return_pct"] == pytest.approx(50.0, abs=0.1)
+        assert anomalies[0]["date"] == "2026-06-16"
 
     def test_multiple_tickers_mixed(self):
-        """Only anomalous tickers should be flagged."""
+        """Only tickers with overlap mismatches should be flagged."""
+        canon_ok1, new_ok1 = _make_overlap_data("OK1", "2026-06-16", 50000.0, 50025.0)
+        canon_bad1, new_bad1 = _make_overlap_data("BAD1", "2026-06-16", 50000.0, 10000.0)
+        canon_ok2, new_ok2 = _make_overlap_data("OK2", "2026-06-16", 20000.0, 20010.0)
         canon = pd.concat([
-            _make_canonical_with_boundary("OK1", 50000.0),
-            _make_canonical_with_boundary("BAD1", 50000.0),
-            _make_canonical_with_boundary("OK2", 20000.0),
+            canon_ok1,
+            canon_bad1,
+            canon_ok2,
         ], ignore_index=True)
         new = pd.concat([
-            _make_new_data("OK1", 51000.0),    # +2%, normal
-            _make_new_data("BAD1", 10000.0),    # -80%, anomalous
-            _make_new_data("OK2", 19500.0),     # -2.5%, normal
+            new_ok1,
+            new_bad1,
+            new_ok2,
         ], ignore_index=True)
         anomalies = umd.detect_price_anomalies(new, canon)
         assert len(anomalies) == 1
@@ -125,19 +143,24 @@ class TestDetectPriceAnomalies:
         ) == []
 
     def test_new_ticker_not_in_canonical(self):
-        """A ticker only in new data should be skipped."""
+        """Ticker absent from canonical should be skipped."""
         canon = _make_canonical_with_boundary("OLD", 50000.0)
         new = _make_new_data("NEW", 10000.0)
         anomalies = umd.detect_price_anomalies(new, canon)
         assert anomalies == []
 
     def test_volume_ratio_computed(self):
-        """Volume ratio should be populated."""
-        canon = _make_canonical_with_boundary("CCC", 50000.0)
-        new = _make_new_data("CCC", 10000.0, volume=300000)
+        """Volume ratio should use overlapping row volumes."""
+        canon, new = _make_overlap_data("CCC", "2026-06-16", 50000.0, 10000.0, volume=300000)
         anomalies = umd.detect_price_anomalies(new, canon)
         assert len(anomalies) == 1
         assert anomalies[0]["volume_ratio"] > 0
+
+    def test_ignores_small_overlap_difference_within_tolerance(self):
+        """0.05% shared-date diff should not trigger anomaly."""
+        canon, new = _make_overlap_data("TOL", "2026-06-16", 50000.0, 49975.0)
+        anomalies = umd.detect_price_anomalies(new, canon)
+        assert anomalies == []
 
 
 # ---------------------------------------------------------------------------
@@ -280,6 +303,79 @@ class TestRunTargetedRefetch:
             )
         assert stats["targets"] == umd.MAX_REFETCH_SYMBOLS
 
+    def test_refetch_uses_symbol_specific_last_date_minus_15_days(self):
+        """Refetch window should start from symbol canon_date minus 15 days."""
+        refetch_df = _make_ohlcv(
+            "WIN1",
+            pd.bdate_range("2026-05-22", periods=25),
+            49000.0,
+        )
+        anomalies = [
+            {"symbol": "WIN1", "classification": "PRICE_JUMP",
+             "return_pct": -30.0, "exchange": "HOSE",
+             "canon_close": 50000.0, "canon_date": "2026-06-01",
+             "price_ratio": 0.7, "volume_ratio": 1.0},
+        ]
+        client = MagicMock()
+        with patch.object(umd, 'fetch_one_symbol', return_value=refetch_df) as mock_fetch:
+            umd.run_targeted_refetch(
+                client, anomalies, {"WIN1": "HOSE"}, "2026-06-18"
+            )
+        assert mock_fetch.call_args[0][2] == "2026-05-17"
+        assert mock_fetch.call_args[0][3] == "2026-06-18"
+
+
+class TestFetchSymbolsOverlapPreload:
+
+    def test_fetch_symbols_subtracts_15_days_from_symbol_max_dates(self):
+        client = MagicMock()
+        exchange_map = {"AAA": "HOSE", "BBB": "HNX"}
+
+        def fake_fetch_one_symbol(_client, symbol, start_date, end_date, exchange):
+            return _make_ohlcv(symbol, pd.bdate_range(start_date, periods=2), 50000.0, exchange=exchange)
+
+        with patch.object(umd, "fetch_one_symbol", side_effect=fake_fetch_one_symbol) as mock_fetch, \
+             patch.object(umd.time, "sleep", return_value=None):
+            df, stats = umd.fetch_symbols(
+                client=client,
+                symbols=["AAA", "BBB"],
+                exchange_map=exchange_map,
+                start_date="2026-05-01",
+                end_date="2026-06-18",
+                symbol_max_dates={
+                    "AAA": pd.Timestamp("2026-06-10"),
+                    "BBB": pd.Timestamp("2026-05-20"),
+                },
+            )
+
+        starts = {call.args[1]: call.args[2] for call in mock_fetch.call_args_list}
+        assert starts == {"AAA": "2026-05-26", "BBB": "2026-05-05"}
+        assert stats["fetched"] == 2
+        assert set(df["ticker"]) == {"AAA", "BBB"}
+
+    def test_run_targeted_refetch_composition(self):
+        """run_targeted_refetch should accept detect_price_anomalies output directly."""
+        canon, new = _make_overlap_data("CMP1", "2026-06-16", 50000.0, 40000.0)
+        anomalies = umd.detect_price_anomalies(new, canon)
+        ref_df = _make_ohlcv("CMP1", pd.bdate_range("2026-06-16", periods=10), 49975.0)
+
+        client = MagicMock()
+        with patch.object(umd, 'fetch_one_symbol', return_value=ref_df):
+            df, stats = umd.run_targeted_refetch(
+                client,
+                anomalies,
+                {"CMP1": "HOSE"},
+                "2026-06-30",
+                canonical_df=canon,
+            )
+
+        assert len(anomalies) == 1
+        assert anomalies[0]["canon_date"] == anomalies[0]["date"]
+        assert stats["success"] == 1
+        assert stats["failed"] == 0
+        assert stats["details"][0]["status"] == "success"
+        assert not df.empty
+
 
 # ---------------------------------------------------------------------------
 # 4. Integration: run_updater with skip_refetch
@@ -314,14 +410,14 @@ class TestRunUpdaterRefetch:
             mock_detect.assert_not_called()
 
     def test_refetch_triggered_on_anomaly(self):
-        """When anomalies detected, targeted refetch should be invoked."""
+        """When overlap mismatches detected, full refetch should be invoked directly."""
         with patch.object(umd, 'load_universe_from_json', return_value={"hsx": ["BAD1"], "hnx": []}), \
              patch.object(umd, 'read_canonical_max_date', return_value=pd.Timestamp("2026-06-14")), \
              patch.object(umd, '_create_vnstock_client') as mock_client_fn, \
              patch.object(umd, 'fetch_symbols') as mock_fetch, \
              patch.object(umd, 'read_canonical') as mock_read_canon, \
              patch.object(umd, 'detect_price_anomalies') as mock_detect, \
-             patch.object(umd, 'run_targeted_refetch') as mock_refetch, \
+             patch.object(umd, 'run_full_history_refetch') as mock_full_refetch, \
              patch.object(umd, 'validate_dataframe', return_value=(True, [])), \
              patch.object(umd, 'atomic_write_with_backup') as mock_write:
 
@@ -338,14 +434,16 @@ class TestRunUpdaterRefetch:
                 "symbol": "BAD1", "classification": "PRICE_JUMP",
                 "return_pct": -80.0, "exchange": "HOSE",
                 "canon_close": 50000.0, "price_ratio": 0.2,
-                "volume_ratio": 1.0,
+                "volume_ratio": 1.0, "date": "2026-06-16",
+                "diff_pct": 80.0, "overlap_rows": 3, "mismatch_rows": 3,
+                "reason": "shared-date close mismatch > 0.10% on 2026-06-16",
             }
             mock_detect.return_value = [anomaly]
 
-            refetched = _make_ohlcv("BAD1", pd.bdate_range("2026-03-20", periods=60), 49000.0)
-            mock_refetch.return_value = (refetched, {
+            refetched = _make_ohlcv("BAD1", pd.bdate_range("2015-01-02", periods=60), 49000.0)
+            mock_full_refetch.return_value = (refetched, {
                 "targets": 1, "success": 1, "failed": 0,
-                "details": [{"symbol": "BAD1", "status": "success", "rows": 60, "new_return_pct": 2.0}],
+                "details": [{"symbol": "BAD1", "status": "success", "rows": 60}],
             })
             mock_write.return_value = Path("/fake/output.parquet")
 
@@ -355,9 +453,10 @@ class TestRunUpdaterRefetch:
             )
 
             mock_detect.assert_called_once()
-            mock_refetch.assert_called_once()
+            mock_full_refetch.assert_called_once()
             assert result.get("anomalies_detected") == 1
-            assert result.get("refetch_stats", {}).get("success") == 1
+            assert result.get("refetch_stats", {}).get("targets") == 0
+            assert result.get("full_history_refetch_stats", {}).get("success") == 1
 
 
 # ---------------------------------------------------------------------------
@@ -396,15 +495,14 @@ class TestConstants:
         assert umd.SPLIT_RATIO_LOW > 0
         assert umd.SPLIT_RATIO_HIGH > umd.SPLIT_RATIO_LOW
         assert umd.VOLUME_SPIKE_SPLIT > 0
-        assert umd.REFETCH_LOOKBACK_DAYS > 0
+        assert umd.REFETCH_LOOKBACK_DAYS == 15
         assert umd.MAX_REFETCH_SYMBOLS > 0
 
     def test_overlap_constants_defined(self):
         """Overlap check constants should be sensible."""
-        assert umd.OVERLAP_PRICE_TOLERANCE > 0
-        assert umd.OVERLAP_PRICE_TOLERANCE < 0.10  # max 10%
-        assert umd.OVERLAP_MIN_ROWS >= 1
-        assert 0 < umd.OVERLAP_PASS_RATIO <= 1.0
+        assert umd.OVERLAP_PRICE_TOLERANCE == 0.001
+        assert umd.OVERLAP_MIN_ROWS == 1
+        assert umd.OVERLAP_PASS_RATIO == 1.0
 
     def test_price_jump_above_vn_limit(self):
         """Threshold should be well above Vietnam ±7% daily limit."""
@@ -490,16 +588,15 @@ class TestCheckOverlapConsistency:
         result = umd.check_overlap_consistency(ref, canon, "NEW")
         assert result["passed"] is True
 
-    def test_few_overlap_rows_passes(self):
-        """Fewer than OVERLAP_MIN_ROWS overlapping rows → passes cautiously."""
-        canon = _make_ohlcv("GGG", pd.bdate_range("2026-04-01", periods=2), 50000.0)
+    def test_single_shared_row_mismatch_fails(self):
+        """Direct overlap check should fail on the first shared mismatch."""
+        canon = _make_ohlcv("GGG", pd.bdate_range("2026-04-01", periods=1), 50000.0)
         ref_dates = pd.bdate_range("2026-04-01", periods=10)
         ref = _make_ohlcv("GGG", ref_dates, 40000.0)
         result = umd.check_overlap_consistency(ref, canon, "GGG")
-        assert result["passed"] is True
-        assert result["overlap_rows"] == 2
-        # Trimmed should exclude the 2 overlapping rows
-        assert len(result["trimmed_df"]) == 8
+        assert result["passed"] is False
+        assert result["overlap_rows"] == 1
+        assert len(result["trimmed_df"]) == 9
 
     def test_canonical_max_date_reported(self):
         """canonical_max should be populated when symbol is in canonical."""
@@ -1118,7 +1215,6 @@ class TestFullHistoryDeleteAndOverwrite:
              patch.object(umd, 'fetch_symbols') as mock_fetch, \
              patch.object(umd, 'read_canonical') as mock_read_canon, \
              patch.object(umd, 'detect_price_anomalies') as mock_detect, \
-             patch.object(umd, 'run_targeted_refetch') as mock_refetch, \
              patch.object(umd, 'run_full_history_refetch') as mock_full, \
              patch.object(umd, 'validate_dataframe', return_value=(True, [])), \
              patch.object(umd, 'atomic_write_with_backup') as mock_write:
@@ -1139,27 +1235,11 @@ class TestFullHistoryDeleteAndOverwrite:
                 "symbol": "SYM1", "classification": "PRICE_JUMP",
                 "return_pct": -4.0, "exchange": "HOSE",
                 "canon_close": 50000.0, "price_ratio": 0.96,
-                "volume_ratio": 1.0,
+                "volume_ratio": 1.0, "date": "2026-06-16",
+                "diff_pct": 4.0, "overlap_rows": 10, "mismatch_rows": 10,
+                "reason": "overlap mismatch",
             }
             mock_detect.return_value = [anomaly]
-
-            # Targeted refetch returns overlap mismatch → queued for full refetch
-            mock_refetch.return_value = (
-                pd.DataFrame(columns=umd.CANONICAL_COLUMNS),
-                {
-                    "targets": 1, "success": 0, "failed": 0,
-                    "overlap_checks": 1, "overlap_passed": 0, "overlap_failed": 1,
-                    "needs_full_refetch": [
-                        {"symbol": "SYM1", "exchange": "HOSE",
-                         "reason": "overlap mismatch", "overlap_rows": 10,
-                         "match_ratio": 0.0},
-                    ],
-                    "details": [{
-                        "symbol": "SYM1",
-                        "status": "overlap_mismatch_queued_full_refetch",
-                    }],
-                },
-            )
 
             # Full history refetch succeeds
             full_dates = pd.bdate_range("2015-01-02", periods=2800)

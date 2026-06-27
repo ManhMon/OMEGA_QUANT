@@ -28,6 +28,7 @@ from omega.quant.pipeline_v2 import (
     RegimeOverlay,
     ThompsonSamplingWeightOverlay,
 )
+from omega.quant.pipeline.overlays.drawdown_control import DrawdownControlOverlay
 
 def test_pipeline_state_manager(tmp_path):
     """TEST-01 FIX3: use pytest tmp_path (ACL-safe) instead of tempfile.TemporaryDirectory."""
@@ -182,12 +183,14 @@ def test_trading_pipeline_v2_live(tmp_path):
         overlays=[
             TCostOverlay(cost_per_trade_bps=10.0, min_trade_threshold_bps=5.0)
         ],
-        config={"initial_capital_vnd": 1e9}
+        config={
+            "initial_capital_vnd": 1e9,
+        }
     )
     
     orders = pipeline.execute(
         run_id="live_run",
-        date_start="2026-01-05",
+        date_start="2026-01-03",
         date_end="2026-01-05",
         tickers=["HPG", "SSI"]
     )
@@ -197,7 +200,6 @@ def test_trading_pipeline_v2_live(tmp_path):
     state = state_manager.load_state("live_run")
     assert "last_weights" in state
     assert "portfolio_returns_history" in state
-
 
 def test_signal_overlays_use_prior_day_scores(monkeypatch):
     import omega.quant.portfolio.sentiment_overlay as sentiment_mod
@@ -242,7 +244,6 @@ def test_signal_overlays_use_prior_day_scores(monkeypatch):
     assert smart_money_out.loc[dates[1], "HPG"] > smart_money_out.loc[dates[1], "SSI"]
     assert sentiment_out.loc[dates[1], "HPG"] > sentiment_out.loc[dates[1], "SSI"]
 
-
 def test_adaptive_sizing_overlay_uses_prior_expanding_adv(monkeypatch):
     import omega.quant.portfolio.adaptive_sizing_overlay as adaptive_mod
 
@@ -270,3 +271,58 @@ def test_adaptive_sizing_overlay_uses_prior_expanding_adv(monkeypatch):
     assert adv_series.loc[dates[1], "SSI"] == 50.0
     assert adv_series.loc[dates[2], "HPG"] == 200.0
     assert adv_series.loc[dates[2], "SSI"] == 100.0
+
+def test_drawdown_control_hmm_reentry_cap():
+    dates = pd.date_range("2026-01-01", periods=40, freq="D")
+    weights = pd.DataFrame(1.0, index=dates, columns=["HPG"])
+    panel = pd.DataFrame(
+        [{"date": dt, "symbol": "HPG", "returns": 0.0} for dt in dates]
+    )
+    overlay = DrawdownControlOverlay(
+        cooldown_days=1,
+        adaptive_re_entry=False,
+        regime_re_entry_filter=False,
+        bocpd_enabled=False,
+        hmm_reentry_enabled=True,
+        hmm_bear_reentry_threshold=0.6,
+        hmm_reentry_cooldown_extension=5,
+        max_reentry_cooldown_days=10,
+    )
+    overlay._in_cooldown = True
+    overlay._cooldown_remaining = 1
+    overlay._reentry_cooldown_total = 1
+
+    state = {"hmm_p_bear": {str(dt)[:10]: 0.9 for dt in dates}}
+    result = overlay.apply(weights, panel, state)
+
+    dd_state = state["drawdown_control"]
+    assert dd_state["hmm_reentry_blocked_count"] == 2
+    assert dd_state["reentry_cooldown_total"] == 0
+    assert dd_state["in_cooldown"] is False
+    assert result.iloc[-1, 0] == pytest.approx(1.0)
+
+def test_drawdown_control_hmm_reentry_allowed():
+    dates = pd.date_range("2026-01-01", periods=3, freq="D")
+    weights = pd.DataFrame(1.0, index=dates, columns=["HPG"])
+    panel = pd.DataFrame(
+        [{"date": dt, "symbol": "HPG", "returns": 0.0} for dt in dates]
+    )
+    overlay = DrawdownControlOverlay(
+        cooldown_days=1,
+        adaptive_re_entry=False,
+        regime_re_entry_filter=False,
+        bocpd_enabled=False,
+        hmm_reentry_enabled=True,
+        hmm_bear_reentry_threshold=0.6,
+    )
+    overlay._in_cooldown = True
+    overlay._cooldown_remaining = 1
+    overlay._reentry_cooldown_total = 1
+
+    state = {"hmm_p_bear": {str(dt)[:10]: 0.2 for dt in dates}}
+    result = overlay.apply(weights, panel, state)
+
+    dd_state = state["drawdown_control"]
+    assert dd_state["hmm_reentry_blocked_count"] == 0
+    assert dd_state["in_cooldown"] is False
+    assert result.iloc[0, 0] == pytest.approx(1.0)

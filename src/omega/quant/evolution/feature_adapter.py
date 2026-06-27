@@ -2,7 +2,7 @@
 
 Purpose
 -------
-Loads 200+ existing alphas (ultimate_alpha_arsenal, phase34_microstructure)
+Loads 200+ existing alphas (ultimate_alpha_arsenal, phase34_microstructure, vn_specific)
 plus base OHLCV + engineered features, returns a dict[name -> np.ndarray]
 suitable as input features for genetic-program evolution.
 
@@ -10,15 +10,16 @@ Sources (best-effort, never hard-fail on missing module)
 --------------------------------------------------------
 - omega.quant.ultimate_alpha_arsenal.compute_ultimate_alphas (~132 alphas)
 - omega.quant.phase34_microstructure_alphas.compute_phase34_microstructure_alphas (~17 alphas)
+- omega.quant.alpha.vn_specific (27 VN-specific compute_ + alpha_ functions)
 - Base OHLCV: open / high / low / close / volume
 - Engineered: ret_1d, ret_5d, vol_ratio, hl_range, oc_range
 
 PIT Safety
 ----------
 This module is a thin orchestrator. PIT correctness is the responsibility of
-each underlying alpha source (ultimate / phase34). We only forward the input
-DataFrame and apply purely-pointwise / past-only transforms (rolling means,
-pct_change) on the engineered base features.
+each underlying alpha source (ultimate / phase34 / vn_specific). We only forward
+the input DataFrame and apply purely-pointwise / past-only transforms (rolling
+means, pct_change) on the engineered base features.
 
 Role
 ----
@@ -91,6 +92,33 @@ class GPFeatureAdapter:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"phase34 import error: {e}")
 
+        # --- source: vn_specific ---
+        try:
+            import omega.quant.alpha.vn_specific as vns  # type: ignore
+            vn_funcs = [
+                name for name in dir(vns)
+                if (name.startswith("compute_") or name.startswith("alpha_"))
+                and callable(getattr(vns, name))
+            ]
+            if vn_funcs:
+                def _run_vn_specific(df: pd.DataFrame) -> pd.DataFrame:
+                    result = pd.DataFrame(index=df.index)
+                    for func_name in vn_funcs:
+                        fn = getattr(vns, func_name)
+                        try:
+                            col_name = f"alpha_vnspec_{func_name}"
+                            result[col_name] = fn(df).astype(np.float64)
+                        except Exception as exc:
+                            logger.debug("vn_specific.%s failed: %s", func_name, exc)
+                            result[col_name] = 0.0
+                    return result
+                self.sources["vn_specific"] = _run_vn_specific
+                logger.info("Loaded vn_specific (%d functions: %s)", len(vn_funcs), vn_funcs)
+        except ImportError as e:
+            logger.warning(f"vn_specific not available: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"vn_specific import error: {e}")
+
     # -------------------------------------------------------------- main API
     @staticmethod
     def _fingerprint(df: pd.DataFrame, top_n_features: int) -> str:
@@ -161,6 +189,17 @@ class GPFeatureAdapter:
                     all_alphas.append((col, np.asarray(p34_df[col].values)))
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"phase34 failed: {e}")
+
+        # --- source: vn_specific ---
+        if "vn_specific" in self.sources:
+            try:
+                vns_df = self.sources["vn_specific"](df)
+                vns_cols = [c for c in vns_df.columns if c.startswith("alpha_vnspec_")]
+                logger.info(f"vn_specific produced {len(vns_cols)} alphas")
+                for col in vns_cols:
+                    all_alphas.append((col, np.asarray(vns_df[col].values)))
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"vn_specific failed: {e}")
 
         # --- base OHLCV (raw) ---
         base_features = ["open", "high", "low", "close", "volume"]

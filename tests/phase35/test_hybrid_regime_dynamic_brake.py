@@ -14,6 +14,7 @@ import pytest
 import numpy as np
 import pandas as pd
 
+from scripts import backtest_hybrid_regime as hybrid_regime
 from omega.quant.portfolio.tail_controls import (
     soft_dynamic_brake,
     dynamic_dd_threshold,
@@ -407,6 +408,15 @@ class TestGMMBullReentryFilter:
         assert overlay.gmm_bull_confidence == pytest.approx(0.6)
         assert overlay.gmm_partial_reentry_scale == pytest.approx(0.2)
         assert overlay.gmm_reentry_cooldown_extension == 5
+
+    def test_hybrid_scenario_uses_relaxed_bear_market_gmm_params(self):
+        """Hybrid scenario should use tuned bear-market GMM re-entry settings."""
+        overlays = hybrid_regime.build_scenario_overlays(capital=1_000_000)["Hybrid"]
+        overlay = next(item for item in overlays if isinstance(item, DrawdownControlOverlay))
+
+        assert overlay.gmm_bull_confidence == pytest.approx(0.25)
+        assert overlay.gmm_partial_reentry_scale == pytest.approx(0.50)
+        assert overlay.gmm_reentry_cooldown_extension == 2
 
     def test_missing_gmm_does_not_cause_permanent_cash(self):
         """REGRESSION: Missing gmm_p_bull must not trap portfolio in permanent cash.

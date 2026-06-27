@@ -77,6 +77,11 @@ AUTHORITATIVE_MARKERS = [
 
 # Markers that indicate non-authoritative mention (allowed)
 NON_AUTHORITATIVE_MARKERS = [
+    'no reliance',
+    'confirmed not present',
+    'not present',
+    'not in repo_root scope',
+    'not in scope',
     "non-authoritative",
     "forbidden-path",
     "forbidden path",
@@ -726,6 +731,10 @@ def _validate_l2_report_content(content, role_id, role_name) -> tuple:
             f".agents\\agent\\{role_name_str}.md",
             f".agents/agent/{role_name_str}",
             f".agents\\agent\\{role_name_str}",
+            f"REPO_AGENT_ROOT/{role_name_str}.md",
+            f"REPO_AGENT_ROOT\\{role_name_str}.md",
+            f"REPO_AGENT_ROOT/{role_name_str}",
+            f"REPO_AGENT_ROOT\\{role_name_str}",
         ]
         for p in patterns:
             if p in content or p.lower() in content_lower:
@@ -892,7 +901,8 @@ def derive_strict_approval_timestamp(gates) -> float:
             return ts
     
     # Search by phase_name in values
-    for key, gate in gates.items():
+    gates_dict = gates if isinstance(gates, dict) else {g.get("phase_name", g.get("__original_key__", "UNKNOWN")): g for g in gates if isinstance(g, dict)}
+    for key, gate in gates_dict.items():
         if not isinstance(gate, dict):
             continue
         if gate.get("phase_name") == STRICT_GATE_NAME:
@@ -973,7 +983,8 @@ def get_superseded_gates(gates) -> list:
     if not gates:
         return []
     
-    chains = build_remediation_chains(gates)
+    gates_dict = gates if isinstance(gates, dict) else {g.get("phase_name", g.get("__original_key__", "UNKNOWN")): g for g in gates if isinstance(g, dict)}
+    chains = build_remediation_chains(gates_dict)
     superseded = []
     
     for chain_key, members in chains.items():

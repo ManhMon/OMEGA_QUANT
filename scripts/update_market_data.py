@@ -4,8 +4,8 @@
 Canonical VCI Updater / Backfill for data/market_2015_now.parquet
 ==================================================================
 Role:   Data Engineer (Role 15, L2)
-Gate:   AUTOMATIC_TARGETED_REFETCH_20260618
-Date:   2026-06-18
+Gate:   CANONICAL_UPDATER_FULL_OVERLAP_RELOAD_20260626
+Date:   2026-06-26
 
 Replaces the old VN30-only TOP_SYMBOLS pipeline with a canonical-safe
 updater that:
@@ -29,14 +29,15 @@ updater that:
   - **Automatic Targeted Re-fetch**: detects price jumps (>25% daily
     return) at the canonical/new-data boundary, classifies them as
     SPLIT_LIKE (corporate action) or PRICE_JUMP (data error), and
-    automatically re-fetches PRICE_JUMP symbols with a wider lookback
-    window to recover correct data.  Disable with --no-refetch.
-  - **Overlap Check**: when re-fetching with a wider lookback, the
-    returned data covers dates already in canonical.  The Overlap Check
-    compares close prices for shared trading dates — only when ≥80% of
-    overlapping rows match within 0.1% tolerance is the re-fetch accepted.
-    Overlapping rows are always trimmed (canonical takes precedence),
-    ensuring no duplicate writes and clean boundary stitching.
+    automatically re-fetches PRICE_JUMP symbols from the symbol's own
+    canonical last date minus 15 calendar days.  Disable with
+    --no-refetch.
+  - **Direct Overlap Check**: the re-fetch window intentionally overlaps
+    canonical data. Shared trading dates are compared directly. Any
+    overlap mismatch above 0.1% is treated as a phase shift and queued
+    for full-history refetch. Overlapping rows are always trimmed
+    (canonical takes precedence), ensuring no duplicate writes and clean
+    boundary stitching.
   - **Full-History Refetch on Phase Shift**: when the overlap check
     detects a mismatch at the 0.1% threshold, this indicates a corporate
     action (small split, bonus shares, cash dividend) has shifted the
@@ -122,17 +123,17 @@ PRICE_JUMP_THRESHOLD = 0.25       # |daily return| > 25% → suspicious
 SPLIT_RATIO_LOW = 0.30            # lower bound of split-like price ratio
 SPLIT_RATIO_HIGH = 0.72           # upper bound of split-like price ratio
 VOLUME_SPIKE_SPLIT = 1.5          # volume >= 1.5× 20-day avg → volume spike
-REFETCH_LOOKBACK_DAYS = 90        # calendar days to re-fetch on anomaly
+REFETCH_LOOKBACK_DAYS = 15        # symbol last canonical date minus 15 calendar days
 MAX_REFETCH_SYMBOLS = 20          # safety cap to prevent runaway re-fetches
 
 # ── Overlap Check thresholds ─────────────────────────────────────────────────
-# When re-fetching with a wider lookback the re-fetched window overlaps with
-# canonical data.  The overlap check compares close prices for shared trading
-# dates.  If enough overlapping rows match within tolerance the re-fetch is
-# considered trustworthy for the *new* (post-canonical) dates.
+# When re-fetching with a symbol-specific overlap window the re-fetched rows
+# intentionally cover dates already in canonical.  Every shared trading date
+# must match within tolerance; any mismatch indicates a phase-shifted adjusted
+# series and triggers full-history reload.
 OVERLAP_PRICE_TOLERANCE = 0.001   # 0.1% max |close_diff| / canon_close
-OVERLAP_MIN_ROWS = 3              # minimum overlapping trading days required
-OVERLAP_PASS_RATIO = 0.80         # ≥80% of overlapping rows must match
+OVERLAP_MIN_ROWS = 1              # direct comparison starts at first shared day
+OVERLAP_PASS_RATIO = 1.00         # direct overlap: every shared day must match
 
 # ── Full-history refetch (corporate-action phase-shift recovery) ─────────────
 # When the overlap check at 0.1% detects a mismatch the canonical and new data
@@ -290,6 +291,7 @@ def fetch_symbols(
     start_date: str,
     end_date: str,
     symbol_filter: Optional[Set[str]] = None,
+    symbol_max_dates: Optional[Dict[str, pd.Timestamp]] = None,
 ) -> Tuple[pd.DataFrame, Dict]:
     """Fetch OHLCV for a list of symbols with retry and rate limiting.
 
@@ -311,11 +313,18 @@ def fetch_symbols(
             logger.debug(f"[{symbol}] Skipping: exchange={exchange} not in whitelist")
             continue
 
+        symbol_start = start_date
+        if symbol_max_dates and symbol in symbol_max_dates:
+            overlap_dt = symbol_max_dates[symbol] - timedelta(days=15)
+            if overlap_dt < MIN_DATE:
+                overlap_dt = MIN_DATE
+            symbol_start = overlap_dt.strftime("%Y-%m-%d")
+
         retries = 0
         df = pd.DataFrame()
         while retries < MAX_RETRIES:
             try:
-                df = fetch_one_symbol(client, symbol, start_date, end_date, exchange)
+                df = fetch_one_symbol(client, symbol, symbol_start, end_date, exchange)
                 break
             except Exception as e:
                 retries += 1
@@ -460,76 +469,68 @@ def detect_price_anomalies(
     new_df: pd.DataFrame,
     canonical_df: Optional[pd.DataFrame],
 ) -> List[Dict]:
-    """Detect price jumps and split-like events at the boundary between
-    canonical and newly-fetched data.
-
-    For each symbol present in both *canonical_df* and *new_df*, compare the
-    last canonical close with the first new close.  If the absolute return
-    exceeds ``PRICE_JUMP_THRESHOLD`` the symbol is flagged.
-
-    Returns a list of anomaly dicts with keys:
-        symbol, exchange, canon_date, canon_close, new_date, new_close,
-        return_pct, volume_ratio, classification
-    """
+    """Detect overlap mismatches between canonical and newly-fetched data."""
     if canonical_df is None or canonical_df.empty or new_df.empty:
         return []
 
+    canon_cols = ["ticker", "date", "close", "volume", "exchange"]
+    new_cols = ["ticker", "date", "close", "volume", "exchange"]
+    canon_overlap = canonical_df[canon_cols].copy()
+    new_overlap = new_df[new_cols].copy()
+    canon_overlap["date"] = pd.to_datetime(canon_overlap["date"]).dt.normalize()
+    new_overlap["date"] = pd.to_datetime(new_overlap["date"]).dt.normalize()
+    canon_overlap = canon_overlap.drop_duplicates(subset=["ticker", "date"], keep="last")
+    new_overlap = new_overlap.drop_duplicates(subset=["ticker", "date"], keep="last")
+
+    merged = new_overlap.merge(
+        canon_overlap,
+        on=["ticker", "date"],
+        how="inner",
+        suffixes=("_new", "_canon"),
+    )
+    if merged.empty:
+        return []
+
+    merged = merged[(merged["close_canon"] > 0) & (merged["close_new"] > 0)].copy()
+    if merged.empty:
+        return []
+
+    merged["diff_ratio"] = (
+        (merged["close_new"] - merged["close_canon"]).abs() / merged["close_canon"].abs()
+    )
+    merged["signed_return"] = (
+        (merged["close_new"] - merged["close_canon"]) / merged["close_canon"]
+    )
+
     anomalies: List[Dict] = []
-
-    canon_last = (
-        canonical_df.sort_values("date")
-        .groupby("ticker")
-        .last()
-        .reset_index()
-    )
-    new_first = (
-        new_df.sort_values("date")
-        .groupby("ticker")
-        .first()
-        .reset_index()
-    )
-
-    canon_map = {r["ticker"]: r for _, r in canon_last.iterrows()}
-
-    # Compute 20-day average volume from canonical tail for volume comparison
-    canon_tail = canonical_df.sort_values("date").groupby("ticker").tail(20)
-    avg_vol = canon_tail.groupby("ticker")["volume"].mean()
-
-    for _, row in new_first.iterrows():
-        sym = row["ticker"]
-        if sym not in canon_map:
+    for symbol, symbol_df in merged.groupby("ticker"):
+        mismatch_df = symbol_df[symbol_df["diff_ratio"] > OVERLAP_PRICE_TOLERANCE]
+        if mismatch_df.empty:
             continue
 
-        canon_row = canon_map[sym]
-        canon_close = float(canon_row["close"])
-        new_close = float(row["close"])
-
-        if canon_close <= 0 or new_close <= 0:
-            continue
-
-        ret_pct = (new_close - canon_close) / canon_close
-
-        if abs(ret_pct) < PRICE_JUMP_THRESHOLD:
-            continue
-
-        # Volume ratio vs canonical 20-day average
-        vol_avg = avg_vol.get(sym, 0.0)
-        new_vol = float(row.get("volume", 0))
-        vol_ratio = new_vol / vol_avg if vol_avg > 0 else 0.0
-
-        price_ratio = new_close / canon_close
-
+        mismatch_row = mismatch_df.sort_values("diff_ratio", ascending=False).iloc[0]
+        canon_close = float(mismatch_row["close_canon"])
+        new_close = float(mismatch_row["close_new"])
+        canon_volume = float(mismatch_row.get("volume_canon", 0) or 0)
+        new_volume = float(mismatch_row.get("volume_new", 0) or 0)
         anomalies.append({
-            "symbol": sym,
-            "exchange": row.get("exchange", "UNKNOWN"),
-            "canon_date": str(canon_row["date"]),
+            "symbol": symbol,
+            "exchange": mismatch_row.get("exchange_new") or mismatch_row.get("exchange_canon") or "UNKNOWN",
+            "date": str(pd.Timestamp(mismatch_row["date"]).date()),
+            "canon_date": str(pd.Timestamp(mismatch_row["date"]).date()),
             "canon_close": canon_close,
-            "new_date": str(row["date"]),
             "new_close": new_close,
-            "return_pct": round(ret_pct * 100, 2),
-            "price_ratio": round(price_ratio, 4),
-            "volume_ratio": round(vol_ratio, 2),
-            "classification": classify_anomaly(price_ratio, vol_ratio),
+            "return_pct": round(float(mismatch_row["signed_return"]) * 100, 2),
+            "diff_pct": round(float(mismatch_row["diff_ratio"]) * 100, 4),
+            "price_ratio": round(new_close / canon_close, 4),
+            "volume_ratio": round(new_volume / canon_volume, 2) if canon_volume > 0 else 0.0,
+            "overlap_rows": int(len(symbol_df)),
+            "mismatch_rows": int(len(mismatch_df)),
+            "classification": "PRICE_JUMP",
+            "reason": (
+                f"shared-date close mismatch > {OVERLAP_PRICE_TOLERANCE:.2%} "
+                f"on {pd.Timestamp(mismatch_row['date']).date()}"
+            ),
         })
 
     return anomalies
@@ -554,9 +555,10 @@ def check_overlap_consistency(
 ) -> Dict:
     """Compare re-fetched data against canonical for overlapping trading dates.
 
-    When a targeted re-fetch uses a wider lookback window the returned rows
-    cover dates already present in canonical.  This function checks whether
-    the *overlapping* close prices agree within ``OVERLAP_PRICE_TOLERANCE``.
+    When a targeted re-fetch uses a symbol-specific overlap window the
+    returned rows cover dates already present in canonical. This function
+    checks whether every overlapping close price agrees within
+    ``OVERLAP_PRICE_TOLERANCE``.
 
     Args:
         refetched_df: Re-fetched OHLCV DataFrame (canonical schema) for ONE symbol.
@@ -610,17 +612,8 @@ def check_overlap_consistency(
     result["overlap_rows"] = overlap_count
 
     if overlap_count == 0:
-        result["reason"] = "no overlapping dates (lookback did not reach canonical)"
+        result["reason"] = "no overlapping dates"
         result["passed"] = True
-        return result
-
-    if overlap_count < OVERLAP_MIN_ROWS:
-        result["reason"] = (
-            f"only {overlap_count} overlapping rows < minimum {OVERLAP_MIN_ROWS}"
-        )
-        result["passed"] = True  # too few to judge → accept cautiously
-        # Still trim overlap rows
-        result["trimmed_df"] = ref_sym[~ref_sym["date"].isin(overlap_dates)].copy()
         return result
 
     # Compare close prices on overlapping dates
@@ -654,14 +647,14 @@ def check_overlap_consistency(
     if match_ratio >= OVERLAP_PASS_RATIO:
         result["passed"] = True
         result["reason"] = (
-            f"overlap OK: {match_count}/{total_pairs} rows match "
+            f"overlap OK: {match_count}/{total_pairs} shared rows match "
             f"({match_ratio:.0%} >= {OVERLAP_PASS_RATIO:.0%})"
         )
     else:
         result["passed"] = False
         result["reason"] = (
-            f"overlap MISMATCH: only {match_count}/{total_pairs} rows match "
-            f"({match_ratio:.0%} < {OVERLAP_PASS_RATIO:.0%})"
+            f"overlap MISMATCH: {total_pairs - match_count}/{total_pairs} shared rows "
+            f"differ by more than {OVERLAP_PRICE_TOLERANCE:.2%}"
         )
         logger.warning(
             f"[{symbol}] Overlap check failed: {result['reason']}"
@@ -680,14 +673,13 @@ def run_targeted_refetch(
     """Re-fetch OHLCV for symbols flagged as PRICE_JUMP with overlap checking.
 
     SPLIT_LIKE anomalies are logged but **not** re-fetched (the data is
-    likely correct—backward-adjusted prices already reflect the split).
+    likely correct-backward-adjusted prices already reflect the split).
 
-    After a successful boundary-return check the **Overlap Check** compares
-    re-fetched close prices against canonical for shared trading dates.
-    Only when the overlap is consistent (≥ ``OVERLAP_PASS_RATIO`` matching
-    within ``OVERLAP_PRICE_TOLERANCE``) are the *new* (non-overlapping)
-    rows accepted.  Overlapping rows are always discarded — canonical data
-    takes precedence for dates already stored.
+    After a successful boundary-return check the **Direct Overlap Check**
+    compares re-fetched close prices against canonical for shared trading
+    dates. Any mismatch above ``OVERLAP_PRICE_TOLERANCE`` is queued for
+    full-history refetch. Overlapping rows are always discarded - canonical
+    data takes precedence for dates already stored.
 
     Args:
         client: VnstockClient instance.
@@ -718,15 +710,9 @@ def run_targeted_refetch(
         )
         refetch_targets = refetch_targets[:MAX_REFETCH_SYMBOLS]
 
-    end_ts = pd.Timestamp(end_date)
-    start_ts = end_ts - timedelta(days=REFETCH_LOOKBACK_DAYS)
-    if start_ts < MIN_DATE:
-        start_ts = MIN_DATE
-    refetch_start = start_ts.strftime("%Y-%m-%d")
-
     logger.info(
         f"Targeted re-fetch: {len(refetch_targets)} symbols, "
-        f"window {refetch_start} to {end_date}"
+        f"symbol-specific window = canonical last date - {REFETCH_LOOKBACK_DAYS} days"
     )
 
     frames: List[pd.DataFrame] = []
@@ -751,6 +737,17 @@ def run_targeted_refetch(
             f"classification={anomaly['classification']}"
         )
 
+        canon_date = anomaly.get("canon_date") or anomaly.get("date")
+        canon_max_ts = pd.Timestamp(canon_date)
+        start_ts = canon_max_ts - timedelta(days=REFETCH_LOOKBACK_DAYS)
+        if start_ts < MIN_DATE:
+            start_ts = MIN_DATE
+        refetch_start = start_ts.strftime("%Y-%m-%d")
+        logger.info(
+            f"  [{sym}] Refetch window: {refetch_start} to {end_date} "
+            f"(canon_last={canon_max_ts.date()})"
+        )
+
         retries = 0
         df = pd.DataFrame()
         while retries < MAX_RETRIES:
@@ -773,7 +770,6 @@ def run_targeted_refetch(
             # Stage 1: Validate re-fetched data at boundary
             # Compare close at the first trading day AFTER canonical max date
             # (the boundary), NOT iloc[0] of the full lookback window.
-            canon_max_ts = pd.Timestamp(anomaly["canon_date"])
             sorted_df = df.sort_values("date")
             boundary_mask = sorted_df["date"] > canon_max_ts
             if boundary_mask.any():
@@ -819,9 +815,8 @@ def run_targeted_refetch(
 
                 if not overlap_result["passed"]:
                     stats["overlap_failed"] += 1
-                    # Overlap mismatch → phase shift detected.
-                    # Do NOT count as hard-fail; instead queue for full-history
-                    # reload from 2015-01-01.
+                    # Overlap mismatch > 0.1% on any shared day → phase shift.
+                    # Queue direct full-history reload from 2015-01-01.
                     needs_full_refetch.append({
                         "symbol": sym,
                         "exchange": exchange,
@@ -1076,7 +1071,7 @@ def run_updater(
 
     logger.info("=" * 70)
     logger.info("Canonical VCI Updater / Backfill")
-    logger.info(f"Gate: AUTOMATIC_TARGETED_REFETCH_20260618")
+    logger.info(f"Gate: CANONICAL_UPDATER_FULL_OVERLAP_RELOAD_20260626")
     logger.info(f"Canonical: {canonical_path}")
     logger.info(f"Output: {target_path}")
     logger.info(f"Dry-run: {dry_run}")
@@ -1093,12 +1088,16 @@ def run_updater(
         return {"status": "error", "message": "Empty universe"}
 
     # 2. Determine incremental date range
+    symbol_max_dates: Dict[str, pd.Timestamp] = {}
     if start_date:
         fetch_start = pd.Timestamp(start_date)
     else:
-        canon_max = read_canonical_max_date(canonical_path)
-        if canon_max is not None:
-            fetch_start = canon_max + timedelta(days=1)
+        if canonical_path.exists():
+            df_dates = pd.read_parquet(canonical_path, columns=["ticker", "date"])
+            df_dates["date"] = pd.to_datetime(df_dates["date"])
+            symbol_max_dates = df_dates.groupby("ticker")["date"].max().to_dict()
+            global_max = max(symbol_max_dates.values()) if symbol_max_dates else None
+            fetch_start = global_max + timedelta(days=1) if global_max else MIN_DATE
         else:
             fetch_start = MIN_DATE
             logger.info("No canonical data found; starting from 2015-01-01 (full backfill)")
@@ -1123,7 +1122,13 @@ def run_updater(
         return {"status": "error", "message": "VnstockClient creation failed"}
 
     new_data, fetch_stats = fetch_symbols(
-        client, all_symbols, exchange_map, start_str, end_str, symbol_filter
+        client,
+        all_symbols,
+        exchange_map,
+        start_str,
+        end_str,
+        symbol_filter=symbol_filter,
+        symbol_max_dates=symbol_max_dates,
     )
     logger.info(
         f"Fetch complete: {fetch_stats['rows']} new rows from "
@@ -1142,82 +1147,67 @@ def run_updater(
     anomalies: List[Dict] = []
     if not skip_refetch:
         logger.info("─" * 50)
-        logger.info("Targeted Re-fetch: scanning for price anomalies")
+        logger.info("Overlap mismatch scan: shared-date close validation")
         canonical_for_detect = read_canonical(canonical_path)
         anomalies = detect_price_anomalies(new_data, canonical_for_detect)
 
         if anomalies:
-            split_like = [a for a in anomalies if a["classification"] == "SPLIT_LIKE"]
-            price_jumps = [a for a in anomalies if a["classification"] == "PRICE_JUMP"]
             logger.info(
-                f"Anomalies detected: {len(anomalies)} total "
-                f"({len(price_jumps)} PRICE_JUMP, {len(split_like)} SPLIT_LIKE)"
+                f"Overlap mismatches detected: {len(anomalies)} PRICE_JUMP symbols"
             )
             for a in anomalies:
                 logger.info(
                     f"  [{a['symbol']}] {a['classification']}: "
-                    f"return={a['return_pct']}%, price_ratio={a['price_ratio']}, "
-                    f"vol_ratio={a['volume_ratio']}"
+                    f"date={a['date']}, diff={a['diff_pct']}%, "
+                    f"overlap_rows={a['overlap_rows']}, mismatches={a['mismatch_rows']}"
                 )
 
-            if price_jumps:
-                refetched_df, refetch_stats = run_targeted_refetch(
-                    client, anomalies, exchange_map, end_str,
-                    canonical_df=canonical_for_detect,
+            needs_full = [
+                {
+                    "symbol": a["symbol"],
+                    "exchange": a.get("exchange", "UNKNOWN"),
+                    "reason": a.get("reason", "shared-date overlap mismatch"),
+                    "overlap_rows": a.get("overlap_rows", 0),
+                    "mismatch_rows": a.get("mismatch_rows", 0),
+                }
+                for a in anomalies
+            ]
+            refetch_stats = {
+                "targets": 0,
+                "success": 0,
+                "failed": 0,
+                "needs_full_refetch": needs_full,
+                "details": [],
+            }
+            logger.info("─" * 50)
+            logger.info(
+                f"Full-History Refetch: {len(needs_full)} symbols with overlap mismatch"
+            )
+            full_df, full_refetch_stats = run_full_history_refetch(
+                client, needs_full, exchange_map, end_str,
+            )
+            full_history_symbols = {
+                d["symbol"]
+                for d in full_refetch_stats.get("details", [])
+                if d["status"] == "success"
+            }
+            if full_history_symbols:
+                before = len(new_data)
+                new_data = new_data[
+                    ~new_data["ticker"].isin(full_history_symbols)
+                ].copy()
+                after = len(new_data)
+                logger.info(
+                    f"Full-history refetch: removed {before - after} "
+                    f"incremental rows for {len(full_history_symbols)} "
+                    f"symbols from new_data (will overwrite canonical)"
                 )
-                if not refetched_df.empty:
-                    # Replace affected symbols in new_data with re-fetched data
-                    refetch_symbols = {r["symbol"] for r in refetch_stats.get("details", []) if r["status"] == "success"}
-                    if refetch_symbols:
-                        before_rows = len(new_data)
-                        new_data = new_data[~new_data["ticker"].isin(refetch_symbols)].copy()
-                        new_data = pd.concat([new_data, refetched_df], ignore_index=True)
-                        after_rows = len(new_data)
-                        logger.info(
-                            f"Targeted re-fetch replaced data for "
-                            f"{len(refetch_symbols)} symbols "
-                            f"({before_rows} → {after_rows} rows)"
-                        )
-
-                # 4b. Full-history refetch for overlap-mismatch symbols
-                needs_full = refetch_stats.get("needs_full_refetch", [])
-                if needs_full:
-                    logger.info("─" * 50)
-                    logger.info(
-                        f"Full-History Refetch: {len(needs_full)} symbols with "
-                        f"overlap mismatch (corporate-action phase shift)"
+                if not full_df.empty:
+                    new_data = pd.concat(
+                        [new_data, full_df], ignore_index=True,
                     )
-                    full_df, full_refetch_stats = run_full_history_refetch(
-                        client, needs_full, exchange_map, end_str,
-                    )
-                    full_history_symbols = {
-                        d["symbol"]
-                        for d in full_refetch_stats.get("details", [])
-                        if d["status"] == "success"
-                    }
-                    if full_history_symbols:
-                        # Remove these symbols from new_data (canonical will be
-                        # fully replaced, not incrementally merged).
-                        before = len(new_data)
-                        new_data = new_data[
-                            ~new_data["ticker"].isin(full_history_symbols)
-                        ].copy()
-                        after = len(new_data)
-                        logger.info(
-                            f"Full-history refetch: removed {before - after} "
-                            f"incremental rows for {len(full_history_symbols)} "
-                            f"symbols from new_data (will overwrite canonical)"
-                        )
-                        # Append full-history data to new_data so the merge
-                        # step below picks it up.
-                        if not full_df.empty:
-                            new_data = pd.concat(
-                                [new_data, full_df], ignore_index=True,
-                            )
-                else:
-                    full_refetch_stats = {"targets": 0, "success": 0, "failed": 0}
         else:
-            logger.info("No price anomalies detected at canonical boundary")
+            logger.info("No shared-date close mismatches detected")
     else:
         logger.info("Targeted re-fetch skipped (--no-refetch)")
 

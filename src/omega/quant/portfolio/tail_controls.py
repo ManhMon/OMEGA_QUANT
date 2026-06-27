@@ -144,6 +144,22 @@ def dynamic_dd_threshold(realized_vol_ann: float = 0.15,
     return float(np.clip(threshold, min_threshold, max_threshold))
 
 
+def smooth_regime_scale(
+    p_bull: float,
+    p_bear: float,
+    bear_scale: float,
+    bull_scale: float,
+    tau: float,
+    bocpd_penalty_scale: float = 1.0,
+) -> float:
+    """Smoothly interpolate exposure between bear/bull scales from regime probabilities."""
+    safe_tau = max(float(tau), 1e-6)
+    score = (float(p_bull) - float(p_bear)) / safe_tau
+    sigmoid = 1.0 / (1.0 + np.exp(-score))
+    base_scale = float(bear_scale) + (float(bull_scale) - float(bear_scale)) * sigmoid
+    return base_scale * float(bocpd_penalty_scale)
+
+
 def apply_tail_controls(daily_weights: pd.DataFrame,
                         daily_realized_y: np.ndarray,
                         target_vol_ann: float = 0.15,
@@ -163,6 +179,14 @@ def apply_tail_controls(daily_weights: pd.DataFrame,
                         soft_brake_vol_sensitivity: float = 1.0,
                         soft_brake_min_threshold: float = 0.02,
                         soft_brake_max_threshold: float = 0.08,
+                        regime_dates: pd.Index | None = None,
+                        gmm_p_bull: dict[str, float] | None = None,
+                        gmm_p_bear: dict[str, float] | None = None,
+                        regime_ramp_enabled: bool = False,
+                        regime_ramp_tau: float = 0.20,
+                        regime_bear_scale: float = 0.50,
+                        regime_bull_scale: float = 1.00,
+                        bocpd_penalty_scale: float = 0.75,
                         ) -> tuple[pd.DataFrame, np.ndarray]:
     """Apply 3 tail controls bar-by-bar (causal).
 
@@ -192,6 +216,14 @@ def apply_tail_controls(daily_weights: pd.DataFrame,
             (default 1.0).
         soft_brake_min_threshold: floor for adaptive DD threshold (default 0.02).
         soft_brake_max_threshold: ceiling for adaptive DD threshold (default 0.08).
+        regime_dates: optional date index aligned to rows for regime maps.
+        gmm_p_bull: optional date->bull posterior map from upstream GMM overlay.
+        gmm_p_bear: optional date->bear posterior map from upstream GMM overlay.
+        regime_ramp_enabled: if True, apply smooth GMM/BOCPD exposure ramp.
+        regime_ramp_tau: sigmoid temperature for bull-bear probability spread.
+        regime_bear_scale: minimum regime scale.
+        regime_bull_scale: maximum regime scale.
+        bocpd_penalty_scale: extra multiplicative penalty when bear > bull.
 
     Returns:
         adj_weights: same shape, after caps + vol-target + DD breaker.
@@ -228,6 +260,20 @@ def apply_tail_controls(daily_weights: pd.DataFrame,
             scale = min(target_vol_ann / max(vol, 1e-8), max_leverage)
         else:
             scale = 1.0
+
+        if regime_ramp_enabled and regime_dates is not None:
+            dt_key = str(regime_dates[t])[:10]
+            p_bull = 0.0 if gmm_p_bull is None else float(gmm_p_bull.get(dt_key, 0.0))
+            p_bear = 0.0 if gmm_p_bear is None else float(gmm_p_bear.get(dt_key, 0.0))
+            penalty = bocpd_penalty_scale if p_bear > p_bull else 1.0
+            scale *= smooth_regime_scale(
+                p_bull=p_bull,
+                p_bear=p_bear,
+                bear_scale=regime_bear_scale,
+                bull_scale=regime_bull_scale,
+                tau=regime_ramp_tau,
+                bocpd_penalty_scale=penalty,
+            )
 
         # DD breaker: trip-and-hold (TC-3 fix) OR soft brake (Giai phap A).
         if soft_brake_enabled:

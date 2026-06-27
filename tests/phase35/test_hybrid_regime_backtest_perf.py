@@ -1093,33 +1093,38 @@ class TestQuotaAlphaSelection:
 
 
 class TestTCostOverlayTuning:
-    """Verify TCostOverlay cost-control relaxation (Gate: HYBRID_REGIME_ALPHAS_DIVERSIFIED_REVIEW_20260623).
+    """Verify turnover reduction tuning for both scenario overlays.
 
-    The Hybrid scenario's TCostOverlay is relaxed (min_trade_threshold_bps
-    updated to 35.0 bps. Baseline now also includes a matching
-    TCostOverlay.
+    Gate: HYBRID_REGIME_TURNOVER_REDUCTION_20260626
     """
 
-    def test_hybrid_tcost_threshold_relaxed(self):
+    def test_hybrid_turnover_controls_tightened(self):
         from backtest_hybrid_regime import build_scenario_overlays
         scenarios = build_scenario_overlays(capital=2_000_000_000.0)
         hybrid_overlays = scenarios["Hybrid"]
         tcost = [o for o in hybrid_overlays if o.__class__.__name__ == "TCostOverlay"]
+        rebalance = [o for o in hybrid_overlays if o.__class__.__name__ == "RebalanceFrequencyOverlay"]
+
         assert len(tcost) == 1, f"Expected exactly 1 TCostOverlay in Hybrid, got {len(tcost)}"
-        assert tcost[0].min_trade_threshold_bps == 70.0, (
-            f"Hybrid TCostOverlay threshold should be 70.0 bps, "
+        assert len(rebalance) == 1, f"Expected exactly 1 RebalanceFrequencyOverlay in Hybrid, got {len(rebalance)}"
+        assert tcost[0].min_trade_threshold_bps == 150.0, (
+            f"Hybrid TCostOverlay threshold should be 150.0 bps, "
             f"got {tcost[0].min_trade_threshold_bps}"
         )
+        assert rebalance[0].rebalance_every_n_days == 10
         assert tcost[0].cost_per_trade_bps == 35.0
 
-    def test_baseline_unchanged(self):
-        """Baseline scenario now includes the default TCostOverlay."""
+    def test_baseline_turnover_controls_tightened(self):
         from backtest_hybrid_regime import build_scenario_overlays
         scenarios = build_scenario_overlays(capital=2_000_000_000.0)
         baseline_overlays = scenarios["Baseline"]
         tcost = [o for o in baseline_overlays if o.__class__.__name__ == "TCostOverlay"]
+        rebalance = [o for o in baseline_overlays if o.__class__.__name__ == "RebalanceFrequencyOverlay"]
+
         assert len(tcost) == 1, f"Expected exactly 1 TCostOverlay in Baseline, got {len(tcost)}"
-        assert tcost[0].min_trade_threshold_bps == 70.0
+        assert len(rebalance) == 1, f"Expected exactly 1 RebalanceFrequencyOverlay in Baseline, got {len(rebalance)}"
+        assert tcost[0].min_trade_threshold_bps == 150.0
+        assert rebalance[0].rebalance_every_n_days == 10
 
 
 class TestLongOnlyConcentratedOverlay:

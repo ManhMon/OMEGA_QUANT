@@ -196,6 +196,10 @@ def parse_args() -> argparse.Namespace:
         help="Alpha blending model type (default: lightgbm)",
     )
     parser.add_argument(
+        "--hmm-reentry-threshold", type=float, default=0.6,
+        help="Block drawdown re-entry while HMM bear prob exceeds this threshold (default: 0.6)",
+    )
+    parser.add_argument(
         "--top-k", type=int, default=5,
         help="Number of top assets to select in concentrated overlay (default: 5)",
     )
@@ -460,6 +464,7 @@ def build_scenario_overlays(
     gmm_model: Optional[LatentGMMRegime] = None,
     hmm_params: Optional[dict] = None,
     top_k: int = 5,
+    hmm_reentry_threshold: float = 0.6,
 ) -> Dict[str, list]:
     """Build scenario overlay stacks with optional pre-fitted models.
 
@@ -495,6 +500,7 @@ def build_scenario_overlays(
                 threshold=-0.05,
                 cooldown_days=5,
                 adaptive_re_entry=True,
+                hmm_bear_reentry_threshold=hmm_reentry_threshold,
                 bocpd_enabled=False,
             ),
             RebalanceFrequencyOverlay(
@@ -536,6 +542,7 @@ def build_scenario_overlays(
                 threshold=-0.05,
                 cooldown_days=3,
                 adaptive_re_entry=True,
+                hmm_bear_reentry_threshold=hmm_reentry_threshold,
                 bocpd_enabled=True,
                 bocpd_threshold=0.50,
                 bocpd_cooldown_extension=1,
@@ -560,9 +567,10 @@ def build_scenario_overlays(
     }
 
 
-def build_pipeline_config(capital: float) -> dict:
+def build_pipeline_config(capital: float, hmm_reentry_threshold: float = 0.6) -> dict:
     return {
         "initial_capital_vnd": capital,
+        "hmm_reentry_threshold": hmm_reentry_threshold,
         "commission_buy": 0.0015,
         "commission_sell": 0.0015,
         "tax_sell": 0.0010,
@@ -1484,7 +1492,13 @@ def run_single_fold(
     )
 
     # Build per-fold scenario overlays with pre-fitted models (inference-only on test)
-    scenarios = build_scenario_overlays(capital, gmm_model=gmm_model, hmm_params=hmm_params, top_k=top_k)
+    scenarios = build_scenario_overlays(
+        capital,
+        gmm_model=gmm_model,
+        hmm_params=hmm_params,
+        top_k=top_k,
+        hmm_reentry_threshold=float(config.get("hmm_reentry_threshold", 0.6)),
+    )
 
     query = make_query_fn(test_feat, dynamic_schedule)
     feature_store = DatabaseFeatureStoreAdapter(query)
@@ -1999,7 +2013,7 @@ def main():
     logger.info("CPCV will generate %d combinatorial folds", total_combinatorial_folds)
 
     # Scenarios are now built per-fold inside run_single_fold with pre-fitted models.
-    config = build_pipeline_config(args.capital)
+    config = build_pipeline_config(args.capital, args.hmm_reentry_threshold)
 
     all_fold_results: List[Dict[str, Dict]] = []
     fold_counter = 0

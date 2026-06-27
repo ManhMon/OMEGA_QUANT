@@ -133,6 +133,7 @@ def apply_realistic_tc(
     cost_model: VNCostModel | None = None,
     prev_w_init: np.ndarray | None = None,
     use_adv_tiered_spread: bool = False,
+    active_dates_mask: np.ndarray | None = None,
 ) -> tuple[pd.DataFrame, np.ndarray, dict]:
     """Subtract realistic VN costs from gross returns bar-by-bar.
 
@@ -153,6 +154,11 @@ def apply_realistic_tc(
         use_adv_tiered_spread: if True and daily_adv is provided, use
             per-name ADV-tiered half-spread (5/10/15 bps) instead of
             the flat half_spread_bps from cost_model.
+        active_dates_mask: optional bool array of length T. When provided,
+            only bars where mask[t] is True incur transaction costs; non-
+            active bars pass gross returns without cost deduction. This
+            prevents cost leakage from CPCV non-test-date gaps (purge/
+            embargo periods between scattered test blocks).
 
     Returns:
         adj_weights: same shape (after foreign room enforcement)
@@ -169,11 +175,19 @@ def apply_realistic_tc(
     N = weights.shape[1]
     net_returns = np.zeros(T)
 
-    # Cost accumulators
-    total_commission = 0.0
-    total_spread = 0.0
-    total_slippage = 0.0
-    total_turnover = 0.0
+    # Validate active_dates_mask
+    if active_dates_mask is not None:
+        if active_dates_mask.shape != (T,):
+            raise ValueError(
+                f"active_dates_mask shape {active_dates_mask.shape} != expected ({T},)"
+            )
+
+    # Per-bar cost tracking for active-date-filtered breakdown
+    bar_commission = np.zeros(T, dtype=float)
+    bar_spread = np.zeros(T, dtype=float)
+    bar_slippage = np.zeros(T, dtype=float)
+    bar_costs = np.zeros(T, dtype=float)
+    bar_turnover = np.zeros(T, dtype=float)
 
     if prev_w_init is None:
         prev_w = np.zeros(N)
@@ -187,14 +201,14 @@ def apply_realistic_tc(
         w_t = weights[t]
         delta_w = w_t - prev_w
         turnover = np.abs(delta_w).sum()  # one-way turnover per bar
-        total_turnover += turnover
+        bar_turnover[t] = turnover
 
         # Commission: separate buy vs sell legs
         buy_leg = np.maximum(delta_w, 0).sum()
         sell_leg = np.maximum(-delta_w, 0).sum()
         commission_t = (buy_leg * cost_model.commission_buy
                          + sell_leg * (cost_model.commission_sell + cost_model.tax_sell))
-        total_commission += commission_t
+        bar_commission[t] = commission_t
 
         # Half-spread: paid on both sides of every trade
         # ADV-tiered spread: per-name spread based on liquidity tier
@@ -204,7 +218,7 @@ def apply_realistic_tc(
             spread_t = float(np.sum(np.abs(delta_w) * per_name_spread))
         else:
             spread_t = turnover * cost_model.half_spread_bps
-        total_spread += spread_t
+        bar_spread[t] = spread_t
 
         # Slippage: participation-rate impact (linear or sub-linear), only if ADV provided
         slippage_t = 0.0
@@ -236,7 +250,7 @@ def apply_realistic_tc(
             slippage_per_name = cost_model.slippage_k * participation_eff
             # Slippage cost = participation_impact * |delta_w| (proportional to trade size)
             slippage_t = float(np.sum(slippage_per_name * np.abs(delta_w)))
-            total_slippage += slippage_t
+            bar_slippage[t] = slippage_t
 
         # Gross return - costs
         gross_t = float(np.sum(w_t * daily_realized_y[t]))
@@ -260,18 +274,42 @@ def apply_realistic_tc(
         foreign_drag = 0.0
         if cost_model.foreign_room_haircut_pct > 0 and gross_t > 0:
             foreign_drag = cost_model.foreign_room_haircut_pct * gross_t
-        net_t = gross_t - commission_t - spread_t - slippage_t - settlement_drag - halt_drag - foreign_drag
+
+        total_cost_t = commission_t + spread_t + slippage_t + settlement_drag + halt_drag + foreign_drag
+        bar_costs[t] = total_cost_t
+        net_t = gross_t - total_cost_t
+        # CPCV non-test-date gap filter: zero costs on non-active bars
+        if active_dates_mask is not None and not active_dates_mask[t]:
+            net_t = gross_t
         net_returns[t] = net_t
         prev_w = w_t
 
+    if active_dates_mask is not None:
+        active_idx = active_dates_mask.astype(bool)
+        n_active = int(np.sum(active_idx))
+        if n_active == 0:
+            n_active = 1
+        total_commission_adj = float(np.sum(bar_commission[active_idx]))
+        total_spread_adj = float(np.sum(bar_spread[active_idx]))
+        total_slippage_adj = float(np.sum(bar_slippage[active_idx]))
+        total_turnover_adj = float(np.sum(bar_turnover[active_idx]))
+        total_cost_adj = total_commission_adj + total_spread_adj + total_slippage_adj
+    else:
+        n_active = T
+        total_commission_adj = float(np.sum(bar_commission))
+        total_spread_adj = float(np.sum(bar_spread))
+        total_slippage_adj = float(np.sum(bar_slippage))
+        total_turnover_adj = float(np.sum(bar_turnover))
+        total_cost_adj = total_commission_adj + total_spread_adj + total_slippage_adj
+
     breakdown = {
-        "total_turnover": float(total_turnover),
-        "avg_turnover_per_bar": float(total_turnover / T),
-        "total_commission_cost": float(total_commission),
-        "total_spread_cost": float(total_spread),
-        "total_slippage_cost": float(total_slippage),
-        "total_cost": float(total_commission + total_spread + total_slippage),
-        "avg_cost_per_bar_bps": float(10000 * (total_commission + total_spread + total_slippage) / T),
+        "total_turnover": total_turnover_adj,
+        "avg_turnover_per_bar": float(total_turnover_adj / n_active),
+        "total_commission_cost": total_commission_adj,
+        "total_spread_cost": total_spread_adj,
+        "total_slippage_cost": total_slippage_adj,
+        "total_cost": total_cost_adj,
+        "avg_cost_per_bar_bps": float(10000 * total_cost_adj / n_active),
         "capital_vnd": portfolio_capital_vnd,
         "final_w": prev_w.copy(),
         # Phase 11: extra cost components for diagnostic
@@ -280,5 +318,6 @@ def apply_realistic_tc(
         "halt_limit_haircut_pct": cost_model.halt_limit_haircut_pct,
         "foreign_room_haircut_pct": cost_model.foreign_room_haircut_pct,
         "use_adv_tiered_spread": use_adv_tiered_spread,
+        "n_active_bars": n_active,
     }
     return daily_weights, net_returns, breakdown

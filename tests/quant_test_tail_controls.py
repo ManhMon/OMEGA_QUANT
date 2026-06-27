@@ -17,6 +17,7 @@ vol_target_weights = _mod.vol_target_weights
 cap_weights = _mod.cap_weights
 drawdown_breaker = _mod.drawdown_breaker
 apply_tail_controls = _mod.apply_tail_controls
+smooth_regime_scale = _mod.smooth_regime_scale
 
 
 def test_cap_weights_clips():
@@ -208,3 +209,32 @@ def test_tc4_vol_target_uses_pre_leverage():
         assert post <= pre * 0.7, (
             f"DD breaker not effectively dampening post-trip: pre={pre:.6f}, post={post:.6f}"
         )
+
+
+def test_smooth_regime_scale_monotonic_between_bear_and_bull():
+    bearish = smooth_regime_scale(0.1, 0.7, bear_scale=0.4, bull_scale=1.0, tau=0.2)
+    neutral = smooth_regime_scale(0.4, 0.4, bear_scale=0.4, bull_scale=1.0, tau=0.2)
+    bullish = smooth_regime_scale(0.7, 0.1, bear_scale=0.4, bull_scale=1.0, tau=0.2)
+
+    assert 0.4 <= bearish < neutral < bullish <= 1.0
+
+
+def test_apply_tail_controls_regime_ramp_downweights_bearish_dates():
+    dates = pd.date_range("2026-01-01", periods=3, freq="D")
+    weights = pd.DataFrame(np.full((3, 1), 0.05), index=dates, columns=["A"])
+    rets = np.full((3, 1), 0.001)
+
+    adj_w, _ = apply_tail_controls(
+        weights,
+        rets,
+        regime_dates=dates,
+        regime_ramp_enabled=True,
+        gmm_p_bull={"2026-01-01": 0.8, "2026-01-02": 0.5, "2026-01-03": 0.1},
+        gmm_p_bear={"2026-01-01": 0.1, "2026-01-02": 0.5, "2026-01-03": 0.8},
+        regime_bear_scale=0.4,
+        regime_bull_scale=1.0,
+        regime_ramp_tau=0.2,
+        bocpd_penalty_scale=0.75,
+    )
+
+    assert adj_w.iloc[0, 0] > adj_w.iloc[1, 0] > adj_w.iloc[2, 0]
