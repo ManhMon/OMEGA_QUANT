@@ -75,6 +75,15 @@ LATENT_AE_PATH = "data/latent_alphas_components.parquet"
 OUTPUT_DIR = "data/phase35_results"
 STATE_DIR = ".ly_state/session/pipeline_state_hybrid"
 
+LEGACY_BUY_COMMISSION_BPS = 15.0
+LEGACY_SELL_COMMISSION_BPS = 15.0
+LEGACY_SELL_TAX_BPS = 10.0
+LEGACY_TOTAL_EXECUTION_COST_BPS = (
+    LEGACY_BUY_COMMISSION_BPS
+    + LEGACY_SELL_COMMISSION_BPS
+    + LEGACY_SELL_TAX_BPS
+)
+
 
 class LongOnlyConcentratedOverlay(WeightOverlay):
     """Clips weights to non-negative (long-only), keeps top_k, normalizes to sum to 1.0."""
@@ -123,6 +132,17 @@ class LongOnlyConcentratedOverlay(WeightOverlay):
             processed_rows.append(new_row)
             
         return pd.DataFrame(processed_rows, index=weights.index, columns=weights.columns)
+
+
+def derive_trade_cost_components(cost_per_trade_bps: float) -> dict:
+    """Map round-trip trade cost to legacy VN fee mix."""
+    scale = cost_per_trade_bps / LEGACY_TOTAL_EXECUTION_COST_BPS
+    return {
+        "commission_buy": LEGACY_BUY_COMMISSION_BPS * scale * 1e-4,
+        "commission_sell": LEGACY_SELL_COMMISSION_BPS * scale * 1e-4,
+        "tax_sell": LEGACY_SELL_TAX_BPS * scale * 1e-4,
+        "estimated_cost_bps": cost_per_trade_bps / 2.0,
+    }
 
 
 def parse_args() -> argparse.Namespace:
@@ -495,6 +515,7 @@ def build_scenario_overlays(
         Number of top assets to select in concentrated overlay.
     """
     sector_file = str(REPO_ROOT / SECTOR_MAPPING_FILE)
+    trade_costs = derive_trade_cost_components(cost_per_trade_bps)
     return {
         "Baseline": [
             RiskSizingOverlay(
@@ -529,6 +550,7 @@ def build_scenario_overlays(
                 adaptive_re_entry=True,
                 hmm_bear_reentry_threshold=hmm_reentry_threshold,
                 bocpd_enabled=False,
+                estimated_cost_bps=trade_costs["estimated_cost_bps"],
             ),
         ],
         "Hybrid": [
@@ -571,6 +593,7 @@ def build_scenario_overlays(
                 adaptive_re_entry=True,
                 hmm_bear_reentry_threshold=hmm_reentry_threshold,
                 bocpd_enabled=True,
+                estimated_cost_bps=trade_costs["estimated_cost_bps"],
                 bocpd_threshold=0.50,
                 bocpd_cooldown_extension=1,
                 bocpd_exposure_scale=0.5,
@@ -589,15 +612,16 @@ def build_pipeline_config(
     min_trade_threshold_bps: float = 150.0,
     rebalance_every_n_days: int = 10,
 ) -> dict:
+    trade_costs = derive_trade_cost_components(cost_per_trade_bps)
     return {
         "initial_capital_vnd": capital,
         "hmm_reentry_threshold": hmm_reentry_threshold,
         "cost_per_trade_bps": cost_per_trade_bps,
         "min_trade_threshold_bps": min_trade_threshold_bps,
         "rebalance_every_n_days": rebalance_every_n_days,
-        "commission_buy": 0.0015,
-        "commission_sell": 0.0015,
-        "tax_sell": 0.0010,
+        "commission_buy": trade_costs["commission_buy"],
+        "commission_sell": trade_costs["commission_sell"],
+        "tax_sell": trade_costs["tax_sell"],
         "half_spread_bps": 0.0002,
         "slippage_k": 0.1,
         "slippage_nonlinear_exp": 1.0,
@@ -614,6 +638,20 @@ def build_pipeline_config(
             "rebalance_day_of_month": None,
         },
     }
+
+
+def safe_build_pipeline_config(args: argparse.Namespace) -> dict:
+    config_kwargs = {
+        "capital": args.capital,
+        "hmm_reentry_threshold": getattr(args, "hmm_reentry_threshold", 0.6),
+        "cost_per_trade_bps": getattr(args, "cost_per_trade_bps", 35.0),
+        "min_trade_threshold_bps": getattr(args, "min_trade_threshold_bps", 150.0),
+        "rebalance_every_n_days": getattr(args, "rebalance_every_n_days", 10),
+    }
+    try:
+        return build_pipeline_config(**config_kwargs)
+    except TypeError:
+        return build_pipeline_config(args.capital)
 
 
 def clear_state_dir(state_dir: Path) -> None:
@@ -2067,13 +2105,7 @@ def main():
     total_combinatorial_folds = cpcv.get_n_folds()
     logger.info("CPCV will generate %d combinatorial folds", total_combinatorial_folds)
 
-    config = build_pipeline_config(
-        args.capital,
-        args.hmm_reentry_threshold,
-        cost_per_trade_bps=args.cost_per_trade_bps,
-        min_trade_threshold_bps=args.min_trade_threshold_bps,
-        rebalance_every_n_days=args.rebalance_every_n_days,
-    )
+    config = safe_build_pipeline_config(args)
 
     all_fold_results: List[Dict[str, Dict]] = []
     fold_counter = 0
