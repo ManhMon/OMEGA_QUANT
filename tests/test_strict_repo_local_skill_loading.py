@@ -42,7 +42,9 @@ from sod_gate_enforcer import (
     check_path_traversal_only,
     derive_strict_approval_timestamp,
     get_superseded_gates,
+    check_sod_compliance,
     load_gates,
+    validate_task_graph,
     validate_audit_report_path,
     validate_forbidden_path_usage,
 )
@@ -306,6 +308,136 @@ class TestIntegration:
         ts = normalize_timestamp("2026-06-12T10:00:00+07:00")
         assert ts is not None
         assert ts >= SKILL_LOADING_CUTOFF
+
+
+class TestTaskGraphValidation:
+    """Unit tests for validate_task_graph and empty-gates compliance path."""
+
+    def test_valid_dag(self):
+        task_graph = [
+            {
+                "task_id": "l2_impl",
+                "role_id": 11,
+                "depends_on": [],
+                "parallel_safe": False,
+                "success_criteria": "Implementation complete",
+            },
+            {
+                "task_id": "l3_audit",
+                "role_id": 21,
+                "depends_on": ["l2_impl"],
+                "parallel_safe": False,
+                "success_criteria": "Audit verdict recorded",
+            },
+        ]
+        mock_task_graph = MagicMock()
+        mock_task_graph.exists.return_value = True
+        mock_task_graph.read_text.return_value = json.dumps(task_graph)
+
+        with patch("sod_gate_enforcer.TASK_GRAPH_FILE", mock_task_graph):
+            valid, msg = validate_task_graph()
+
+        assert valid is True
+        assert "valid DAG" in msg
+
+    def test_circular_dependency_dag(self):
+        task_graph = [
+            {
+                "task_id": "a",
+                "role_id": 11,
+                "depends_on": ["b"],
+                "parallel_safe": False,
+                "success_criteria": "A done",
+            },
+            {
+                "task_id": "b",
+                "role_id": 21,
+                "depends_on": ["a"],
+                "parallel_safe": False,
+                "success_criteria": "B done",
+            },
+        ]
+        mock_task_graph = MagicMock()
+        mock_task_graph.exists.return_value = True
+        mock_task_graph.read_text.return_value = json.dumps(task_graph)
+
+        with patch("sod_gate_enforcer.TASK_GRAPH_FILE", mock_task_graph):
+            valid, msg = validate_task_graph()
+
+        assert valid is False
+        assert "cycle detected" in msg
+
+    def test_duplicate_node_ids(self):
+        task_graph = [
+            {
+                "task_id": "dup",
+                "role_id": 11,
+                "depends_on": [],
+                "parallel_safe": False,
+                "success_criteria": "First",
+            },
+            {
+                "task_id": "dup",
+                "role_id": 21,
+                "depends_on": [],
+                "parallel_safe": True,
+                "success_criteria": "Second",
+            },
+        ]
+        mock_task_graph = MagicMock()
+        mock_task_graph.exists.return_value = True
+        mock_task_graph.read_text.return_value = json.dumps(task_graph)
+
+        with patch("sod_gate_enforcer.TASK_GRAPH_FILE", mock_task_graph):
+            valid, msg = validate_task_graph()
+
+        assert valid is False
+        assert "duplicate task_id" in msg
+
+    def test_missing_fields(self):
+        task_graph = [
+            {
+                "task_id": "missing",
+                "role_id": 11,
+                "depends_on": [],
+                "parallel_safe": False,
+            }
+        ]
+        mock_task_graph = MagicMock()
+        mock_task_graph.exists.return_value = True
+        mock_task_graph.read_text.return_value = json.dumps(task_graph)
+
+        with patch("sod_gate_enforcer.TASK_GRAPH_FILE", mock_task_graph):
+            valid, msg = validate_task_graph()
+
+        assert valid is False
+        assert "missing fields" in msg
+        assert "success_criteria" in msg
+
+    def test_wrong_types(self):
+        task_graph = [
+            {
+                "task_id": "wrong_types",
+                "role_id": "11",
+                "depends_on": "setup",
+                "parallel_safe": "false",
+                "success_criteria": "Type check",
+            }
+        ]
+        mock_task_graph = MagicMock()
+        mock_task_graph.exists.return_value = True
+        mock_task_graph.read_text.return_value = json.dumps(task_graph)
+
+        with patch("sod_gate_enforcer.TASK_GRAPH_FILE", mock_task_graph):
+            valid, msg = validate_task_graph()
+
+        assert valid is False
+        assert "depends_on must be list" in msg
+
+    def test_empty_gates_list_with_invalid_task_graph_fails_compliance(self):
+        with patch("sod_gate_enforcer.validate_task_graph", return_value=(False, "bad graph")):
+            with patch("sod_gate_enforcer.load_gates", return_value=[]):
+                assert check_sod_compliance() is False
 
 
 # =========================================================================

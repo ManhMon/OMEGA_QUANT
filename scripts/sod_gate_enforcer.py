@@ -43,6 +43,7 @@ from pathlib import Path
 WORKSPACE = Path(__file__).parent.parent  # scripts/ -> workspace/
 GATES_FILE = WORKSPACE / ".ly_state" / "session" / "phase_gates.json"
 AGENTS_DIR = WORKSPACE / ".agents" / "agent"
+TASK_GRAPH_FILE = WORKSPACE / ".ly_state" / "session" / "task_graph.json"
 
 # Cutoff date for new gate requirements (2026-06-11 00:00:00 Asia/Saigon / UTC+7)
 # This is 2026-06-10 17:00:00 UTC
@@ -103,6 +104,94 @@ _CHAIN_BASE_RE = re.compile(r'^(.+)_(\d{8})$')
 
 # Cache for loaded role specs
 _ROLE_SPECS_CACHE = None
+
+
+def validate_task_graph() -> tuple[bool, str]:
+    """Validate optional task graph file.
+
+    Returns:
+        tuple: (is_valid: bool, message: str)
+    """
+    if not TASK_GRAPH_FILE.exists():
+        return True, "task_graph.json not present"
+
+    try:
+        data = json.loads(TASK_GRAPH_FILE.read_text(encoding='utf-8'))
+    except Exception as e:
+        return False, f"task_graph.json invalid JSON: {e}"
+
+    if not isinstance(data, list):
+        return False, "task_graph.json must be list of nodes"
+
+    required_fields = {
+        "task_id",
+        "role_id",
+        "depends_on",
+        "parallel_safe",
+        "success_criteria",
+    }
+    nodes_by_id = {}
+
+    for index, node in enumerate(data):
+        if not isinstance(node, dict):
+            return False, f"task_graph node at index {index} must be object"
+
+        missing = sorted(required_fields - node.keys())
+        if missing:
+            return False, f"task_graph node at index {index} missing fields: {', '.join(missing)}"
+
+        task_id = node.get("task_id")
+        if not isinstance(task_id, str) or not task_id.strip():
+            return False, f"task_graph node at index {index} has invalid task_id"
+
+        depends_on = node.get("depends_on")
+        if not isinstance(depends_on, list):
+            return False, f"task_graph node '{task_id}' depends_on must be list"
+        if any(not isinstance(dep, str) or not dep.strip() for dep in depends_on):
+            return False, f"task_graph node '{task_id}' depends_on must contain non-empty strings"
+
+        if not isinstance(node.get("parallel_safe"), bool):
+            return False, f"task_graph node '{task_id}' parallel_safe must be boolean"
+
+        if isinstance(node.get("role_id"), bool) or not isinstance(node.get("role_id"), int):
+            return False, f"task_graph node '{task_id}' role_id must be integer"
+
+        success_criteria = node.get("success_criteria")
+        if not isinstance(success_criteria, str) or not success_criteria.strip():
+            return False, f"task_graph node '{task_id}' success_criteria must be non-empty string"
+
+        if task_id in nodes_by_id:
+            return False, f"task_graph duplicate task_id: {task_id}"
+
+        nodes_by_id[task_id] = node
+
+    for task_id, node in nodes_by_id.items():
+        for dependency in node["depends_on"]:
+            if dependency not in nodes_by_id:
+                return False, f"task_graph node '{task_id}' depends on unknown task '{dependency}'"
+
+    visiting = set()
+    visited = set()
+
+    def visit(task_id: str) -> bool:
+        if task_id in visited:
+            return True
+        if task_id in visiting:
+            return False
+
+        visiting.add(task_id)
+        for dependency in nodes_by_id[task_id]["depends_on"]:
+            if not visit(dependency):
+                return False
+        visiting.remove(task_id)
+        visited.add(task_id)
+        return True
+
+    for task_id in nodes_by_id:
+        if not visit(task_id):
+            return False, f"task_graph cycle detected at task '{task_id}'"
+
+    return True, "task_graph.json valid DAG"
 
 
 def load_role_specs() -> dict:
@@ -1019,10 +1108,14 @@ def check_sod_compliance() -> bool:
     Returns:
         bool: True if all gates pass compliance, False if any hard-blocking failure
     """
+    task_graph_valid, task_graph_msg = validate_task_graph()
+    if not task_graph_valid:
+        print(f"FAIL: {task_graph_msg}")
+
     gates_list = load_gates()
     
     if not gates_list:
-        return True  # No gates to check
+        return task_graph_valid  # No gates to check beyond task graph
     
     # Load role specs
     role_specs = load_role_specs()
@@ -1042,7 +1135,7 @@ def check_sod_compliance() -> bool:
     superseded = get_superseded_gates(gates_dict)
     
     # Check each gate
-    all_pass = True
+    all_pass = task_graph_valid
     
     for gate_name, gate in gates_dict.items():
         # Skip superseded gates
