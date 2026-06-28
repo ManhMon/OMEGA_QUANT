@@ -34,6 +34,8 @@ from sod_gate_enforcer import (
     FORBIDDEN_SKILL_PATHS,
     SKILL_LOADING_CUTOFF,
     STRICT_GATE_NAME,
+    STRICT_SKILL_ALIGNMENT_CUTOFF,
+    STRICT_SKILL_ALIGNMENT_GATE,
     _validate_audit_report_skill_content,
     _validate_l2_report_content,
     build_remediation_chains,
@@ -173,10 +175,13 @@ class TestCheckL2ReportSkillSources:
             "## Repo-Local Skill Source Evidence\n"
             "- REPO_AGENT_ROOT: .agents/agent\n"
             "- REPO_SKILL_ROOT: .agents/skills\n"
-            "Files read:\n"
+            "## Repo-Local Files Read\n"
             "- .agents/agent/devops-engineer.md\n"
             "- .agents/skills/deployment-procedures/SKILL.md\n"
             "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/testing-patterns/SKILL.md\n"
+            "- .agents/skills/server-management/SKILL.md\n"
+            "- .agents/skills/systematic-debugging/SKILL.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is True
@@ -199,7 +204,7 @@ class TestCheckL2ReportSkillSources:
             "## Repo-Local Skill Source Evidence\n"
             "REPO_AGENT_ROOT: .agents/agent\n"
             "REPO_SKILL_ROOT: .agents/skills\n"
-            "Files read:\n"
+            "## Repo-Local Files Read\n"
             "- .agents/agent/devops-engineer.md\n"
             "- .agents/skills/clean-code/SKILL.md\n\n"
             "Skills loaded from C:\\Users\\GHC\\.agents\\skills as the source: for coding.\n"
@@ -207,6 +212,20 @@ class TestCheckL2ReportSkillSources:
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is False
         assert "forbidden path" in msg.lower()
+
+    def test_legacy_l2_report_allows_loose_agent_only_check(self):
+        """Legacy mode accepts repo-local agent evidence without strict skill matching."""
+        content = (
+            "# L2 Report\n\n"
+            "## Repo-Local Skill Source Evidence\n"
+            "- REPO_AGENT_ROOT: .agents/agent\n"
+            "- REPO_SKILL_ROOT: .agents/skills\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/agent/some-legacy-role.md\n"
+        )
+        valid, msg = _validate_l2_report_content(content)
+        assert valid is True
+        assert "legacy" in msg.lower()
 
 
 class TestCheckAuditReportSkillSources:
@@ -226,9 +245,15 @@ class TestCheckAuditReportSkillSources:
             "# Audit Report\n\n"
             "## Verdict: [APPROVED]\n"
             "L2 report lists repo-local skill source evidence from .agents/agent and .agents/skills.\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/skills/code-review-checklist/SKILL.md\n"
+            "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/testing-patterns/SKILL.md\n"
+            "- .agents/skills/audit-cycle/SKILL.md\n"
+            "- .agents/skills/omega-sod/SKILL.md\n"
             "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
         )
-        valid, msg = _validate_audit_report_skill_content(content, "role21_test_20260612.md")
+        valid, msg = _validate_audit_report_skill_content(content, "role21_test_20260612.md", 21, "code-reviewer")
         assert valid is True
 
     def test_audit_report_with_forbidden_violation(self):
@@ -240,6 +265,21 @@ class TestCheckAuditReportSkillSources:
         valid, msg = _validate_audit_report_skill_content(content, "role21_violation_20260612.md")
         assert valid is False
         assert "forbidden path" in msg.lower()
+
+    def test_legacy_audit_report_allows_loose_agent_only_check(self):
+        """Legacy mode accepts repo-local agent evidence without strict skill matching."""
+        content = (
+            "# Audit Report\n\n"
+            "## Verdict: [APPROVED]\n"
+            "L2 report lists repo-local skill source evidence from .agents/agent.\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/agent/code-reviewer.md\n"
+            "## Forbidden Path Scan Result\n"
+            "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
+        )
+        valid, msg = _validate_audit_report_skill_content(content, "role21_legacy_20260612.md")
+        assert valid is True
+        assert "legacy" in msg.lower()
 
 
 class TestSkillLoadingCutoff:
@@ -548,11 +588,13 @@ class TestL2ReportTightenedValidation:
             "## Repo-Local Skill Source Evidence\n"
             "REPO_AGENT_ROOT=C:\\Users\\GHC\\repos\\OMEGA_QUANT\\.agents\\agent\n"
             "REPO_SKILL_ROOT=C:\\Users\\GHC\\repos\\OMEGA_QUANT\\.agents\\skills\n\n"
-            "Files read:\n"
+            "## Repo-Local Files Read\n"
             "- .agents/agent/devops-engineer.md\n"
             "- .agents/skills/deployment-procedures/SKILL.md\n"
             "- .agents/skills/clean-code/SKILL.md\n"
             "- .agents/skills/testing-patterns/SKILL.md\n"
+            "- .agents/skills/server-management/SKILL.md\n"
+            "- .agents/skills/systematic-debugging/SKILL.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is True
@@ -564,12 +606,69 @@ class TestL2ReportTightenedValidation:
             "## Repo-Local Skill Source Evidence\n"
             "REPO_AGENT_ROOT: .agents/agent\n"
             "REPO_SKILL_ROOT: .agents/skills\n\n"
-            "Files read:\n"
+            "## Repo-Local Files Read\n"
             "- .agents/skills/clean-code/SKILL.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is False
         assert "devops-engineer" in msg or "exact" in msg.lower()
+
+    def test_report_missing_declared_skill_fails(self):
+        """L2 report missing declared skill fails."""
+        content = (
+            "# L2 Report\n\n"
+            "## Repo-Local Skill Source Evidence\n"
+            "REPO_AGENT_ROOT: .agents/agent\n"
+            "REPO_SKILL_ROOT: .agents/skills\n\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/agent/devops-engineer.md\n"
+            "- .agents/skills/deployment-procedures/SKILL.md\n"
+            "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/testing-patterns/SKILL.md\n"
+            "- .agents/skills/server-management/SKILL.md\n"
+        )
+        valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
+        assert valid is False
+        assert "missing declared skill files" in msg.lower()
+
+    def test_report_with_undeclared_skill_fails(self):
+        """L2 report with undeclared skill fails."""
+        content = (
+            "# L2 Report\n\n"
+            "## Repo-Local Skill Source Evidence\n"
+            "REPO_AGENT_ROOT: .agents/agent\n"
+            "REPO_SKILL_ROOT: .agents/skills\n\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/agent/devops-engineer.md\n"
+            "- .agents/skills/deployment-procedures/SKILL.md\n"
+            "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/testing-patterns/SKILL.md\n"
+            "- .agents/skills/server-management/SKILL.md\n"
+            "- .agents/skills/systematic-debugging/SKILL.md\n"
+            "- .agents/skills/undeclared-skill/SKILL.md\n"
+        )
+        valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
+        assert valid is False
+        assert "undeclared skill files" in msg.lower()
+
+    def test_global_config_file_allowed(self):
+        """Global config files are allowed alongside declared skills."""
+        content = (
+            "# L2 Report\n\n"
+            "## Repo-Local Skill Source Evidence\n"
+            "REPO_AGENT_ROOT: .agents/agent\n"
+            "REPO_SKILL_ROOT: .agents/skills\n\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/AGENTS.md\n"
+            "- .agents/agent/devops-engineer.md\n"
+            "- .agents/skills/deployment-procedures/SKILL.md\n"
+            "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/testing-patterns/SKILL.md\n"
+            "- .agents/skills/server-management/SKILL.md\n"
+            "- .agents/skills/systematic-debugging/SKILL.md\n"
+        )
+        valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
+        assert valid is True
 
 
 # =========================================================================
@@ -581,7 +680,7 @@ class TestAuditReportTightenedValidation:
     and explicit forbidden path scan result."""
 
     def test_audit_report_missing_repo_local_refs(self):
-        """Audit report without repo-local references fails."""
+        """Legacy audit report without repo-local refs still passes in loose mode."""
         content = (
             "# Audit Report\n\n"
             "## Verdict: [APPROVED]\n"
@@ -589,11 +688,11 @@ class TestAuditReportTightenedValidation:
             "Forbidden path scan: no violations found.\n"
         )
         valid, msg = _validate_audit_report_skill_content(content, "role21_no_refs_20260612.md")
-        assert valid is False
-        assert "repo-local" in msg.lower()
+        assert valid is True
+        assert "legacy" in msg.lower()
 
     def test_audit_report_missing_forbidden_scan(self):
-        """Audit report without explicit forbidden path scan result fails."""
+        """Legacy audit report without forbidden scan still passes in loose mode."""
         content = (
             "# Audit Report\n\n"
             "## Verdict: [APPROVED]\n"
@@ -601,8 +700,8 @@ class TestAuditReportTightenedValidation:
             "All checks pass.\n"
         )
         valid, msg = _validate_audit_report_skill_content(content, "role21_no_scan_20260612.md")
-        assert valid is False
-        assert "forbidden path scan" in msg.lower()
+        assert valid is True
+        assert "legacy" in msg.lower()
 
     def test_audit_report_complete_passes(self):
         """Complete audit report with all required evidence passes."""
@@ -611,13 +710,78 @@ class TestAuditReportTightenedValidation:
             "## Verdict: [APPROVED]\n\n"
             "## Repo-Local Skill Source Verification\n"
             "L2 report lists exact repo-local files read from .agents/agent and .agents/skills.\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/AGENTS.md\n"
+            "- .agents/skills/code-review-checklist/SKILL.md\n"
+            "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/testing-patterns/SKILL.md\n"
+            "- .agents/skills/audit-cycle/SKILL.md\n"
+            "- .agents/skills/omega-sod/SKILL.md\n"
             "All skill source evidence is repo-local.\n\n"
             "## Forbidden Path Scan Result\n"
             "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
             "No forbidden path violations found.\n"
         )
-        valid, msg = _validate_audit_report_skill_content(content, "role21_complete_20260612.md")
+        valid, msg = _validate_audit_report_skill_content(content, "role21_complete_20260612.md", 21, "code-reviewer")
         assert valid is True
+
+    def test_audit_report_missing_declared_skill_fails(self):
+        """Audit report missing declared skill fails."""
+        content = (
+            "# Audit Report\n\n"
+            "## Verdict: [APPROVED]\n\n"
+            "## Repo-Local Skill Source Verification\n"
+            "L2 report lists exact repo-local files read from .agents/agent and .agents/skills.\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/skills/code-review-checklist/SKILL.md\n"
+            "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/testing-patterns/SKILL.md\n"
+            "- .agents/skills/audit-cycle/SKILL.md\n"
+            "## Forbidden Path Scan Result\n"
+            "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
+        )
+        valid, msg = _validate_audit_report_skill_content(content, "role21_missing_skill_20260612.md", 21, "code-reviewer")
+        assert valid is False
+        assert "missing declared skill files" in msg.lower()
+
+    def test_audit_report_with_zero_skill_files_fails(self):
+        """Audit report with zero listed skill files fails when role declares skills."""
+        content = (
+            "# Audit Report\n\n"
+            "## Verdict: [APPROVED]\n\n"
+            "## Repo-Local Skill Source Verification\n"
+            "L2 report lists exact repo-local files read from .agents/agent and .agents/skills.\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/agent/code-reviewer.md\n"
+            "- .agents/AGENTS.md\n"
+            "## Forbidden Path Scan Result\n"
+            "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
+        )
+        valid, msg = _validate_audit_report_skill_content(content, "role21_zero_skill_files_20260612.md", 21, "code-reviewer")
+        assert valid is False
+        assert "missing skill file evidence" in msg.lower()
+
+
+    def test_audit_report_extra_skill_fails(self):
+        """Audit report with undeclared skill fails."""
+        content = (
+            "# Audit Report\n\n"
+            "## Verdict: [APPROVED]\n\n"
+            "## Repo-Local Skill Source Verification\n"
+            "L2 report lists exact repo-local files read from .agents/agent and .agents/skills.\n"
+            "## Repo-Local Files Read\n"
+            "- .agents/skills/code-review-checklist/SKILL.md\n"
+            "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/testing-patterns/SKILL.md\n"
+            "- .agents/skills/audit-cycle/SKILL.md\n"
+            "- .agents/skills/omega-sod/SKILL.md\n"
+            "- .agents/skills/undeclared-skill/SKILL.md\n"
+            "## Forbidden Path Scan Result\n"
+            "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
+        )
+        valid, msg = _validate_audit_report_skill_content(content, "role21_extra_skill_20260612.md", 21, "code-reviewer")
+        assert valid is False
+        assert "undeclared skill files" in msg.lower()
 
 
 # =========================================================================
@@ -1108,6 +1272,94 @@ class TestL3PanelAuditing:
 
         assert valid is False
         assert "separation" in msg.lower() or "writer/auditor" in msg.lower()
+
+
+class TestStrictSkillAlignmentRouting:
+    def _base_gate(self, phase_name, timestamp):
+        return {
+            "phase_name": phase_name,
+            "l2_session_id": "l2_role11_gate_20260628",
+            "l2_completed": True,
+            "l2_role_id": 11,
+            "l2_role_name": "devops-engineer",
+            "l3_session_id": "l3_role21_gate_20260628",
+            "l3_session_key": "role21_gate_20260628",
+            "l3_role_id": 21,
+            "l3_role_name": "code-reviewer",
+            "audit_report_path": ".ly_state/session/audit_reports/role21_gate_20260628.md",
+            "final_verdict": "[APPROVED]",
+            "sod_boundary_checked": True,
+            "writer_auditor_separated": True,
+            "repo_local_skill_sources": [".agents/agent/devops-engineer.md"],
+            "forbidden_path_scan": "clean",
+            "timestamp": timestamp,
+        }
+
+    def _role_specs(self):
+        return {
+            11: {"name": "devops-engineer", "tier": 2, "platform": "OpenCode", "sod_boundary": "test"},
+            21: {"name": "code-reviewer", "tier": 3, "platform": "Codex", "sod_boundary": "READ-ONLY"},
+        }
+
+    def test_legacy_gate_uses_loose_skill_checks(self):
+        gate = self._base_gate("LEGACY_GATE", "2026-06-27T23:59:59+00:00")
+        gates_json = json.dumps([gate])
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data=gates_json)):
+                with patch("sod_gate_enforcer.load_role_specs", return_value=self._role_specs()):
+                    with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                        with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                            with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as mock_l2:
+                                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as mock_audit:
+                                    result = check_sod_compliance()
+
+        assert result is True
+        assert mock_l2.call_args.args == ("l2_role11_gate_20260628", None, None)
+        assert mock_audit.call_args.args == (".ly_state/session/audit_reports/role21_gate_20260628.md", None, None)
+
+    def test_named_strict_gate_uses_strict_skill_checks_before_cutoff(self):
+        gate = self._base_gate(STRICT_SKILL_ALIGNMENT_GATE, "2026-06-27T12:00:00+00:00")
+        gates_json = json.dumps([gate])
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data=gates_json)):
+                with patch("sod_gate_enforcer.load_role_specs", return_value=self._role_specs()):
+                    with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                        with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                            with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as mock_l2:
+                                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as mock_audit:
+                                    result = check_sod_compliance()
+
+        assert result is True
+        assert mock_l2.call_args.args == ("l2_role11_gate_20260628", 11, "devops-engineer")
+        assert mock_audit.call_args.args == (".ly_state/session/audit_reports/role21_gate_20260628.md", 21, "code-reviewer")
+
+    def test_timestamp_strict_gate_uses_strict_skill_checks(self):
+        assert STRICT_SKILL_ALIGNMENT_CUTOFF == 1782636960.0
+
+        gate = self._base_gate("FUTURE_GATE", "2026-06-28T08:56:00+00:00")
+        gates_json = json.dumps([gate])
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data=gates_json)):
+                with patch("sod_gate_enforcer.load_role_specs", return_value=self._role_specs()):
+                    with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                        with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                            with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as mock_l2:
+                                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as mock_audit:
+                                    result = check_sod_compliance()
+
+        assert result is True
+        assert mock_l2.call_args.args == ("l2_role11_gate_20260628", 11, "devops-engineer")
+        assert mock_audit.call_args.args == (".ly_state/session/audit_reports/role21_gate_20260628.md", 21, "code-reviewer")
 
 
 # =========================================================================

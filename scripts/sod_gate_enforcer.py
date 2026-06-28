@@ -55,6 +55,13 @@ CUTOFF_TIMESTAMP = datetime(2026, 6, 10, 17, 0, 0, tzinfo=timezone.utc).timestam
 # Gates created before this date are exempt from repo-local skill source checks
 SKILL_LOADING_CUTOFF = datetime(2026, 6, 11, 17, 0, 0, tzinfo=timezone.utc).timestamp()
 
+# Cutoff for strict declared-skill alignment (2026-06-28 08:56:00 UTC)
+STRICT_SKILL_ALIGNMENT_CUTOFF = datetime(2026, 6, 28, 8, 56, 0, tzinfo=timezone.utc).timestamp()
+
+
+# Gate name for strict declared-skill alignment enforcement
+STRICT_SKILL_ALIGNMENT_GATE = "SOD_STRICT_SKILL_ALIGNMENT_20260628"
+
 # Forbidden paths for authoritative skill/role loading (non-authoritative mentions allowed)
 FORBIDDEN_SKILL_PATHS = [
     r".gemini\antigravity-ide\scratch\ag-kit",
@@ -104,6 +111,15 @@ _CHAIN_BASE_RE = re.compile(r'^(.+)_(\d{8})$')
 
 # Cache for loaded role specs
 _ROLE_SPECS_CACHE = None
+
+ALLOWED_GLOBAL_REPO_LOCAL_FILES = {
+    ".agents/agents.md",
+    ".agents\\agents.md",
+    "agents.md",
+    "phase_gates.json",
+    ".ly_state/session/phase_gates.json",
+    ".ly_state\\session\\phase_gates.json",
+}
 
 
 def validate_task_graph() -> tuple[bool, str]:
@@ -234,8 +250,22 @@ def load_role_specs() -> dict:
                     key = key.strip()
                     value = value.strip()
                     
+                    # Parse simple inline YAML lists like [a, b, c]
+                    if value.startswith('[') and value.endswith(']'):
+                        items = []
+                        inner = value[1:-1].strip()
+                        if inner:
+                            for item in inner.split(','):
+                                item = item.strip()
+                                if item.startswith('"') and item.endswith('"'):
+                                    item = item[1:-1]
+                                elif item.startswith("'") and item.endswith("'"):
+                                    item = item[1:-1]
+                                if item:
+                                    items.append(item)
+                        value = items
                     # Remove quotes
-                    if value.startswith('"') and value.endswith('"'):
+                    elif value.startswith('"') and value.endswith('"'):
                         value = value[1:-1]
                     elif value.startswith("'") and value.endswith("'"):
                         value = value[1:-1]
@@ -746,7 +776,7 @@ def validate_forbidden_path_usage(text) -> tuple:
     return len(violations) > 0, violations
 
 
-def _validate_l2_report_content(content, role_id, role_name) -> tuple:
+def _validate_l2_report_content(content, role_id=None, role_name=None) -> tuple:
     """Validate L2 report contains repo-local skill source evidence.
     
     Requires:
@@ -774,47 +804,85 @@ def _validate_l2_report_content(content, role_id, role_name) -> tuple:
     if has_violation:
         return False, f"Forbidden path violation in L2 report: {violations[0]}"
     
+    repo_local_markers = (
+        " repo-local",
+        "repo_local",
+        ".agents/agent",
+        ".agents\\agent",
+        ".agents/skills",
+        ".agents\\skills",
+        "repo_agent_root",
+        "repo_skill_root",
+    )
+    has_legacy_repo_local_evidence = any(marker in content_lower for marker in repo_local_markers)
+
+    if role_id is None:
+        if has_legacy_repo_local_evidence:
+            return True, "L2 report has valid legacy repo-local skill source evidence"
+        return False, "L2 report missing legacy repo-local skill source evidence"
+
     # Check REPO_AGENT_ROOT reference
     has_agent_root = (
         "repo_agent_root" in content_lower or
         ".agents/agent" in content_lower or
-        ".agents\\agent" in content_lower or
-        ".agents/agent" in content or
-        ".agents\\agent" in content
+        ".agents\\agent" in content_lower
     )
-    
+
     # Check REPO_SKILL_ROOT reference
     has_skill_root = (
         "repo_skill_root" in content_lower or
         ".agents/skills" in content_lower or
-        ".agents\\skills" in content_lower or
-        ".agents/skills" in content or
-        ".agents\\skills" in content
+        ".agents\\skills" in content_lower
     )
-    
+
     if not has_agent_root and not has_skill_root:
         return False, (
             "L2 report missing repo-local skill source evidence: "
             "no REPO_AGENT_ROOT or REPO_SKILL_ROOT reference found"
         )
-    
+
+    if role_id is None:
+        return True, "L2 report has valid legacy repo-local skill source evidence"
+
+
     if not has_agent_root:
         return False, (
             "L2 report missing REPO_AGENT_ROOT reference: "
             "must list exact agent file read from .agents/agent"
         )
-    
+
     if not has_skill_root:
         return False, (
             "L2 report missing REPO_SKILL_ROOT reference: "
             "must list exact skill files read from .agents/skills"
         )
     
+    reported_files = _extract_repo_local_files_read(content)
+    reported_agent_files = {
+        path for path in reported_files
+        if re.fullmatch(r"\.agents[/\\]agent[/\\][^/\\]+\.md", path, re.IGNORECASE)
+    }
+    reported_skill_files = _extract_reported_skill_files(reported_files)
+
+    if not reported_agent_files and not reported_skill_files:
+        return False, (
+            "L2 report missing repo-local file evidence: must list at least one "
+            "repo-local agent or skill file in Repo-Local Files Read"
+        )
+
+    role_specs = load_role_specs()
+    spec = role_specs.get(int(role_id)) if role_id is not None else None
+    if not spec:
+        return False, f"Role spec not found for l2_role_id {role_id}"
+
+    declared_skills = spec.get('skills') or []
+    if not isinstance(declared_skills, list):
+        return False, f"Role spec for {role_name} has invalid skills list"
+
     # Check exact role file read
     role_name_str = str(role_name) if role_name else ""
     has_exact_role_file = False
     if role_name_str:
-        # Check for .agents/agent/<role_name>.md pattern
         patterns = [
             f".agents/agent/{role_name_str}.md",
             f".agents\\agent\\{role_name_str}.md",
@@ -829,32 +897,39 @@ def _validate_l2_report_content(content, role_id, role_name) -> tuple:
             if p in content or p.lower() in content_lower:
                 has_exact_role_file = True
                 break
-    
+
     if role_name_str and not has_exact_role_file:
         return False, (
             f"L2 report missing exact role file: expected .agents/agent/{role_name_str}.md "
             f"in files read list"
         )
-    
-    # Check at least one skill file from .agents/skills/
-    has_skill_file = (
-        ".agents/skills/" in content and "SKILL.md" in content
-    ) or (
-        ".agents\\skills\\" in content and "SKILL.md" in content
-    ) or (
-        re.search(r'\.agents[/\\]skills[/\\]\w+', content) is not None
-    )
-    
-    if not has_skill_file:
+    expected_skill_files = {
+        f".agents/skills/{skill}/SKILL.md".lower()
+        for skill in declared_skills
+    }
+
+    if not reported_skill_files:
         return False, (
             "L2 report missing skill file evidence: "
-            "must list at least one .agents/skills/<name>/SKILL.md in files read"
+            "must list declared .agents/skills/<name>/SKILL.md files in Repo-Local Files Read"
+        )
+
+    missing_skill_files = sorted(expected_skill_files - reported_skill_files)
+    if missing_skill_files:
+        return False, (
+            "L2 report missing declared skill files: " + ", ".join(missing_skill_files)
+        )
+
+    extra_skill_files = sorted(reported_skill_files - expected_skill_files)
+    if extra_skill_files:
+        return False, (
+            "L2 report lists undeclared skill files: " + ", ".join(extra_skill_files)
         )
     
-    return True, "L2 report has valid repo-local skill source evidence"
+    return True, "L2 report has valid strict repo-local skill source evidence"
 
 
-def _validate_audit_report_skill_content(content, report_filename) -> tuple:
+def _validate_audit_report_skill_content(content, report_filename, role_id=None, role_name=None) -> tuple:
     """Validate audit report content for repo-local skill source verification.
     
     Requires:
@@ -889,29 +964,82 @@ def _validate_audit_report_skill_content(content, report_filename) -> tuple:
         ".agents\\skills" in content
     )
     
-    if not has_repo_local:
-        return False, (
-            "Audit report missing repo-local skill source verification: "
-            "must reference L2 report's repo-local skill source evidence"
-        )
-    
     # Check for explicit forbidden path scan result
     has_forbidden_scan = (
         "forbidden path scan" in content_lower or
         "forbidden-path scan" in content_lower or
         "forbidden path" in content_lower and "scan" in content_lower
     )
-    
+
+    if role_id is None:
+        return True, "Audit report has valid legacy repo-local skill source verification"
+
+    if not has_repo_local:
+        return False, (
+            "Audit report missing repo-local skill source verification: "
+            "must reference L2 report's repo-local skill source evidence"
+        )
+
     if not has_forbidden_scan:
         return False, (
             "Audit report missing forbidden path scan result: "
             "must include explicit forbidden path scan evidence"
         )
+
+    reported_files = _extract_repo_local_files_read(content)
+    reported_agent_files = {
+        path for path in reported_files
+        if re.fullmatch(r"\.agents[/\\]agent[/\\][^/\\]+\.md", path, re.IGNORECASE)
+    }
+    reported_skill_files = _extract_reported_skill_files(reported_files)
+
+    if not reported_agent_files and not reported_skill_files:
+        return False, (
+            "Audit report missing repo-local file evidence: must list at least one "
+            "repo-local agent or skill file in Repo-Local Files Read"
+        )
+
+    if role_name:
+        role_specs = load_role_specs()
+        spec = role_specs.get(int(role_id))
+        if not spec:
+            return False, f"Role spec not found for l3_role_id {role_id}"
+
+        declared_skills = spec.get('skills') or []
+        if not isinstance(declared_skills, list):
+            return False, f"Role spec for {role_name} has invalid skills list"
+
+        expected_skill_files = {
+            f".agents/skills/{skill}/SKILL.md".lower()
+            for skill in declared_skills
+        }
+
+        if expected_skill_files and not reported_skill_files:
+            return False, (
+                "Audit report missing skill file evidence: "
+                "must list declared .agents/skills/<name>/SKILL.md files in Repo-Local Files Read"
+            )
+
+        missing_skill_files = sorted(expected_skill_files - reported_skill_files)
+        if missing_skill_files:
+            return False, (
+                "Audit report missing declared skill files: " + ", ".join(missing_skill_files)
+            )
+
+        extra_skill_files = sorted(reported_skill_files - expected_skill_files)
+        non_global_extras = [
+            path for path in extra_skill_files
+            if path not in ALLOWED_GLOBAL_REPO_LOCAL_FILES
+        ]
+        if non_global_extras:
+            return False, (
+                "Audit report lists undeclared skill files: " + ", ".join(non_global_extras)
+            )
     
-    return True, "Audit report has valid repo-local skill source verification"
+    return True, "Audit report has valid strict repo-local skill source verification"
 
 
-def check_l2_report_skill_sources(session_id, role_id, role_name) -> tuple:
+def check_l2_report_skill_sources(session_id, role_id=None, role_name=None) -> tuple:
     """Check L2 report for repo-local skill source evidence.
     
     Args:
@@ -939,7 +1067,7 @@ def check_l2_report_skill_sources(session_id, role_id, role_name) -> tuple:
     return _validate_l2_report_content(content, role_id, role_name)
 
 
-def check_audit_report_skill_sources(report_path) -> tuple:
+def check_audit_report_skill_sources(report_path, role_id=None, role_name=None) -> tuple:
     """Check audit report for repo-local skill source verification.
     
     Args:
@@ -965,7 +1093,50 @@ def check_audit_report_skill_sources(report_path) -> tuple:
         return True, f"Audit report read error (checked separately): {e}"
     
     report_filename = full_path.name
-    return _validate_audit_report_skill_content(content, report_filename)
+    return _validate_audit_report_skill_content(content, report_filename, role_id, role_name)
+
+
+def _extract_repo_local_files_read(content: str) -> list[str]:
+    """Extract file paths listed in repo-local files-read blocks."""
+    files = []
+    capture = False
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip()
+        line_lower = line.lower()
+
+        if "repo-local files read" in line_lower or line_lower.startswith("files read:"):
+            capture = True
+            continue
+
+        if capture and line.startswith("#"):
+            break
+
+        if capture and line.startswith("-"):
+            file_path = line[1:].strip().strip('`')
+            if file_path:
+                files.append(file_path)
+            continue
+
+        if capture and line and not line.startswith("-"):
+            break
+
+    return files
+
+
+def _normalize_report_path(path: str) -> str:
+    return path.replace('\\', '/').strip().lower()
+
+
+def _extract_reported_skill_files(reported_files: list[str]) -> set[str]:
+    skill_files = set()
+    for file_path in reported_files:
+        normalized = _normalize_report_path(file_path)
+        if normalized in ALLOWED_GLOBAL_REPO_LOCAL_FILES:
+            continue
+        if re.fullmatch(r"\.agents/skills/[^/]+/skill\.md", normalized):
+            skill_files.add(normalized)
+    return skill_files
 
 
 def _validate_panel_audit(audit: dict, l2_role_id, role_specs: dict) -> tuple[bool, str]:
@@ -1232,6 +1403,8 @@ def check_sod_compliance() -> bool:
                 continue
         
         l3_panel = gate.get("l3_panel")
+        l3_role_id = gate.get("l3_role_id")
+        l3_role_name = gate.get("l3_role_name")
         if l3_panel is not None:
             panel_valid, panel_msg = validate_l3_panel(l3_panel, l2_role_id, role_specs)
             if not panel_valid:
@@ -1240,9 +1413,6 @@ def check_sod_compliance() -> bool:
             audit_path = ""
         else:
             # Validate L3 role
-            l3_role_id = gate.get("l3_role_id")
-            l3_role_name = gate.get("l3_role_name")
-
             if l3_role_id is not None:
                 l3_valid, l3_msg = validate_l3_role(l3_role_id, l3_role_name, role_specs)
                 if not l3_valid:
@@ -1282,6 +1452,11 @@ def check_sod_compliance() -> bool:
                     all_pass = False
                     continue
         
+        is_strict_skill_alignment_gate = (
+            phase_name == STRICT_SKILL_ALIGNMENT_GATE or
+            (ts is not None and ts >= STRICT_SKILL_ALIGNMENT_CUTOFF)
+        )
+
         # --- STRICT_REPO_LOCAL_SKILL_LOADING_20260612 checks ---
         if ts is not None and ts >= SKILL_LOADING_CUTOFF:
             # Check if this is the STRICT gate itself (Tier C: always hard-blocking)
@@ -1301,7 +1476,9 @@ def check_sod_compliance() -> bool:
                 # Validate L2 report content
                 l2_session_id = gate.get("l2_session_id", "")
                 l2_valid, l2_msg = check_l2_report_skill_sources(
-                    l2_session_id, l2_role_id, l2_role_name
+                    l2_session_id,
+                    l2_role_id if is_strict_skill_alignment_gate else None,
+                    l2_role_name if is_strict_skill_alignment_gate else None,
                 )
                 if not l2_valid:
                     all_pass = False
@@ -1309,7 +1486,11 @@ def check_sod_compliance() -> bool:
                 
                 # Validate audit report skill content
                 if audit_path:
-                    audit_valid, audit_msg = check_audit_report_skill_sources(audit_path)
+                    audit_valid, audit_msg = check_audit_report_skill_sources(
+                        audit_path,
+                        l3_role_id if is_strict_skill_alignment_gate else None,
+                        l3_role_name if is_strict_skill_alignment_gate else None,
+                    )
                     if not audit_valid:
                         all_pass = False
                         continue
@@ -1318,14 +1499,20 @@ def check_sod_compliance() -> bool:
                 # Has strict fields -> validate them (hard-blocking)
                 l2_session_id = gate.get("l2_session_id", "")
                 l2_valid, l2_msg = check_l2_report_skill_sources(
-                    l2_session_id, l2_role_id, l2_role_name
+                    l2_session_id,
+                    l2_role_id if is_strict_skill_alignment_gate else None,
+                    l2_role_name if is_strict_skill_alignment_gate else None,
                 )
                 if not l2_valid:
                     all_pass = False
                     continue
                 
                 if audit_path:
-                    audit_valid, audit_msg = check_audit_report_skill_sources(audit_path)
+                    audit_valid, audit_msg = check_audit_report_skill_sources(
+                        audit_path,
+                        l3_role_id if is_strict_skill_alignment_gate else None,
+                        l3_role_name if is_strict_skill_alignment_gate else None,
+                    )
                     if not audit_valid:
                         all_pass = False
                         continue
