@@ -8,6 +8,13 @@ AUDIT_DIR = WORKSPACE / ".ly_state" / "session" / "audit_reports"
 KNOWLEDGE_DIR = WORKSPACE / ".agents" / "knowledge"
 LESSONS_FILE = KNOWLEDGE_DIR / "lessons.jsonl"
 
+ROLE_MAP = {
+    6: "system-architect", 7: "tech-lead", 8: "frontend-engineer",
+    9: "backend-engineer", 10: "database-admin", 11: "devops-engineer",
+    12: "cloud-infra-engineer", 13: "ui-ux-integrator", 14: "data-scientist",
+    15: "data-engineer", 16: "machine-learning-engineer"
+}
+
 def extract_lessons():
     print("Extracting lessons from audit reports...")
     
@@ -17,6 +24,16 @@ def extract_lessons():
         
     KNOWLEDGE_DIR.mkdir(parents=True, exist_ok=True)
     
+    # Load phase_gates.json to cross-reference gate metadata
+    gates_path = WORKSPACE / ".ly_state" / "session" / "phase_gates.json"
+    gates_dict = {}
+    if gates_path.exists():
+        try:
+            with open(gates_path, encoding='utf-8') as f:
+                gates_dict = json.load(f)
+        except Exception as e:
+            print(f"Warning: failed to load phase_gates.json: {e}")
+            
     # Let's read all audit reports
     lessons = []
     
@@ -29,7 +46,6 @@ def extract_lessons():
         
         # Parse fields using simple regex
         gate_match = re.search(r'\*\*Gate\*\*:\s*([A-Za-z0-9_]+)', content)
-        role_match = re.search(r'\*\*Role\*\*:\s*([A-Za-z0-9_\-]+)\s*\(Role\s*(\d+)\)', content)
         verdict_match = re.search(r'## Verdict\s*\n+\s*\[(APPROVED|NEEDS_FIX|APPROVED_PARTIAL)\]', content)
         
         if not gate_match or not verdict_match:
@@ -37,8 +53,32 @@ def extract_lessons():
             
         gate = gate_match.group(1)
         verdict = verdict_match.group(1)
-        role_name = role_match.group(1) if role_match else "unknown"
-        role_id = int(role_match.group(2)) if role_match else 0
+        
+        # Try to resolve L2 role ID and Name
+        role_id = 0
+        role_name = "unknown"
+        
+        gate_data = gates_dict.get(gate, {})
+        l2_role_id = gate_data.get("l2_role_id")
+        l2_role_name = gate_data.get("l2_role_name")
+        
+        if l2_role_id is not None:
+            role_id = int(l2_role_id)
+            role_name = l2_role_name
+        else:
+            # Fallback to extracting from l2_session_id or l2_role pattern in content
+            session_match = re.search(r'l2_role(\d+)', content)
+            if session_match:
+                role_id = int(session_match.group(1))
+                role_name = ROLE_MAP.get(role_id, "unknown")
+            else:
+                # Try parsing raw L2 Role text
+                l2_role_match = re.search(r'\*\*L2 Role\*\*:\s*([A-Za-z0-9_\-\s\(\),]+)', content, re.IGNORECASE)
+                if l2_role_match:
+                    nums = re.findall(r'\d+', l2_role_match.group(1))
+                    if nums:
+                        role_id = int(nums[0])
+                        role_name = ROLE_MAP.get(role_id, "unknown")
         
         # Extract findings/issues
         findings_sec = ""
