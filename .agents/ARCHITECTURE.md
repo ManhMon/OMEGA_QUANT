@@ -1,6 +1,6 @@
 # AG Kit Architecture
 
-> Comprehensive AI Agent Capability Expansion Toolkit — 2026.5.31
+> Comprehensive AI Agent Capability Expansion Toolkit — Synced dynamically
 
 ---
 
@@ -8,8 +8,8 @@
 
 AG Kit is a modular system consisting of:
 
-- **25 OMEGA Agents** - Three-tier role-based AI personas with segregation of duties (OMEGA SOD customization 2026.6.11)
-- **46 Skills** - Domain-specific knowledge modules with conditional loading (audit-cycle added 2026.6.12)
+- **25 OMEGA Agents** - Three-tier role-based AI personas with segregation of duties
+- **55 Skills** - Domain-specific knowledge modules with conditional loading
 - **13 Workflows** - Slash command procedures
 
 ---
@@ -19,17 +19,17 @@ AG Kit is a modular system consisting of:
 ```plaintext
 .agents/
 ├── ARCHITECTURE.md          # This file
-├── agent/                  # 25 OMEGA Agents (3-tier SOD)
-├── skills/                  # 45 Skills (with conditional loading)
-├── workflows/               # 13 Slash Commands
+├── agent/                  # OMEGA Agents (3-tier SOD)
+├── skills/                  # Skills (with conditional loading)
+├── workflows/               # Slash Commands
 ├── rules/                   # Global Rules
-├── memory/                  # Persistent Memory (2026.5.13)
+├── memory/                  # Persistent Memory
 └── scripts/                 # Master Validation Scripts
 ```
 
 ---
 
-## 🤖 OMEGA Agents (25)
+## 🤖 OMEGA Agents
 
 OMEGA agents follow a three-tier segregation of duties (SOD) architecture with strict boundaries between orchestration, implementation, and audit.
 
@@ -37,337 +37,138 @@ OMEGA agents follow a three-tier segregation of duties (SOD) architecture with s
 
 - **Tier 1 (Ly)**: Orchestration and gate decisions only. Cannot implement or audit.
 - **Tier 2 (OpenCode)**: Implementation and coding. Must test all code. Cannot self-approve. Must submit to Tier 3 for audit.
-- **Tier 3 (Codex)**: READ-ONLY audit. No code modifications. Must provide final verdict: `[APPROVED]` or `[NEEDS_FIX]`.
-
-### Phase Gate Fields
-
-Each agent includes OMEGA metadata:
-- `role_id`: Unique identifier (1-25)
-- `tier`: 1 (Ly), 2 (OpenCode), or 3 (Codex)
-- `platform`: Ly, OpenCode, or Codex
-- `sod_boundary`: SOD constraints for the role
+- **Tier 3 (Codex)**: READ-ONLY audit. No code modifications. Must provide final verdict: `[APPROVED]` or `[NEEDS_FIX]`. 
 
 ### Tier 1: Ly (Orchestration/Gate-Only)
 
-| Role ID | Agent               | Focus                                  |
-| ------- | ------------------- | -------------------------------------- |
-| 1       | project-manager     | Strategic orchestration/resource allocation |
-| 2       | product-owner       | Feature prioritization/stakeholder alignment |
-| 3       | scrum-master        | Agile process/blocker removal          |
-| 4       | release-manager     | Release coordination/deployment gates  |
-| 5       | delivery-manager    | Timeline tracking/resource management  |
-
-**SOD Boundary**: `"orchestration/gate-only, no implementation/audit"`
+| Role ID | Agent | Focus |
+| ------- | ----- | ----- |
+| 1 | `project-manager` | Strategic orchestration/resource allocation |
+| 2 | `product-owner` | Feature prioritization/stakeholder alignment |
+| 3 | `scrum-master` | Agile process/blocker removal |
+| 4 | `release-manager` | Release coordination/deployment gates |
+| 5 | `delivery-manager` | Timeline tracking/resource management |
 
 ### Tier 2: OpenCode (Implementation)
 
-| Role ID | Agent                      | Focus                           |
-| ------- | -------------------------- | ------------------------------- |
-| 6       | system-architect           | System design/interface definition |
-| 7       | tech-lead                  | Technical leadership/code standards |
-| 8       | frontend-engineer          | UI/UX implementation            |
-| 9       | backend-engineer           | API/business logic implementation |
-| 10      | database-admin             | Schema design/DB performance    |
-| 11      | devops-engineer            | CI/CD automation                |
-| 12      | cloud-infra-engineer       | IaC                             |
-| 13      | ui-ux-integrator           | UI integration/styling          |
-| 14      | data-scientist             | Model research/signal discovery |
-| 15      | data-engineer              | Data pipelines/ETL              |
-| 16      | machine-learning-engineer  | Model training/deployment       |
-
-**SOD Boundary**: `"implementation-only, test required, no self-approval, submit to Tier3"`
+| Role ID | Agent | Focus |
+| ------- | ----- | ----- |
+| 6 | `system-architect` | System design/interface definition |
+| 7 | `tech-lead` | Technical leadership/code standards |
+| 8 | `frontend-engineer` | UI/UX implementation |
+| 9 | `backend-engineer` | API/business logic implementation |
+| 10 | `database-admin` | Schema design/DB performance |
+| 11 | `devops-engineer` | CI/CD automation |
+| 12 | `cloud-infra-engineer` | IaC |
+| 13 | `ui-ux-integrator` | UI integration/styling |
+| 14 | `data-scientist` | Model research/signal discovery |
+| 15 | `data-engineer` | Data pipelines/ETL |
+| 16 | `machine-learning-engineer` | Model training/deployment |
 
 ### Tier 3: Codex (Audit)
 
-| Role ID | Agent                | Focus                              |
-| ------- | -------------------- | ---------------------------------- |
-| 17      | qa-engineer          | Functional testing                 |
-| 18      | sdet                 | Test automation/frameworks         |
-| 19      | security-auditor     | Security compliance                |
-| 20      | compliance-officer   | Standards compliance/PIT safety    |
-| 21      | code-reviewer        | Peer review/audit reports          |
-| 22      | penetration-tester   | Security testing/exploits          |
-| 23      | performance-tester   | Load/stress testing                |
-| 24      | uat-validator        | User acceptance validation         |
-| 25      | it-systems-auditor   | Overall system audit               |
-
-**SOD Boundary**: `"READ-ONLY audit, no code/file modifications, markdown audit report required, final verdict [APPROVED] or [NEEDS_FIX]"`
+| Role ID | Agent | Focus |
+| ------- | ----- | ----- |
+| 17 | `qa-engineer` | Functional testing |
+| 18 | `sdet` | Test automation/frameworks |
+| 19 | `security-auditor` | Security compliance |
+| 20 | `compliance-officer` | Standards compliance/PIT safety |
+| 21 | `code-reviewer` | Peer review/audit reports |
+| 22 | `penetration-tester` | Security testing/exploits |
+| 23 | `performance-tester` | Load/stress testing |
+| 24 | `uat-validator` | User acceptance validation |
+| 25 | `it-systems-auditor` | Overall system audit |
 
 ---
 
-## 🧩 Skills (46)
+## 🧩 Skills
 
-Modular knowledge domains that agents can load on-demand based on task context. Each skill has a `when_to_use` frontmatter field for conditional/intelligent loading.
+Modular knowledge domains that agents can load on-demand based on task context.
 
-### Frontend & UI
-
-| Skill                   | Description                                                           |
-| ----------------------- | --------------------------------------------------------------------- |
-| `nextjs-react-expert`   | React & Next.js performance optimization (Vercel - 58 rules)          |
-| `web-design-guidelines` | Web UI audit - 100+ rules for accessibility, UX, performance (Vercel) |
-| `tailwind-patterns`     | Tailwind CSS v4 utilities                                             |
-| `frontend-design`       | UI/UX patterns, design systems                                        |
-
-### Backend & API
-
-| Skill                   | Description                    |
-| ----------------------- | ------------------------------ |
-| `api-patterns`          | REST, GraphQL, tRPC            |
-| `nodejs-best-practices` | Node.js async, modules         |
-| `python-patterns`       | Python standards, FastAPI      |
-| `rust-pro`              | Rust async, systems, type system |
-
-### Database
-
-| Skill             | Description                 |
-| ----------------- | --------------------------- |
-| `database-design` | Schema design, optimization |
-
-### Cloud & Infrastructure
-
-| Skill                   | Description               |
-| ----------------------- | ------------------------- |
-| `deployment-procedures` | CI/CD, deploy workflows   |
-| `server-management`     | Infrastructure management |
-
-### Testing & Quality
-
-| Skill                   | Description              |
-| ----------------------- | ------------------------ |
-| `testing-patterns`      | Jest, Vitest, strategies |
-| `webapp-testing`        | E2E, Playwright          |
-| `tdd-workflow`          | Test-driven development  |
-| `code-review-checklist` | Code review standards    |
-| `lint-and-validate`     | Linting, validation      |
-
-### Security
-
-| Skill                   | Description              |
-| ----------------------- | ------------------------ |
-| `vulnerability-scanner` | Security auditing, OWASP |
-| `red-team-tactics`      | Offensive security       |
-
-### Architecture & Planning
-
-| Skill           | Description                |
-| --------------- | -------------------------- |
-| `app-builder`   | Full-stack app scaffolding |
-| `architecture`  | System design patterns     |
-| `plan-writing`  | Task planning, breakdown   |
-| `brainstorming` | Socratic questioning       |
-
-### Mobile
-
-| Skill           | Description           |
-| --------------- | --------------------- |
-| `mobile-design` | Mobile UI/UX patterns |
-
-### Game Development
-
-| Skill              | Description           |
-| ------------------ | --------------------- |
-| `game-development` | Game logic, mechanics |
-
-### SEO & Growth
-
-| Skill              | Description                   |
-| ------------------ | ----------------------------- |
-| `seo-fundamentals` | SEO, E-E-A-T, Core Web Vitals |
-| `geo-fundamentals` | GenAI optimization            |
-
-### Shell/CLI
-
-| Skill                | Description               |
-| -------------------- | ------------------------- |
-| `bash-linux`         | Linux commands, scripting |
-| `powershell-windows` | Windows PowerShell        |
-
-### Orchestration & Memory (2026.5.13)
-
-| Skill                     | Description                                                 |
-| ------------------------- | ----------------------------------------------------------- |
-| `coordinator-mode`        | Multi-agent orchestration with parallel workers & synthesis  |
-| `memory-system`           | Persistent cross-session memory with MEMORY.md index        |
-| `context-compression`     | Auto-compress context in long sessions                      |
-| `verify-changes`          | Prove code works by running it, not just inspecting         |
-| `batch-operations`        | Multi-file pattern-based modifications                      |
-| `simplify-code`           | Reduce over-engineered complexity                           |
-| `skillify`                | Auto-create skills from repetitive workflows                |
-| `code-review-graph`       | Token-efficient code review via Tree-sitter AST + MCP       |
-| `audit-cycle`             | SOD audit cycle workflow (L2->L3->gate coordination)        |
-| `omega-sod`               | OMEGA_QUANT SOD framework with repo-local skill contract    |
-
-### Other
-
-| Skill                     | Description               |
-| ------------------------- | ------------------------- |
-| `clean-code`              | Coding standards (Global) |
-| `behavioral-modes`        | Agent personas            |
-| `parallel-agents`         | Multi-agent patterns      |
-| `mcp-builder`             | Model Context Protocol    |
-| `documentation-templates` | Doc formats               |
-| `i18n-localization`       | Internationalization      |
-| `performance-profiling`   | Web Vitals, optimization  |
-| `systematic-debugging`    | Troubleshooting           |
-| `intelligent-routing`     | Request → agent routing   |
+| Skill | Directory | Description |
+| ----- | --------- | ----------- |
+| `api-patterns` | `api-patterns` | API design principles and decision-making. REST vs GraphQL vs tRPC selection, response formats, versioning, pagination. |
+| `app-builder` | `app-builder` | Main application building orchestrator. Creates full-stack applications from natural language requests. Determines project type, selects tech stack, coordinates agents. |
+| `architecture` | `architecture` | Architectural decision-making framework. Requirements analysis, trade-off evaluation, ADR documentation. Use when making architecture decisions or analyzing system design. |
+| `audit-cycle` | `audit-cycle` | SOD audit cycle workflow - coordinates L2 implementation submission to L3 independent audit and verdict collection. Implements the audit-cycle process defined by omega-sod. |
+| `backtesting-pit-safety` | `backtesting-pit-safety` | Backtesting integrity and Point-In-Time (PIT) safety for OMEGA_QUANT. No look-ahead bias, survivorship-free, walk-forward validation, CPCV, corporate action handling, slippage/fee modeling. |
+| `bash-linux` | `bash-linux` | Bash/Linux terminal patterns. Critical commands, piping, error handling, scripting. Use when working on macOS or Linux systems. |
+| `batch-operations` | `batch-operations` | Apply operations across multiple files simultaneously. Pattern-based bulk modifications, search-and-replace across codebases, consistent changes to many files at once. |
+| `behavioral-modes` | `behavioral-modes` | AI operational modes (brainstorm, implement, debug, review, teach, ship, orchestrate). Use to adapt behavior based on task type. |
+| `brainstorming` | `brainstorming` | Socratic questioning protocol + user communication. MANDATORY for complex requests, new features, or unclear requirements. Includes progress reporting and error handling. |
+| `clean-code` | `clean-code` | Pragmatic coding standards - concise, direct, no over-engineering, no unnecessary comments |
+| `code-review-checklist` | `code-review-checklist` | Code review guidelines covering code quality, security, and best practices. |
+| `code-review-graph` | `code-review-graph` | Token-efficient code review using Tree-sitter AST graphs and MCP. Cuts AI token usage on large codebases by computing the blast radius of changes instead of reading entire codebases. Uses a SQLite graph database for structural analysis. |
+| `context-compression` | `context-compression` | Manage and compress conversation context in long sessions. Detect when context is growing large, summarize completed work phases, archive old findings while preserving key decisions. Prevents context degradation. |
+| `coordinator-mode` | `coordinator-mode` | Advanced multi-agent orchestration with parallel workers, synthesis protocols, and coordinator lifecycle. Use when complex tasks require multiple agents working in parallel with intelligent result synthesis. |
+| `data-science-workflow` | `data-science-workflow` | Data science workflow for OMEGA_QUANT. EDA, data quality assessment, experiment tracking, statistical tests, reproducibility protocols, and reporting standards for Vietnam equity quant research. |
+| `database-design` | `database-design` | Database design principles and decision-making. Schema design, indexing strategy, ORM selection, serverless databases. |
+| `deployment-procedures` | `deployment-procedures` | Production deployment principles and decision-making. Safe deployment workflows, rollback strategies, and verification. Teaches thinking, not scripts. |
+| `documentation-templates` | `documentation-templates` | Documentation templates and structure guidelines. README, API docs, code comments, and AI-friendly documentation. |
+| `elite-karpathy` | `elite-karpathy` | Enforces Karpathy coding principles, simplicity, surgical edits, vectorization, and compliance trails. |
+| `frontend-design` | `frontend-design` | Design thinking and decision-making for web UI. Use when designing components, layouts, color schemes, typography, or creating aesthetic interfaces. Teaches principles, not fixed values. |
+| `game-development` | `game-development` | Game development orchestrator. Routes to platform-specific skills based on project needs. |
+| `geo-fundamentals` | `geo-fundamentals` | Generative Engine Optimization for AI search engines (ChatGPT, Claude, Perplexity). |
+| `i18n-localization` | `i18n-localization` | Internationalization and localization patterns. Detecting hardcoded strings, managing translations, locale files, RTL support. |
+| `improve` | `improve` | Survey any codebase as a senior advisor and produce prioritized, self-contained implementation plans for OTHER models/agents to execute. Strictly read-only on source code — never implements, fixes, or refactors anything itself. Use when asked to audit a codebase, find improvement opportunities (bugs, security, performance, test coverage, tech debt, migrations, DX), suggest features or where to take the project next (roadmap, product direction), or generate handoff plans for another agent to implement. |
+| `intelligent-routing` | `intelligent-routing` | Automatic agent selection and intelligent task routing. Analyzes user requests and automatically selects the best specialist agent(s) without requiring explicit user mentions. |
+| `lint-and-validate` | `lint-and-validate` | Automatic quality control, linting, and static analysis procedures. Use after every code modification to ensure syntax correctness and project standards. Triggers onKeywords: lint, format, check, validate, types, static analysis. |
+| `mcp-builder` | `mcp-builder` | MCP (Model Context Protocol) server building principles. Tool design, resource patterns, best practices. |
+| `memory-system` | `memory-system` | Persistent cross-session memory management. Enables agents to remember user preferences, project conventions, and past decisions across different sessions using a structured MEMORY.md index and topic files. |
+| `ml-dl-rl` | `ml-dl-rl` | ML/DL/RL for OMEGA_QUANT time-series and portfolio optimization. Tree-based models (XGBoost/LightGBM/CatBoost), LSTM, autoencoder, PPO reinforcement learning. Leakage prevention, validation protocols, feature stores, RL environment and reward design. |
+| `mobile-design` | `mobile-design` | Mobile-first design thinking and decision-making for iOS and Android apps. Touch interaction, performance patterns, platform conventions. Teaches principles, not fixed values. Use when building React Native, Flutter, or native mobile apps. |
+| `nextjs-react-expert` | `nextjs-react-expert` | React and Next.js performance optimization from Vercel Engineering. Use when building React components, optimizing performance, eliminating waterfalls, reducing bundle size, reviewing code for performance issues, or implementing server/client-side optimizations. |
+| `nodejs-best-practices` | `nodejs-best-practices` | Node.js development principles and decision-making. Framework selection, async patterns, security, and architecture. Teaches thinking, not copying. |
+| `omega-sod` | `omega-sod` | Strict L1-L3 platform constraints (Ly L1 Orchestration, OpenCode L2 Developer, Codex L3 Auditor), segregation of duties, no direct coding for L3, verdict requirement |
+| `parallel-agents` | `parallel-agents` | Multi-agent orchestration patterns. Use when multiple independent tasks can run with different domain expertise or when comprehensive analysis requires multiple perspectives. |
+| `performance-profiling` | `performance-profiling` | Performance profiling principles. Measurement, analysis, and optimization techniques. |
+| `plan-writing` | `plan-writing` | Structured task planning with clear breakdowns, dependencies, and verification criteria. Use when implementing features, refactoring, or any multi-step work. |
+| `powershell-windows` | `powershell-windows` | PowerShell Windows patterns. Critical pitfalls, operator syntax, error handling. |
+| `python-patterns` | `python-patterns` | Python development principles and decision-making. Framework selection, async patterns, type hints, project structure. Teaches thinking, not copying. |
+| `quant-research` | `quant-research` | Factor/alpha research principles for OMEGA_QUANT Vietnam equity quant pipeline. IC/IR, turnover, capacity, neutralization, regime awareness, transaction-cost-aware alpha evaluation. |
+| `red-team-tactics` | `red-team-tactics` | Red team tactics principles based on MITRE ATT&CK. Attack phases, detection evasion, reporting. |
+| `rust-pro` | `rust-pro` | Master modern Rust (2024 edition) with async patterns, advanced type system features, and production-ready systems programming. Expert in the current Rust ecosystem including Tokio, axum, and modern crates. Use PROACTIVELY for Rust development, performance optimization, or systems programming. |
+| `seo-fundamentals` | `seo-fundamentals` | SEO fundamentals, E-E-A-T, Core Web Vitals, and Google algorithm principles. |
+| `server-management` | `server-management` | Server management principles and decision-making. Process management, monitoring strategy, and scaling decisions. Teaches thinking, not commands. |
+| `simplify-code` | `simplify-code` | Reduce complexity of over-engineered code. Identify unnecessary abstractions, remove dead code, flatten deep nesting, and simplify logic while preserving behavior. |
+| `skillify` | `skillify` | Auto-create new skills from repetitive workflows. When you notice yourself doing the same multi-step process repeatedly, extract it into a reusable SKILL.md that any agent can use. |
+| `sops` | `sops` | Standard Operating Procedures (SOPs) index for OMEGA_QUANT (SOP_AC, SOP_BACKTEST, SOP_PIT_SAFETY, SOP_FIX_0_RETURN, SOP_APSE_INTEGRATION). |
+| `systematic-debugging` | `systematic-debugging` | 4-phase systematic debugging methodology with root cause analysis and evidence-based verification. Use when debugging complex issues. |
+| `tailwind-patterns` | `tailwind-patterns` | Tailwind CSS v4 principles. CSS-first configuration, container queries, modern patterns, design token architecture. |
+| `tdd-workflow` | `tdd-workflow` | Test-Driven Development workflow principles. RED-GREEN-REFACTOR cycle. |
+| `testing-patterns` | `testing-patterns` | Testing patterns and principles. Unit, integration, mocking strategies. |
+| `verify-changes` | `verify-changes` | Prove code works by running it, not just checking it exists. Verification through execution rather than inspection. Use after writing or modifying code to ensure it actually functions correctly. |
+| `vietnam-market-data` | `vietnam-market-data` | Vietnam equity market data principles for OMEGA_QUANT. HOSE/HNX/UPCOM exchanges, VCI/vnstock data providers, ticker lifecycle, VND_FULL price scale, sector mapping, delisting/survivorship, canonical data schema. |
+| `vulnerability-scanner` | `vulnerability-scanner` | Advanced vulnerability analysis principles. OWASP 2025, Supply Chain Security, attack surface mapping, risk prioritization. |
+| `web-design-guidelines` | `web-design-guidelines` | Review UI code for Web Interface Guidelines compliance. Use when asked to "review my UI", "check accessibility", "audit design", "review UX", or "check my site against best practices". |
+| `webapp-testing` | `webapp-testing` | Web application testing principles. E2E, Playwright, deep audit strategies. |
 
 ---
 
-## 🔄 Workflows (13)
+## 🔄 Workflows
 
 Slash command procedures. Invoke with `/command`.
 
-| Command          | Description                                    |
-| ---------------- | ---------------------------------------------- |
-| `/brainstorm`    | Socratic discovery                             |
-| `/coordinate`    | **NEW** Advanced multi-agent coordination      |
-| `/create`        | Create new features                            |
-| `/debug`         | Debug issues                                   |
-| `/deploy`        | Deploy application                             |
-| `/enhance`       | Improve existing code                          |
-| `/orchestrate`   | Multi-agent coordination                       |
-| `/plan`          | Task breakdown                                 |
-| `/preview`       | Preview changes                                |
-| `/remember`      | **NEW** Save to persistent memory              |
-| `/status`        | Check project status                           |
-| `/test`          | Run tests                                      |
-| `/verify`        | **NEW** Prove code works by running it         |
-
----
-
-## 🎯 Skill Loading Protocol (Conditional)
-
-```plaintext
-User Request → Check `when_to_use` frontmatter → Match? → Load full SKILL.md
-                                                     ↓ No match
-                                                  Skip (save tokens)
-```
-
-### Strict Repo-Local Skill Source Contract (STRICT_REPO_LOCAL_SKILL_LOADING_20260612)
-
-**Effective**: 2026-06-12. All L2/L3 dispatches MUST load role specs and skills exclusively from repo-local paths.
-
-| Constant | Value | Purpose |
-|----------|-------|---------|
-| `REPO_AGENT_ROOT` | `{REPO_ROOT}/.agents/agent` | Role spec files (`*.md`) |
-| `REPO_SKILL_ROOT` | `{REPO_ROOT}/.agents/skills` | Skill definitions (`*/SKILL.md`) |
-
-**Loading Protocol (MANDATORY):**
-1. Read role spec from `REPO_AGENT_ROOT/<role_name>.md` and parse frontmatter
-2. Extract `skills` list from frontmatter
-3. Read each declared skill's `SKILL.md` from `REPO_SKILL_ROOT/<skill_name>/SKILL.md`
-4. Report exact repo-local files read in L2/L3 output
-5. Stop/NEEDS_FIX if required repo-local source is missing
-
-**Forbidden Paths (Non-Authoritative):**
-
-| Path | Description |
-|------|-------------|
-| `.gemini\antigravity-ide\scratch\ag-kit` | Antigravity IDE scratch |
-| `.openclaw\skills` | OpenClaw skills |
-| `C:\Users\GHC\.agents` | Global Codex agents |
-| `.codex\memories` | Codex memory files |
-
-Mentions allowed ONLY if explicitly marked non-authoritative or as forbidden-path scan evidence.
-
-**Enforcement:** `scripts/sod_gate_enforcer.py` validates repo-local skill source evidence for post-cutoff gates.
-
-### Skill Structure
-
-```plaintext
-skill-name/
-├── SKILL.md           # (Required) Metadata, when_to_use & instructions
-├── scripts/           # (Optional) Python/Bash scripts
-├── references/        # (Optional) Templates, docs
-└── assets/            # (Optional) Images, logos
-```
-
-### Required Frontmatter Fields
-
-```yaml
----
-name: skill-name
-description: What this skill does
-when_to_use: "When to activate. NOT for X."  # 2026.5.13
-allowed-tools: Read, Grep, Glob
----
-```
-
-### Enhanced Skills (with scripts/references)
-
-| Skill               | Files | Coverage                            |
-| ------------------- | ----- | ----------------------------------- |
-| `app-builder`       | 20    | Full-stack scaffolding              |
-
----
-
-## 🛠️ Scripts (2)
-
-Master validation scripts that orchestrate skill-level scripts.
-
-### Master Scripts
-
-| Script          | Purpose                                 | When to Use              |
-| --------------- | --------------------------------------- | ------------------------ |
-| `checklist.py`  | Priority-based validation (Core checks) | Development, pre-commit  |
-| `verify_all.py` | Comprehensive verification (All checks) | Pre-deployment, releases |
-
-### Usage
-
-```bash
-# Quick validation during development
-python .agents/scripts/checklist.py .
-
-# Full verification before deployment
-python .agents/scripts/verify_all.py . --url http://localhost:3000
-```
-
-### What They Check
-
-**checklist.py** (Core checks):
-
-- Security (vulnerabilities, secrets)
-- Code Quality (lint, types)
-- Schema Validation
-- Test Suite
-- UX Audit
-- SEO Check
-
-**verify_all.py** (Full suite):
-
-- Everything in checklist.py PLUS:
-- Lighthouse (Core Web Vitals)
-- Playwright E2E
-- Bundle Analysis
-- Mobile Audit
-- i18n Check
-
-For details, see [scripts/README.md](scripts/README.md)
+| Command | Description |
+| ------- | ----------- |
+| `/brainstorm` | /brainstorm - Structured Idea Exploration |
+| `/coordinate` | /coordinate — Advanced Multi-Agent Coordination |
+| `/create` | /create - Create Application |
+| `/debug` | /debug - Systematic Problem Investigation |
+| `/deploy` | /deploy - Production Deployment |
+| `/enhance` | /enhance - Update Application |
+| `/orchestrate` | Multi-Agent Orchestration |
+| `/plan` | /plan - Project Planning Mode |
+| `/preview` | /preview - Preview Management |
+| `/remember` | /remember — Persistent Memory Management |
+| `/status` | /status - Show Status |
+| `/test` | /test - Test Generation and Execution |
+| `/verify` | /verify — Prove Code Works |
 
 ---
 
 ## 📊 Statistics
 
-| Metric              | Value                             |
-| ------------------- | --------------------------------- |
-| **Total Agents**    | 20 (1 major upgrade in 2026.5.13) |
-| **Total Skills**    | 45 (+7 new in 2026.5.13)          |
-| **Total Workflows** | 13 (+2 new in 2026.5.13)          |
-| **Total Scripts**   | 2 (master) + 16 (skill-level)     |
-| **Coverage**        | ~95% web/mobile + orchestration   |
-| **Token Efficiency**| Reduced via conditional skill loading |
-
----
-
-## 🔗 Quick Reference
-
-| Need     | Agent                 | Skills                                |
-| -------- | --------------------- | ------------------------------------- |
-| Web App  | `frontend-specialist` | nextjs-react-expert, frontend-design |
-| API      | `backend-specialist`  | api-patterns, nodejs-best-practices   |
-| Mobile   | `mobile-developer`    | mobile-design                         |
-| Database | `database-architect`  | database-design                       |
-| Security | `security-auditor`    | vulnerability-scanner                 |
-| Testing  | `test-engineer`       | testing-patterns, webapp-testing      |
-| Debug    | `debugger`            | systematic-debugging                  |
-| Plan     | `project-planner`     | brainstorming, plan-writing           |
+- **Total Agents**: 25
+- **Total Skills**: 55
+- **Total Workflows**: 13

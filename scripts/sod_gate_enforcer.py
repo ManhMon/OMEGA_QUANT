@@ -1105,13 +1105,14 @@ def check_sod_compliance() -> bool:
             # Check audit report exists
             exists_valid, exists_msg = check_audit_report_exists(audit_path)
             if not exists_valid:
-                # Try with mocked path (tests may mock this)
-                pass
+                all_pass = False
+                continue
             
             # Check audit report content
             content_valid, content_msg = check_audit_report_content(audit_path, verdict)
             if not content_valid:
-                pass  # Soft check
+                all_pass = False
+                continue
         
         # --- STRICT_REPO_LOCAL_SKILL_LOADING_20260612 checks ---
         if ts is not None and ts >= SKILL_LOADING_CUTOFF:

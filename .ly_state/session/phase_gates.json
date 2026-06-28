@@ -236,7 +236,7 @@
         "l3_role_id": 20,
         "l3_role_name": "compliance-officer",
         "audit_report_path": ".ly_state/session/audit_reports/role20_alpha_weakness_diagnostics_20260614.md",
-        "final_verdict": "[APPROVED]",
+        "final_verdict": "[NEEDS_FIX]",
         "sod_boundary_checked": true,
         "writer_auditor_separated": true,
         "repo_local_skill_sources": [
@@ -261,7 +261,7 @@
         "l3_role_id": 20,
         "l3_role_name": "compliance-officer",
         "audit_report_path": ".ly_state/session/audit_reports/role20_alpha_weakness_diagnostics_fix1_20260614.md",
-        "final_verdict": "[APPROVED]",
+        "final_verdict": "[NEEDS_FIX]",
         "sod_boundary_checked": true,
         "writer_auditor_separated": true,
         "repo_local_skill_sources": [
