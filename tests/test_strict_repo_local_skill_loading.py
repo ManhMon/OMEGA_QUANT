@@ -44,6 +44,7 @@ from sod_gate_enforcer import (
     get_superseded_gates,
     check_sod_compliance,
     load_gates,
+    validate_l3_panel,
     validate_task_graph,
     validate_audit_report_path,
     validate_forbidden_path_usage,
@@ -1024,6 +1025,89 @@ class TestThreeTierEnforcement:
                             # Result depends on L2 report soft warning behavior
                             # The important thing is the gate was processed in hard-blocking tier
                             assert isinstance(result, bool)
+
+
+class TestL3PanelAuditing:
+    def _role_specs(self):
+        return {
+            11: {"name": "devops-engineer", "tier": 2, "platform": "OpenCode", "sod_boundary": "test"},
+            18: {"name": "security-auditor", "tier": 3, "platform": "Codex", "sod_boundary": "AUDIT"},
+            21: {"name": "code-reviewer", "tier": 3, "platform": "Codex", "sod_boundary": "READ-ONLY"},
+            25: {"name": "it-systems-auditor", "tier": 3, "platform": "Codex", "sod_boundary": "AUDIT"},
+        }
+
+    def _panel_entry(self, role_id, role_name, suffix):
+        return {
+            "l3_role_id": role_id,
+            "l3_role_name": role_name,
+            "audit_report_path": f".ly_state/session/audit_reports/role{role_id}_{suffix}.md",
+        }
+
+    def test_valid_panel_audit(self):
+        panel = [
+            self._panel_entry(21, "code-reviewer", "panel1_20260628"),
+            self._panel_entry(25, "it-systems-auditor", "panel2_20260628"),
+        ]
+
+        with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+            with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")):
+                    valid, msg = validate_l3_panel(panel, 11, self._role_specs())
+
+        assert valid is True
+        assert msg == ""
+
+    def test_panel_audit_accepts_approved_partial_verdict(self):
+        panel = [
+            self._panel_entry(21, "code-reviewer", "panel_partial_20260628"),
+        ]
+
+        with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+            with patch(
+                "sod_gate_enforcer.check_audit_report_content",
+                side_effect=[(False, "missing [APPROVED]"), (True, "")],
+            ) as mock_check_content:
+                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")):
+                    valid, msg = validate_l3_panel(panel, 11, self._role_specs())
+
+        assert valid is True
+        assert msg == ""
+        assert mock_check_content.call_args_list[0].args[1] == "[APPROVED]"
+        assert mock_check_content.call_args_list[1].args[1] == "[APPROVED_PARTIAL]"
+
+    def test_failing_panel_audit(self):
+        panel = [
+            self._panel_entry(21, "code-reviewer", "panel_bad_20260628"),
+        ]
+
+        with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+            with patch("sod_gate_enforcer.check_audit_report_content", return_value=(False, "missing [APPROVED]")):
+                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")):
+                    valid, msg = validate_l3_panel(panel, 11, self._role_specs())
+
+        assert valid is False
+        assert "approved" in msg.lower()
+
+    def test_duplicate_panel_auditor_roles(self):
+        panel = [
+            self._panel_entry(21, "code-reviewer", "dup1_20260628"),
+            self._panel_entry(21, "code-reviewer", "dup2_20260628"),
+        ]
+
+        valid, msg = validate_l3_panel(panel, 11, self._role_specs())
+
+        assert valid is False
+        assert "duplicate" in msg.lower()
+
+    def test_panel_audit_violates_writer_auditor_separation(self):
+        panel = [
+            self._panel_entry(11, "devops-engineer", "same_role_20260628"),
+        ]
+
+        valid, msg = validate_l3_panel(panel, 11, self._role_specs())
+
+        assert valid is False
+        assert "separation" in msg.lower() or "writer/auditor" in msg.lower()
 
 
 # =========================================================================

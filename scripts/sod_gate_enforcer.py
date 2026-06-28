@@ -968,6 +968,73 @@ def check_audit_report_skill_sources(report_path) -> tuple:
     return _validate_audit_report_skill_content(content, report_filename)
 
 
+def _validate_panel_audit(audit: dict, l2_role_id, role_specs: dict) -> tuple[bool, str]:
+    """Validate one L3 panel audit entry."""
+    if not isinstance(audit, dict):
+        return False, "l3_panel entry must be object"
+
+    l3_role_id = audit.get("l3_role_id")
+    l3_role_name = audit.get("l3_role_name")
+    role_valid, role_msg = validate_l3_role(l3_role_id, l3_role_name, role_specs)
+    if not role_valid:
+        return False, role_msg
+
+    if l2_role_id is not None and int(l2_role_id) == int(l3_role_id):
+        return False, f"writer/auditor separation violated: l2_role_id {l2_role_id} equals panel l3_role_id {l3_role_id}"
+
+    audit_path = audit.get("audit_report_path", "")
+    path_valid, path_msg = validate_audit_report_path(audit_path)
+    if not path_valid:
+        return False, path_msg
+
+    exists_valid, exists_msg = check_audit_report_exists(audit_path)
+    if not exists_valid:
+        return False, exists_msg
+
+    approved_valid, approved_msg = check_audit_report_content(audit_path, "[APPROVED]")
+    if not approved_valid:
+        partial_valid, partial_msg = check_audit_report_content(audit_path, "[APPROVED_PARTIAL]")
+        if not partial_valid:
+            return False, approved_msg or partial_msg
+
+    skill_valid, skill_msg = check_audit_report_skill_sources(audit_path)
+    if not skill_valid:
+        return False, skill_msg
+
+    return True, ""
+
+
+def validate_l3_panel(l3_panel, l2_role_id, role_specs: dict) -> tuple[bool, str]:
+    """Validate panel of independent L3 audits."""
+    if not isinstance(l3_panel, list) or not l3_panel:
+        return False, "l3_panel must be non-empty list"
+
+    seen_role_ids = set()
+    for audit in l3_panel:
+        if not isinstance(audit, dict):
+            return False, "l3_panel entry must be object"
+
+        l3_role_id = audit.get("l3_role_id")
+        try:
+            l3_role_id_int = int(l3_role_id)
+        except (TypeError, ValueError):
+            return False, f"panel l3_role_id must be integer, got: {l3_role_id}"
+
+        if l2_role_id is not None and int(l2_role_id) == l3_role_id_int:
+            return False, f"writer/auditor separation violated: l2_role_id {l2_role_id} equals panel l3_role_id {l3_role_id_int}"
+
+        if l3_role_id_int in seen_role_ids:
+            return False, f"duplicate panel auditor role_id: {l3_role_id_int}"
+        seen_role_ids.add(l3_role_id_int)
+
+    for audit in l3_panel:
+        audit_valid, audit_msg = _validate_panel_audit(audit, l2_role_id, role_specs)
+        if not audit_valid:
+            return False, audit_msg
+
+    return True, ""
+
+
 def derive_strict_approval_timestamp(gates) -> float:
     """Derive the STRICT gate approval timestamp from gates dict.
     
@@ -1164,48 +1231,56 @@ def check_sod_compliance() -> bool:
                 all_pass = False
                 continue
         
-        # Validate L3 role
-        l3_role_id = gate.get("l3_role_id")
-        l3_role_name = gate.get("l3_role_name")
-        
-        if l3_role_id is not None:
-            l3_valid, l3_msg = validate_l3_role(l3_role_id, l3_role_name, role_specs)
-            if not l3_valid:
+        l3_panel = gate.get("l3_panel")
+        if l3_panel is not None:
+            panel_valid, panel_msg = validate_l3_panel(l3_panel, l2_role_id, role_specs)
+            if not panel_valid:
                 all_pass = False
                 continue
-        
-        # Validate audit report path
-        # Pre-cutoff gates may have audit reports in docs/ (legacy behavior).
-        # For pre-cutoff gates: skip location check but ALWAYS enforce path
-        # traversal rejection (.., absolute paths) for security.
-        # For post-cutoff gates: enforce full validate_audit_report_path.
-        audit_path = gate.get("audit_report_path", "")
-        if audit_path:
-            is_pre_cutoff = ts is not None and ts < CUTOFF_TIMESTAMP
-            if is_pre_cutoff:
-                # Pre-cutoff: path traversal check only (no location requirement)
-                traversal_safe, traversal_msg = check_path_traversal_only(audit_path)
-                if not traversal_safe:
+            audit_path = ""
+        else:
+            # Validate L3 role
+            l3_role_id = gate.get("l3_role_id")
+            l3_role_name = gate.get("l3_role_name")
+
+            if l3_role_id is not None:
+                l3_valid, l3_msg = validate_l3_role(l3_role_id, l3_role_name, role_specs)
+                if not l3_valid:
                     all_pass = False
                     continue
-            else:
-                # Post-cutoff: full validation (traversal + location)
-                path_valid, path_msg = validate_audit_report_path(audit_path)
-                if not path_valid:
+
+            # Validate audit report path
+            # Pre-cutoff gates may have audit reports in docs/ (legacy behavior).
+            # For pre-cutoff gates: skip location check but ALWAYS enforce path
+            # traversal rejection (.., absolute paths) for security.
+            # For post-cutoff gates: enforce full validate_audit_report_path.
+            audit_path = gate.get("audit_report_path", "")
+            if audit_path:
+                is_pre_cutoff = ts is not None and ts < CUTOFF_TIMESTAMP
+                if is_pre_cutoff:
+                    # Pre-cutoff: path traversal check only (no location requirement)
+                    traversal_safe, traversal_msg = check_path_traversal_only(audit_path)
+                    if not traversal_safe:
+                        all_pass = False
+                        continue
+                else:
+                    # Post-cutoff: full validation (traversal + location)
+                    path_valid, path_msg = validate_audit_report_path(audit_path)
+                    if not path_valid:
+                        all_pass = False
+                        continue
+
+                # Check audit report exists
+                exists_valid, exists_msg = check_audit_report_exists(audit_path)
+                if not exists_valid:
                     all_pass = False
                     continue
-            
-            # Check audit report exists
-            exists_valid, exists_msg = check_audit_report_exists(audit_path)
-            if not exists_valid:
-                all_pass = False
-                continue
-            
-            # Check audit report content
-            content_valid, content_msg = check_audit_report_content(audit_path, verdict)
-            if not content_valid:
-                all_pass = False
-                continue
+
+                # Check audit report content
+                content_valid, content_msg = check_audit_report_content(audit_path, verdict)
+                if not content_valid:
+                    all_pass = False
+                    continue
         
         # --- STRICT_REPO_LOCAL_SKILL_LOADING_20260612 checks ---
         if ts is not None and ts >= SKILL_LOADING_CUTOFF:
