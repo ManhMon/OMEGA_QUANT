@@ -194,8 +194,8 @@ def parse_args() -> argparse.Namespace:
         help="Suffix tag for output file names",
     )
     parser.add_argument(
-        "--embargo-pct", type=float, default=0.01,
-        help="CPCV embargo fraction (default: 0.01)",
+        "--embargo-pct", type=float, default=0.025,
+        help="CPCV embargo fraction (default: 0.025 ~65 trading days, >= label_horizon=60).",
     )
     parser.add_argument(
         "--label-horizon", type=int, default=60,
@@ -220,20 +220,20 @@ def parse_args() -> argparse.Namespace:
         help="Block drawdown re-entry while HMM bear prob exceeds this threshold (default: 0.6)",
     )
     parser.add_argument(
-        "--top-k", type=int, default=5,
-        help="Number of top assets to select in concentrated overlay (default: 5)",
+        "--top-k", type=int, default=7,
+        help="Number of top assets to select in concentrated overlay (default: 7)",
     )
     parser.add_argument(
         "--cost-per-trade-bps", type=float, default=35.0,
         help="Transaction cost per trade in basis points (default: 35.0)",
     )
     parser.add_argument(
-        "--min-trade-threshold-bps", type=float, default=150.0,
-        help="Minimum trade threshold in basis points to filter churn (default: 150.0)",
+        "--min-trade-threshold-bps", type=float, default=250.0,
+        help="Minimum trade threshold in basis points to filter churn (default: 250.0)",
     )
     parser.add_argument(
-        "--rebalance-every-n-days", type=int, default=10,
-        help="Number of days between portfolio rebalances (default: 10)",
+        "--rebalance-every-n-days", type=int, default=15,
+        help="Number of days between portfolio rebalances (default: 15)",
     )
     return parser.parse_args()
 
@@ -495,11 +495,11 @@ def build_scenario_overlays(
     capital: float,
     gmm_model: Optional[LatentGMMRegime] = None,
     hmm_params: Optional[dict] = None,
-    top_k: int = 5,
+    top_k: int = 7,
     hmm_reentry_threshold: float = 0.6,
     cost_per_trade_bps: float = 35.0,
-    min_trade_threshold_bps: float = 150.0,
-    rebalance_every_n_days: int = 10,
+    min_trade_threshold_bps: float = 250.0,
+    rebalance_every_n_days: int = 15,
 ) -> Dict[str, list]:
     """Build scenario overlay stacks with optional pre-fitted models.
 
@@ -518,15 +518,6 @@ def build_scenario_overlays(
     trade_costs = derive_trade_cost_components(cost_per_trade_bps)
     return {
         "Baseline": [
-            RiskSizingOverlay(
-                inverse_vol_sizing=True,
-                confidence_scaling=True,
-                regime_sizing=True,
-                regime_sizing_mode="hmm",
-                regime_sizing_scale=0.5,
-                latent_gmm_enabled=False,
-                hmm_params=hmm_params,
-            ),
             SectorConcentrationOverlay(
                 max_sector_exposure=0.30,
                 sector_mapping_file=sector_file,
@@ -536,8 +527,17 @@ def build_scenario_overlays(
                 rebalance_every_n_days=rebalance_every_n_days,
                 mode="fixed_interval",
             ),
-            WeightSmoothingOverlay(ema_alpha=0.08),
+            WeightSmoothingOverlay(ema_alpha=0.05),
             LongOnlyConcentratedOverlay(top_k=top_k),
+            RiskSizingOverlay(
+                inverse_vol_sizing=True,
+                confidence_scaling=True,
+                regime_sizing=True,
+                regime_sizing_mode="hmm",
+                regime_sizing_scale=0.5,
+                latent_gmm_enabled=False,
+                hmm_params=hmm_params,
+            ),
             BoardLotRoundingOverlay(lot_size=100, capital_vnd=capital),
             TCostOverlay(
                 cost_per_trade_bps=cost_per_trade_bps,
@@ -554,6 +554,17 @@ def build_scenario_overlays(
             ),
         ],
         "Hybrid": [
+            SectorConcentrationOverlay(
+                max_sector_exposure=0.30,
+                sector_mapping_file=sector_file,
+            ),
+            TailControlOverlay(target_vol_ann=0.2, max_abs_weight=0.25),
+            RebalanceFrequencyOverlay(
+                rebalance_every_n_days=rebalance_every_n_days,
+                mode="fixed_interval",
+            ),
+            WeightSmoothingOverlay(ema_alpha=0.05),
+            LongOnlyConcentratedOverlay(top_k=top_k),
             RiskSizingOverlay(
                 inverse_vol_sizing=True,
                 confidence_scaling=True,
@@ -570,17 +581,6 @@ def build_scenario_overlays(
                 gmm_model=gmm_model,
                 hmm_params=hmm_params,
             ),
-            SectorConcentrationOverlay(
-                max_sector_exposure=0.30,
-                sector_mapping_file=sector_file,
-            ),
-            TailControlOverlay(target_vol_ann=0.2, max_abs_weight=0.25),
-            RebalanceFrequencyOverlay(
-                rebalance_every_n_days=rebalance_every_n_days,
-                mode="fixed_interval",
-            ),
-            WeightSmoothingOverlay(ema_alpha=0.08),
-            LongOnlyConcentratedOverlay(top_k=top_k),
             BoardLotRoundingOverlay(lot_size=100, capital_vnd=capital),
             TCostOverlay(
                 cost_per_trade_bps=cost_per_trade_bps,
@@ -609,8 +609,8 @@ def build_pipeline_config(
     capital: float,
     hmm_reentry_threshold: float = 0.6,
     cost_per_trade_bps: float = 35.0,
-    min_trade_threshold_bps: float = 150.0,
-    rebalance_every_n_days: int = 10,
+    min_trade_threshold_bps: float = 250.0,
+    rebalance_every_n_days: int = 15,
 ) -> dict:
     trade_costs = derive_trade_cost_components(cost_per_trade_bps)
     return {
@@ -645,8 +645,8 @@ def safe_build_pipeline_config(args: argparse.Namespace) -> dict:
         "capital": args.capital,
         "hmm_reentry_threshold": getattr(args, "hmm_reentry_threshold", 0.6),
         "cost_per_trade_bps": getattr(args, "cost_per_trade_bps", 35.0),
-        "min_trade_threshold_bps": getattr(args, "min_trade_threshold_bps", 150.0),
-        "rebalance_every_n_days": getattr(args, "rebalance_every_n_days", 10),
+        "min_trade_threshold_bps": getattr(args, "min_trade_threshold_bps", 250.0),
+        "rebalance_every_n_days": getattr(args, "rebalance_every_n_days", 15),
     }
     try:
         return build_pipeline_config(**config_kwargs)

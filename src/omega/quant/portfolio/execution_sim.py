@@ -134,6 +134,7 @@ def apply_realistic_tc(
     prev_w_init: np.ndarray | None = None,
     use_adv_tiered_spread: bool = False,
     active_dates_mask: np.ndarray | None = None,
+    dynamic_capital_tracking: bool = True,
 ) -> tuple[pd.DataFrame, np.ndarray, dict]:
     """Subtract realistic VN costs from gross returns bar-by-bar.
 
@@ -159,6 +160,8 @@ def apply_realistic_tc(
             active bars pass gross returns without cost deduction. This
             prevents cost leakage from CPCV non-test-date gaps (purge/
             embargo periods between scattered test blocks).
+        dynamic_capital_tracking: if True, scales trade sizes (and thus participation
+            rates and slippage costs) based on running mark-to-market capital.
 
     Returns:
         adj_weights: same shape (after foreign room enforcement)
@@ -197,6 +200,9 @@ def apply_realistic_tc(
                 f"prev_w_init shape {prev_w_init.shape} != expected ({N},)"
             )
         prev_w = prev_w_init.astype(float, copy=True)
+        
+    running_capital = float(portfolio_capital_vnd)
+
     for t in range(T):
         w_t = weights[t]
         delta_w = w_t - prev_w
@@ -224,8 +230,9 @@ def apply_realistic_tc(
         slippage_t = 0.0
         if daily_adv is not None:
             adv_row = daily_adv[t]  # VND
-            # Trade VND value per name = |delta_w| * portfolio_capital
-            trade_vnd = np.abs(delta_w) * portfolio_capital_vnd
+            # Trade VND value per name = |delta_w| * running_capital (if tracking NAV)
+            trade_capital = running_capital if dynamic_capital_tracking else portfolio_capital_vnd
+            trade_vnd = np.abs(delta_w) * trade_capital
             with np.errstate(divide='ignore', invalid='ignore'):
                 participation = np.where(adv_row > 0, trade_vnd / adv_row, 0)
             # Phase 11: optional nonlinear (sub-linear) Almgren-Chriss-style
@@ -283,6 +290,10 @@ def apply_realistic_tc(
             net_t = gross_t
         net_returns[t] = net_t
         prev_w = w_t
+        
+        # Update running capital
+        if dynamic_capital_tracking:
+            running_capital = max(1000.0, running_capital * (1.0 + net_t))
 
     if active_dates_mask is not None:
         active_idx = active_dates_mask.astype(bool)

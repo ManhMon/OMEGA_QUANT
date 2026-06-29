@@ -52,10 +52,11 @@ def test_slippage_scales_with_capital():
     y = np.zeros((T, N))
     adv = np.full((T, N), 1e9)  # 1B VND ADV (small)
 
+    cost_model = VNCostModel(slippage_nonlinear_exp=1.0)
     _, _, br_small = apply_realistic_tc(w, y, daily_adv=adv,
-                                          portfolio_capital_vnd=1e8)  # 100M
+                                          portfolio_capital_vnd=1e8, cost_model=cost_model)  # 100M
     _, _, br_big = apply_realistic_tc(w, y, daily_adv=adv,
-                                        portfolio_capital_vnd=1e10)  # 10B
+                                        portfolio_capital_vnd=1e10, cost_model=cost_model)  # 10B
     assert br_big["total_slippage_cost"] > 50 * br_small["total_slippage_cost"]
 
 

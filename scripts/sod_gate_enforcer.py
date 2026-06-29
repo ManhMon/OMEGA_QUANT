@@ -1105,7 +1105,12 @@ def _extract_repo_local_files_read(content: str) -> list[str]:
         line = raw_line.strip()
         line_lower = line.lower()
 
-        if "repo-local files read" in line_lower or line_lower.startswith("files read:"):
+        # Only start capturing on actual files-read section headers
+        if (
+            "repo-local files read" in line_lower or
+            "files read" in line_lower or
+            line_lower.startswith("files read:")
+        ):
             capture = True
             continue
 
@@ -1385,9 +1390,11 @@ def check_sod_compliance() -> bool:
         ts = normalize_timestamp(gate.get("timestamp"))
         
         # Skip gates that are not approved (unless they're pending)
+        # Skip gates that are not approved (unless they're pending)
         if verdict not in ("[APPROVED]", "[APPROVED_PARTIAL]"):
             # NEEDS_FIX or other non-approved verdicts are hard-blocking
             # unless superseded
+            print(f"FAIL: Gate {gate_name} has non-approved verdict: {verdict}")
             all_pass = False
             continue
         
@@ -1399,6 +1406,7 @@ def check_sod_compliance() -> bool:
         if l2_completed and l2_role_id is not None:
             l2_valid, l2_msg = validate_l2_role(l2_role_id, l2_role_name, role_specs)
             if not l2_valid:
+                print(f"FAIL: Gate {gate_name} L2 role invalid: {l2_msg}")
                 all_pass = False
                 continue
         
@@ -1408,6 +1416,7 @@ def check_sod_compliance() -> bool:
         if l3_panel is not None:
             panel_valid, panel_msg = validate_l3_panel(l3_panel, l2_role_id, role_specs)
             if not panel_valid:
+                print(f"FAIL: Gate {gate_name} L3 panel invalid: {panel_msg}")
                 all_pass = False
                 continue
             audit_path = ""
@@ -1416,6 +1425,7 @@ def check_sod_compliance() -> bool:
             if l3_role_id is not None:
                 l3_valid, l3_msg = validate_l3_role(l3_role_id, l3_role_name, role_specs)
                 if not l3_valid:
+                    print(f"FAIL: Gate {gate_name} L3 role invalid: {l3_msg}")
                     all_pass = False
                     continue
 
@@ -1431,24 +1441,28 @@ def check_sod_compliance() -> bool:
                     # Pre-cutoff: path traversal check only (no location requirement)
                     traversal_safe, traversal_msg = check_path_traversal_only(audit_path)
                     if not traversal_safe:
+                        print(f"FAIL: Gate {gate_name} audit path traversal unsafe: {traversal_msg}")
                         all_pass = False
                         continue
                 else:
                     # Post-cutoff: full validation (traversal + location)
                     path_valid, path_msg = validate_audit_report_path(audit_path)
                     if not path_valid:
+                        print(f"FAIL: Gate {gate_name} audit path invalid: {path_msg}")
                         all_pass = False
                         continue
 
                 # Check audit report exists
                 exists_valid, exists_msg = check_audit_report_exists(audit_path)
                 if not exists_valid:
+                    print(f"FAIL: Gate {gate_name} audit report missing: {exists_msg}")
                     all_pass = False
                     continue
 
                 # Check audit report content
                 content_valid, content_msg = check_audit_report_content(audit_path, verdict)
                 if not content_valid:
+                    print(f"FAIL: Gate {gate_name} audit content invalid: {content_msg}")
                     all_pass = False
                     continue
         
@@ -1470,6 +1484,7 @@ def check_sod_compliance() -> bool:
             if is_strict_gate:
                 # Tier C: STRICT gate always hard-blocking
                 if not has_strict_fields:
+                    print(f"FAIL: Gate {gate_name} (STRICT) missing strict fields")
                     all_pass = False
                     continue
                 
@@ -1481,6 +1496,7 @@ def check_sod_compliance() -> bool:
                     l2_role_name if is_strict_skill_alignment_gate else None,
                 )
                 if not l2_valid:
+                    print(f"FAIL: Gate {gate_name} (STRICT) L2 skill sources invalid: {l2_msg}")
                     all_pass = False
                     continue
                 
@@ -1492,6 +1508,7 @@ def check_sod_compliance() -> bool:
                         l3_role_name if is_strict_skill_alignment_gate else None,
                     )
                     if not audit_valid:
+                        print(f"FAIL: Gate {gate_name} (STRICT) L3 audit skill sources invalid: {audit_msg}")
                         all_pass = False
                         continue
             
@@ -1504,6 +1521,7 @@ def check_sod_compliance() -> bool:
                     l2_role_name if is_strict_skill_alignment_gate else None,
                 )
                 if not l2_valid:
+                    print(f"FAIL: Gate {gate_name} L2 skill sources invalid: {l2_msg}")
                     all_pass = False
                     continue
                 
@@ -1514,11 +1532,13 @@ def check_sod_compliance() -> bool:
                         l3_role_name if is_strict_skill_alignment_gate else None,
                     )
                     if not audit_valid:
+                        print(f"FAIL: Gate {gate_name} L3 audit skill sources invalid: {audit_msg}")
                         all_pass = False
                         continue
             
             elif strict_approval_ts is not None and ts >= strict_approval_ts:
                 # Tier B: Post-strict-approval, missing strict fields -> hard-blocking
+                print(f"FAIL: Gate {gate_name} missing strict fields")
                 all_pass = False
                 continue
             
@@ -1529,6 +1549,13 @@ def check_sod_compliance() -> bool:
 
 if __name__ == '__main__':
     """CLI entry point for SoD gate compliance check."""
+    import sys
+    if sys.platform.startswith('win'):
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        except AttributeError:
+            pass
     import argparse
     parser = argparse.ArgumentParser(description='SOD Gate Enforcer')
     parser.add_argument('--check-before-push', action='store_true',

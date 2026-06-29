@@ -247,7 +247,8 @@ When user's prompt is NOT in English:
 3. SOLUTIONING → Architecture, design (NO CODE!)
 4. IMPLEMENTATION → Code + tests
 
-> 🔴 **Edit mode:** If multi-file or structural change → Offer to create `{task-slug}.md`. For single-file fixes → Proceed directly.
+> 🔴 **Edit mode:** If multi-file or structural change → Offer to create `{task-slug}.md`. For single-file fixes → Proceed directly (EXCEPTION: If the project enforces strict Segregation of Duties (SoD) per AGENTS.md, L1 orchestrator is still strictly prohibited from writing code directly and must delegate to L2 OpenCode).
+
 
 ---
 

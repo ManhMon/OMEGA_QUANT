@@ -1103,11 +1103,11 @@ class TestTCostOverlayTuning:
 
         assert len(tcost) == 1, f"Expected exactly 1 TCostOverlay in Hybrid, got {len(tcost)}"
         assert len(rebalance) == 1, f"Expected exactly 1 RebalanceFrequencyOverlay in Hybrid, got {len(rebalance)}"
-        assert tcost[0].min_trade_threshold_bps == 150.0, (
-            f"Hybrid TCostOverlay threshold should be 150.0 bps, "
+        assert tcost[0].min_trade_threshold_bps == 250.0, (
+            f"Hybrid TCostOverlay threshold should be 250.0 bps, "
             f"got {tcost[0].min_trade_threshold_bps}"
         )
-        assert rebalance[0].rebalance_every_n_days == 10
+        assert rebalance[0].rebalance_every_n_days == 15
         assert tcost[0].cost_per_trade_bps == 35.0
 
     def test_baseline_turnover_controls_tightened(self):
@@ -1119,8 +1119,8 @@ class TestTCostOverlayTuning:
 
         assert len(tcost) == 1, f"Expected exactly 1 TCostOverlay in Baseline, got {len(tcost)}"
         assert len(rebalance) == 1, f"Expected exactly 1 RebalanceFrequencyOverlay in Baseline, got {len(rebalance)}"
-        assert tcost[0].min_trade_threshold_bps == 150.0
-        assert rebalance[0].rebalance_every_n_days == 10
+        assert tcost[0].min_trade_threshold_bps == 250.0
+        assert rebalance[0].rebalance_every_n_days == 15
 
     def test_trade_cost_wiring_scales_pipeline_and_drawdown_overlay(self):
         from backtest_hybrid_regime import (
