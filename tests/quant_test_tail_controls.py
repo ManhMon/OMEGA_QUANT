@@ -59,6 +59,38 @@ def test_vol_target_caps_max_leverage():
     assert np.abs(out[0]) <= 3.0 * np.abs(w[0]) + 1e-9
 
 
+def test_vol_target_downside_only_uses_sqrt2_correction():
+    w = np.array([1.0])
+    returns = np.array([-0.01, 0.01, -0.02, 0.02] * 25, dtype=float)
+    out = vol_target_weights(
+        w,
+        returns,
+        target_vol_ann=0.15,
+        lookback=100,
+        periods_per_year=252,
+        downside_only=True,
+    )
+    expected_vol = np.std(returns[returns < 0.0], ddof=1) * np.sqrt(2.0) * np.sqrt(252)
+    expected_scale = min(0.15 / expected_vol, 3.0)
+    assert out[0] == pytest.approx(expected_scale)
+
+
+def test_vol_target_downside_only_falls_back_when_sample_too_small():
+    w = np.array([1.0])
+    returns = np.array([0.01] * 99 + [-0.02], dtype=float)
+    out = vol_target_weights(
+        w,
+        returns,
+        target_vol_ann=0.15,
+        lookback=100,
+        periods_per_year=252,
+        downside_only=True,
+    )
+    expected_vol = np.std(returns, ddof=1) * np.sqrt(252)
+    expected_scale = min(0.15 / expected_vol, 3.0)
+    assert out[0] == pytest.approx(expected_scale)
+
+
 def test_drawdown_breaker_no_trip_when_flat():
     eq = np.linspace(1.0, 1.05, 30)
     s = drawdown_breaker(eq, scale=1.0, window=20, dd_threshold=0.08)

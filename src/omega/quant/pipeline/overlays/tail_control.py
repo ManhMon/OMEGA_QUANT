@@ -11,6 +11,7 @@ from omega.quant.portfolio.tail_controls import apply_tail_controls
 
 class TailControlOverlay(WeightOverlay):
     def __init__(self, target_vol_ann: float = 0.15, max_abs_weight: float = 0.05,
+                 downside_only_vol_target: bool = False,
                  dd_window: int = 20, dd_threshold: float = 0.08, dd_cut: float = 0.5,
                  soft_brake_enabled: bool = False,
                  soft_brake_base_threshold: float = 0.05,
@@ -19,6 +20,7 @@ class TailControlOverlay(WeightOverlay):
                  soft_brake_vol_sensitivity: float = 1.0):
         self.target_vol_ann = target_vol_ann
         self.max_abs_weight = max_abs_weight
+        self.downside_only_vol_target = downside_only_vol_target
         self.dd_window = dd_window
         self.dd_threshold = dd_threshold
         self.dd_cut = dd_cut
@@ -36,6 +38,7 @@ class TailControlOverlay(WeightOverlay):
         adj_w, _ = apply_tail_controls(
             weights, returns_pivot.to_numpy(),
             target_vol_ann=self.target_vol_ann,
+            downside_only_vol_target=self.downside_only_vol_target,
             max_abs_weight=self.max_abs_weight,
             dd_window=self.dd_window,
             dd_threshold=self.dd_threshold,

@@ -439,6 +439,7 @@ class TailControlOverlay(WeightOverlay):
         self,
         target_vol_ann: float = 0.15,
         max_abs_weight: float = 0.05,
+        downside_only_vol_target: bool = False,
         dd_window: int = 20,
         dd_threshold: float = 0.08,
         dd_cut: float = 0.5,
@@ -455,6 +456,7 @@ class TailControlOverlay(WeightOverlay):
     ):
         self.target_vol_ann = target_vol_ann
         self.max_abs_weight = max_abs_weight
+        self.downside_only_vol_target = downside_only_vol_target
         self.dd_window = dd_window
         self.dd_threshold = dd_threshold
         self.dd_cut = dd_cut
@@ -478,6 +480,7 @@ class TailControlOverlay(WeightOverlay):
         adj_w, _ = apply_tail_controls(
             weights, returns_pivot.to_numpy(),
             target_vol_ann=self.target_vol_ann,
+            downside_only_vol_target=self.downside_only_vol_target,
             max_abs_weight=self.max_abs_weight,
             dd_window=self.dd_window,
             dd_threshold=self.dd_threshold,
@@ -836,6 +839,7 @@ class TradingPipelineV2:
 
         capital = self.config.get("initial_capital_vnd", 1e9)
         use_adv_tiered_spread = self.config.get("use_adv_tiered_spread", False)
+        dynamic_capital_tracking = self.config.get("dynamic_capital_tracking", True)
         cost_model = VNCostModel(
             commission_buy=self.config.get("commission_buy", DEFAULT_VN_COSTS.commission_buy),
             commission_sell=self.config.get("commission_sell", DEFAULT_VN_COSTS.commission_sell),
@@ -923,6 +927,7 @@ class TradingPipelineV2:
             cost_model=cost_model,
             prev_w_init=prev_w_init_exec,
             use_adv_tiered_spread=use_adv_tiered_spread,
+            dynamic_capital_tracking=dynamic_capital_tracking,
             active_dates_mask=active_dates_mask,
         )
 

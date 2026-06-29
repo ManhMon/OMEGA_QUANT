@@ -190,6 +190,25 @@ class TestMainHasWorkersArg:
         source = inspect.getsource(parse_args)
         assert "--workers" in source
 
+    def test_cli_defaults_to_dynamic_universe_with_60_symbols(self, monkeypatch):
+        from backtest_hybrid_regime import parse_args
+
+        monkeypatch.setattr(sys, "argv", ["backtest_hybrid_regime.py"])
+        args = parse_args()
+
+        assert args.static_universe is False
+        assert args.dynamic_universe is True
+        assert args.symbol_count == 60
+
+    def test_static_universe_flag_disables_dynamic_universe(self, monkeypatch):
+        from backtest_hybrid_regime import parse_args
+
+        monkeypatch.setattr(sys, "argv", ["backtest_hybrid_regime.py", "--static-universe"])
+        args = parse_args()
+
+        assert args.static_universe is True
+        assert args.dynamic_universe is False
+
 
 class TestVectorizedQueryDynamic:
     """Verify the vectorized query_dynamic produces correct PIT-safe results."""
@@ -1136,6 +1155,10 @@ class TestTCostOverlayTuning:
         assert config["commission_buy"] == pytest.approx(expected_costs["commission_buy"])
         assert config["commission_sell"] == pytest.approx(expected_costs["commission_sell"])
         assert config["tax_sell"] == pytest.approx(expected_costs["tax_sell"])
+        assert config["use_adv_tiered_spread"] is True
+        assert config["dynamic_capital_tracking"] is True
+        assert config["slippage_k"] == pytest.approx(0.05)
+        assert config["slippage_nonlinear_exp"] == pytest.approx(0.6)
 
         for scenario in ("Baseline", "Hybrid"):
             drawdown = [
@@ -1177,6 +1200,40 @@ class TestLongOnlyConcentratedOverlay:
         assert res2.loc[pd.Timestamp("2024-01-01"), "B"] == 0.0
         assert res2.loc[pd.Timestamp("2024-01-01"), "C"] == pytest.approx(0.375)
         assert res2.loc[pd.Timestamp("2024-01-01"), "D"] == 0.0
+
+    def test_overlay_reselects_plain_top_k_each_day(self):
+        from backtest_hybrid_regime import LongOnlyConcentratedOverlay
+
+        overlay = LongOnlyConcentratedOverlay(top_k=2)
+        weights = pd.DataFrame(
+            [
+                [0.9, 0.8, 0.7, 0.6],
+                [0.1, 0.2, 0.95, 0.85],
+            ],
+            columns=["A", "B", "C", "D"],
+            index=[pd.Timestamp("2024-01-01"), pd.Timestamp("2024-01-02")],
+        )
+
+        res = overlay.apply(weights, pd.DataFrame(), {})
+
+        assert set(res.columns[res.loc[pd.Timestamp("2024-01-01")] > 0]) == {"A", "B"}
+        assert set(res.columns[res.loc[pd.Timestamp("2024-01-02")] > 0]) == {"C", "D"}
+
+    def test_overlay_handles_ties_by_truncating_to_top_k(self):
+        from backtest_hybrid_regime import LongOnlyConcentratedOverlay
+
+        overlay = LongOnlyConcentratedOverlay(top_k=3)
+        weights = pd.DataFrame(
+            [[0.9, 0.8, 0.8, 0.8, 0.1]],
+            columns=["A", "B", "C", "D", "E"],
+            index=[pd.Timestamp("2024-01-01")],
+        )
+
+        res = overlay.apply(weights, pd.DataFrame(), {})
+
+        active = set(res.columns[res.loc[pd.Timestamp("2024-01-01")] > 0])
+        assert len(active) == 3
+        assert active == {"A", "B", "C"}
 
     def test_scenario_concentration_invariant(self, monkeypatch):
         from backtest_hybrid_regime import build_scenario_overlays
@@ -1227,6 +1284,47 @@ class TestLongOnlyConcentratedOverlay:
             for dt in current_weights.index:
                 active_assets = (current_weights.loc[dt] > 1e-5).sum()
                 assert active_assets <= 2, f"Scenario {name}: Expected at most 2 active assets on {dt}, got {active_assets}"
+
+
+class TestScenarioDefaults:
+    def test_hybrid_bear_dampening_default(self):
+        from backtest_hybrid_regime import build_scenario_overlays
+        from omega.quant.pipeline.overlays.risk_sizing import RiskSizingOverlay
+
+        overlays = build_scenario_overlays(capital=1_000_000)["Hybrid"]
+        risk_overlay = next(o for o in overlays if isinstance(o, RiskSizingOverlay))
+
+        assert risk_overlay.latent_gmm_bear_dampening == pytest.approx(0.45)
+
+    def test_overlay_params_are_cli_parameterized(self):
+        from backtest_hybrid_regime import build_scenario_overlays
+        from omega.quant.pipeline.overlays.risk_sizing import RiskSizingOverlay
+        from omega.quant.pipeline.overlays.tail_control import TailControlOverlay
+        from omega.quant.pipeline.overlays.tcost import TCostOverlay
+
+        overlays = build_scenario_overlays(
+            capital=1_000_000,
+            tail_target_vol_ann=0.18,
+            tail_max_abs_weight=0.12,
+            tail_downside_only_vol_target=True,
+            risk_regime_sizing_scale=0.65,
+            risk_latent_gmm_bear_dampening=0.22,
+            tcost_dynamic_ic_lookback=33,
+        )
+
+        for scenario_name, stack in overlays.items():
+            tail = next(o for o in stack if isinstance(o, TailControlOverlay))
+            risk = next(o for o in stack if isinstance(o, RiskSizingOverlay))
+            tcost = next(o for o in stack if isinstance(o, TCostOverlay))
+
+            assert tail.target_vol_ann == pytest.approx(0.18)
+            assert tail.max_abs_weight == pytest.approx(0.12)
+            assert tail.downside_only_vol_target is True
+            assert risk.regime_sizing_scale == pytest.approx(0.65)
+            assert tcost.ic_lookback == 33
+
+            if scenario_name == "Hybrid":
+                assert risk.latent_gmm_bear_dampening == pytest.approx(0.22)
 
 
 

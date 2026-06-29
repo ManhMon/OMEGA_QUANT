@@ -29,6 +29,7 @@ from omega.quant.pipeline_v2 import (
     ThompsonSamplingWeightOverlay,
 )
 from omega.quant.pipeline.overlays.drawdown_control import DrawdownControlOverlay
+from omega.quant.portfolio.execution_sim import adv_tiered_half_spread
 
 def test_pipeline_state_manager(tmp_path):
     """TEST-01 FIX3: use pytest tmp_path (ACL-safe) instead of tempfile.TemporaryDirectory."""
@@ -326,3 +327,66 @@ def test_drawdown_control_hmm_reentry_allowed():
     assert dd_state["hmm_reentry_blocked_count"] == 0
     assert dd_state["in_cooldown"] is False
     assert result.iloc[0, 0] == pytest.approx(1.0)
+
+
+def test_pipeline_uses_adv_tiered_spread_and_dynamic_capital(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_apply_realistic_tc(daily_weights, daily_realized_y, **kwargs):
+        captured.update(kwargs)
+        return daily_weights, np.zeros(len(daily_weights)), {"total_cost": 0.0, "final_w": daily_weights.iloc[-1].to_numpy()}
+
+    def query_fn(start, end, tickers):
+        dates = pd.date_range(start, end, freq="D")
+        rows = []
+        adv_values = {"HPG": 100e9, "SSI": 5e9}
+        signals = {"HPG": 1.0, "SSI": -1.0}
+        for d in dates:
+            for t in ["HPG", "SSI"]:
+                rows.append({
+                    "date": d,
+                    "symbol": t,
+                    "open": 10.0,
+                    "high": 10.5,
+                    "low": 9.5,
+                    "close": 10.0,
+                    "volume": 1000.0,
+                    "returns": 0.01,
+                    "adv_vnd": adv_values[t],
+                    "composite_signal": signals[t],
+                })
+        return pd.DataFrame(rows)
+
+    monkeypatch.setattr("omega.quant.pipeline_v2.apply_realistic_tc", fake_apply_realistic_tc)
+
+    feature_store = DatabaseFeatureStoreAdapter(query_fn)
+    state_manager = PipelineStateManager(tmp_path)
+    output_handler = BacktestOutputHandler(tmp_path / "report.json", tmp_path / "equity.csv")
+    pipeline = TradingPipelineV2(
+        feature_store=feature_store,
+        state_manager=state_manager,
+        output_handler=output_handler,
+        overlays=[],
+        config={
+            "initial_capital_vnd": 1e9,
+            "use_adv_tiered_spread": True,
+            "dynamic_capital_tracking": True,
+        },
+    )
+
+    pipeline.execute(
+        run_id="spread_dyn_cap",
+        date_start="2026-01-02",
+        date_end="2026-01-03",
+        tickers=["HPG", "SSI"],
+    )
+
+    assert captured["use_adv_tiered_spread"] is True
+    assert captured["dynamic_capital_tracking"] is True
+    assert captured["daily_adv"].shape[1] == 2
+    np.testing.assert_allclose(
+        captured["daily_adv"][1],
+        [100e9, 5e9],
+    )
+    assert adv_tiered_half_spread(captured["daily_adv"][1][0]) == pytest.approx(0.0005)
+    assert adv_tiered_half_spread(captured["daily_adv"][1][1]) == pytest.approx(0.0015)

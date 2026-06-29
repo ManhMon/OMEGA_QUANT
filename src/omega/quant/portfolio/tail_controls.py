@@ -32,12 +32,20 @@ def vol_target_weights(weights: np.ndarray, returns_history: np.ndarray,
                        target_vol_ann: float = 0.15,
                        periods_per_year: int = 252,
                        lookback: int = 60,
-                       max_leverage: float = 3.0) -> np.ndarray:
+                       max_leverage: float = 3.0,
+                       downside_only: bool = False) -> np.ndarray:
     """Scale weights so realized vol matches target. Returns scaled weights."""
     if len(returns_history) < lookback:
         return weights
     recent = returns_history[-lookback:]
-    realized_vol = np.std(recent, ddof=1) * np.sqrt(periods_per_year)
+    sample = recent[recent < 0.0] if downside_only else recent
+    if len(sample) >= 2:
+        realized_vol = np.std(sample, ddof=1)
+        if downside_only:
+            realized_vol *= np.sqrt(2.0)
+    else:
+        realized_vol = np.std(recent, ddof=1)
+    realized_vol *= np.sqrt(periods_per_year)
     if realized_vol < 1e-8:
         return weights
     scale = min(target_vol_ann / realized_vol, max_leverage)
@@ -163,6 +171,7 @@ def smooth_regime_scale(
 def apply_tail_controls(daily_weights: pd.DataFrame,
                         daily_realized_y: np.ndarray,
                         target_vol_ann: float = 0.15,
+                        downside_only_vol_target: bool = False,
                         max_abs_weight: float = 0.05,
                         max_leverage: float = 3.0,
                         lookback: int = 60,
@@ -194,6 +203,9 @@ def apply_tail_controls(daily_weights: pd.DataFrame,
         daily_weights: T x N DataFrame; row t = weights AT bar t (used to realize y[t]).
         daily_realized_y: T x N matrix of realized per-ticker returns.
         target_vol_ann: 0.15 = 15% annualized portfolio vol target.
+        downside_only_vol_target: if True, estimate vol from negative returns only,
+            with sqrt(2) correction; fallback to full-sample vol when downside sample
+            is too small for a stable estimate.
         max_abs_weight: per-name cap (intentional risk reduction; no renorm).
         max_leverage: cap on vol-target multiplier (default 3x).
         lookback: bars for realized vol estimation (default 60).
@@ -256,7 +268,15 @@ def apply_tail_controls(daily_weights: pd.DataFrame,
 
         # Vol target on PRE-LEVERAGE history.
         if len(pre_lev_history) >= lookback:
-            vol = np.std(pre_lev_history[-lookback:], ddof=1) * np.sqrt(periods_per_year)
+            recent = np.asarray(pre_lev_history[-lookback:], dtype=float)
+            sample = recent[recent < 0.0] if downside_only_vol_target else recent
+            if len(sample) >= 2:
+                vol = np.std(sample, ddof=1)
+                if downside_only_vol_target:
+                    vol *= np.sqrt(2.0)
+            else:
+                vol = np.std(recent, ddof=1)
+            vol *= np.sqrt(periods_per_year)
             scale = min(target_vol_ann / max(vol, 1e-8), max_leverage)
         else:
             scale = 1.0

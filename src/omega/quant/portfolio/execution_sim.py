@@ -295,6 +295,7 @@ def apply_realistic_tc(
         if dynamic_capital_tracking:
             running_capital = max(1000.0, running_capital * (1.0 + net_t))
 
+    total_other_adj = 0.0
     if active_dates_mask is not None:
         active_idx = active_dates_mask.astype(bool)
         n_active = int(np.sum(active_idx))
@@ -304,14 +305,20 @@ def apply_realistic_tc(
         total_spread_adj = float(np.sum(bar_spread[active_idx]))
         total_slippage_adj = float(np.sum(bar_slippage[active_idx]))
         total_turnover_adj = float(np.sum(bar_turnover[active_idx]))
-        total_cost_adj = total_commission_adj + total_spread_adj + total_slippage_adj
+        total_cost_adj = float(np.sum(bar_costs[active_idx]))
+        total_other_adj = total_cost_adj - (
+            total_commission_adj + total_spread_adj + total_slippage_adj
+        )
     else:
         n_active = T
         total_commission_adj = float(np.sum(bar_commission))
         total_spread_adj = float(np.sum(bar_spread))
         total_slippage_adj = float(np.sum(bar_slippage))
         total_turnover_adj = float(np.sum(bar_turnover))
-        total_cost_adj = total_commission_adj + total_spread_adj + total_slippage_adj
+        total_cost_adj = float(np.sum(bar_costs))
+        total_other_adj = total_cost_adj - (
+            total_commission_adj + total_spread_adj + total_slippage_adj
+        )
 
     breakdown = {
         "total_turnover": total_turnover_adj,
@@ -319,9 +326,11 @@ def apply_realistic_tc(
         "total_commission_cost": total_commission_adj,
         "total_spread_cost": total_spread_adj,
         "total_slippage_cost": total_slippage_adj,
+        "total_other_cost": float(total_other_adj),
         "total_cost": total_cost_adj,
         "avg_cost_per_bar_bps": float(10000 * total_cost_adj / n_active),
         "capital_vnd": portfolio_capital_vnd,
+        "final_capital_vnd": float(running_capital),
         "final_w": prev_w.copy(),
         # Phase 11: extra cost components for diagnostic
         "slippage_nonlinear_exp": cost_model.slippage_nonlinear_exp,
@@ -329,6 +338,8 @@ def apply_realistic_tc(
         "halt_limit_haircut_pct": cost_model.halt_limit_haircut_pct,
         "foreign_room_haircut_pct": cost_model.foreign_room_haircut_pct,
         "use_adv_tiered_spread": use_adv_tiered_spread,
+        "dynamic_capital_tracking": dynamic_capital_tracking,
         "n_active_bars": n_active,
+        "bar_costs": bar_costs.copy(),
     }
     return daily_weights, net_returns, breakdown

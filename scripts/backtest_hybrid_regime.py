@@ -91,46 +91,30 @@ class LongOnlyConcentratedOverlay(WeightOverlay):
         self.top_k = top_k
 
     def apply(self, weights: pd.DataFrame, panel: pd.DataFrame, state: Dict[str, Any]) -> pd.DataFrame:
-        # Clip to non-negative (long-only)
         long_only = weights.clip(lower=0.0)
-        
-        # Select top_k largest weights on each date, zeroes others
-        # We can do this efficiently per row.
-        # Find the threshold value for the top_kth largest element per row
-        # If the row has fewer elements than top_k, we just keep all non-zero elements.
         processed_rows = []
         for idx, row in long_only.iterrows():
             if row.sum() == 0:
                 processed_rows.append(row)
                 continue
-            
-            # Find the top_k largest value
+
             sorted_vals = row.sort_values(ascending=False)
             if len(sorted_vals) > self.top_k:
                 kth_val = sorted_vals.iloc[self.top_k - 1]
-                # Zero out anything less than kth_val
-                # To handle ties or zeroes properly, we can mask
-                # If kth_val is 0, we only keep positive values up to top_k
-                mask = row >= kth_val
-                new_row = row.where(mask, 0.0)
-                
-                # If there are ties resulting in more than top_k elements, let's keep only top_k elements
+                new_row = row.where(row >= kth_val, 0.0)
                 if (new_row > 0.0).sum() > self.top_k:
-                    # Keep only the top_k elements by index
                     keep_idx = sorted_vals.index[:self.top_k]
                     new_row = new_row.copy()
                     new_row.loc[~new_row.index.isin(keep_idx)] = 0.0
             else:
                 new_row = row
-            
-            # Normalize to sum to 1.0 (or 0.0 if all zero)
             row_sum = new_row.sum()
             if row_sum > 0.0:
                 new_row = new_row / row_sum
             else:
                 new_row = new_row * 0.0
             processed_rows.append(new_row)
-            
+
         return pd.DataFrame(processed_rows, index=weights.index, columns=weights.columns)
 
 
@@ -178,11 +162,15 @@ def parse_args() -> argparse.Namespace:
         help="Walk-forward test window in years (default: 1)",
     )
     parser.add_argument(
-        "--dynamic-universe", action="store_true",
+        "--dynamic-universe", action="store_true", default=True,
         help="Enable DynamicUniverseSelector for per-rebalance filtering",
     )
     parser.add_argument(
-        "--symbol-count", type=int, default=30,
+        "--static-universe", action="store_true",
+        help="Disable DynamicUniverseSelector and use static universe selection.",
+    )
+    parser.add_argument(
+        "--symbol-count", type=int, default=60,
         help="Top N symbols for static or dynamic universe (default: 30)",
     )
     parser.add_argument(
@@ -235,7 +223,34 @@ def parse_args() -> argparse.Namespace:
         "--rebalance-every-n-days", type=int, default=15,
         help="Number of days between portfolio rebalances (default: 15)",
     )
-    return parser.parse_args()
+    parser.add_argument(
+        "--tail-target-vol-ann", type=float, default=0.2,
+        help="TailControlOverlay annualized target vol (default: 0.2)",
+    )
+    parser.add_argument(
+        "--tail-max-abs-weight", type=float, default=0.25,
+        help="TailControlOverlay per-name cap before leverage (default: 0.25)",
+    )
+    parser.add_argument(
+        "--tail-downside-only-vol-target", action="store_true",
+        help="Use downside-only vol targeting with sqrt(2) correction + stability fallback.",
+    )
+    parser.add_argument(
+        "--risk-regime-sizing-scale", type=float, default=0.5,
+        help="RiskSizingOverlay bear-regime exposure scale (default: 0.5)",
+    )
+    parser.add_argument(
+        "--risk-latent-gmm-bear-dampening", type=float, default=0.45,
+        help="Hybrid RiskSizingOverlay latent GMM bear dampening (default: 0.45)",
+    )
+    parser.add_argument(
+        "--tcost-dynamic-ic-lookback", type=int, default=20,
+        help="TCostOverlay dynamic budgeting IC lookback (default: 20)",
+    )
+    args = parser.parse_args()
+    if args.static_universe:
+        args.dynamic_universe = False
+    return args
 
 
 def apply_quick_mode_overrides(args: argparse.Namespace) -> None:
@@ -500,6 +515,12 @@ def build_scenario_overlays(
     cost_per_trade_bps: float = 35.0,
     min_trade_threshold_bps: float = 250.0,
     rebalance_every_n_days: int = 15,
+    tail_target_vol_ann: float = 0.2,
+    tail_max_abs_weight: float = 0.25,
+    tail_downside_only_vol_target: bool = False,
+    risk_regime_sizing_scale: float = 0.5,
+    risk_latent_gmm_bear_dampening: float = 0.45,
+    tcost_dynamic_ic_lookback: int = 20,
 ) -> Dict[str, list]:
     """Build scenario overlay stacks with optional pre-fitted models.
 
@@ -522,7 +543,11 @@ def build_scenario_overlays(
                 max_sector_exposure=0.30,
                 sector_mapping_file=sector_file,
             ),
-            TailControlOverlay(target_vol_ann=0.2, max_abs_weight=0.25),
+            TailControlOverlay(
+                target_vol_ann=tail_target_vol_ann,
+                max_abs_weight=tail_max_abs_weight,
+                downside_only_vol_target=tail_downside_only_vol_target,
+            ),
             RebalanceFrequencyOverlay(
                 rebalance_every_n_days=rebalance_every_n_days,
                 mode="fixed_interval",
@@ -534,7 +559,7 @@ def build_scenario_overlays(
                 confidence_scaling=True,
                 regime_sizing=True,
                 regime_sizing_mode="hmm",
-                regime_sizing_scale=0.5,
+                regime_sizing_scale=risk_regime_sizing_scale,
                 latent_gmm_enabled=False,
                 hmm_params=hmm_params,
             ),
@@ -543,6 +568,7 @@ def build_scenario_overlays(
                 cost_per_trade_bps=cost_per_trade_bps,
                 min_trade_threshold_bps=min_trade_threshold_bps,
                 use_dynamic_budgeting=True,
+                ic_lookback=tcost_dynamic_ic_lookback,
             ),
             DrawdownControlOverlay(
                 threshold=-0.05,
@@ -558,7 +584,11 @@ def build_scenario_overlays(
                 max_sector_exposure=0.30,
                 sector_mapping_file=sector_file,
             ),
-            TailControlOverlay(target_vol_ann=0.2, max_abs_weight=0.25),
+            TailControlOverlay(
+                target_vol_ann=tail_target_vol_ann,
+                max_abs_weight=tail_max_abs_weight,
+                downside_only_vol_target=tail_downside_only_vol_target,
+            ),
             RebalanceFrequencyOverlay(
                 rebalance_every_n_days=rebalance_every_n_days,
                 mode="fixed_interval",
@@ -570,10 +600,10 @@ def build_scenario_overlays(
                 confidence_scaling=True,
                 regime_sizing=True,
                 regime_sizing_mode="hmm",
-                regime_sizing_scale=0.5,
+                regime_sizing_scale=risk_regime_sizing_scale,
                 latent_gmm_enabled=True,
                 latent_gmm_columns=["latent_ae_00", "latent_ae_01", "latent_ae_11"],
-                latent_gmm_bear_dampening=0.15,
+                latent_gmm_bear_dampening=risk_latent_gmm_bear_dampening,
                 latent_gmm_bull_boost=1.25,
                 latent_gmm_sideways_scale=0.9,
                 latent_gmm_smooth_transition=True,
@@ -586,6 +616,7 @@ def build_scenario_overlays(
                 cost_per_trade_bps=cost_per_trade_bps,
                 min_trade_threshold_bps=min_trade_threshold_bps,
                 use_dynamic_budgeting=True,
+                ic_lookback=tcost_dynamic_ic_lookback,
             ),
             DrawdownControlOverlay(
                 threshold=-0.05,
@@ -611,6 +642,12 @@ def build_pipeline_config(
     cost_per_trade_bps: float = 35.0,
     min_trade_threshold_bps: float = 250.0,
     rebalance_every_n_days: int = 15,
+    tail_target_vol_ann: float = 0.2,
+    tail_max_abs_weight: float = 0.25,
+    tail_downside_only_vol_target: bool = False,
+    risk_regime_sizing_scale: float = 0.5,
+    risk_latent_gmm_bear_dampening: float = 0.45,
+    tcost_dynamic_ic_lookback: int = 20,
 ) -> dict:
     trade_costs = derive_trade_cost_components(cost_per_trade_bps)
     return {
@@ -619,12 +656,20 @@ def build_pipeline_config(
         "cost_per_trade_bps": cost_per_trade_bps,
         "min_trade_threshold_bps": min_trade_threshold_bps,
         "rebalance_every_n_days": rebalance_every_n_days,
+        "tail_target_vol_ann": tail_target_vol_ann,
+        "tail_max_abs_weight": tail_max_abs_weight,
+        "tail_downside_only_vol_target": tail_downside_only_vol_target,
+        "risk_regime_sizing_scale": risk_regime_sizing_scale,
+        "risk_latent_gmm_bear_dampening": risk_latent_gmm_bear_dampening,
+        "tcost_dynamic_ic_lookback": tcost_dynamic_ic_lookback,
         "commission_buy": trade_costs["commission_buy"],
         "commission_sell": trade_costs["commission_sell"],
         "tax_sell": trade_costs["tax_sell"],
+        "use_adv_tiered_spread": True,
+        "dynamic_capital_tracking": True,
         "half_spread_bps": 0.0002,
-        "slippage_k": 0.1,
-        "slippage_nonlinear_exp": 1.0,
+        "slippage_k": 0.05,
+        "slippage_nonlinear_exp": 0.6,
         "expected_alpha_scale": 2.0,  # was 1.0 default - amplify signal in low-vol regimes
         "expected_alpha_lookback": 60,  # was 20 default - smoother vol estimate
         "dynamic_tc_gate_multiplier": 4.0,  # was 2.5 default - require higher alpha/cost ratio to trade
@@ -647,6 +692,12 @@ def safe_build_pipeline_config(args: argparse.Namespace) -> dict:
         "cost_per_trade_bps": getattr(args, "cost_per_trade_bps", 35.0),
         "min_trade_threshold_bps": getattr(args, "min_trade_threshold_bps", 250.0),
         "rebalance_every_n_days": getattr(args, "rebalance_every_n_days", 15),
+        "tail_target_vol_ann": getattr(args, "tail_target_vol_ann", 0.2),
+        "tail_max_abs_weight": getattr(args, "tail_max_abs_weight", 0.25),
+        "tail_downside_only_vol_target": getattr(args, "tail_downside_only_vol_target", False),
+        "risk_regime_sizing_scale": getattr(args, "risk_regime_sizing_scale", 0.5),
+        "risk_latent_gmm_bear_dampening": getattr(args, "risk_latent_gmm_bear_dampening", 0.45),
+        "tcost_dynamic_ic_lookback": getattr(args, "tcost_dynamic_ic_lookback", 20),
     }
     try:
         return build_pipeline_config(**config_kwargs)
@@ -1591,6 +1642,12 @@ def run_single_fold(
         cost_per_trade_bps=float(config.get("cost_per_trade_bps", 35.0)),
         min_trade_threshold_bps=float(config.get("min_trade_threshold_bps", 150.0)),
         rebalance_every_n_days=int(config.get("rebalance_every_n_days", 10)),
+        tail_target_vol_ann=float(config.get("tail_target_vol_ann", 0.2)),
+        tail_max_abs_weight=float(config.get("tail_max_abs_weight", 0.25)),
+        tail_downside_only_vol_target=bool(config.get("tail_downside_only_vol_target", False)),
+        risk_regime_sizing_scale=float(config.get("risk_regime_sizing_scale", 0.5)),
+        risk_latent_gmm_bear_dampening=float(config.get("risk_latent_gmm_bear_dampening", 0.45)),
+        tcost_dynamic_ic_lookback=int(config.get("tcost_dynamic_ic_lookback", 20)),
     )
 
     query = make_query_fn(test_feat, dynamic_schedule)
