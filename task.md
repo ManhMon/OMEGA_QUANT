@@ -24,3 +24,10 @@ Checklist này điều phối quá trình phát triển (L2) và kiểm thử đ
 
 ## Phase 4: Nghiệm thu & Khóa cổng (L1)
 - [x] Chạy enforcer `python scripts/sod_gate_enforcer.py` để khóa cổng tổng thể thành công.
+
+## Phase 5: Khắc phục thứ tự chạy bộ lọc Tail Control & Giao dịch (L1/L2/L3)
+- [x] Khai báo gate mới `HYBRID_REGIME_OVERLAY_ORDER_FIX_20260629` trong `phase_gates.json`.
+- [x] Thực hiện khắc phục thứ tự chạy bộ lọc tail control (L2 Role 14).
+- [x] Chạy L3 Codex (Role 21) kiểm duyệt mã nguồn và phê duyệt gate thành `[APPROVED]`.
+- [x] Sửa lỗi enforcer trên Windows (UTF-8 stdout, backward-compatible headers, diagnostic print).
+- [x] Nghiệm thu tổng thể cổng SoD: [PASS] (exit code 0).

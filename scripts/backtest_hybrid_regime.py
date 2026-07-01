@@ -19,6 +19,7 @@ import sys
 import gc
 import time
 import argparse
+import hashlib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from joblib import Parallel, delayed
@@ -74,6 +75,7 @@ SECTOR_MAPPING_FILE = "data/sector_mapping_level2.csv"
 LATENT_AE_PATH = "data/latent_alphas_components.parquet"
 OUTPUT_DIR = "data/phase35_results"
 STATE_DIR = ".ly_state/session/pipeline_state_hybrid"
+DEFAULT_ALPHA_SELECTION_TOP_K = 7
 
 LEGACY_BUY_COMMISSION_BPS = 15.0
 LEGACY_SELL_COMMISSION_BPS = 15.0
@@ -87,34 +89,49 @@ LEGACY_TOTAL_EXECUTION_COST_BPS = (
 
 class LongOnlyConcentratedOverlay(WeightOverlay):
     """Clips weights to non-negative (long-only), keeps top_k, normalizes to sum to 1.0."""
-    def __init__(self, top_k: int = 5):
+    def __init__(self, top_k: int = 5, hysteresis: int = 0):
         self.top_k = top_k
+        self.hysteresis = hysteresis
 
     def apply(self, weights: pd.DataFrame, panel: pd.DataFrame, state: Dict[str, Any]) -> pd.DataFrame:
         long_only = weights.clip(lower=0.0)
         processed_rows = []
+        state_key = "long_only_concentrated_prev_selected"
+        prev_selected = list(state.get(state_key, []))
         for idx, row in long_only.iterrows():
             if row.sum() == 0:
+                prev_selected = []
                 processed_rows.append(row)
                 continue
 
             sorted_vals = row.sort_values(ascending=False)
-            if len(sorted_vals) > self.top_k:
-                kth_val = sorted_vals.iloc[self.top_k - 1]
-                new_row = row.where(row >= kth_val, 0.0)
-                if (new_row > 0.0).sum() > self.top_k:
-                    keep_idx = sorted_vals.index[:self.top_k]
-                    new_row = new_row.copy()
-                    new_row.loc[~new_row.index.isin(keep_idx)] = 0.0
-            else:
-                new_row = row
+            ranked_symbols = sorted_vals[sorted_vals > 0.0].index.tolist()
+            rank_map = {symbol: rank for rank, symbol in enumerate(ranked_symbols, start=1)}
+            keep_rank = self.top_k + max(self.hysteresis, 0)
+            retained = [
+                symbol for symbol in prev_selected
+                if rank_map.get(symbol, keep_rank + 1) <= keep_rank
+            ]
+            selected = list(retained)
+            for symbol in ranked_symbols:
+                if len(selected) >= self.top_k:
+                    break
+                if symbol not in selected:
+                    selected.append(symbol)
+
+            new_row = row * 0.0
+            if selected:
+                new_row.loc[selected] = row.loc[selected]
             row_sum = new_row.sum()
             if row_sum > 0.0:
                 new_row = new_row / row_sum
             else:
                 new_row = new_row * 0.0
+                selected = []
+            prev_selected = selected
             processed_rows.append(new_row)
 
+        state[state_key] = prev_selected
         return pd.DataFrame(processed_rows, index=weights.index, columns=weights.columns)
 
 
@@ -200,6 +217,10 @@ def parse_args() -> argparse.Namespace:
              "diagnostic JSON with REALIZED gross/TC/net from 45-fold CPCV.",
     )
     parser.add_argument(
+        "--alpha-turnover-penalty", type=float, default=0.1,
+        help="Penalty multiplier for alpha turnover in fold training selection (default: 0.1)",
+    )
+    parser.add_argument(
         "--model-type", choices=["ridge", "lightgbm"], default="lightgbm",
         help="Alpha blending model type (default: lightgbm)",
     )
@@ -212,6 +233,10 @@ def parse_args() -> argparse.Namespace:
         help="Number of top assets to select in concentrated overlay (default: 7)",
     )
     parser.add_argument(
+        "--risk-concentrated-hysteresis", type=int, default=2,
+        help="Rank buffer for retaining existing concentrated positions (default: 2)",
+    )
+    parser.add_argument(
         "--cost-per-trade-bps", type=float, default=35.0,
         help="Transaction cost per trade in basis points (default: 35.0)",
     )
@@ -222,6 +247,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--rebalance-every-n-days", type=int, default=15,
         help="Number of days between portfolio rebalances (default: 15)",
+    )
+    parser.add_argument(
+        "--rebalance-bear-multiplier", type=float, default=2.0,
+        help="Multiply rebalance interval outside bull regimes (default: 2.0)",
     )
     parser.add_argument(
         "--tail-target-vol-ann", type=float, default=0.2,
@@ -324,6 +353,7 @@ def build_dynamic_schedule(
 
 
 PRECOMPUTED_FEATURES_PATH = "data/precomputed_alpha_features.parquet"
+PRECOMPUTE_CACHE_DIR = "data/cache/hybrid_regime_backtest"
 
 
 def generate_features(panel: pd.DataFrame) -> pd.DataFrame:
@@ -511,10 +541,12 @@ def build_scenario_overlays(
     gmm_model: Optional[LatentGMMRegime] = None,
     hmm_params: Optional[dict] = None,
     top_k: int = 7,
+    concentrated_hysteresis: int = 2,
     hmm_reentry_threshold: float = 0.6,
     cost_per_trade_bps: float = 35.0,
     min_trade_threshold_bps: float = 250.0,
     rebalance_every_n_days: int = 15,
+    rebalance_bear_multiplier: float = 2.0,
     tail_target_vol_ann: float = 0.2,
     tail_max_abs_weight: float = 0.25,
     tail_downside_only_vol_target: bool = False,
@@ -550,10 +582,11 @@ def build_scenario_overlays(
             ),
             RebalanceFrequencyOverlay(
                 rebalance_every_n_days=rebalance_every_n_days,
+                bear_multiplier=rebalance_bear_multiplier,
                 mode="fixed_interval",
             ),
             WeightSmoothingOverlay(ema_alpha=0.05),
-            LongOnlyConcentratedOverlay(top_k=top_k),
+            LongOnlyConcentratedOverlay(top_k=top_k, hysteresis=concentrated_hysteresis),
             RiskSizingOverlay(
                 inverse_vol_sizing=True,
                 confidence_scaling=True,
@@ -591,10 +624,11 @@ def build_scenario_overlays(
             ),
             RebalanceFrequencyOverlay(
                 rebalance_every_n_days=rebalance_every_n_days,
+                bear_multiplier=rebalance_bear_multiplier,
                 mode="fixed_interval",
             ),
             WeightSmoothingOverlay(ema_alpha=0.05),
-            LongOnlyConcentratedOverlay(top_k=top_k),
+            LongOnlyConcentratedOverlay(top_k=top_k, hysteresis=concentrated_hysteresis),
             RiskSizingOverlay(
                 inverse_vol_sizing=True,
                 confidence_scaling=True,
@@ -641,11 +675,14 @@ def build_pipeline_config(
     hmm_reentry_threshold: float = 0.6,
     cost_per_trade_bps: float = 35.0,
     min_trade_threshold_bps: float = 250.0,
+    alpha_turnover_penalty: float = 0.1,
     rebalance_every_n_days: int = 15,
+    rebalance_bear_multiplier: float = 2.0,
     tail_target_vol_ann: float = 0.2,
     tail_max_abs_weight: float = 0.25,
     tail_downside_only_vol_target: bool = False,
     risk_regime_sizing_scale: float = 0.5,
+    risk_concentrated_hysteresis: int = 2,
     risk_latent_gmm_bear_dampening: float = 0.45,
     tcost_dynamic_ic_lookback: int = 20,
 ) -> dict:
@@ -655,11 +692,14 @@ def build_pipeline_config(
         "hmm_reentry_threshold": hmm_reentry_threshold,
         "cost_per_trade_bps": cost_per_trade_bps,
         "min_trade_threshold_bps": min_trade_threshold_bps,
+        "alpha_turnover_penalty": alpha_turnover_penalty,
         "rebalance_every_n_days": rebalance_every_n_days,
+        "rebalance_bear_multiplier": rebalance_bear_multiplier,
         "tail_target_vol_ann": tail_target_vol_ann,
         "tail_max_abs_weight": tail_max_abs_weight,
         "tail_downside_only_vol_target": tail_downside_only_vol_target,
         "risk_regime_sizing_scale": risk_regime_sizing_scale,
+        "risk_concentrated_hysteresis": risk_concentrated_hysteresis,
         "risk_latent_gmm_bear_dampening": risk_latent_gmm_bear_dampening,
         "tcost_dynamic_ic_lookback": tcost_dynamic_ic_lookback,
         "commission_buy": trade_costs["commission_buy"],
@@ -691,11 +731,14 @@ def safe_build_pipeline_config(args: argparse.Namespace) -> dict:
         "hmm_reentry_threshold": getattr(args, "hmm_reentry_threshold", 0.6),
         "cost_per_trade_bps": getattr(args, "cost_per_trade_bps", 35.0),
         "min_trade_threshold_bps": getattr(args, "min_trade_threshold_bps", 250.0),
+        "alpha_turnover_penalty": getattr(args, "alpha_turnover_penalty", 0.1),
         "rebalance_every_n_days": getattr(args, "rebalance_every_n_days", 15),
+        "rebalance_bear_multiplier": getattr(args, "rebalance_bear_multiplier", 2.0),
         "tail_target_vol_ann": getattr(args, "tail_target_vol_ann", 0.2),
         "tail_max_abs_weight": getattr(args, "tail_max_abs_weight", 0.25),
         "tail_downside_only_vol_target": getattr(args, "tail_downside_only_vol_target", False),
         "risk_regime_sizing_scale": getattr(args, "risk_regime_sizing_scale", 0.5),
+        "risk_concentrated_hysteresis": getattr(args, "risk_concentrated_hysteresis", 2),
         "risk_latent_gmm_bear_dampening": getattr(args, "risk_latent_gmm_bear_dampening", 0.45),
         "tcost_dynamic_ic_lookback": getattr(args, "tcost_dynamic_ic_lookback", 20),
     }
@@ -743,6 +786,65 @@ def precompute_prediction_lags(feat_df: pd.DataFrame) -> pd.DataFrame:
     return pred_lag_df
 
 
+def compute_alpha_turnover_by_lag_column(
+    train_sorted: pd.DataFrame,
+    lag_col_names_all: List[str],
+) -> Dict[str, float]:
+    alpha_cols = [lc.replace("_lag1", "") for lc in lag_col_names_all]
+    if not alpha_cols:
+        return {}
+    turnover = (
+        train_sorted.groupby("symbol")[alpha_cols]
+        .diff()
+        .abs()
+        .mean(skipna=True)
+    )
+    return {
+        f"{alpha_col}_lag1": float(turnover.get(alpha_col, 0.0))
+        for alpha_col in alpha_cols
+    }
+
+
+def select_alpha_features_by_penalized_ic(
+    train_sorted: pd.DataFrame,
+    temp_train: pd.DataFrame,
+    lag_col_names_all: List[str],
+    alpha_turnover_penalty: float,
+    top_k: int = DEFAULT_ALPHA_SELECTION_TOP_K,
+) -> Tuple[List[str], Dict[str, Dict[str, float]]]:
+    alpha_ics: Dict[str, float] = {}
+    if len(temp_train) > 10:
+        y_vals = temp_train["returns"].values
+        for lc in lag_col_names_all:
+            x_vals = temp_train[lc].values
+            mask = np.isfinite(x_vals) & np.isfinite(y_vals)
+            if np.nanstd(x_vals) > 1e-9 and np.nanstd(y_vals) > 1e-9 and mask.sum() > 1:
+                corr = np.corrcoef(x_vals[mask], y_vals[mask])[0, 1]
+                if not np.isnan(corr):
+                    alpha_ics[lc] = float(corr)
+
+    turnover_by_lag = compute_alpha_turnover_by_lag_column(train_sorted, lag_col_names_all)
+    alpha_scores = {
+        lc: {
+            "ic": float(alpha_ics.get(lc, 0.0)),
+            "turnover": float(turnover_by_lag.get(lc, 0.0)),
+        }
+        for lc in lag_col_names_all
+    }
+    for lc, metrics in alpha_scores.items():
+        metrics["score"] = abs(metrics["ic"]) - alpha_turnover_penalty * metrics["turnover"]
+
+    ranked = sorted(
+        alpha_scores.items(),
+        key=lambda item: (item[1]["score"], abs(item[1]["ic"])),
+        reverse=True,
+    )
+    selected_lag_cols = [name for name, _ in ranked[:top_k]]
+    if not selected_lag_cols:
+        selected_lag_cols = lag_col_names_all[:top_k]
+    return selected_lag_cols, alpha_scores
+
+
 def precompute_close_pivot(feat_df: pd.DataFrame) -> pd.DataFrame:
     """Pre-compute close pivot table ONCE for HMM training.
 
@@ -753,6 +855,113 @@ def precompute_close_pivot(feat_df: pd.DataFrame) -> pd.DataFrame:
     """
     close_pivot = feat_df.pivot(index="date", columns="symbol", values="close")
     return close_pivot.sort_index()
+
+
+def should_use_p2full_precompute_cache(args: argparse.Namespace) -> bool:
+    if os.getenv("OMEGA_DISABLE_P2FULL_PRECOMPUTE_CACHE") == "1":
+        return False
+    return "p2full" in (args.output_tag or "").lower()
+
+
+def build_precompute_content_fingerprint(feat_df: pd.DataFrame) -> str:
+    alpha_cols = sorted(
+        c for c in feat_df.columns
+        if c.startswith("alpha_") and not c.endswith("_lag1")
+    )
+    fingerprint_cols = ["date", "symbol", "close", *alpha_cols]
+    fingerprint_df = feat_df.loc[:, fingerprint_cols].sort_values(["symbol", "date"])
+    row_hashes = pd.util.hash_pandas_object(fingerprint_df, index=False, categorize=False)
+    return hashlib.sha1(row_hashes.values.tobytes()).hexdigest()[:16]
+
+
+def build_precompute_cache_key(feat_df: pd.DataFrame, args: argparse.Namespace) -> str:
+    alpha_cols = sorted(
+        c for c in feat_df.columns
+        if c.startswith("alpha_") and not c.endswith("_lag1")
+    )
+    key_parts = [
+        args.start_date,
+        args.end_date,
+        str(bool(args.dynamic_universe)),
+        str(args.symbol_count),
+        str(len(feat_df)),
+        str(feat_df["symbol"].nunique()),
+        str(feat_df["date"].min()),
+        str(feat_df["date"].max()),
+        ",".join(alpha_cols),
+        build_precompute_content_fingerprint(feat_df),
+    ]
+    return hashlib.sha1("|".join(key_parts).encode("utf-8")).hexdigest()[:16]
+
+
+def load_or_create_shared_precomputes(
+    feat_df: pd.DataFrame,
+    args: argparse.Namespace,
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    cache_enabled = should_use_p2full_precompute_cache(args)
+    metadata = {
+        "cache_enabled": cache_enabled,
+        "cache_hit": False,
+        "cache_key": None,
+        "pred_lag_path": None,
+        "close_pivot_path": None,
+    }
+    if not cache_enabled:
+        return precompute_prediction_lags(feat_df), precompute_close_pivot(feat_df), metadata
+
+    cache_key = build_precompute_cache_key(feat_df, args)
+    cache_dir = REPO_ROOT / PRECOMPUTE_CACHE_DIR
+    pred_lag_path = cache_dir / f"pred_lag_{cache_key}.pkl"
+    close_pivot_path = cache_dir / f"close_pivot_{cache_key}.pkl"
+    meta_path = cache_dir / f"meta_{cache_key}.json"
+    metadata.update(
+        {
+            "cache_key": cache_key,
+            "pred_lag_path": str(pred_lag_path.relative_to(REPO_ROOT)),
+            "close_pivot_path": str(close_pivot_path.relative_to(REPO_ROOT)),
+            "meta_path": str(meta_path.relative_to(REPO_ROOT)),
+        }
+    )
+
+    if pred_lag_path.exists() and close_pivot_path.exists():
+        logger.info("Loading PIT-safe shared precomputes from cache key=%s", cache_key)
+        metadata["cache_hit"] = True
+        return pd.read_pickle(pred_lag_path), pd.read_pickle(close_pivot_path), metadata
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    pred_lag_df = precompute_prediction_lags(feat_df)
+    close_pivot_full = precompute_close_pivot(feat_df)
+    pred_lag_df.to_pickle(pred_lag_path)
+    close_pivot_full.to_pickle(close_pivot_path)
+    meta_payload = {
+        "gate": "HYBRID_REGIME_PIT_SAFE_PRECOMPUTE_ACCEL_20260630",
+        "cache_key": cache_key,
+        "cache_boundary": {
+            "pred_lag_df": "PIT-safe full-panel alpha shift(1) for prediction only",
+            "close_pivot_full": "fold-invariant date x symbol close pivot for per-fold HMM train-date slicing",
+        },
+        "config": {
+            "start_date": args.start_date,
+            "end_date": args.end_date,
+            "dynamic_universe": bool(args.dynamic_universe),
+            "symbol_count": int(args.symbol_count),
+            "output_tag": args.output_tag,
+        },
+        "feat_df": {
+            "rows": int(len(feat_df)),
+            "symbols": int(feat_df["symbol"].nunique()),
+            "date_min": str(feat_df["date"].min()),
+            "date_max": str(feat_df["date"].max()),
+            "content_fingerprint": build_precompute_content_fingerprint(feat_df),
+        },
+        "files": {
+            "pred_lag_path": str(pred_lag_path.relative_to(REPO_ROOT)),
+            "close_pivot_path": str(close_pivot_path.relative_to(REPO_ROOT)),
+        },
+    }
+    with open(meta_path, "w", encoding="utf-8") as f:
+        json.dump(meta_payload, f, indent=2)
+    return pred_lag_df, close_pivot_full, metadata
 
 
 def precompute_alpha_lags(feat_df: pd.DataFrame) -> List[str]:
@@ -794,6 +1003,7 @@ def train_fold_models(
     pred_lag_df: Optional[pd.DataFrame] = None,
     close_pivot_full: Optional[pd.DataFrame] = None,
     model_type: str = "lightgbm",
+    alpha_turnover_penalty: float = 0.1,
 ) -> Tuple[Optional[LatentGMMRegime], Optional[dict], Optional[pd.Series]]:
     """Train Ridge blending (per GMM regime), HMM, and GMM models on train-fold data.
 
@@ -1027,22 +1237,16 @@ def train_fold_models(
         temp_train = temp_train.drop(index=first_row_indices, errors="ignore")
         temp_train = temp_train.dropna(subset=["returns"])
 
-        # Calculate absolute correlation (IC) for each alpha feature
-        alpha_ics = {}
-        if len(temp_train) > 10:
-            y_vals = temp_train["returns"].values
-            # Compute correlation with target
-            for lc in lag_col_names_all:
-                x_vals = temp_train[lc].values
-                mask = np.isfinite(x_vals) & np.isfinite(y_vals)
-                # Avoid constant feature correlation warnings
-                if np.nanstd(x_vals) > 1e-9 and np.nanstd(y_vals) > 1e-9 and mask.sum() > 1:
-                    corr = np.corrcoef(x_vals[mask], y_vals[mask])[0, 1]
-                    if not np.isnan(corr):
-                        alpha_ics[lc] = corr
+        _, alpha_scores = select_alpha_features_by_penalized_ic(
+            train_sorted=train_sorted,
+            temp_train=temp_train,
+            lag_col_names_all=lag_col_names_all,
+            alpha_turnover_penalty=alpha_turnover_penalty,
+            top_k=min(DEFAULT_ALPHA_SELECTION_TOP_K, max(len(lag_col_names_all), 1)),
+        )
 
         # Quota-based alpha selection (Gate: HYBRID_REGIME_ALPHAS_DIVERSIFIED_REVIEW_20260623)
-        # Select top 2 alphas by absolute IC from each of 4 categories to
+        # Select top 2 alphas by penalized score from each of 4 categories to
         # diversify inputs and improve realization yields vs. single-block Top-K.
         #   HR  : alpha_hr_*
         #   GP  : alpha_gp_*
@@ -1070,22 +1274,34 @@ def train_fold_models(
         for lc in lag_col_names_all:
             alpha_name = lc.replace("_lag1", "")
             cat = _category_of(alpha_name)
-            if cat is None or lc not in alpha_ics:
+            if cat is None:
                 continue
             categorized_alphas[cat].append(lc)
 
         for cat, lc_list in categorized_alphas.items():
-            lc_list.sort(key=lambda c: abs(alpha_ics[c]), reverse=True)
+            lc_list.sort(
+                key=lambda c: (
+                    alpha_scores[c]["score"],
+                    abs(alpha_scores[c]["ic"]),
+                ),
+                reverse=True,
+            )
             selected_lag_cols.extend(lc_list[:QUOTA_PER_CATEGORY])
             used_categories[cat] = min(len(lc_list), QUOTA_PER_CATEGORY)
 
         # Fallback: if quota selection yielded zero alphas (e.g. legacy
         # fixtures with only non-categorized alphas), fall back to global
-        # absolute-IC Top-K so existing tests and edge cases still train Ridge.
+        # penalized-score Top-K so existing tests and edge cases still train Ridge.
         FALLBACK_TOP_K = 7
         if not selected_lag_cols:
-            sorted_ics = pd.Series(alpha_ics).abs().sort_values(ascending=False)
-            selected_lag_cols = sorted_ics.index[:FALLBACK_TOP_K].tolist()
+            selected_lag_cols = sorted(
+                lag_col_names_all,
+                key=lambda c: (
+                    alpha_scores[c]["score"],
+                    abs(alpha_scores[c]["ic"]),
+                ),
+                reverse=True,
+            )[:FALLBACK_TOP_K]
             if not selected_lag_cols:
                 selected_lag_cols = lag_col_names_all[:FALLBACK_TOP_K]
 
@@ -1094,12 +1310,13 @@ def train_fold_models(
 
         logger.info(
             "Quota Feature Selection: %d alphas across %d categories "
-            "(HR=%d, GP=%d, LLM=%d, VN=%d). Top-3 absolute ICs: %s",
+            "(HR=%d, GP=%d, LLM=%d, VN=%d). Top-3 penalized scores: %s. Selected: %s",
             len(lag_col_names), len(used_categories),
             used_categories.get("HR", 0), used_categories.get("GP", 0),
             used_categories.get("LLM", 0), used_categories.get("VN", 0),
-            {k: f"{alpha_ics.get(k, 0.0):.4f}" for k in lag_col_names[:3]}
+            {k: f"{alpha_scores.get(k, {}).get('score', 0.0):.4f}" for k in lag_col_names[:3]}
             if lag_col_names else {},
+            lag_col_names,
         )
 
         # Build Ridge training matrix using ONLY the selected alpha features
@@ -1228,6 +1445,10 @@ def train_fold_models(
                     index=pred_indices,
                     name="composite_signal",
                 )
+
+            if composite_signal is not None:
+                composite_signal.attrs["selected_lag_cols"] = list(lag_col_names)
+                composite_signal.attrs["alpha_turnover_penalty"] = float(alpha_turnover_penalty)
 
             # Log regime distribution of predictions
             if composite_signal is not None:
@@ -1551,6 +1772,7 @@ def run_single_fold(
     close_pivot_full: Optional[pd.DataFrame] = None,
     model_type: str = "lightgbm",
     top_k: int = 5,
+    concentrated_hysteresis: int = 2,
 ) -> Dict[str, Dict]:
     min_test_date = pd.Timestamp(test_dates.min())
     max_test_date = pd.Timestamp(test_dates.max())
@@ -1566,6 +1788,7 @@ def run_single_fold(
         pred_lag_df=pred_lag_df,
         close_pivot_full=close_pivot_full,
         model_type=model_type,
+        alpha_turnover_penalty=float(config.get("alpha_turnover_penalty", 0.1)),
     )
     logger.info(
         "Fold %d: train models — gmm=%s, hmm_params=%s",
@@ -1590,6 +1813,21 @@ def run_single_fold(
     if composite_signal is not None:
         common_idx = test_feat.index.intersection(composite_signal.index)
         test_feat.loc[common_idx, "composite_signal"] = composite_signal.loc[common_idx]
+
+    gmm_regime_labels = None
+    if gmm_model is not None and gmm_model.is_fitted:
+        regime_latent_cols = [
+            c for c in ["latent_ae_00", "latent_ae_01", "latent_ae_11"]
+            if c in test_feat.columns
+        ]
+        if regime_latent_cols:
+            date_latent = test_feat.groupby("date")[regime_latent_cols].mean().sort_index()
+            if not date_latent.empty:
+                labels_arr, _ = gmm_model.predict_regime(date_latent)
+                gmm_regime_labels = {
+                    pd.Timestamp(date).strftime("%Y-%m-%d"): str(label)
+                    for date, label in zip(date_latent.index, labels_arr)
+                }
 
     if test_feat.empty:
         raise ValueError(
@@ -1638,10 +1876,12 @@ def run_single_fold(
         gmm_model=gmm_model,
         hmm_params=hmm_params,
         top_k=top_k,
+        concentrated_hysteresis=concentrated_hysteresis,
         hmm_reentry_threshold=float(config.get("hmm_reentry_threshold", 0.6)),
         cost_per_trade_bps=float(config.get("cost_per_trade_bps", 35.0)),
         min_trade_threshold_bps=float(config.get("min_trade_threshold_bps", 150.0)),
         rebalance_every_n_days=int(config.get("rebalance_every_n_days", 10)),
+        rebalance_bear_multiplier=float(config.get("rebalance_bear_multiplier", 2.0)),
         tail_target_vol_ann=float(config.get("tail_target_vol_ann", 0.2)),
         tail_max_abs_weight=float(config.get("tail_max_abs_weight", 0.25)),
         tail_downside_only_vol_target=bool(config.get("tail_downside_only_vol_target", False)),
@@ -1679,6 +1919,10 @@ def run_single_fold(
         )
 
         run_id = f"hybrid_fold{fold_id}_{scenario_name}"
+        initial_state: Dict[str, Any] = {}
+        if gmm_regime_labels is not None:
+            initial_state["gmm_regime_labels"] = gmm_regime_labels
+        state_manager.save_state(run_id, initial_state)
         start_time = time.time()
         try:
             res = pipeline.execute(
@@ -2144,14 +2388,21 @@ def main():
     # Pre-compute prediction lags and close pivot ONCE before fold loop.
     # Prediction lags: shift(1) on full panel is PIT-safe for prediction.
     # Close pivot: shared across all folds for HMM training.
-    pred_lag_df = precompute_prediction_lags(feat_df)
-    close_pivot_full = precompute_close_pivot(feat_df)
+    pred_lag_df, close_pivot_full, precompute_meta = load_or_create_shared_precomputes(
+        feat_df, args,
+    )
     logger.info(
-        "Pre-computed prediction lags (%d cols) and close pivot (%d dates, %d symbols)",
+        "Pre-computed prediction lags (%d cols) and close pivot (%d dates, %d symbols); cache=%s hit=%s",
         len(pred_lag_df.columns),
         len(close_pivot_full),
         len(close_pivot_full.columns),
+        precompute_meta.get("cache_enabled", False),
+        precompute_meta.get("cache_hit", False),
     )
+
+    del panel_full
+    del raw_df
+    gc.collect()
 
     cpcv = CombinatorialPurgedKFold(
         n_splits=args.folds,
@@ -2190,7 +2441,8 @@ def main():
             "pred_lag_df": pred_lag_df,
             "close_pivot_full": close_pivot_full,
             "model_type": args.model_type,
-            "top_k": args.top_k,
+            "top_k": getattr(args, "top_k", 7),
+            "concentrated_hysteresis": getattr(args, "risk_concentrated_hysteresis", 2),
         })
 
     # Determine worker count: 0=auto, 1=serial, >1=parallel
@@ -2207,9 +2459,11 @@ def main():
     )
 
     if n_workers > 1 and len(fold_specs) > 1:
+        parallel_backend = os.environ.get("OMEGA_BACKTEST_BACKEND", "threading")
         logger.info(
-            "Launching joblib parallel with %d workers (loky backend, max_nbytes=10M)",
+            "Launching joblib parallel with %d workers (%s backend, shared-memory fold precomputes)",
             n_workers,
+            parallel_backend,
         )
 
         def _run_fold_spec(spec):
@@ -2230,6 +2484,7 @@ def main():
                 close_pivot_full=spec["close_pivot_full"],
                 model_type=spec["model_type"],
                 top_k=spec["top_k"],
+                concentrated_hysteresis=spec["concentrated_hysteresis"],
             )
 
         for spec in fold_specs:
@@ -2243,8 +2498,7 @@ def main():
 
         fold_results = Parallel(
             n_jobs=n_workers,
-            backend="loky",
-            max_nbytes="10M",
+            backend=parallel_backend,
             verbose=10,
             batch_size=1,
         )(delayed(_run_fold_spec)(spec) for spec in fold_specs)
@@ -2281,6 +2535,7 @@ def main():
                 close_pivot_full=spec["close_pivot_full"],
                 model_type=spec["model_type"],
                 top_k=spec["top_k"],
+                concentrated_hysteresis=spec["concentrated_hysteresis"],
             )
             all_fold_results.append(fold_res)
 
