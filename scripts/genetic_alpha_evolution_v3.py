@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+from joblib import parallel_backend
 from scipy.stats import spearmanr
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -52,6 +53,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--population-size", type=int, default=150)
     parser.add_argument("--generations", type=int, default=25)
     parser.add_argument("--workers", type=int, default=-1)
+    parser.add_argument(
+        "--backend",
+        choices=["threads", "loky", "multiprocessing"],
+        default="threads",
+    )
     return parser.parse_args()
 
 
@@ -185,7 +191,8 @@ def main() -> int:
         )
 
         engine = GeneticEngine(config=config)
-        hof = engine.evolve(features=features_train, target=target_train)
+        with parallel_backend(args.backend):
+            hof = engine.evolve(features=features_train, target=target_train)
 
         for ind in hof[:5]:
             try:
