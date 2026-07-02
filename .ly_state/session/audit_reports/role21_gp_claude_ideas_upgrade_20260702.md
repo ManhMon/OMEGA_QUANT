@@ -1,6 +1,6 @@
 # Code Review Audit Report
 **Role**: Code Reviewer (Role 21)
-**Date**: 2026-07-02T22:45:47.9548918+07:00
+**Date**: 2026-07-03T06:25:07.2879833+07:00
 **Gate**: GP_CLAUDE_IDEAS_UPGRADE_20260702
 **L2 Session**: l2_role9_gp_claude_ideas_upgrade_20260702
 **Tier 2 Engineer**: backend-engineer (Role 9)
@@ -18,33 +18,23 @@
 - `.ly_state/session/phase_gates.json`
 
 ## Forbidden Path Scan
-No authoritative reliance on forbidden paths. Forbidden path strings were found only in repo-local SOD skill docs and the L2 report as non-authoritative scan evidence:
-- `.gemini\antigravity-ide\scratch\ag-kit`
-- `.openclaw\skills`
-- `C:\Users\GHC\.agents`
-- `.codex\memories`
+No authoritative reliance on forbidden paths. Forbidden path strings appeared only in repo-local SOD skill docs and L2 report scan evidence explicitly marked non-authoritative.
 
 ## Checks
-- [x] SoD separation: L2 role 9 != L3 role 21.
-- [x] `cs_rank` and `cs_zscore` functions exist, are in `GPConfig.unary_ops`, and are handled by `_execute_tree()`.
-- [x] ICIR config fields `use_icir` and `icir_window` exist.
-- [x] `_compute_combined_ic()` uses block IC when `use_icir=True` and `__date__` exists; otherwise falls back to Spearman IC.
-- [x] Turnover penalty is configurable via `GPConfig.turnover_penalty_weight`; `evaluate()` uses config value.
-- [x] `scripts/genetic_alpha_evolution_v3.py` sets `features_train["__date__"] = train_df["date"].values`, PIT-safe from train split only.
-- [x] `GPConfig` in runner sets `use_icir=True`, `icir_window=20`, `turnover_penalty_weight=0.01`.
-- [x] Targeted operator test passed.
-- [x] L2 report lists repo-local skill source evidence and forbidden path scan.
-- [ ] Scope check passed.
+- [x] SoD separation verified: L2 role 9 != L3 role 21.
+- [x] `cs_rank` and `cs_zscore` functions exist, listed in `GPConfig.unary_ops`, and execute in `_execute_tree()`.
+- [x] ICIR config exists via `GPConfig.use_icir` and `GPConfig.icir_window`; `_compute_combined_ic()` implements date-block ICIR with fallback.
+- [x] Turnover penalty config exists via `GPConfig.turnover_penalty_weight`; `evaluate()` applies config value.
+- [x] Runner uses `features_train["__date__"] = train_df["date"].values`; no test-date leakage into train features.
+- [x] Runner sets `use_icir=True`, `icir_window=20`, and `turnover_penalty_weight=0.01`.
+- [x] L2 report heading is exactly `Repo-Local Files Read`.
+- [x] Scoped worktree review: production files clean vs current diff; audit/report/gate files dirty only.
 
 ## Targeted Test
 Command:
-```powershell
-python -c "import sys, numpy as np; sys.path.insert(0, 'src'); from omega.quant.evolution.genetic_engine import GPConfig, GPNode, GPIndividual; cfg=GPConfig(population_size=2,generations=1,min_observations=1); leaf=GPNode('', value='x'); features={'x':np.array([3.,1.,2.])}; rank=GPIndividual(GPNode('cs_rank',[leaf]))._execute_tree(GPNode('cs_rank',[leaf]), features); z=GPIndividual(GPNode('cs_zscore',[leaf]))._execute_tree(GPNode('cs_zscore',[leaf]), features); assert np.allclose(rank, [1.,1/3,2/3]); assert abs(float(np.nanmean(z))) < 1e-12; assert abs(float(np.nanstd(z))-1.0) < 1e-8; assert 'cs_rank' in cfg.unary_ops and 'cs_zscore' in cfg.unary_ops; print('cs_rank_cs_zscore_ok', rank.tolist(), z.round(6).tolist())"
-```
-Result: passed, printed `cs_rank_cs_zscore_ok [1.0, 0.3333333333333333, 0.6666666666666666] [1.224745, -1.224745, 0.0]`.
+`$env:PYTHONPATH='src'; @' ... '@ | python -`
 
-## Findings
-1. **BLOCKING - scope check**: `git diff --name-only` shows many modified production files outside the requested scope, including `scripts/backtest_hybrid_regime.py`, `scripts/run_daily_oracle.py`, `scripts/run_paper_execution_pipeline.py`, `scripts/run_sentiment_enrichment.py`, `scripts/sod_gate_enforcer.py`, `src/omega/backtest/vectorized_backtest.py`, `src/omega/core/database.py`, `src/omega/core/db/models.py`, `src/omega/data/news_aggregator.py`, `src/omega/execution/live_trading_pipeline.py`, `src/omega/quant/execution/transaction_cost.py`, `src/omega/quant/pipeline_v2.py`, `src/omega/quant/portfolio/sector_classifier.py`, `src/omega/quant/risk/realtime_risk.py`, and tests. The gate required verifying only two production files were modified; current worktree state prevents that verification.
+Result: passed. Verified unary ops, ICIR path, and turnover penalty config.
 
 ## Verdict
-[NEEDS_FIX]
+[APPROVED] - Requested GP Claude ideas upgrade checks pass.

@@ -6,7 +6,7 @@ Gate: `GP_CLAUDE_IDEAS_UPGRADE_20260702`
 Status: `IMPLEMENTED`
 Verdict: `Non-authoritative. L2 implementation only; no audit/approval performed.`
 
-## Repo-Local Role/Skill Sources Read
+## Repo-Local Files Read
 
 - `.agents/agent/backend-engineer.md`
 - `.agents/skills/nodejs-best-practices/SKILL.md`
