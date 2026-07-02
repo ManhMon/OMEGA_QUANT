@@ -45,6 +45,7 @@ FEATURE_COLS = [
     "hl_range",
     "oc_range",
 ]
+ORTHO_BASELINE_COLS = ["open", "high", "low", "close", "volume"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -166,6 +167,7 @@ def main() -> int:
     target_train = train_df["fwd_ret_5"].values
     features_test = {col: test_df[col].values for col in FEATURE_COLS}
     target_test = test_df["fwd_ret_5"].values
+    ortho_baseline_set = {col: features_train[col] for col in ORTHO_BASELINE_COLS}
 
     all_hof: list[dict[str, object]] = []
     best_test_ic = -999.0
@@ -184,9 +186,12 @@ def main() -> int:
             mutation_rate=0.35,
             elitism_count=2,
             hall_of_fame_size=10,
-            diversity_threshold=0.5,
+            diversity_threshold=0.4,
             min_observations=500,
             terminal_prob=0.4,
+            ortho_baseline_set=ortho_baseline_set,
+            ortho_penalty_weight=0.08,
+            ortho_correlation_threshold=0.4,
             n_jobs=args.workers,
         )
 
