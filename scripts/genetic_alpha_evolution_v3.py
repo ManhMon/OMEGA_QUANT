@@ -164,6 +164,7 @@ def main() -> int:
     print(f"Train: {len(train_df)} rows, Test: {len(test_df)} rows")
 
     features_train = {col: train_df[col].values for col in FEATURE_COLS}
+    features_train["__date__"] = train_df["date"].values
     target_train = train_df["fwd_ret_5"].values
     features_test = {col: test_df[col].values for col in FEATURE_COLS}
     target_test = test_df["fwd_ret_5"].values
@@ -189,9 +190,12 @@ def main() -> int:
             diversity_threshold=0.4,
             min_observations=500,
             terminal_prob=0.4,
+            use_icir=True,
+            icir_window=20,
             ortho_baseline_set=ortho_baseline_set,
             ortho_penalty_weight=0.08,
             ortho_correlation_threshold=0.4,
+            turnover_penalty_weight=0.01,
             n_jobs=args.workers,
         )
 

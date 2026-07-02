@@ -81,6 +81,18 @@ def _rank_transform(x: np.ndarray) -> np.ndarray:
     return pd.Series(x).rank(pct=True, method='average').values
 
 
+def _cs_rank(x: np.ndarray) -> np.ndarray:
+    """Cross-sectional rank transformation."""
+    return _rank_transform(x)
+
+
+def _cs_zscore(x: np.ndarray) -> np.ndarray:
+    """Cross-sectional z-score transformation."""
+    if len(x) == 0:
+        return x
+    return (x - np.nanmean(x)) / (np.nanstd(x) + 1e-9)
+
+
 def _ts_rank(x: np.ndarray, window: int = 10) -> np.ndarray:
     """Time-series rank within rolling window."""
     if len(x) < window:
@@ -203,10 +215,12 @@ class GPConfig:
     
     # Operator probabilities
     terminal_prob: float = 0.3
-    unary_ops: List[str] = field(default_factory=lambda: ['abs', 'log', 'sqrt', 'rank', 'neg', 'sigmoid'])
+    unary_ops: List[str] = field(default_factory=lambda: ['abs', 'log', 'sqrt', 'rank', 'neg', 'sigmoid', 'cs_rank', 'cs_zscore'])
     binary_ops: List[str] = field(default_factory=lambda: ['+', '-', '*', '/', 'max', 'min'])
     ts_ops: List[str] = field(default_factory=lambda: ['ts_std', 'ts_mean', 'ts_rank', 'decay_linear'])
     ts_windows: List[int] = field(default_factory=lambda: [5, 10, 20])
+    use_icir: bool = False
+    icir_window: int = 20
     
     # Multi-target fitness (Phase 2.2)
     # Forward return horizons (in bars) used for combined IC fitness.
@@ -223,6 +237,7 @@ class GPConfig:
     ortho_baseline_set: Optional[Dict[str, np.ndarray]] = None
     ortho_penalty_weight: float = 0.05          # max penalty magnitude
     ortho_correlation_threshold: float = 0.5     # |corr| above which penalty kicks in
+    turnover_penalty_weight: float = 0.0025
 
     # Parallel evaluation (Phase 2.4)
     # n_jobs: number of parallel threads for population evaluation.
@@ -302,7 +317,7 @@ class GPIndividual:
             signal_changes = np.sum(np.abs(np.diff(alpha_sign)) > 0)
             if len(alpha_series) > 1:
                 self.turnover_rate = signal_changes / len(alpha_series)
-                self.transaction_cost_penalty = 0.0025 * self.turnover_rate
+                self.transaction_cost_penalty = config.turnover_penalty_weight * self.turnover_rate
             
             # Progressive complexity penalty
             depth = self.tree.depth()
@@ -406,13 +421,45 @@ class GPIndividual:
         horizons = list(getattr(config, 'multi_target_horizons', []) or [])
         weights = list(getattr(config, 'multi_target_weights', []) or [])
         
-        # Single-target back-compat path
-        if len(horizons) <= 1:
-            combined = pd.DataFrame({'alpha': alpha_series, 'target': target}).dropna()
+        def _compute_spearman_ic(alpha_values: np.ndarray, target_values: np.ndarray) -> float:
+            combined = pd.DataFrame({'alpha': alpha_values, 'target': target_values}).dropna()
             if len(combined) < 2:
                 return 0.0
-            ic, _ = spearmanr(combined['alpha'], combined['target'])
-            return float(ic) if not np.isnan(ic) else 0.0
+            ic_value, _ = spearmanr(combined['alpha'], combined['target'])
+            return float(ic_value) if not np.isnan(ic_value) else 0.0
+
+        # Single-target back-compat path
+        if len(horizons) <= 1:
+            if getattr(config, 'use_icir', False) and '__date__' in features:
+                combined = pd.DataFrame({
+                    'alpha': alpha_series,
+                    'target': target,
+                    'date': features['__date__'],
+                }).dropna()
+                if len(combined) < 2:
+                    return 0.0
+
+                chunk_ics: List[float] = []
+                unique_dates = pd.Index(pd.unique(combined['date']))
+                window = max(1, int(getattr(config, 'icir_window', 20)))
+                for start in range(0, len(unique_dates), window):
+                    chunk_dates = unique_dates[start:start + window]
+                    chunk = combined[combined['date'].isin(chunk_dates)]
+                    if len(chunk) < 2:
+                        continue
+                    ic_value, _ = spearmanr(chunk['alpha'], chunk['target'])
+                    if not np.isnan(ic_value):
+                        chunk_ics.append(float(ic_value))
+
+                if not chunk_ics:
+                    return _compute_spearman_ic(alpha_series, target)
+
+                ic_std = float(np.std(chunk_ics))
+                if ic_std < 1e-9:
+                    return float(np.mean(chunk_ics))
+                return float(np.mean(chunk_ics) / ic_std)
+
+            return _compute_spearman_ic(alpha_series, target)
         
         # Normalize weights (default to equal weights if mismatch)
         if len(weights) != len(horizons):
@@ -465,6 +512,10 @@ class GPIndividual:
                 return _sigmoid(child_val)
             elif node.operator == 'rank':
                 return _rank_transform(child_val)
+            elif node.operator == 'cs_rank':
+                return _cs_rank(child_val)
+            elif node.operator == 'cs_zscore':
+                return _cs_zscore(child_val)
             elif node.operator == 'neg':
                 return -child_val
             return child_val
