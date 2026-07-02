@@ -41,6 +41,16 @@ updated: 2026-07-02
 ## 5. Conformal Backtest Integration & Sharpe Verification (Phase 20)
 - **Sharpe Calculation Audited**: Confirmed rf = 0 is implicitly assumed across production backtests; DSR deflated Sharpe uses `periods_per_year=252` with raw per-bar inputs; implemented exact diagnostic `verify_sharpe_objective.py`.
 - **PIT-Safe Conformal Gating**: Resolved look-ahead bias by enforcing that `ConformalGateOverlay` relies *only* on PIT-safe predicted interval width (`upper - lower` from GBR point/quantile forecasts) and width threshold limits (`max_width_abs`). Eliminated test-window realized coverage feedback from active sizing/gating logic.
-- **PIT Strategy B Default**: Swapped backtest pipeline default to Strategy B (per-fold refit) to enforce strict split-level out-of-sample GBR training and eliminate metadata-dependency leaks.
-
-
+- **Strategy B Default**: Swapped backtest pipeline default to Strategy B (per-fold refit) to enforce strict split-level out-of-sample GBR training and eliminate metadata-dependency leaks.
+ 
+ 
+## 6. GP Evolutionary Alpha Search & Diversity Engine (v3 Upgrade)
+- **Engine**: `GeneticEngine` and `GPConfig` in `omega.quant.evolution.genetic_engine`.
+- **Search Space Configuration**:
+  - Population size: `150`
+  - Generations: `25`
+  - Evolutionary rounds: `5` (with dynamic niche mutation to prevent convergence)
+  - Top-K: `15` models selected by out-of-sample Spearman rank correlation (Spearman IC).
+- **Features/Primitives**: OHLCV data + rolling indicators (`decay_linear`, `ts_rank`, `vol_ratio`, `hl_range`, `oc_range`).
+- **Storage/Registry Integration**: Evolved models are registered to `conformal_registry.sqlite` with the naming pattern `genetic_alpha_v3_rank_<rank:02d>`. Metrics registered include `train_IC`, `test_IC`, `hit_rate`, and `serialized_tree`.
+- **Views**: Registry model records are exported as offline CSV/JSONL views (`genetic_alpha_v3_results.csv` / `.jsonl`) for caching, but the SQLite registry remains the single canonical source of truth for runtime features compilation.
