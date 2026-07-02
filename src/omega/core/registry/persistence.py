@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
@@ -72,6 +72,35 @@ class DatabaseRegistry:
             session.commit()
             session.refresh(record)
         return record
+
+    def get_model(self, *, name: str, version: str) -> Optional[ModelRecord]:
+        stmt = select(ModelRecord).where(
+            ModelRecord.name == name,
+            ModelRecord.version == version,
+        )
+        with self._session_factory() as session:
+            return session.execute(stmt).scalar_one_or_none()
+
+    def list_models(
+        self,
+        *,
+        name: Optional[str] = None,
+        name_prefix: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[ModelRecord]:
+        stmt = select(ModelRecord)
+        if name is not None:
+            stmt = stmt.where(ModelRecord.name == name)
+        if name_prefix is not None:
+            stmt = stmt.where(ModelRecord.name.like(f"{name_prefix}%"))
+        if status is not None:
+            stmt = stmt.where(ModelRecord.status == status)
+        stmt = stmt.order_by(ModelRecord.created_at.desc(), ModelRecord.id.desc())
+        if limit is not None:
+            stmt = stmt.limit(limit)
+        with self._session_factory() as session:
+            return list(session.execute(stmt).scalars())
 
     def write_audit_log(
         self,
