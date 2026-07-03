@@ -27,7 +27,7 @@ import logging
 import random
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -36,6 +36,46 @@ from joblib import Parallel, delayed
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+DATE_CHUNK_CACHE_KEY = '__date_chunk_indices__'
+
+
+def _chunked_average_ranks(
+    order: np.ndarray,
+    values: np.ndarray,
+    chunk_id: np.ndarray,
+    ordinal_ranks: np.ndarray,
+) -> np.ndarray:
+    """Average ranks within date chunks, preserving ties (scipy 'average' method).
+
+    `order` is a stable sort of `values` that keeps each `chunk_id` block
+    contiguous and ascending within the block; `ordinal_ranks[i]` is the
+    1-based ordinal rank (within its chunk) of the element at sorted
+    position `i`. Consecutive equal values inside a chunk form a tie group
+    and receive the mean of their ordinal ranks. Returns average ranks in
+    the original (flat) element order.
+    """
+    n = order.size
+    out = np.empty(n, dtype=np.float64)
+    if n == 0:
+        return out
+    v_sorted = values[order]
+    c_sorted = chunk_id[order]
+    is_new = np.empty(n, dtype=bool)
+    is_new[0] = True
+    # New tie group at a chunk boundary or a change in value.
+    is_new[1:] = (c_sorted[1:] != c_sorted[:-1]) | (v_sorted[1:] != v_sorted[:-1])
+    group_id = np.cumsum(is_new) - 1
+    group_starts = np.flatnonzero(is_new)
+    group_ends = np.empty_like(group_starts)
+    group_ends[:-1] = group_starts[1:] - 1
+    group_ends[-1] = n - 1
+    # Ordinal ranks within a group are consecutive integers, so the group
+    # mean is simply the average of its first and last ordinal rank.
+    avg_by_group = (ordinal_ranks[group_starts] + ordinal_ranks[group_ends]) / 2.0
+    out[order] = avg_by_group[group_id]
+    return out
+
 
 # Standalone function for joblib parallel (must be picklable for serialization)
 def _evaluate_individual(ind, features, target, hof, config):
@@ -253,7 +293,14 @@ class GPConfig:
 @dataclass
 class GPIndividual:
     """Individual in genetic programming population."""
-    
+
+    # Class-level ICIR fast-path telemetry (unannotated -> not dataclass fields).
+    # Shared across all individuals so the owning GeneticEngine can aggregate
+    # hits across a population evaluated in the default 'threads' joblib backend
+    # or the serial (n_jobs=1) path. See GeneticEngine.get_icir_stats().
+    fast_path_hits = 0
+    fallback_hits = 0
+
     tree: GPNode
     fitness: float = -np.inf
     ic_score: float = 0.0
@@ -422,32 +469,106 @@ class GPIndividual:
         weights = list(getattr(config, 'multi_target_weights', []) or [])
         
         def _compute_spearman_ic(alpha_values: np.ndarray, target_values: np.ndarray) -> float:
-            combined = pd.DataFrame({'alpha': alpha_values, 'target': target_values}).dropna()
-            if len(combined) < 2:
+            valid = np.isfinite(alpha_values) & np.isfinite(target_values)
+            if np.count_nonzero(valid) < 2:
                 return 0.0
-            ic_value, _ = spearmanr(combined['alpha'], combined['target'])
+            ic_value, _ = spearmanr(alpha_values[valid], target_values[valid])
             return float(ic_value) if not np.isnan(ic_value) else 0.0
+
+        def _compute_icir_loop(date_chunks: Tuple[np.ndarray, ...]) -> float:
+            chunk_ics: List[float] = []
+            for chunk_indices in date_chunks:
+                alpha_chunk = alpha_series[chunk_indices]
+                target_chunk = target[chunk_indices]
+                valid = np.isfinite(alpha_chunk) & np.isfinite(target_chunk)
+                if np.count_nonzero(valid) < 2:
+                    continue
+                ic_value, _ = spearmanr(alpha_chunk[valid], target_chunk[valid])
+                if not np.isnan(ic_value):
+                    chunk_ics.append(float(ic_value))
+
+            if not chunk_ics:
+                return _compute_spearman_ic(alpha_series, target)
+
+            ic_std = float(np.std(chunk_ics))
+            if ic_std < 1e-9:
+                return float(np.mean(chunk_ics))
+            return float(np.mean(chunk_ics) / ic_std)
 
         # Single-target back-compat path
         if len(horizons) <= 1:
             if getattr(config, 'use_icir', False) and '__date__' in features:
-                combined = pd.DataFrame({
-                    'alpha': alpha_series,
-                    'target': target,
-                    'date': features['__date__'],
-                }).dropna()
-                if len(combined) < 2:
+                date_chunk_cache = features.get(DATE_CHUNK_CACHE_KEY)
+                if date_chunk_cache:
+                    flat_idx = date_chunk_cache['flat_idx']
+                    if flat_idx.size:
+                        alpha_flat = alpha_series[flat_idx]
+                        if (
+                            date_chunk_cache['target_all_finite']
+                            and np.all(np.isfinite(alpha_flat))
+                        ):
+                            GPIndividual.fast_path_hits += 1
+                            chunk_id = date_chunk_cache['chunk_id']
+                            seg_starts = date_chunk_cache['seg_starts']
+                            # Stable two-key sort: chunk_id groups, alpha orders
+                            # within group. Average ranks preserve ties so this
+                            # matches scipy.spearmanr's tie handling exactly.
+                            order_a = np.lexsort((alpha_flat, chunk_id))
+                            a_rank = _chunked_average_ranks(
+                                order_a, alpha_flat, chunk_id,
+                                date_chunk_cache['rank_values'],
+                            )
+                            t_rank = date_chunk_cache['t_rank']
+                            t_sum = date_chunk_cache['t_sum']
+                            t_var_num = date_chunk_cache['t_var_num']
+                            nf = date_chunk_cache['chunk_sizes'].astype(np.float64)
+                            a_sum = np.add.reduceat(a_rank, seg_starts)
+                            a_ss = np.add.reduceat(a_rank * a_rank, seg_starts)
+                            cross = np.add.reduceat(a_rank * t_rank, seg_starts)
+                            a_var_num = a_ss - (a_sum * a_sum) / nf
+                            cov_num = cross - (a_sum * t_sum) / nf
+                            # Spearman IC per chunk == Pearson on average ranks.
+                            # Zero-variance (constant) chunks are reported as NaN
+                            # by scipy.spearmanr and skipped by the loop, so we
+                            # mask them here before aggregating.
+                            valid_chunk = (a_var_num > 1e-12) & (t_var_num > 1e-12)
+                            denom = np.sqrt(np.maximum(a_var_num * t_var_num, 0.0))
+                            chunk_ics = np.divide(
+                                cov_num, denom,
+                                out=np.full(cov_num.shape, np.nan),
+                                where=valid_chunk,
+                            )
+                            chunk_ics = chunk_ics[np.isfinite(chunk_ics)]
+                            if chunk_ics.size == 0:
+                                return _compute_spearman_ic(alpha_series, target)
+                            ic_std = float(np.std(chunk_ics))
+                            if ic_std < 1e-9:
+                                return float(np.mean(chunk_ics))
+                            return float(np.mean(chunk_ics) / ic_std)
+
+                        GPIndividual.fallback_hits += 1
+                        return _compute_icir_loop(date_chunk_cache['date_chunks'])
+
+                valid = (
+                    np.isfinite(alpha_series)
+                    & np.isfinite(target)
+                    & pd.notna(features['__date__'])
+                )
+                if np.count_nonzero(valid) < 2:
                     return 0.0
 
                 chunk_ics: List[float] = []
-                unique_dates = pd.Index(pd.unique(combined['date']))
+                valid_alpha = alpha_series[valid]
+                valid_target = target[valid]
+                valid_dates = features['__date__'][valid]
+                unique_dates = pd.unique(valid_dates)
                 window = max(1, int(getattr(config, 'icir_window', 20)))
                 for start in range(0, len(unique_dates), window):
                     chunk_dates = unique_dates[start:start + window]
-                    chunk = combined[combined['date'].isin(chunk_dates)]
-                    if len(chunk) < 2:
+                    chunk_mask = np.isin(valid_dates, chunk_dates)
+                    if np.count_nonzero(chunk_mask) < 2:
                         continue
-                    ic_value, _ = spearmanr(chunk['alpha'], chunk['target'])
+                    ic_value, _ = spearmanr(valid_alpha[chunk_mask], valid_target[chunk_mask])
                     if not np.isnan(ic_value):
                         chunk_ics.append(float(ic_value))
 
@@ -473,10 +594,10 @@ class GPIndividual:
         for horizon, weight in zip(horizons, weights):
             key = f'target_h{horizon}'
             target_h = features.get(key, target)
-            combined = pd.DataFrame({'alpha': alpha_series, 'target': target_h}).dropna()
-            if len(combined) < 2:
+            valid = np.isfinite(alpha_series) & np.isfinite(target_h)
+            if np.count_nonzero(valid) < 2:
                 continue
-            ic_h, _ = spearmanr(combined['alpha'], combined['target'])
+            ic_h, _ = spearmanr(alpha_series[valid], target_h[valid])
             if np.isnan(ic_h):
                 continue
             weighted_ic += float(weight) * float(ic_h)
@@ -568,6 +689,137 @@ class GeneticEngine:
         self.hall_of_fame: List[GPIndividual] = []
         self.history: List[Dict[str, float]] = []
         self.feature_names: List[str] = []
+        self._date_chunk_cache: Tuple[Optional[int], Optional[Dict[str, Any]]] = (None, None)
+        # Reset ICIR telemetry so get_icir_stats() reflects this engine's runs.
+        # (Counters live on GPIndividual, whose _compute_combined_ic increments
+        # them; they are process-global, so constructing a new engine resets them.)
+        GPIndividual.fast_path_hits = 0
+        GPIndividual.fallback_hits = 0
+
+    def get_icir_stats(self) -> Dict[str, Any]:
+        """Return ICIR fast-path telemetry.
+
+        - fast_path_hits: vectorized composite-key argsort evaluations.
+        - fallback_hits: per-chunk spearmanr loop evaluations.
+        - hit_rate: fraction of ICIR evaluations that took the fast path.
+        """
+        fast = GPIndividual.fast_path_hits
+        fallback = GPIndividual.fallback_hits
+        total = fast + fallback
+        hit_rate = fast / total if total else 0.0
+        return {
+            'fast_path_hits': fast,
+            'fallback_hits': fallback,
+            'hit_rate': hit_rate,
+        }
+
+    def _precompute_date_chunks(
+        self,
+        features: Dict[str, np.ndarray],
+        target: np.ndarray,
+    ) -> Dict[str, Any]:
+        """Cache ICIR chunk metadata once per feature slice."""
+        date_values = features.get('__date__')
+        if date_values is None:
+            empty_cache = {
+                'date_chunks': tuple(),
+                'flat_idx': np.array([], dtype=np.int64),
+                'seg_starts': np.array([], dtype=np.int64),
+                'chunk_sizes': np.array([], dtype=np.int64),
+                'chunk_id': np.array([], dtype=np.int64),
+                'rank_values': np.array([], dtype=np.float64),
+                't_rank': np.array([], dtype=np.float64),
+                't_sum': np.array([], dtype=np.float64),
+                't_var_num': np.array([], dtype=np.float64),
+                'target_all_finite': False,
+            }
+            self._date_chunk_cache = (None, empty_cache)
+            return empty_cache
+
+        cache_key = id(date_values)
+        cached_key, cached_chunks = self._date_chunk_cache
+        if cached_key == cache_key:
+            return cached_chunks
+
+        valid_date_mask = pd.notna(date_values)
+        valid_indices = np.flatnonzero(valid_date_mask)
+        if valid_indices.size == 0:
+            empty_cache = {
+                'date_chunks': tuple(),
+                'flat_idx': np.array([], dtype=np.int64),
+                'seg_starts': np.array([], dtype=np.int64),
+                'chunk_sizes': np.array([], dtype=np.int64),
+                'chunk_id': np.array([], dtype=np.int64),
+                'rank_values': np.array([], dtype=np.float64),
+                't_rank': np.array([], dtype=np.float64),
+                't_sum': np.array([], dtype=np.float64),
+                't_var_num': np.array([], dtype=np.float64),
+                'target_all_finite': False,
+            }
+            self._date_chunk_cache = (cache_key, empty_cache)
+            return empty_cache
+
+        unique_dates = pd.unique(date_values[valid_date_mask])
+        window = max(1, int(getattr(self.config, 'icir_window', 20)))
+        chunks: List[np.ndarray] = []
+        for start in range(0, len(unique_dates), window):
+            chunk_dates = unique_dates[start:start + window]
+            chunk_mask = np.isin(date_values[valid_date_mask], chunk_dates)
+            chunk_indices = valid_indices[chunk_mask]
+            if chunk_indices.size >= 2:
+                chunks.append(chunk_indices)
+
+        date_chunks = tuple(chunks)
+        if not date_chunks:
+            empty_cache = {
+                'date_chunks': tuple(),
+                'flat_idx': np.array([], dtype=np.int64),
+                'seg_starts': np.array([], dtype=np.int64),
+                'chunk_sizes': np.array([], dtype=np.int64),
+                'chunk_id': np.array([], dtype=np.int64),
+                'rank_values': np.array([], dtype=np.float64),
+                't_rank': np.array([], dtype=np.float64),
+                't_sum': np.array([], dtype=np.float64),
+                't_var_num': np.array([], dtype=np.float64),
+                'target_all_finite': False,
+            }
+            self._date_chunk_cache = (cache_key, empty_cache)
+            return empty_cache
+
+        chunk_sizes = np.array([chunk.size for chunk in date_chunks], dtype=np.int64)
+        flat_idx = np.concatenate(date_chunks)
+        seg_starts = np.concatenate(([0], np.cumsum(chunk_sizes[:-1], dtype=np.int64)))
+        chunk_id = np.repeat(np.arange(len(date_chunks), dtype=np.int64), chunk_sizes)
+        rank_values = np.arange(1, flat_idx.size + 1, dtype=np.float64) - np.repeat(seg_starts, chunk_sizes)
+        target_flat = target[flat_idx]
+        target_all_finite = bool(np.all(np.isfinite(target_flat)))
+
+        if target_all_finite:
+            order_t = np.lexsort((target_flat, chunk_id))
+            t_rank = _chunked_average_ranks(order_t, target_flat, chunk_id, rank_values)
+            nf = chunk_sizes.astype(np.float64)
+            t_sum = np.add.reduceat(t_rank, seg_starts)
+            t_ss = np.add.reduceat(t_rank * t_rank, seg_starts)
+            t_var_num = t_ss - (t_sum * t_sum) / nf
+        else:
+            t_rank = np.array([], dtype=np.float64)
+            t_sum = np.array([], dtype=np.float64)
+            t_var_num = np.array([], dtype=np.float64)
+
+        cached_chunks = {
+            'date_chunks': date_chunks,
+            'flat_idx': flat_idx,
+            'seg_starts': seg_starts,
+            'chunk_sizes': chunk_sizes,
+            'chunk_id': chunk_id,
+            'rank_values': rank_values,
+            't_rank': t_rank,
+            't_sum': t_sum,
+            't_var_num': t_var_num,
+            'target_all_finite': target_all_finite,
+        }
+        self._date_chunk_cache = (cache_key, cached_chunks)
+        return cached_chunks
     
     def generate_random_tree(self, depth: int = 0) -> GPNode:
         """Generate random expression tree."""
@@ -688,6 +940,10 @@ class GeneticEngine:
             else:
                 gen_features = features
                 gen_target = target
+
+            if self.config.use_icir and '__date__' in gen_features:
+                gen_features = dict(gen_features)
+                gen_features[DATE_CHUNK_CACHE_KEY] = self._precompute_date_chunks(gen_features, gen_target)
 
             if self.config.n_jobs == 1:
                 for individual in self.population:

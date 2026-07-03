@@ -130,6 +130,10 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 2. Validate: role_id 6-16, tier=2, platform=OpenCode
 3. Verify filename stem matches frontmatter `name` field exactly
 4. Run `python scripts/get_relevant_lessons.py <role_id>` and append the output to the implementation task requirements to alert the worker about past mistakes.
+
+> [!IMPORTANT]
+> **MANDATORY PRE-DISPATCH STEP**: L1 MUST run `python scripts/get_relevant_lessons.py <role_id> "<task_query>"` first and embed the retrieved lessons output in the `LESSONS` parameter of the OpenCode command. NEVER mock or skip this step.
+
 5. Use extracted `role_id` and `name` in prompt (never hand-type role names)
 
 ```powershell
@@ -220,3 +224,16 @@ Missing/invalid fields -> `PENDING_L3_AUDIT`.
 - `.ly_state/session/phase_gates.json`
 - `.ly_state/session/audit_reports/`
 - `.ly_state/session/l2_*.md`
+
+## L1 Orchestrator Bootstrap Rules
+
+1. **Vietnamese Communication**: Always respond to the user in Vietnamese.
+2. **Timer Ban**: Absolutely do not use timer tools (`schedule`, `cron`, or background sleeps). Rely strictly on Reactive Wakeup.
+3. **L1 Dynamic Composite Role**: L1's base role is `orchestrator`. Depending on the task domain, L1 must dynamically combine it with a specialist role (e.g. `tech-lead` or `machine-learning-engineer` for quant/architecture, `release-manager` for gates). Announce this composite role on the very first line of the response: `🤖 **Applying knowledge of @[orchestrator / <specialist-role>]...**`.
+4. **Memory Update Gate**: Whenever a gate is `[APPROVED]`, L1 must review and update `tech-decisions.md` to record the new configurations/findings before starting a new phase.
+5. **Claude Code CLI Dispatch Rule**: When the user requests a review, brainstorming, or advisory task via Claude/Claude Code, run the command in the background with the following format (bypassing permissions):
+   ```powershell
+   claude --permission-mode bypassPermissions -p "<TASK_PROMPT>"
+   ```
+
+
