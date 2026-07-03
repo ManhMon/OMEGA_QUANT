@@ -38,29 +38,22 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 DATE_CHUNK_CACHE_KEY = '__date_chunk_indices__'
+NEUTRALIZATION_CACHE_KEY = '__neutralization_cache__'
 
 
-def _neutralize_cross_section(
-    alpha_arr: np.ndarray,
+def _build_neutralization_cache(
     log_mcap_arr: np.ndarray,
     sector_arr: np.ndarray,
     date_arr: np.ndarray,
-) -> np.ndarray:
-    residuals = np.asarray(alpha_arr, dtype=np.float64).copy()
-    if log_mcap_arr is None or sector_arr is None or date_arr is None:
-        return residuals
-
-    log_mcap_arr = np.asarray(log_mcap_arr, dtype=np.float64)
-    sector_arr = np.asarray(sector_arr)
-    date_arr = np.asarray(date_arr)
+) -> Dict[Any, Tuple[np.ndarray, np.ndarray]]:
+    cache: Dict[Any, Tuple[np.ndarray, np.ndarray]] = {}
     for current_date in pd.unique(date_arr[pd.notna(date_arr)]):
         mask = date_arr == current_date
         if np.count_nonzero(mask) < 2:
             continue
-        alpha_slice = residuals[mask]
         mcap_slice = log_mcap_arr[mask]
         sector_slice = sector_arr[mask]
-        valid = np.isfinite(alpha_slice) & np.isfinite(mcap_slice) & pd.notna(sector_slice)
+        valid = np.isfinite(mcap_slice) & pd.notna(sector_slice)
         if np.count_nonzero(valid) < 2:
             continue
         valid_sector = pd.factorize(sector_slice[valid], sort=True)[0]
@@ -71,17 +64,58 @@ def _neutralize_cross_section(
         ]
         if sector_dummies.shape[1] > 1:
             design_parts.append(sector_dummies[:, 1:])
-        design = np.column_stack(design_parts)
-        alpha_valid = alpha_slice[valid]
+        cache[current_date] = (valid, np.column_stack(design_parts))
+    return cache
+
+
+def _neutralize_cross_section(
+    alpha_arr: np.ndarray,
+    log_mcap_arr: np.ndarray,
+    sector_arr: np.ndarray,
+    date_arr: np.ndarray,
+    neutralization_cache: Optional[Dict[Any, Tuple[np.ndarray, np.ndarray]]] = None,
+) -> np.ndarray:
+    t0 = time.perf_counter()
+    residuals = np.asarray(alpha_arr, dtype=np.float64).copy()
+    if log_mcap_arr is None or sector_arr is None or date_arr is None:
+        return residuals
+
+    log_mcap_arr = np.asarray(log_mcap_arr, dtype=np.float64)
+    sector_arr = np.asarray(sector_arr)
+    date_arr = np.asarray(date_arr)
+    date_cache = neutralization_cache
+    if date_cache is None:
+        date_cache = _build_neutralization_cache(log_mcap_arr, sector_arr, date_arr)
+    for current_date in pd.unique(date_arr[pd.notna(date_arr)]):
+        mask = date_arr == current_date
+        if np.count_nonzero(mask) < 2:
+            continue
+        alpha_slice = residuals[mask]
+        cached = date_cache.get(current_date)
+        if cached is None:
+            continue
+        cached_valid, design = cached
+        valid_rows = cached_valid & np.isfinite(alpha_slice)
+        if np.count_nonzero(valid_rows) < 2:
+            continue
+        alpha_valid = alpha_slice[valid_rows]
+        design_valid = design[valid_rows[cached_valid]]
         try:
-            beta, _, rank, _ = np.linalg.lstsq(design, alpha_valid, rcond=None)
+            beta, _, rank, _ = np.linalg.lstsq(design_valid, alpha_valid, rcond=None)
         except np.linalg.LinAlgError:
             continue
-        if rank < design.shape[1]:
+        if rank < design_valid.shape[1]:
             continue
-        alpha_slice[valid] = alpha_valid - design @ beta
-        alpha_slice[valid & (np.abs(alpha_slice) < 1e-12)] = 0.0
+        alpha_slice[valid_rows] = alpha_valid - design_valid @ beta
+        alpha_slice[valid_rows & (np.abs(alpha_slice) < 1e-12)] = 0.0
         residuals[mask] = alpha_slice
+    logger.debug(
+        "_neutralize_cross_section dt=%.4fs rows=%d dates=%d cache=%s",
+        time.perf_counter() - t0,
+        residuals.size,
+        len(date_cache),
+        neutralization_cache is not None,
+    )
     return residuals
 
 
@@ -91,6 +125,7 @@ def _compute_time_fold_ir(
     features: Dict[str, np.ndarray],
     config: "GPConfig",
 ) -> float:
+    t0 = time.perf_counter()
     date_arr = features.get('__date__')
     log_mcap_arr = features.get('__log_market_cap__')
     sector_arr = features.get('__sector__')
@@ -103,7 +138,9 @@ def _compute_time_fold_ir(
         return 0.0
 
     fold_ics: List[float] = []
-    for fold_dates in np.array_split(valid_dates, max(1, int(config.time_folds))):
+    fold_count = 2 if getattr(config, 'time_folds_fast_mode', False) else int(config.time_folds)
+    neutralization_cache = features.get(NEUTRALIZATION_CACHE_KEY)
+    for fold_dates in np.array_split(valid_dates, max(1, fold_count)):
         if len(fold_dates) == 0:
             continue
         fold_mask = np.isin(date_arr, fold_dates)
@@ -112,9 +149,9 @@ def _compute_time_fold_ir(
         alpha_fold = np.asarray(alpha[fold_mask], dtype=np.float64)
         target_fold = np.asarray(target[fold_mask], dtype=np.float64)
         fold_features = {
-            key: np.asarray(value)[fold_mask]
+            key: value_arr[fold_mask]
             for key, value in features.items()
-            if len(np.asarray(value)) == len(date_arr)
+            if (value_arr := np.asarray(value)).ndim > 0 and len(value_arr) == len(date_arr)
         }
         if config.neutralize_size_sector and log_mcap_arr is not None and sector_arr is not None:
             alpha_fold = _neutralize_cross_section(
@@ -122,6 +159,7 @@ def _compute_time_fold_ir(
                 fold_features.get('__log_market_cap__'),
                 fold_features.get('__sector__'),
                 fold_features.get('__date__'),
+                neutralization_cache=neutralization_cache,
             )
         valid = np.isfinite(alpha_fold) & np.isfinite(target_fold)
         if np.count_nonzero(valid) < 2:
@@ -132,7 +170,16 @@ def _compute_time_fold_ir(
 
     if len(fold_ics) < 2:
         return 0.0
-    return float(np.mean(fold_ics) / max(float(np.std(fold_ics, ddof=1)), float(config.fold_ir_std_floor)))
+    result = float(np.mean(fold_ics) / max(float(np.std(fold_ics, ddof=1)), float(config.fold_ir_std_floor)))
+    logger.debug(
+        "_compute_time_fold_ir dt=%.4fs folds=%d dates=%d cache=%s result=%.6f",
+        time.perf_counter() - t0,
+        max(1, fold_count),
+        valid_dates.size,
+        neutralization_cache is not None,
+        result,
+    )
+    return result
 
 
 def _chunked_average_ranks(
@@ -363,6 +410,7 @@ class GPConfig:
     neutralize_size_sector: bool = False
     use_time_fold_ir: bool = False
     time_folds: int = 3
+    time_folds_fast_mode: bool = False
     fold_ir_std_floor: float = 0.01
     icir_window: int = 20
     
@@ -601,6 +649,7 @@ class GPIndividual:
                 features.get('__log_market_cap__'),
                 features.get('__sector__'),
                 features.get('__date__'),
+                neutralization_cache=features.get(NEUTRALIZATION_CACHE_KEY),
             )
 
         def _compute_icir_loop(date_chunks: Tuple[np.ndarray, ...]) -> float:
@@ -1100,6 +1149,19 @@ class GeneticEngine:
             if self.config.use_icir and '__date__' in gen_features:
                 gen_features = dict(gen_features)
                 gen_features[DATE_CHUNK_CACHE_KEY] = self._precompute_date_chunks(gen_features, gen_target)
+            if (
+                self.config.neutralize_size_sector
+                and '__date__' in gen_features
+                and '__log_market_cap__' in gen_features
+                and '__sector__' in gen_features
+            ):
+                if gen_features is features:
+                    gen_features = dict(gen_features)
+                gen_features[NEUTRALIZATION_CACHE_KEY] = _build_neutralization_cache(
+                    np.asarray(gen_features.get('__log_market_cap__'), dtype=np.float64),
+                    np.asarray(gen_features.get('__sector__')),
+                    np.asarray(gen_features.get('__date__')),
+                )
 
             if self.config.n_jobs == 1:
                 for individual in self.population:
@@ -1125,7 +1187,7 @@ class GeneticEngine:
                 'best_tree_size': best.tree.size(),
             })
             
-            logger.info(f"Gen {generation+1}: IC={best.ic_score:.4f}, Fitness={best.fitness:.4f}")
+            logger.info(f"Gen {generation+1}: Fold_IR={best.ic_score:.4f}, Fitness={best.fitness:.4f}")
             
             # Progress metadata with timing and ETA
             elapsed = time.monotonic() - t_start
