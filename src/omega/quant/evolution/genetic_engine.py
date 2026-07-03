@@ -31,7 +31,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import rankdata, spearmanr
 from joblib import Parallel, delayed
 
 logging.basicConfig(level=logging.INFO)
@@ -40,6 +40,41 @@ logger = logging.getLogger(__name__)
 DATE_CHUNK_CACHE_KEY = '__date_chunk_indices__'
 NEUTRALIZATION_CACHE_KEY = '__neutralization_cache__'
 HOF_ALPHA_CACHE_KEY = '__hof_alphas__'
+FOLD_STRUCTURE_CACHE_KEY = '__fold_structure__'
+ORTHO_RANKS_CACHE_KEY = '__ortho_ranks__'
+ALPHA_CACHE_KEY = '__alpha_cache__'
+
+
+def _pearson_corr(a: np.ndarray, b: np.ndarray) -> float:
+    valid = np.isfinite(a) & np.isfinite(b)
+    if np.count_nonzero(valid) < 2:
+        return np.nan
+    a_valid = np.asarray(a[valid], dtype=np.float64)
+    b_valid = np.asarray(b[valid], dtype=np.float64)
+    a_valid = a_valid - np.mean(a_valid)
+    b_valid = b_valid - np.mean(b_valid)
+    denom = np.sqrt(np.sum(a_valid * a_valid) * np.sum(b_valid * b_valid))
+    if denom < 1e-12:
+        return np.nan
+    return float(np.sum(a_valid * b_valid) / denom)
+
+
+def _build_time_fold_structure(
+    date_arr: np.ndarray,
+    fold_count: int,
+) -> Tuple[Tuple[np.ndarray, np.ndarray], ...]:
+    valid_dates = np.sort(pd.unique(date_arr[pd.notna(date_arr)]))
+    if valid_dates.size == 0:
+        return tuple()
+    fold_structure: List[Tuple[np.ndarray, np.ndarray]] = []
+    for fold_dates in np.array_split(valid_dates, max(1, fold_count)):
+        if len(fold_dates) == 0:
+            continue
+        fold_mask = np.isin(date_arr, fold_dates)
+        if np.count_nonzero(fold_mask) < 2:
+            continue
+        fold_structure.append((fold_mask, np.asarray(fold_dates)))
+    return tuple(fold_structure)
 
 
 def _build_neutralization_cache(
@@ -141,19 +176,20 @@ def _compute_time_fold_ir(
     fold_ics: List[float] = []
     fold_count = 2 if getattr(config, 'time_folds_fast_mode', False) else int(config.time_folds)
     neutralization_cache = features.get(NEUTRALIZATION_CACHE_KEY)
-    for fold_dates in np.array_split(valid_dates, max(1, fold_count)):
-        if len(fold_dates) == 0:
-            continue
-        fold_mask = np.isin(date_arr, fold_dates)
-        if np.count_nonzero(fold_mask) < 2:
-            continue
+    fold_structure = features.get(FOLD_STRUCTURE_CACHE_KEY)
+    if fold_structure is None:
+        fold_structure = _build_time_fold_structure(date_arr, fold_count)
+    for fold_mask, _fold_dates in fold_structure:
         alpha_fold = np.asarray(alpha[fold_mask], dtype=np.float64)
         target_fold = np.asarray(target[fold_mask], dtype=np.float64)
-        fold_features = {
-            key: value_arr[fold_mask]
-            for key, value in features.items()
-            if (value_arr := np.asarray(value)).ndim > 0 and len(value_arr) == len(date_arr)
-        }
+        fold_features = {}
+        for key, value in features.items():
+            try:
+                value_arr = np.asarray(value)
+            except ValueError:
+                continue
+            if value_arr.ndim > 0 and len(value_arr) == len(date_arr):
+                fold_features[key] = value_arr[fold_mask]
         if config.neutralize_size_sector and log_mcap_arr is not None and sector_arr is not None:
             alpha_fold = _neutralize_cross_section(
                 alpha_fold,
@@ -466,6 +502,7 @@ class GPIndividual:
     transaction_cost_penalty: float = 0.0
     orthogonalization_penalty: float = 0.0
     turnover_rate: float = 0.0
+    _alpha_cache: Dict[int, float] = field(default_factory=dict, repr=False)
     
     def evaluate(
         self,
@@ -548,6 +585,7 @@ class GPIndividual:
             
             # Diversity penalty
             self.diversity_penalty = 0.0
+            self._alpha_cache = {}
             if hall_of_fame:
                 hof_alphas = features.get(HOF_ALPHA_CACHE_KEY)
                 if hof_alphas is None:
@@ -558,15 +596,22 @@ class GPIndividual:
                             hof_alphas.append(np.nan_to_num(hof_alpha, nan=0.0, posinf=0.0, neginf=0.0))
                         except Exception:
                             hof_alphas.append(None)
-                for hof_alpha in hof_alphas:
+                generation_alpha_cache = features.get(ALPHA_CACHE_KEY)
+                if generation_alpha_cache is not None:
+                    candidate_cache = generation_alpha_cache.setdefault(id(self), {})
+                else:
+                    candidate_cache = self._alpha_cache
+                for hof_individual, hof_alpha in zip(hall_of_fame, hof_alphas):
                     if hof_alpha is None:
                         continue
                     try:
-                        corr_df = pd.DataFrame({'a': alpha_series, 'b': hof_alpha}).dropna()
-                        if len(corr_df) > 100:
-                            corr, _ = spearmanr(corr_df['a'], corr_df['b'])
-                            if not np.isnan(corr) and abs(corr) > config.diversity_threshold:
-                                self.diversity_penalty = max(self.diversity_penalty, 0.02)
+                        hof_cache_key = id(hof_individual)
+                        corr = candidate_cache.get(hof_cache_key)
+                        if corr is None:
+                            corr, _ = spearmanr(alpha_series, hof_alpha[:len(alpha_series)])
+                            candidate_cache[hof_cache_key] = float(corr) if not np.isnan(corr) else np.nan
+                        if not np.isnan(corr) and abs(corr) > config.diversity_threshold:
+                            self.diversity_penalty = max(self.diversity_penalty, 0.02)
                     except Exception:
                         continue
             
@@ -579,21 +624,42 @@ class GPIndividual:
             if baseline_set:
                 threshold = getattr(config, 'ortho_correlation_threshold', 0.5)
                 max_abs_corr = 0.0
-                for _bl_name, bl_signal in baseline_set.items():
-                    if bl_signal is None or len(bl_signal) == 0:
-                        continue
-                    try:
-                        bl_df = pd.DataFrame({
-                            'a': alpha_series,
-                            'b': bl_signal[:len(alpha_series)]
-                        }).dropna()
-                        if len(bl_df) < 100:
+                ortho_ranks = features.get(ORTHO_RANKS_CACHE_KEY)
+                if getattr(config, 'use_fast_penalties', True) and ortho_ranks:
+                    alpha_rank_cache: Dict[int, np.ndarray] = {}
+                    for bl_name, baseline_ranks in ortho_ranks.items():
+                        bl_signal = baseline_set.get(bl_name)
+                        if bl_signal is None or len(bl_signal) == 0:
                             continue
-                        bl_corr, _ = spearmanr(bl_df['a'], bl_df['b'])
-                        if not np.isnan(bl_corr):
-                            max_abs_corr = max(max_abs_corr, abs(bl_corr))
-                    except Exception:
-                        continue
+                        span = min(len(alpha_series), len(baseline_ranks))
+                        if span < 100:
+                            continue
+                        try:
+                            alpha_ranks = alpha_rank_cache.get(span)
+                            if alpha_ranks is None:
+                                alpha_ranks = rankdata(alpha_series[:span])
+                                alpha_rank_cache[span] = alpha_ranks
+                            bl_corr = _pearson_corr(alpha_ranks, baseline_ranks[:span])
+                            if not np.isnan(bl_corr):
+                                max_abs_corr = max(max_abs_corr, abs(bl_corr))
+                        except Exception:
+                            continue
+                else:
+                    for _bl_name, bl_signal in baseline_set.items():
+                        if bl_signal is None or len(bl_signal) == 0:
+                            continue
+                        try:
+                            bl_df = pd.DataFrame({
+                                'a': alpha_series,
+                                'b': bl_signal[:len(alpha_series)]
+                            }).dropna()
+                            if len(bl_df) < 100:
+                                continue
+                            bl_corr, _ = spearmanr(bl_df['a'], bl_df['b'])
+                            if not np.isnan(bl_corr):
+                                max_abs_corr = max(max_abs_corr, abs(bl_corr))
+                        except Exception:
+                            continue
                 # Linear penalty: 0 when max_abs_corr <= threshold,
                 # scales to ortho_penalty_weight when max_abs_corr == 1.0
                 if max_abs_corr > threshold and threshold < 1.0:
@@ -871,6 +937,19 @@ class GeneticEngine:
         # them; they are process-global, so constructing a new engine resets them.)
         GPIndividual.fast_path_hits = 0
         GPIndividual.fallback_hits = 0
+        self._ortho_ranks = self._precompute_ortho_ranks()
+
+    def _precompute_ortho_ranks(self) -> Dict[str, np.ndarray]:
+        baseline_set = getattr(self.config, 'ortho_baseline_set', None) or {}
+        precomputed: Dict[str, np.ndarray] = {}
+        for name, signal in baseline_set.items():
+            if signal is None or len(signal) == 0:
+                continue
+            signal_arr = np.asarray(signal, dtype=np.float64)
+            if not np.all(np.isfinite(signal_arr)):
+                raise AssertionError(f"ortho baseline '{name}' must be finite for fast ranks")
+            precomputed[name] = rankdata(signal_arr)
+        return precomputed
 
     def _build_hof_alpha_cache(
         self,
@@ -1156,10 +1235,25 @@ class GeneticEngine:
                 gen_features = features
                 gen_target = target
 
+            if self.config.use_fast_penalties and '__date__' in gen_features:
+                if gen_features is features:
+                    gen_features = dict(gen_features)
+                fold_count = 2 if getattr(self.config, 'time_folds_fast_mode', False) else int(self.config.time_folds)
+                gen_features[FOLD_STRUCTURE_CACHE_KEY] = _build_time_fold_structure(
+                    np.asarray(gen_features['__date__']),
+                    fold_count,
+                )
+
             if self.config.use_fast_penalties and self.hall_of_fame:
                 if gen_features is features:
                     gen_features = dict(gen_features)
                 gen_features[HOF_ALPHA_CACHE_KEY] = self._build_hof_alpha_cache(self.hall_of_fame, gen_features)
+                gen_features[ALPHA_CACHE_KEY] = {}
+
+            if self.config.use_fast_penalties and self._ortho_ranks:
+                if gen_features is features:
+                    gen_features = dict(gen_features)
+                gen_features[ORTHO_RANKS_CACHE_KEY] = self._ortho_ranks
 
             if self.config.use_icir and '__date__' in gen_features:
                 gen_features = dict(gen_features)

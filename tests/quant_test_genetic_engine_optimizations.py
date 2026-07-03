@@ -1,12 +1,19 @@
 import numpy as np
 import pytest
+from scipy.stats import rankdata, spearmanr
 
 from omega.quant.evolution.genetic_engine import (
+    ALPHA_CACHE_KEY,
+    FOLD_STRUCTURE_CACHE_KEY,
     HOF_ALPHA_CACHE_KEY,
     GeneticEngine,
     GPConfig,
     GPIndividual,
     GPNode,
+    ORTHO_RANKS_CACHE_KEY,
+    _build_time_fold_structure,
+    _compute_time_fold_ir,
+    _pearson_corr,
 )
 
 
@@ -79,6 +86,76 @@ def test_hof_cache_rebuild_tracks_membership_change():
     assert len(cache_b) == 2
     assert np.allclose(cache_b[0], cache_a[0])
     assert np.allclose(cache_b[1], np.ones(16))
+
+
+def test_fix_a_precomputed_ortho_ranks_match_spearman_baseline_penalty():
+    alpha = np.linspace(-2.0, 3.0, 128) ** 3
+    baseline = np.linspace(4.0, -1.0, 128)
+    features, target = _make_features(alpha, alpha * 0.2 + 1.0)
+    config = GPConfig(
+        min_observations=10,
+        use_fast_penalties=True,
+        ortho_baseline_set={'base': baseline},
+        ortho_correlation_threshold=0.1,
+        ortho_penalty_weight=0.05,
+    )
+    engine = GeneticEngine(config)
+    individual = GPIndividual(tree=GPNode(operator='terminal', value='f1'))
+    features[ORTHO_RANKS_CACHE_KEY] = engine._ortho_ranks
+
+    individual.evaluate(features, target, [], config)
+
+    lower = np.nanpercentile(alpha, 1)
+    upper = np.nanpercentile(alpha, 99)
+    alpha_norm = np.clip(alpha, lower, upper)
+    alpha_norm = (alpha_norm - np.nanmean(alpha_norm)) / (np.nanstd(alpha_norm) + 1e-9)
+    alpha_norm = np.nan_to_num(alpha_norm, nan=0.0, posinf=0.0, neginf=0.0)
+    fast_corr = abs(_pearson_corr(rankdata(alpha_norm), engine._ortho_ranks['base']))
+    slow_spearman = abs(spearmanr(alpha_norm, baseline)[0])
+    assert fast_corr == pytest.approx(slow_spearman, abs=1e-12)
+    expected = 0.05 * ((slow_spearman - 0.1) / 0.9)
+    assert individual.orthogonalization_penalty == pytest.approx(expected, abs=1e-10)
+
+
+def test_fix_c_fold_structure_cache_matches_recomputed_ir():
+    alpha = np.linspace(-1.0, 1.0, 64)
+    target = alpha[::-1]
+    features, target_arr = _make_features(alpha, target)
+    config = GPConfig(use_time_fold_ir=True, time_folds=4, use_fast_penalties=True)
+
+    cached_features = dict(features)
+    cached_features[FOLD_STRUCTURE_CACHE_KEY] = _build_time_fold_structure(features['__date__'], 4)
+
+    fast = _compute_time_fold_ir(alpha, target_arr, cached_features, config)
+    slow = _compute_time_fold_ir(alpha, target_arr, features, config)
+
+    assert fast == pytest.approx(slow, abs=1e-12)
+
+
+def test_fix_b_hof_corr_cache_scoped_by_generation_membership():
+    alpha = np.linspace(-1.0, 1.0, 128)
+    target = alpha + 0.2
+    features, target_arr = _make_features(alpha, target)
+    config = GPConfig(min_observations=10, use_fast_penalties=True, diversity_threshold=0.1)
+    candidate = GPIndividual(tree=GPNode(operator='terminal', value='f1'))
+    hof_a = GPIndividual(tree=GPNode(operator='terminal', value='f1'))
+    hof_b = GPIndividual(tree=GPNode(operator='terminal', value='1.0'))
+
+    gen1 = dict(features)
+    gen1[HOF_ALPHA_CACHE_KEY] = [alpha]
+    gen1[ALPHA_CACHE_KEY] = {}
+    candidate.evaluate(gen1, target_arr, [hof_a], config)
+    gen1_cache = gen1[ALPHA_CACHE_KEY][id(candidate)].copy()
+
+    gen2 = dict(features)
+    gen2[HOF_ALPHA_CACHE_KEY] = [np.ones_like(alpha)]
+    gen2[ALPHA_CACHE_KEY] = {}
+    candidate.evaluate(gen2, target_arr, [hof_b], config)
+    gen2_cache = gen2[ALPHA_CACHE_KEY][id(candidate)].copy()
+
+    assert list(gen1_cache.keys()) == [id(hof_a)]
+    assert list(gen2_cache.keys()) == [id(hof_b)]
+    assert id(hof_a) not in gen2_cache
 
 
 def test_evolve_with_fast_penalties_keeps_deterministic_history_and_hof():
