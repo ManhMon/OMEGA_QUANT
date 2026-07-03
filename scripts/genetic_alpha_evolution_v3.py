@@ -52,7 +52,7 @@ def _cs_zscore_by_date(values: pd.Series, dates: pd.Series) -> pd.Series:
 def _volume_quartile_sector_proxy(volumes: pd.Series, dates: pd.Series) -> pd.Series:
     def _per_date_bucket(day_volume: pd.Series) -> pd.Series:
         rank = day_volume.rank(method="first")
-        return pd.qcut(rank, 4, labels=False)
+        return pd.qcut(rank, 4, labels=False, duplicates="drop")
 
     return volumes.groupby(dates).transform(_per_date_bucket).astype(np.int64)
 
@@ -76,7 +76,7 @@ def load_dataset() -> pd.DataFrame:
     df = loader.load_and_prepare(
         start_date="2015-01-05",
         end_date="2026-05-14",
-        top_n_symbols=15,
+        top_n_symbols=100,
         forward_horizons=[1, 3, 5, 10],
     )
     df = df.sort_values(["ticker", "date"]).copy()
