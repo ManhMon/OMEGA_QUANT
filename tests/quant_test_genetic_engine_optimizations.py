@@ -11,8 +11,11 @@ from omega.quant.evolution.genetic_engine import (
     GPIndividual,
     GPNode,
     ORTHO_RANKS_CACHE_KEY,
+    _batch_neutralize_cross_section,
+    _build_neutralization_cache,
     _build_time_fold_structure,
     _compute_time_fold_ir,
+    _neutralize_cross_section,
     _pearson_corr,
 )
 
@@ -188,3 +191,68 @@ def test_evolve_with_fast_penalties_keeps_deterministic_history_and_hof():
     ]
     assert history_a == history_b
     assert [ind.tree.to_string() for ind in hof_a] == [ind.tree.to_string() for ind in hof_b]
+
+
+def test_gate3_batch_neutralization_matches_per_alpha_path():
+    n_dates = 6
+    per_date = 5
+    n = n_dates * per_date
+    dates = np.repeat(np.arange(n_dates), per_date)
+    log_mcap = np.tile(np.linspace(1.0, 2.0, per_date), n_dates)
+    sector = np.tile(np.array([0, 1, 2, 0, 1]), n_dates)
+    alpha_matrix = np.column_stack([
+        np.linspace(-1.0, 1.0, n),
+        np.sin(np.linspace(0.0, 2.0, n)),
+        np.cos(np.linspace(0.0, 3.0, n)),
+    ])
+    cache = _build_neutralization_cache(log_mcap, sector, dates)
+
+    batch = _batch_neutralize_cross_section(alpha_matrix, dates, cache)
+    sequential = np.column_stack([
+        _neutralize_cross_section(alpha_matrix[:, i], log_mcap, sector, dates, cache)
+        for i in range(alpha_matrix.shape[1])
+    ])
+
+    assert np.allclose(batch, sequential, atol=1e-10, rtol=1e-10)
+
+
+def test_gate3_batch_neutralization_flag_preserves_legacy_scores():
+    n_dates = 24
+    per_date = 6
+    n = n_dates * per_date
+    x = np.linspace(-2.0, 2.0, n)
+    dates = np.repeat(np.arange(n_dates), per_date)
+    features = {
+        'f1': x,
+        'f2': x[::-1],
+        '__date__': dates,
+        '__log_market_cap__': np.tile(np.linspace(1.0, 3.0, per_date), n_dates),
+        '__sector__': np.tile(np.array([0, 1, 2, 0, 1, 2]), n_dates),
+    }
+    target = 0.4 * x - 0.2 * x[::-1]
+    base_config = GPConfig(
+        population_size=6,
+        generations=1,
+        min_observations=10,
+        n_jobs=1,
+        random_seed=11,
+        neutralize_size_sector=True,
+        use_fast_penalties=True,
+        hall_of_fame_size=3,
+    )
+
+    batch_engine = GeneticEngine(base_config)
+    legacy_engine = GeneticEngine(GPConfig(**{**base_config.__dict__, 'use_batch_neutralization': False}))
+
+    batch_hof = batch_engine.evolve(features, target)
+    legacy_hof = legacy_engine.evolve(features, target)
+
+    assert len(batch_engine.history) == len(legacy_engine.history)
+    for batch_row, legacy_row in zip(batch_engine.history, legacy_engine.history):
+        compare_keys = {'generation', 'best_fitness', 'best_ic', 'best_tree_size'}
+        assert compare_keys.issubset(batch_row.keys())
+        assert compare_keys.issubset(legacy_row.keys())
+        for key in compare_keys:
+            assert batch_row[key] == pytest.approx(legacy_row[key], abs=1e-10)
+    assert [ind.tree.to_string() for ind in batch_hof] == [ind.tree.to_string() for ind in legacy_hof]
+    assert [ind.fitness for ind in batch_hof] == pytest.approx([ind.fitness for ind in legacy_hof], abs=1e-10)

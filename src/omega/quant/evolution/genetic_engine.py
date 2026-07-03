@@ -45,6 +45,16 @@ ORTHO_RANKS_CACHE_KEY = '__ortho_ranks__'
 ALPHA_CACHE_KEY = '__alpha_cache__'
 
 
+def _set_rejected_fitness(individual: "GPIndividual") -> None:
+    individual.fitness = -np.inf
+    individual.ic_score = 0.0
+    individual.complexity_penalty = 0.0
+    individual.diversity_penalty = 0.0
+    individual.transaction_cost_penalty = 0.0
+    individual.orthogonalization_penalty = 0.0
+    individual.turnover_rate = 0.0
+
+
 def _pearson_corr(a: np.ndarray, b: np.ndarray) -> float:
     valid = np.isfinite(a) & np.isfinite(b)
     if np.count_nonzero(valid) < 2:
@@ -155,11 +165,51 @@ def _neutralize_cross_section(
     return residuals
 
 
+def _batch_neutralize_cross_section(
+    alpha_matrix: np.ndarray,
+    date_arr: np.ndarray,
+    neutralization_cache: Dict[Any, Tuple[np.ndarray, np.ndarray]],
+) -> np.ndarray:
+    residuals = np.asarray(alpha_matrix, dtype=np.float64).copy()
+    if residuals.ndim != 2 or residuals.size == 0:
+        return residuals
+
+    date_arr = np.asarray(date_arr)
+    for current_date in pd.unique(date_arr[pd.notna(date_arr)]):
+        cached = neutralization_cache.get(current_date)
+        if cached is None:
+            continue
+        mask = date_arr == current_date
+        if np.count_nonzero(mask) < 2:
+            continue
+        cached_valid, design = cached
+        if np.count_nonzero(cached_valid) < 2:
+            continue
+        alpha_slice = residuals[mask]
+        alpha_valid = alpha_slice[cached_valid]
+        try:
+            beta, _, rank, _ = np.linalg.lstsq(design, alpha_valid, rcond=None)
+        except np.linalg.LinAlgError:
+            continue
+        if rank < design.shape[1]:
+            continue
+        alpha_slice[cached_valid] = alpha_valid - design @ beta
+        alpha_slice[cached_valid] = np.where(
+            np.abs(alpha_slice[cached_valid]) < 1e-12,
+            0.0,
+            alpha_slice[cached_valid],
+        )
+        residuals[mask] = alpha_slice
+    return residuals
+
+
 def _compute_time_fold_ir(
     alpha: np.ndarray,
     target: np.ndarray,
     features: Dict[str, np.ndarray],
     config: "GPConfig",
+    *,
+    pre_neutralized: bool = False,
 ) -> float:
     t0 = time.perf_counter()
     date_arr = features.get('__date__')
@@ -190,7 +240,12 @@ def _compute_time_fold_ir(
                 continue
             if value_arr.ndim > 0 and len(value_arr) == len(date_arr):
                 fold_features[key] = value_arr[fold_mask]
-        if config.neutralize_size_sector and log_mcap_arr is not None and sector_arr is not None:
+        if (
+            config.neutralize_size_sector
+            and not pre_neutralized
+            and log_mcap_arr is not None
+            and sector_arr is not None
+        ):
             alpha_fold = _neutralize_cross_section(
                 alpha_fold,
                 fold_features.get('__log_market_cap__'),
@@ -260,6 +315,23 @@ def _chunked_average_ranks(
 def _evaluate_individual(ind, features, target, hof, config):
     ind.evaluate(features, target, hof, config)
     return ind
+
+
+def _prepare_individual_batch(ind, features):
+    try:
+        alpha_series = ind._execute_tree(ind.tree, features)
+        valid_fraction = float(np.mean(np.isfinite(alpha_series)))
+        if np.std(alpha_series) < 1e-6:
+            return ind, None, valid_fraction
+
+        lower = np.nanpercentile(alpha_series, 1)
+        upper = np.nanpercentile(alpha_series, 99)
+        alpha_series = np.clip(alpha_series, lower, upper)
+        alpha_series = (alpha_series - np.nanmean(alpha_series)) / (np.nanstd(alpha_series) + 1e-9)
+        alpha_series = np.nan_to_num(alpha_series, nan=0.0, posinf=0.0, neginf=0.0)
+        return ind, alpha_series, valid_fraction
+    except Exception:
+        return ind, None, 0.0
 
 
 
@@ -470,6 +542,7 @@ class GPConfig:
     tree_size_penalty_weight: float = 0.00025
     early_stopping_rounds: int = 10
     tournament_diversity_weight: float = 0.01
+    use_batch_neutralization: bool = True
 
     # Parallel evaluation (Phase 2.4)
     # n_jobs: number of parallel threads for population evaluation.
@@ -513,32 +586,54 @@ class GPIndividual:
     ) -> None:
         """Evaluate fitness of individual."""
         try:
-            # Execute expression tree
-            alpha_series = self._execute_tree(self.tree, features)
-
-            # Coverage: fraction of finite alpha values BEFORE any NaN
-            # scrubbing below. Operators that mask rows (e.g. a NaN-producing
-            # transform) shrink coverage; scaling IC by this fraction stops a
-            # high IC computed over a tiny valid subset from looking strong.
-            valid_fraction = float(np.mean(np.isfinite(alpha_series)))
-
-            # Variance guard: reject constant signals
-            if np.std(alpha_series) < 1e-6:
-                self.fitness = -np.inf
-                logger.debug(f"Rejected constant alpha")
+            prepared = self._prepare_alpha_series(features)
+            if prepared is None:
+                _set_rejected_fitness(self)
+                logger.debug("Rejected constant alpha")
                 return
-            
-            # Winsorization (1%-99% quantile clipping)
-            lower = np.nanpercentile(alpha_series, 1)
-            upper = np.nanpercentile(alpha_series, 99)
-            alpha_series = np.clip(alpha_series, lower, upper)
-            
-            # Z-score normalization
-            alpha_series = (alpha_series - np.nanmean(alpha_series)) / (np.nanstd(alpha_series) + 1e-9)
-            
-            # Handle inf/nan
-            alpha_series = np.nan_to_num(alpha_series, nan=0.0, posinf=0.0, neginf=0.0)
-            
+            alpha_series, valid_fraction = prepared
+            self._score_alpha_series(
+                alpha_series,
+                valid_fraction,
+                features,
+                target,
+                hall_of_fame,
+                config,
+            )
+        except Exception as e:
+            logger.debug(f"Fitness evaluation failed: {e}")
+            _set_rejected_fitness(self)
+
+    def _prepare_alpha_series(
+        self,
+        features: Dict[str, np.ndarray],
+    ) -> Optional[Tuple[np.ndarray, float]]:
+        alpha_series = self._execute_tree(self.tree, features)
+        valid_fraction = float(np.mean(np.isfinite(alpha_series)))
+        if np.std(alpha_series) < 1e-6:
+            return None
+
+        lower = np.nanpercentile(alpha_series, 1)
+        upper = np.nanpercentile(alpha_series, 99)
+        alpha_series = np.clip(alpha_series, lower, upper)
+        alpha_series = (alpha_series - np.nanmean(alpha_series)) / (np.nanstd(alpha_series) + 1e-9)
+        alpha_series = np.nan_to_num(alpha_series, nan=0.0, posinf=0.0, neginf=0.0)
+        return alpha_series, valid_fraction
+
+    def _score_alpha_series(
+        self,
+        alpha_series: np.ndarray,
+        valid_fraction: float,
+        features: Dict[str, np.ndarray],
+        target: np.ndarray,
+        hall_of_fame: List["GPIndividual"],
+        config: GPConfig,
+        *,
+        neutralized_alpha_series: Optional[np.ndarray] = None,
+    ) -> None:
+        try:
+            ic_alpha_series = alpha_series if neutralized_alpha_series is None else neutralized_alpha_series
+
             if getattr(config, 'use_fast_penalties', True):
                 valid_mask = pd.notna(target)
                 n_valid = int(np.count_nonzero(valid_mask))
@@ -548,11 +643,17 @@ class GPIndividual:
 
             # Observation threshold
             if n_valid < config.min_observations:
-                self.fitness = -np.inf
+                _set_rejected_fitness(self)
                 return
-            
+
             # Calculate IC (Spearman) — multi-target aware
-            ic = self._compute_combined_ic(alpha_series, target, features, config)
+            ic = self._compute_combined_ic(
+                ic_alpha_series,
+                target,
+                features,
+                config,
+                pre_neutralized=neutralized_alpha_series is not None,
+            )
             if np.isnan(ic):
                 ic = 0.0
 
@@ -676,17 +777,18 @@ class GPIndividual:
                 - self.transaction_cost_penalty
                 - self.orthogonalization_penalty
             )
-            
         except Exception as e:
             logger.debug(f"Fitness evaluation failed: {e}")
-            self.fitness = -np.inf
+            _set_rejected_fitness(self)
     
     def _compute_combined_ic(
         self,
         alpha_series: np.ndarray,
         target: np.ndarray,
         features: Dict[str, np.ndarray],
-        config: GPConfig
+        config: GPConfig,
+        *,
+        pre_neutralized: bool = False,
     ) -> float:
         """Compute IC, supporting multi-target horizons (Phase 2.2).
         
@@ -706,9 +808,15 @@ class GPIndividual:
             return float(ic_value) if not np.isnan(ic_value) else 0.0
 
         if getattr(config, 'use_time_fold_ir', False):
-            return _compute_time_fold_ir(alpha_series, target, features, config)
+            return _compute_time_fold_ir(
+                alpha_series,
+                target,
+                features,
+                config,
+                pre_neutralized=pre_neutralized,
+            )
 
-        if getattr(config, 'neutralize_size_sector', False):
+        if getattr(config, 'neutralize_size_sector', False) and not pre_neutralized:
             alpha_series = _neutralize_cross_section(
                 alpha_series,
                 features.get('__log_market_cap__'),
@@ -1273,17 +1381,23 @@ class GeneticEngine:
                 )
 
             if self.config.n_jobs == 1:
-                for individual in self.population:
-                    individual.evaluate(gen_features, gen_target, self.hall_of_fame, self.config)
+                if self._should_use_batch_neutralization(gen_features):
+                    self._evaluate_population_with_batch_neutralization(gen_features, gen_target)
+                else:
+                    for individual in self.population:
+                        individual.evaluate(gen_features, gen_target, self.hall_of_fame, self.config)
             else:
-                self.population = list(Parallel(
-                    n_jobs=self.config.n_jobs, batch_size='auto'
-                )(
-                    delayed(_evaluate_individual)(
-                        ind, gen_features, gen_target, self.hall_of_fame, self.config
-                    )
-                    for ind in self.population
-                ))
+                if self._should_use_batch_neutralization(gen_features):
+                    self._evaluate_population_with_batch_neutralization(gen_features, gen_target)
+                else:
+                    self.population = list(Parallel(
+                        n_jobs=self.config.n_jobs, batch_size='auto'
+                    )(
+                        delayed(_evaluate_individual)(
+                            ind, gen_features, gen_target, self.hall_of_fame, self.config
+                        )
+                        for ind in self.population
+                    ))
             
             self.population.sort(key=lambda ind: ind.fitness, reverse=True)
             self.update_hall_of_fame()
@@ -1330,3 +1444,59 @@ class GeneticEngine:
                 self._next_generation()
         
         return self.hall_of_fame
+
+    def _should_use_batch_neutralization(self, features: Dict[str, np.ndarray]) -> bool:
+        return bool(
+            getattr(self.config, 'use_batch_neutralization', True)
+            and self.config.neutralize_size_sector
+            and '__date__' in features
+            and '__log_market_cap__' in features
+            and '__sector__' in features
+            and NEUTRALIZATION_CACHE_KEY in features
+        )
+
+    def _evaluate_population_with_batch_neutralization(
+        self,
+        features: Dict[str, np.ndarray],
+        target: np.ndarray,
+    ) -> None:
+        if self.config.n_jobs == 1:
+            prepared_population = [_prepare_individual_batch(ind, features) for ind in self.population]
+        else:
+            prepared_population = list(Parallel(
+                n_jobs=self.config.n_jobs, batch_size='auto'
+            )(
+                delayed(_prepare_individual_batch)(ind, features)
+                for ind in self.population
+            ))
+
+        self.population = [ind for ind, _, _ in prepared_population]
+        prepared_alpha_rows = [alpha for _, alpha, _ in prepared_population if alpha is not None]
+        neutralized_rows: List[Optional[np.ndarray]] = [None] * len(prepared_population)
+        if prepared_alpha_rows:
+            alpha_matrix = np.column_stack(prepared_alpha_rows)
+            neutralized_matrix = _batch_neutralize_cross_section(
+                alpha_matrix,
+                np.asarray(features['__date__']),
+                features[NEUTRALIZATION_CACHE_KEY],
+            )
+            valid_col = 0
+            for idx, (_, alpha, _) in enumerate(prepared_population):
+                if alpha is None:
+                    continue
+                neutralized_rows[idx] = neutralized_matrix[:, valid_col]
+                valid_col += 1
+
+        for idx, (individual, alpha_series, valid_fraction) in enumerate(prepared_population):
+            if alpha_series is None:
+                _set_rejected_fitness(individual)
+                continue
+            individual._score_alpha_series(
+                alpha_series,
+                valid_fraction,
+                features,
+                target,
+                self.hall_of_fame,
+                self.config,
+                neutralized_alpha_series=neutralized_rows[idx],
+            )
