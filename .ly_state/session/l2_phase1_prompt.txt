@@ -1,0 +1,42 @@
+Role: Senior Backend Engineer (Role 9) on Tier 2 (OpenCode)
+
+Task: Split the god-file `src/omega/quant/ultimate_alpha_arsenal.py` into a modular package `src/omega/quant/alpha/`.
+
+Requirements:
+1. Split all alpha functions and support functions from `src/omega/quant/ultimate_alpha_arsenal.py` into the following files inside `src/omega/quant/alpha/`:
+   - `helpers.py`: Memory limits fallbacks (`limit_memory`, `assert_memory_safe`).
+   - `primitives.py`: Keep existing primitives (`_safe_divide`, `_round_to_board_lot`, `compute_returns`, `compute_rsi`).
+   - `momentum.py`: `compute_roc`, `compute_momentum_acceleration`, and momentum alphas.
+   - `volatility.py`: Volatility-related functions (`compute_atr_normalized`, `compute_historical_volatility`, `compute_downside_volatility`, `compute_parkinson_volatility`, `compute_garman_klass_volatility`, `compute_yang_zhang_volatility`).
+   - `liquidity.py`: Liquidity functions (`compute_volume_ma_ratio`, `compute_illiquidity_amihud`, `compute_adv`, `compute_zero_trade_frequency`, `compute_obv_change`, `compute_liquidity_quality_score`).
+   - `trend.py`: Trend distance functions.
+   - `price_action.py`: Price action functions.
+   - `mean_reversion.py`: Mean reversion functions (RSI crossover, Bollinger, snapback, close location, residual).
+   - `money_flow.py`: Money flow functions (`compute_sector_relative_momentum`).
+   - `vn_specific.py`: VN specific settlement and limit alphas.
+   - `microstructure.py`: Microstructure alphas (Kyle lambda, VPIN, signed volume, auction drift, roll spread).
+   - `correlation.py`: Correlation functions.
+   - `volume_profile.py`: VWAP/TWAP distance functions.
+   - `momentum_extensions.py`: Momentum extensions.
+   - `cross_sectional.py`: Cross sectional functions.
+   - `metadata.py`: Alpha names to categories and parameter registries.
+   - `arsenal.py`: The `compute_ultimate_alphas(df, alpha_groups=None)` function. Implement lazy imports based on the `alpha_groups` requested to optimize cold-import time.
+   - `__init__.py`: Package init. Implement lazy loading using `__getattr__` for sub-modules to optimize package cold start import speed.
+
+2. In `src/omega/quant/alpha/arsenal.py`, the function `compute_ultimate_alphas` must:
+   - Match the signature and behavior of the original function exactly.
+   - Support `alpha_groups: Optional[List[str]] = None`.
+   - Lazy load only the sub-modules needed for the requested groups.
+
+3. Update `src/omega/quant/ultimate_alpha_arsenal.py` to be a pure compatibility wrapper. It must:
+   - Expose the exact same public functions and constants as before.
+   - Import all functions from the new `alpha` package and re-export them.
+   - Print a warning when imported, but remain fully functional.
+
+4. Style & Safety:
+   - Do NOT introduce any new E501/W293 violations. Use multi-line statements and avoid trailing whitespaces.
+   - Ensure Point-in-Time (PIT) safety is fully preserved (using `.shift(1)` where applicable).
+   - No loop computation; keep all operations vectorized.
+
+Execution instructions:
+Read `src/omega/quant/ultimate_alpha_arsenal.py` and implement all the files under `src/omega/quant/alpha/`. Then, update `src/omega/quant/ultimate_alpha_arsenal.py` to re-export them. Run `pytest tests/quant_test_parity_arsenal.py` to verify correctness.

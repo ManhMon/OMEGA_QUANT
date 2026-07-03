@@ -1,0 +1,565 @@
+\U0001f4e6 Vnai 2.4.9 is available
+Current: 2.4.8 (Python 3.14)
+Update: pip install vnai --upgrade
+Release: https://pypi.org/project/vnai/#history
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+omega.quant.phase34_microstructure_alphas is deprecated; import from omega.quant.alpha.phase34 instead.
+Validation successful: All files present and accounted for in .ly_state/
+usage: run_phase35_backtest.py [-h] [--enable-xgboost] [--no-xgboost]
+                               [--enable-multi-model-ensemble]
+                               [--start-date START_DATE] [--end-date END_DATE]
+                               [--initial-capital INITIAL_CAPITAL]
+                               [--strategy STRATEGY]
+                               [--slippage-bps SLIPPAGE_BPS]
+                               [--commission-bps COMMISSION_BPS]
+                               [--quick-mode] [--n-folds N_FOLDS]
+                               [--train-years TRAIN_YEARS]
+                               [--test-years TEST_YEARS]
+                               [--top-n-symbols TOP_N_SYMBOLS]
+                               [--output-tag OUTPUT_TAG] [--drawdown-control]
+                               [--disable-drawdown-control]
+                               [--drawdown-threshold DRAWDOWN_THRESHOLD]
+                               [--drawdown-re-entry]
+                               [--drawdown-cooldown-days DRAWDOWN_COOLDOWN_DAYS]
+                               [--drawdown-no-hwm-reset]
+                               [--drawdown-adaptive-re-entry]
+                               [--drawdown-adaptive-bear-threshold DRAWDOWN_ADAPTIVE_BEAR_THRESHOLD]
+                               [--drawdown-adaptive-vol-window DRAWDOWN_ADAPTIVE_VOL_WINDOW]
+                               [--drawdown-adaptive-vol-multiplier DRAWDOWN_ADAPTIVE_VOL_MULTIPLIER]
+                               [--drawdown-adaptive-max-cooldown DRAWDOWN_ADAPTIVE_MAX_COOLDOWN]
+                               [--enable-evolved]
+                               [--evolved-blend-weight EVOLVED_BLEND_WEIGHT]
+                               [--multi-horizon-blend]
+                               [--blend-horizons BLEND_HORIZONS]
+                               [--blend-weight-method BLEND_WEIGHT_METHOD]
+                               [--p10-gate-mode {strict,relaxed}]
+                               [--p10-gate-min-pass P10_GATE_MIN_PASS]
+                               [--p10-gate-allow-fallback-candidates]
+                               [--enable-data-cleaning]
+                               [--disable-data-cleaning]
+                               [--normalization-mode {expanding_zscore,cross_sectional_zscore,rank,none}]
+                               [--risk-adjusted-alpha-selection]
+                               [--risk-adjusted-preset {balanced,alpha_recovery,drawdown_guarded,ic_first_guarded}]
+                               [--disable-risk-adjusted-portfolio-guard]
+                               [--risk-adjusted-portfolio-guard-tolerance RISK_ADJUSTED_PORTFOLIO_GUARD_TOLERANCE]
+                               [--research-pool-mode {full,recovery_only,recoverable_only}]
+                               [--enable-formulaic-alphas]
+                               [--formulaic-alpha-set {small,mean_reversion_liquidity,v3_pruned,v4_vn_extended}]
+                               [--formulaic-winner-guard]
+                               [--winner-alpha-filter]
+                               [--enable-regime-routing]
+                               [--regime-routing-min-train-days REGIME_ROUTING_MIN_TRAIN_DAYS]
+                               [--regime-routing-min-ic REGIME_ROUTING_MIN_IC]
+                               [--rolling-universe] [--dynamic-universe]
+                               [--dynamic-universe-lookback-days DYNAMIC_UNIVERSE_LOOKBACK_DAYS]
+                               [--dynamic-universe-rebalance-days DYNAMIC_UNIVERSE_REBALANCE_DAYS]
+                               [--dynamic-universe-top-n DYNAMIC_UNIVERSE_TOP_N]
+                               [--diversified-basket]
+                               [--basket-max-per-cluster BASKET_MAX_PER_CLUSTER]
+                               [--basket-corr-threshold BASKET_CORR_THRESHOLD]
+                               [--basket-redundancy-penalty BASKET_REDUNDANCY_PENALTY]
+                               [--basket-min-ic BASKET_MIN_IC]
+                               [--enable-nonredundant-alphas]
+                               [--nonredundant-alpha-set {v1,v1_pruned,v1_mrm_only,v1_mrm_range}]
+                               [--nonredundant-alpha-max-candidates NONREDUNDANT_ALPHA_MAX_CANDIDATES]
+                               [--enable-automated-oos-bundle]
+                               [--automated-oos-bundle-name AUTOMATED_OOS_BUNDLE_NAME]
+                               [--enable-auto-winner-guard-allowlist]
+                               [--enable-oos-stability-filter]
+                               [--stability-min-icir STABILITY_MIN_ICIR]
+                               [--stability-min-sign-consistency STABILITY_MIN_SIGN_CONSISTENCY]
+                               [--stability-decay-penalty-factor STABILITY_DECAY_PENALTY_FACTOR]
+                               [--enable-vn-specific-alphas]
+                               [--risk-sizing-overlay]
+                               [--risk-sizing-inverse-vol]
+                               [--risk-sizing-inverse-vol-window RISK_SIZING_INVERSE_VOL_WINDOW]
+                               [--risk-sizing-inverse-vol-floor RISK_SIZING_INVERSE_VOL_FLOOR]
+                               [--risk-sizing-confidence]
+                               [--risk-sizing-confidence-window RISK_SIZING_CONFIDENCE_WINDOW]
+                               [--risk-sizing-confidence-min-ic RISK_SIZING_CONFIDENCE_MIN_IC]
+                               [--risk-sizing-confidence-max-scale RISK_SIZING_CONFIDENCE_MAX_SCALE]
+                               [--risk-sizing-confidence-min-scale RISK_SIZING_CONFIDENCE_MIN_SCALE]
+                               [--risk-sizing-regime]
+                               [--risk-sizing-regime-scale RISK_SIZING_REGIME_SCALE]
+                               [--risk-sizing-regime-ma-window RISK_SIZING_REGIME_MA_WINDOW]
+                               [--risk-sizing-regime-vol-window RISK_SIZING_REGIME_VOL_WINDOW]
+                               [--risk-sizing-regime-vol-median-window RISK_SIZING_REGIME_VOL_MEDIAN_WINDOW]
+                               [--risk-sizing-regime-window RISK_SIZING_REGIME_WINDOW]
+                               [--risk-sizing-regime-mode {heuristic,hmm}]
+                               [--risk-sizing-regime-auto-optimize]
+                               [--risk-sizing-regime-refit-stride RISK_SIZING_REGIME_REFIT_STRIDE]
+                               [--enable-latent-alphas]
+                               [--latent-alpha-path LATENT_ALPHA_PATH]
+                               [--latent-alpha-top-n LATENT_ALPHA_TOP_N]
+                               [--latent-alpha-min-ir LATENT_ALPHA_MIN_IR]
+
+Run Phase 3.5 walk-forward backtest
+
+options:
+  -h, --help            show this help message and exit
+  --enable-xgboost      GATE DISABLE_XGBOOST_DEFAULT_RESEARCH_MODE_20260615:
+                        Opt-in to XGBoost research signal path. XGBoost is
+                        DISABLED by default because E2E A/B evidence showed it
+                        degrades signal quality (PortfolioIC 0.0157 vs 0.0344
+                        baseline). Use this flag only for research
+                        experimentation.
+  --no-xgboost          DEPRECATED (no-op). XGBoost is now disabled by default
+                        per GATE
+                        DISABLE_XGBOOST_DEFAULT_RESEARCH_MODE_20260615. This
+                        flag is preserved for backward compatibility and has
+                        no effect.
+  --enable-multi-model-ensemble
+                        GATE MULTI_MODEL_ML_ENSEMBLE_20260616: Opt-in PIT-safe
+                        ensemble using XGBoost, LightGBM, RandomForest, and
+                        Ridge. Disabled by default.
+  --start-date START_DATE
+                        Start date for data loading
+  --end-date END_DATE   End date for data loading
+  --initial-capital INITIAL_CAPITAL
+                        Initial capital in VND
+  --strategy STRATEGY   Trading strategy
+  --slippage-bps SLIPPAGE_BPS
+                        Slippage in basis points
+  --commission-bps COMMISSION_BPS
+                        Commission in basis points
+  --quick-mode          Run quickly with 1 symbol, 2 folds, 1 train year, 1
+                        test year
+  --n-folds N_FOLDS     CPCV_FOLD_EXPANSION_20260614: Number of walk-forward
+                        folds (default: 8, quick-mode: 2)
+  --train-years TRAIN_YEARS
+                        CPCV_FOLD_EXPANSION_20260614: Training window in years
+                        (default: 3, quick-mode: 1)
+  --test-years TEST_YEARS
+                        CPCV_FOLD_EXPANSION_20260614: Test window in years
+                        (default: 1, quick-mode: 1)
+  --top-n-symbols TOP_N_SYMBOLS
+                        CPCV_FOLD_EXPANSION_20260614: Number of top symbols to
+                        use (default: 30, quick-mode: 1)
+  --output-tag OUTPUT_TAG
+                        CPCV_FOLD_EXPANSION_20260614: Tag appended to output
+                        filenames to avoid overwrite (e.g. cpcv_smoke)
+  --drawdown-control    DEPRECATED (no-op). Drawdown control is now ENABLED by
+                        default per GATE
+                        DRAWDOWN_CONTROL_DEFAULT_RESEARCH_MODE_20260615. This
+                        flag is preserved for backward compatibility as an
+                        explicit enable and has no effect. Use --disable-
+                        drawdown-control to opt out.
+  --disable-drawdown-control
+                        GATE DRAWDOWN_CONTROL_DEFAULT_RESEARCH_MODE_20260615:
+                        Opt-out flag. Disables active drawdown control stop-
+                        out. Drawdown control is ENABLED by default because
+                        E2E risk-layer evidence showed MaxDD improved from
+                        -66.99% to -12.34% without reducing IC (PortfolioIC
+                        0.0344 preserved, Sharpe 2.33 to 3.16). Use this flag
+                        only to reproduce uncontrolled baselines.
+  --drawdown-threshold DRAWDOWN_THRESHOLD
+                        GATE DRAWDOWN_CONTROL_DEFAULT_RESEARCH_MODE_20260615:
+                        Drawdown threshold (e.g. 0.10 for 10 pct). Default
+                        changed from 0.05 to 0.10 based on E2E risk-layer
+                        diagnostic evidence.
+  --drawdown-re-entry   GATE STAGE6_3_DRAWDOWN_RE_ENTRY_20260616: Enable
+                        stateful drawdown re-entry after stop-out. After
+                        cooldown_days in cash, the strategy re-enters with
+                        optional HWM reset. Default disabled (permanent stop-
+                        out on breach). Research-only, opt-in.
+  --drawdown-cooldown-days DRAWDOWN_COOLDOWN_DAYS
+                        GATE STAGE6_3_DRAWDOWN_RE_ENTRY_20260616: Number of
+                        trading days to stay in cash after a drawdown stop-out
+                        before re-entering the strategy. Default 5. Ignored
+                        when --drawdown-re-entry is not set.
+  --drawdown-no-hwm-reset
+                        GATE STAGE6_3_DRAWDOWN_RE_ENTRY_20260616: Disable HWM
+                        reset on re-entry. By default, HWM is reset to current
+                        NAV after re-entry (prevents repeated stop-outs from
+                        the same HWM). Use this flag to keep the original HWM
+                        (stricter control).
+  --drawdown-adaptive-re-entry
+                        GATE STAGE6_3_DRAWDOWN_ADAPTIVE_RE_ENTRY_20260616:
+                        Enable adaptive drawdown re-entry using HMM bear
+                        probability and trailing volatility. Cooldown is
+                        extended when p_bear is high or volatility is
+                        elevated, and shortened when regime conditions
+                        improve. Requires --drawdown-re-entry and --risk-
+                        sizing-overlay with HMM mode for full effect.
+                        Research-only, opt-in, default disabled.
+  --drawdown-adaptive-bear-threshold DRAWDOWN_ADAPTIVE_BEAR_THRESHOLD
+                        GATE STAGE6_3_DRAWDOWN_ADAPTIVE_RE_ENTRY_20260616: HMM
+                        bear probability threshold for adaptive cooldown. When
+                        p_bear >= threshold, cooldown is extended. Default
+                        0.5.
+  --drawdown-adaptive-vol-window DRAWDOWN_ADAPTIVE_VOL_WINDOW
+                        GATE STAGE6_3_DRAWDOWN_ADAPTIVE_RE_ENTRY_20260616:
+                        Trailing window (days) for realized volatility in
+                        adaptive cooldown. Default 20.
+  --drawdown-adaptive-vol-multiplier DRAWDOWN_ADAPTIVE_VOL_MULTIPLIER
+                        GATE STAGE6_3_DRAWDOWN_ADAPTIVE_RE_ENTRY_20260616:
+                        Volatility ratio threshold for extending cooldown.
+                        When current vol / baseline vol >= multiplier,
+                        cooldown is extended. Default 1.5.
+  --drawdown-adaptive-max-cooldown DRAWDOWN_ADAPTIVE_MAX_COOLDOWN
+                        GATE STAGE6_3_DRAWDOWN_ADAPTIVE_RE_ENTRY_20260616:
+                        Maximum adaptive cooldown days cap. Prevents infinite
+                        cooldown extension. Default 20.
+  --enable-evolved      Enable inline GP evolution per fold and blend evolved
+                        signal with hand-crafted alphas
+  --evolved-blend-weight EVOLVED_BLEND_WEIGHT
+                        Weight of evolved signal in blend (0-1), remainder is
+                        hand-crafted (default: 0.5)
+  --multi-horizon-blend
+                        P10: Enable multi-horizon signal blending (T+1, T+3,
+                        T+5)
+  --blend-horizons BLEND_HORIZONS
+                        P10: Comma-separated list of horizons to blend
+                        (default: 1,3,5)
+  --blend-weight-method BLEND_WEIGHT_METHOD
+                        P10: Method for computing blend weights (validation_ic
+                        or train_ic, default: validation_ic)
+  --p10-gate-mode {strict,relaxed}
+                        P10 Gate Tuning: gate policy mode (strict or relaxed,
+                        default: strict)
+  --p10-gate-min-pass P10_GATE_MIN_PASS
+                        P10 Gate Tuning: minimum gate passes required for
+                        horizon eligibility in relaxed mode (default: 1)
+  --p10-gate-allow-fallback-candidates
+                        P10 Gate Tuning: allow horizons with non-empty
+                        top_alphas to proceed even if gate passes < min_pass
+                        (relaxed mode only)
+  --enable-data-cleaning
+                        P11 (DEPRECATED, kept for backward compat):
+                        DataSanitizer cleaning is now DEFAULT-ON per GATE
+                        DEFAULT_DATA_HYGIENE_NORMALIZATION_20260614. This flag
+                        has no effect. Use --disable-data-cleaning to opt out.
+  --disable-data-cleaning
+                        GATE DEFAULT_DATA_HYGIENE_NORMALIZATION_20260614: Opt-
+                        out flag. Disables DataSanitizer cleaning (default is
+                        ON). Backward-compatible: old scripts without this
+                        flag get cleaning.
+  --normalization-mode {expanding_zscore,cross_sectional_zscore,rank,none}
+                        GATE DEFAULT_DATA_HYGIENE_NORMALIZATION_20260614:
+                        Normalization mode applied to OHLCV columns. Raw OHLCV
+                        always preserved. 'expanding_zscore' (default): per-
+                        symbol causal expanding-window z-score.
+                        'cross_sectional_zscore': per-date cross-sectional
+                        z-score. 'rank': per-date cross-sectional rank [-1,1].
+                        'none': no normalization. All modes are PIT-safe (no
+                        look-ahead).
+  --risk-adjusted-alpha-selection
+                        GATE RISK_ADJUSTED_ALPHA_SELECTION_20260614: Use
+                        composite risk-adjusted scoring for alpha selection
+                        (opt-in, default disabled). Uses only train/val
+                        embargoed data, paper-trading-only boundary.
+  --risk-adjusted-preset {balanced,alpha_recovery,drawdown_guarded,ic_first_guarded}
+                        GATE RISK_ADJUSTED_ALPHA_TUNING_20260614: Weight
+                        preset for risk-adjusted composite scoring. Choices:
+                        balanced (default, backward-compatible),
+                        alpha_recovery (emphasises IC/Sharpe recovery),
+                        drawdown_guarded (emphasises drawdown/turnover
+                        protection), ic_first_guarded (IC-first guarded
+                        tuning: prioritises validation IC and IC stability
+                        with risk penalties as soft tie-breakers). Ignored
+                        when --risk-adjusted-alpha-selection is not set.
+  --disable-risk-adjusted-portfolio-guard
+                        GATE RISK_ADJUSTED_PORTFOLIO_GUARD_FIX1_20260614:
+                        Explicitly disable portfolio guard even when --risk-
+                        adjusted-alpha-selection is set. By default, the guard
+                        is auto-enabled whenever --risk-adjusted-alpha-
+                        selection is active.
+  --risk-adjusted-portfolio-guard-tolerance RISK_ADJUSTED_PORTFOLIO_GUARD_TOLERANCE
+                        GATE RISK_ADJUSTED_PORTFOLIO_GUARD_FIX1_20260614:
+                        Maximum allowed IC underperformance vs baseline
+                        (absolute) before guard triggers fallback. Default
+                        0.005. Ignored when guard is disabled.
+  --research-pool-mode {full,recovery_only,recoverable_only}
+                        GATE RECOVERY_SELECTOR_PHASE35_WIRING_20260614:
+                        Research-only recovery pool selector mode. 'full'
+                        (default) uses all alphas unchanged. 'recovery_only'
+                        excludes CONFIRMED_RETIRE alphas. 'recoverable_only'
+                        keeps only RECOVERABLE alphas. Default 'full'
+                        preserves backward compatibility — no live/default
+                        behavior change. Recovery diagnostics computed post-
+                        hoc from OOS fold ICs (PIT-safe).
+  --enable-formulaic-alphas
+                        GATE FORMULAIC_ALPHA_ADAPTER_20260614: Enable
+                        Kakushadze-inspired formulaic alpha adapter. Research-
+                        only, opt-in, default disabled. Adds PIT-safe
+                        formulaic alpha columns to the alpha pool. No
+                        live/default behavior change when disabled.
+  --formulaic-alpha-set {small,mean_reversion_liquidity,v3_pruned,v4_vn_extended}
+                        GATE FORMULAIC_ALPHA_ADAPTER_20260614 /
+                        FORMULAIC_ALPHA_V2_20260614 /
+                        FORMULAIC_ALPHA_V3_PRUNE_20260614 /
+                        FORMULAIC_ALPHA_V4_EXTENDED_20260616: Which formulaic
+                        alpha set to compute. 'small' (default, v1, 5
+                        candidates) or 'mean_reversion_liquidity' (v2, 8
+                        candidates, excludes weak momentum) or 'v3_pruned'
+                        (v3, 5 candidates, prunes negative-IC v2 candidates:
+                        amihud, range_compression, vol_vol_interact) or
+                        'v4_vn_extended' (v4, 7 candidates, extends v3_pruned
+                        with 2 new VN microstructure/liquidity alphas:
+                        fml090_vn_liquidity_momentum,
+                        fml091_vn_hl_spread_reversal). Ignored when --enable-
+                        formulaic-alphas is not set.
+  --formulaic-winner-guard
+                        GATE FORMULAIC_WINNER_SELECTION_GUARD_20260614: Enable
+                        research-only formulaic winner selection guard. When
+                        enabled, constrains alpha selection and fallback
+                        candidate pool to the formulaic winner allowlist
+                        (strong positive-IC candidates). Prevents negative
+                        legacy alphas from entering fallback. PIT-safe: uses
+                        only current-fold train/validation IC. Opt-in, default
+                        disabled — no live/default behavior change.
+  --winner-alpha-filter
+                        GATE FORMULAIC_WINNER_SELECTION_GUARD_20260614: Alias
+                        for --formulaic-winner-guard. If either flag is set,
+                        the winner guard is enabled.
+  --enable-regime-routing
+                        GATE REGIME_CONDITIONED_ALPHA_ROUTING_20260615: Enable
+                        research-only ex-ante regime-conditioned alpha
+                        routing. Builds deterministic regimes from lagged/PIT-
+                        safe market features, estimates per-regime IC on train
+                        window only, and routes/scales alpha signals on test
+                        using ex-ante regime labels. Never uses test returns
+                        for routing decisions. Opt-in, default disabled — no
+                        live/default behavior change.
+  --regime-routing-min-train-days REGIME_ROUTING_MIN_TRAIN_DAYS
+                        GATE REGIME_CONDITIONED_ALPHA_ROUTING_20260615:
+                        Minimum number of training days with regime labels
+                        required to enable routing. If fewer days available,
+                        falls back to baseline. Default 60.
+  --regime-routing-min-ic REGIME_ROUTING_MIN_IC
+                        GATE REGIME_CONDITIONED_ALPHA_ROUTING_20260615:
+                        Minimum absolute per-regime IC required to apply
+                        regime routing scale. Below this threshold, falls back
+                        to baseline (scale=1.0). Default 0.01.
+  --rolling-universe    GATE PIT_ROLLING_UNIVERSE_AND_VECTOR_DIMS_20260615:
+                        Enable PIT-safe rolling universe selection. For each
+                        fold, selects top N symbols using ONLY train_df based
+                        on mean daily value (close*volume), ADTV>=5B, avg
+                        close>=5000, min history. Filters both train and test
+                        to selected symbols. Opt-in, default disabled — static
+                        universe preserved.
+  --dynamic-universe    GATE DYNAMIC_REBALANCE_UNIVERSE_20260615: Enable PIT-
+                        safe per-rebalance dynamic universe selection. For
+                        each rebalance date, selects top-N symbols using
+                        trailing lookback window ending BEFORE the rebalance
+                        date. Filters: ADTV>=5B VND, avg close>=5000 VND, min
+                        history. Opt-in, default disabled.
+  --dynamic-universe-lookback-days DYNAMIC_UNIVERSE_LOOKBACK_DAYS
+                        GATE DYNAMIC_REBALANCE_UNIVERSE_20260615: Trailing
+                        lookback window in calendar days for universe
+                        selection statistics. Default 252 (~1 year).
+  --dynamic-universe-rebalance-days DYNAMIC_UNIVERSE_REBALANCE_DAYS
+                        GATE DYNAMIC_REBALANCE_UNIVERSE_20260615: Rebalance
+                        cadence in calendar days for dynamic universe
+                        selection. Default 21 (~1 month).
+  --dynamic-universe-top-n DYNAMIC_UNIVERSE_TOP_N
+                        GATE DYNAMIC_REBALANCE_UNIVERSE_20260615: Number of
+                        top symbols per rebalance. Defaults to --top-n-symbols
+                        value (typically 30) when not specified.
+  --diversified-basket  GATE DYNAMIC_UNIVERSE_DIVERSIFIED_BASKET_20260615:
+                        Enable opt-in diversified alpha basket mode. Selects
+                        non-redundant basket by train IC/ICIR + pairwise
+                        correlation/cluster. Max N alphas per cluster,
+                        correlation penalty, fallback safe basket if no pass.
+                        Train-only evidence; no OOS/test metrics available to
+                        selector. Default disabled.
+  --basket-max-per-cluster BASKET_MAX_PER_CLUSTER
+                        GATE DYNAMIC_UNIVERSE_DIVERSIFIED_BASKET_20260615:
+                        Maximum alphas per correlation cluster in diversified
+                        basket (default 2).
+  --basket-corr-threshold BASKET_CORR_THRESHOLD
+                        GATE DYNAMIC_UNIVERSE_DIVERSIFIED_BASKET_20260615:
+                        Absolute correlation threshold for clustering. |corr|
+                        >= threshold places alphas in same cluster (default
+                        0.70).
+  --basket-redundancy-penalty BASKET_REDUNDANCY_PENALTY
+                        GATE DYNAMIC_UNIVERSE_DIVERSIFIED_BASKET_20260615:
+                        Redundancy penalty weight for correlated selected
+                        alphas. Applied when |corr| > threshold/2 (default
+                        0.3).
+  --basket-min-ic BASKET_MIN_IC
+                        GATE DYNAMIC_UNIVERSE_DIVERSIFIED_BASKET_20260615:
+                        Minimum absolute train IC for a candidate to enter the
+                        diversified basket selector (default 0.0).
+  --enable-nonredundant-alphas
+                        GATE NONREDUNDANT_ALPHA_GENERATION_DYNAMIC_20260615:
+                        Enable opt-in nonredundant alpha family set v1. Adds
+                        10 PIT-safe trailing-window alpha candidates from 5
+                        families: liquidity shock reversal, range
+                        pressure/CLV, volatility compression breakout,
+                        sector/market-relative residual momentum/reversal, and
+                        breadth-conditioned reversal. Default disabled — no
+                        live/default behavior change when disabled.
+  --nonredundant-alpha-set {v1,v1_pruned,v1_mrm_only,v1_mrm_range}
+                        GATE NONREDUNDANT_ALPHA_V1_PRUNED_DYNAMIC_20260615 /
+                        NONREDUNDANT_ALPHA_FOCUSED_OVERLAY_DYNAMIC_20260615:
+                        Which nonredundant alpha set to compute. 'v1' (10
+                        candidates from 5 families) or 'v1_pruned' (5
+                        positive-evidence candidates:
+                        market_relative_momentum_20,
+                        range_pressure_momentum_20, liq_shock_reversal_10,
+                        close_location_value_10, vol_breakout_directional_10)
+                        or 'v1_mrm_only' (1 candidate:
+                        market_relative_momentum_20 — focused overlay) or
+                        'v1_mrm_range' (2 candidates:
+                        market_relative_momentum_20 +
+                        range_pressure_momentum_20 — focused overlay). Ignored
+                        when --enable-nonredundant-alphas is not set.
+  --nonredundant-alpha-max-candidates NONREDUNDANT_ALPHA_MAX_CANDIDATES
+                        GATE NONREDUNDANT_ALPHA_GENERATION_DYNAMIC_20260615:
+                        Maximum number of nonredundant alpha candidates to
+                        compute. If None, computes all alphas in the set.
+                        Ignored when --enable-nonredundant-alphas is not set.
+  --enable-automated-oos-bundle
+                        GATE AUTOMATED_ALPHA_PHASE35_OOS_DYNAMIC_20260615:
+                        Enable research-only Phase35 OOS wiring for the
+                        approved top automated alpha bundle. Injects the pre-
+                        approved bundle auto_top5_real_ic_20260615
+                        (auto_rsi_14, auto_mr_zscore_20, auto_mom_ret_60,
+                        auto_mom_ret_20, auto_vol_std_ratio_10_30) as
+                        additional alpha columns. PIT-safe: all signals are
+                        T-1 lagged. Default disabled — no live/default
+                        behavior change.
+  --automated-oos-bundle-name AUTOMATED_OOS_BUNDLE_NAME
+                        GATE AUTOMATED_ALPHA_PHASE35_OOS_DYNAMIC_20260615:
+                        Name of the approved bundle to inject. Currently only
+                        'auto_top5_real_ic_20260615' is available. Ignored
+                        when --enable-automated-oos-bundle is not set.
+  --enable-auto-winner-guard-allowlist
+                        GATE
+                        AUTOMATED_ALPHA_OOS_WINNER_GUARD_ALLOWLIST_20260615:
+                        Extend the formulaic winner guard allowlist to include
+                        auto bundle alpha names (auto_rsi_14,
+                        auto_mr_zscore_20, auto_mom_ret_60, auto_mom_ret_20,
+                        auto_vol_std_ratio_10_30). Prevents the winner guard
+                        from blocking auto bundle alphas that have positive
+                        train-only IC evidence. Requires both --formulaic-
+                        winner-guard and --enable-automated-oos-bundle.
+                        Research-only, opt-in, default disabled — no
+                        live/default behavior change when disabled.
+  --enable-oos-stability-filter
+                        GATE AUTO_ALPHA_OOS_STABILITY_FILTER_20260616: Enable
+                        PIT-safe OOS stability filter for auto-alpha bundle.
+                        Uses ONLY train/in-fold pre-OOS evidence: IC sign
+                        consistency, ICIR threshold, IC decay penalty. Never
+                        uses OOS/test labels or current-bar data. Research-
+                        only, opt-in, default disabled — no live/default
+                        behavior change.
+  --stability-min-icir STABILITY_MIN_ICIR
+                        GATE AUTO_ALPHA_OOS_STABILITY_FILTER_20260616: Minimum
+                        absolute ICIR for alpha to pass stability filter.
+                        Default 0.15.
+  --stability-min-sign-consistency STABILITY_MIN_SIGN_CONSISTENCY
+                        GATE AUTO_ALPHA_OOS_STABILITY_FILTER_20260616: Minimum
+                        IC sign consistency (fraction of sub-windows matching
+                        overall IC sign) for alpha to pass. Default 0.55.
+  --stability-decay-penalty-factor STABILITY_DECAY_PENALTY_FACTOR
+                        GATE AUTO_ALPHA_OOS_STABILITY_FILTER_20260616: Penalty
+                        factor applied when IC decay ratio is negative (recent
+                        IC opposite sign to oldest IC). Higher values impose
+                        stricter decay filtering. Default 1.0.
+  --enable-vn-specific-alphas
+                        Enable VN-specific alphas in the backtest (opt-in,
+                        default disabled)
+  --risk-sizing-overlay
+                        GATE BASELINE_RISK_SIZING_OPTIMIZATION_20260616:
+                        Enable research-only opt-in risk/sizing overlay. Two
+                        sub-features: inverse-vol sizing (weight by
+                        1/realized_vol) and confidence scaling (scale exposure
+                        by rolling IC). Both PIT-safe, trailing-data only.
+                        Default disabled — no live/default behavior change.
+  --risk-sizing-inverse-vol
+                        GATE BASELINE_RISK_SIZING_OPTIMIZATION_20260616:
+                        Enable inverse-volatility sizing within the risk
+                        overlay. Replaces equal-weight with 1/realized_vol
+                        weights. Requires --risk-sizing-overlay.
+  --risk-sizing-inverse-vol-window RISK_SIZING_INVERSE_VOL_WINDOW
+                        GATE BASELINE_RISK_SIZING_OPTIMIZATION_20260616:
+                        Trailing window (days) for realized volatility
+                        estimation. Default 20.
+  --risk-sizing-inverse-vol-floor RISK_SIZING_INVERSE_VOL_FLOOR
+                        GATE BASELINE_RISK_SIZING_OPTIMIZATION_20260616:
+                        Minimum weight fraction (prevents degenerate zero-vol
+                        weights). Default 0.3.
+  --risk-sizing-confidence
+                        GATE BASELINE_RISK_SIZING_OPTIMIZATION_20260616:
+                        Enable confidence scaling within the risk overlay.
+                        Scales total gross exposure by rolling signal IC
+                        strength. Requires --risk-sizing-overlay.
+  --risk-sizing-confidence-window RISK_SIZING_CONFIDENCE_WINDOW
+                        GATE BASELINE_RISK_SIZING_OPTIMIZATION_20260616:
+                        Trailing window (days) for rolling IC estimation.
+                        Default 60.
+  --risk-sizing-confidence-min-ic RISK_SIZING_CONFIDENCE_MIN_IC
+                        GATE BASELINE_RISK_SIZING_OPTIMIZATION_20260616:
+                        Minimum absolute IC for full exposure. Below this,
+                        scale down. Default 0.01.
+  --risk-sizing-confidence-max-scale RISK_SIZING_CONFIDENCE_MAX_SCALE
+                        GATE BASELINE_RISK_SIZING_OPTIMIZATION_20260616:
+                        Maximum exposure scale (cap upside leverage). Default
+                        1.2.
+  --risk-sizing-confidence-min-scale RISK_SIZING_CONFIDENCE_MIN_SCALE
+                        GATE BASELINE_RISK_SIZING_OPTIMIZATION_20260616:
+                        Minimum exposure scale (never fully de-risk to zero).
+                        Default 0.3.
+  --risk-sizing-regime  GATE REGIME_CONDITIONAL_SIZING_20260616: Enable
+                        regime-conditional sizing within the risk overlay.
+                        Detects Bear/Neutral/Bull regimes from PIT-safe
+                        trailing market proxy data and scales exposure in Bear
+                        regime. Requires --risk-sizing-overlay. Default
+                        disabled.
+  --risk-sizing-regime-scale RISK_SIZING_REGIME_SCALE
+                        GATE REGIME_CONDITIONAL_SIZING_20260616: Exposure
+                        scale applied in Bear regime (default 0.5 = 50%
+                        exposure). Must be in (0, 1].
+  --risk-sizing-regime-ma-window RISK_SIZING_REGIME_MA_WINDOW
+                        GATE REGIME_CONDITIONAL_SIZING_20260616: Moving-
+                        average window for market proxy trend detection
+                        (default 200).
+  --risk-sizing-regime-vol-window RISK_SIZING_REGIME_VOL_WINDOW
+                        GATE REGIME_CONDITIONAL_SIZING_20260616: Rolling std
+                        window for market proxy volatility (default 20).
+  --risk-sizing-regime-vol-median-window RISK_SIZING_REGIME_VOL_MEDIAN_WINDOW
+                        GATE REGIME_CONDITIONAL_SIZING_20260616: Rolling
+                        median window for adaptive vol threshold (default 60).
+  --risk-sizing-regime-window RISK_SIZING_REGIME_WINDOW
+                        GATE REGIME_CONDITIONAL_SIZING_20260616: Trailing
+                        window (days) for HMM fitting on market returns
+                        (default 200).
+  --risk-sizing-regime-mode {heuristic,hmm}
+                        GATE REGIME_CONDITIONAL_SIZING_20260616: Regime
+                        detection mode. 'heuristic' (MA/vol, default) or 'hmm'
+                        (3-state Gaussian HMM with Baum-Welch EM).
+  --risk-sizing-regime-auto-optimize
+                        GATE REGIME_CONDITIONAL_SIZING_20260616: Auto-optimize
+                        regime_sizing_scale by grid-searching on train data to
+                        maximize Sharpe ratio. Overrides --risk-sizing-regime-
+                        scale.
+  --risk-sizing-regime-refit-stride RISK_SIZING_REGIME_REFIT_STRIDE
+                        GATE REGIME_CONDITIONAL_SIZING_20260616: Refit HMM
+                        only every N days during walk-forward OOS. Between
+                        refits, cached parameters are used for inference only.
+                        Must be >= 1. Default 5.
+  --enable-latent-alphas
+                        GATE LATENT_ALPHA_MINING_64D_20260617: Enable
+                        research-only latent alpha injection from PCA/ICA
+                        decomposition of the 64D feature space. Loads pre-
+                        computed latent components from
+                        data/latent_alphas_components.parquet and merges into
+                        the backtest dataframe. PIT-safe: model fit on train-
+                        only, projections frozen. Default disabled — no
+                        live/default behavior change.
+  --latent-alpha-path LATENT_ALPHA_PATH
+                        GATE LATENT_ALPHA_MINING_64D_20260617: Override path
+                        to latent alpha components parquet. Default:
+                        data/latent_alphas_components.parquet.
+  --latent-alpha-top-n LATENT_ALPHA_TOP_N
+                        GATE LATENT_ALPHA_MINING_64D_20260617: Inject only the
+                        top-N latent components ranked by OOS |IR| from the
+                        metrics JSON. Default: inject all components.
+  --latent-alpha-min-ir LATENT_ALPHA_MIN_IR
+                        GATE LATENT_ALPHA_MINING_64D_20260617: Minimum
+                        absolute OOS IR for a latent component to be injected.
+                        Default 0.3 (matches quant-research skill IR gate).

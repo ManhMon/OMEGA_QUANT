@@ -1,0 +1,98 @@
+{
+  "date": "2026-06-26",
+  "generated_at": "2026-07-01T01:43:28.614839",
+  "gate": "STRONG_ALPHAS_INTEGRATION_20260618",
+  "alpha_sources": {
+    "legacy_alt": 10,
+    "alt_data": 4,
+    "vn_specific_active": 25,
+    "latent_ae_active": 3,
+    "llm_active": 0,
+    "total_signal_candidates": 42
+  },
+  "regime": {
+    "state": "SIDEWAYS",
+    "confidence": 0.7,
+    "exposure": 0.8,
+    "signals": {
+      "ma_cross": -0.0048,
+      "vol_ratio": 0.8523,
+      "drawdown": -0.1057,
+      "momentum_20d": -0.0241
+    }
+  },
+  "hrp_weights": {
+    "distance_from_ma20": 0.0292,
+    "clv_ma": 0.0321,
+    "vp_divergence": 0.016,
+    "momentum_accel": 0.03,
+    "realized_vol_5": 0.0282,
+    "clv": 0.0152,
+    "gap": 0.0328,
+    "volume_trend": 0.0139,
+    "volume_momentum": 0.0291,
+    "cs_rank_ret20": 0.0319,
+    "foreign_flow_ma5": 0.0155,
+    "margin_trend": 0.0305,
+    "rotation_momentum": 0.0303,
+    "order_imbalance": 0.0148,
+    "alpha_vn_amihud_liq_reversal": 0.0313,
+    "alpha_vn_illiq_regime_penalty": 0.0318,
+    "alpha_vn_volume_shock_reversal": 0.0348,
+    "alpha_vn_turnover_exhaustion": 0.0342,
+    "alpha_vn_bollinger_snapback": 0.0164,
+    "alpha_vn_rsi_divergence_reversal": 0.0329,
+    "alpha_vn_sector_neutral_residual_reversion": 0.03,
+    "alpha_vn_close_location_reversion": 0.0303,
+    "alpha_vn_limit_lock_continuation": 0.0317,
+    "alpha_limit_lock_streak": 0.0322,
+    "alpha_t2_momentum_adj": 0.0329,
+    "alpha_smart_money_lite": 0.0292,
+    "alpha_vn_limit_unlock_exhaustion": 0.0324,
+    "alpha_vn_t2_settlement_supply_overhang": 0.034,
+    "alpha_vn_t2_cash_recycling_bounce": 0.0301,
+    "alpha_vn_001_post_settlement_momentum": 0.0157,
+    "alpha_vn_002_limit_band_reversion": 0.0333,
+    "alpha_vn_004_intraday_persistence": 0.0293,
+    "alpha_vn_t2_momentum_diff": 0.0329,
+    "latent_ae_00": 0.0305,
+    "latent_ae_01": 0.0164,
+    "latent_ae_11": 0.028
+  },
+  "universe_size": 50,
+  "positions": {
+    "NVL": {
+      "weight": 0.0797,
+      "shares": 12600,
+      "price": 12650.0,
+      "value_vnd": 159390000.0
+    },
+    "VRE": {
+      "weight": 0.0755,
+      "shares": 5100,
+      "price": 29600.0,
+      "value_vnd": 150960000.0
+    },
+    "PVD": {
+      "weight": 0.0474,
+      "shares": 3000,
+      "price": 31600.0,
+      "value_vnd": 94800000.0
+    },
+    "PVS": {
+      "weight": 0.0418,
+      "shares": 2200,
+      "price": 38000.0,
+      "value_vnd": 83600000.0
+    },
+    "CII": {
+      "weight": 0.0402,
+      "shares": 4700,
+      "price": 17100.0,
+      "value_vnd": 80370000.0
+    }
+  },
+  "n_positions": 5,
+  "total_exposure": 0.2846,
+  "capital": 2000000000.0
+}

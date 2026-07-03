@@ -1,0 +1,114 @@
+================================================================================
+Phase 3.5 Walk-Forward Backtest Results
+================================================================================
+
+Walk-Forward Backtest Results (8 folds)
+============================================================
+Average Portfolio IC (post Stage 2): 0.0250
+Average Raw Signal IC (pre Stage 2):  0.0165
+Average Raw Signal Daily CS IC:       0.0153
+Average Portfolio Sharpe: 0.9910
+Average Max Drawdown: -12.51%
+
+Alpha IC Summary:
+  alpha_p34_volatility_compression_5: -0.0299
+  alpha_p34_close_auction_drift_10: 0.0199
+  alpha_vn_004_intraday_persistence: 0.0191
+  alpha_p34_volume_clock_acceleration_10: -0.0159
+  alpha_p34_liquidity_provision_ratio_10: -0.0156
+  alpha_smart_money_lite: 0.0107
+  alpha_vn_close_location_reversion: 0.0107
+  alpha_vn_t2_settlement_supply_overhang: 0.0106
+  alpha_vn_t2_cash_recycling_bounce: -0.0102
+  alpha_limit_lock_streak: 0.0088
+  alpha_p34_kyle_lambda_20: -0.0087
+  alpha_p34_tick_signed_volume_imbalance_5: 0.0084
+  alpha_vn_005_liquidity_adjusted_reversal: 0.0073
+  alpha_liquidity_quality_score: -0.0072
+  alpha_vn_amihud_liq_reversal: -0.0068
+  alpha_vn_001_post_settlement_momentum: -0.0062
+  alpha_vn_sector_neutral_residual_reversion: 0.0060
+  alpha_vn_bollinger_snapback: 0.0043
+  alpha_vn_illiq_regime_penalty: 0.0040
+  alpha_vn_002_limit_band_reversion: 0.0033
+  alpha_t2_momentum_adj: -0.0026
+  alpha_vn_t2_momentum_diff: -0.0026
+  alpha_p34_micro_momentum_5_20: -0.0025
+  alpha_vn_limit_lock_continuation: -0.0021
+  alpha_vn_rsi_divergence_reversal: 0.0020
+  alpha_vn_limit_unlock_exhaustion: 0.0013
+  alpha_vn_turnover_exhaustion: -0.0010
+  alpha_vn_volume_shock_reversal: 0.0005
+  alpha_vn_foreign_flow_persistence: 0.0000
+  alpha_vn_foreign_absorption_reversal: 0.0000
+  alpha_vn_foreign_room_squeeze: 0.0000
+  alpha_penny_trap_score: 0.0000
+  alpha_vn_penny_trap_risk: 0.0000
+  alpha_vn_003_foreign_flow_divergence: 0.0000
+
+Fold Details:
+--------------------------------------------------------------------------------
+
+Fold 1:
+  Train: 2015-01-05 to 2018-01-03 (14,557 samples)
+  Test:  2018-01-04 to 2019-01-03 (6,444 samples)
+  Portfolio IC: 0.0445
+  Portfolio Sharpe: 1.3505
+  Portfolio Max DD: -17.40%
+  Portfolio Total Return: 24.73%
+
+Fold 2:
+  Train: 2016-01-05 to 2019-01-03 (16,450 samples)
+  Test:  2019-01-04 to 2020-01-03 (6,719 samples)
+  Portfolio IC: -0.0059
+  Portfolio Sharpe: 2.1289
+  Portfolio Max DD: -14.41%
+  Portfolio Total Return: 30.47%
+
+Fold 3:
+  Train: 2017-01-04 to 2020-01-03 (18,397 samples)
+  Test:  2020-01-06 to 2020-12-31 (6,744 samples)
+  Portfolio IC: 0.0186
+  Portfolio Sharpe: 0.0145
+  Portfolio Max DD: -10.52%
+  Portfolio Total Return: 0.12%
+
+Fold 4:
+  Train: 2018-01-04 to 2020-12-31 (19,772 samples)
+  Test:  2021-01-04 to 2021-12-31 (6,737 samples)
+  Portfolio IC: 0.0582
+  Portfolio Sharpe: 0.3563
+  Portfolio Max DD: -18.71%
+  Portfolio Total Return: 6.13%
+
+Fold 5:
+  Train: 2019-01-04 to 2021-12-31 (20,065 samples)
+  Test:  2022-01-04 to 2022-12-30 (6,723 samples)
+  Portfolio IC: -0.0033
+  Portfolio Sharpe: 1.4089
+  Portfolio Max DD: -11.41%
+  Portfolio Total Return: 19.45%
+
+Fold 6:
+  Train: 2020-01-06 to 2022-12-30 (20,069 samples)
+  Test:  2023-01-03 to 2024-01-02 (6,750 samples)
+  Portfolio IC: 0.0428
+  Portfolio Sharpe: 1.4192
+  Portfolio Max DD: -10.21%
+  Portfolio Total Return: 16.76%
+
+Fold 7:
+  Train: 2021-01-04 to 2024-01-02 (20,075 samples)
+  Test:  2024-01-03 to 2024-12-31 (6,723 samples)
+  Portfolio IC: 0.0387
+  Portfolio Sharpe: 2.9584
+  Portfolio Max DD: -10.43%
+  Portfolio Total Return: 48.73%
+
+Fold 8:
+  Train: 2022-01-04 to 2024-12-31 (20,061 samples)
+  Test:  2025-01-02 to 2025-12-31 (6,777 samples)
+  Portfolio IC: 0.0065
+  Portfolio Sharpe: -1.7083
+  Portfolio Max DD: -6.96%
+  Portfolio Total Return: -11.33%

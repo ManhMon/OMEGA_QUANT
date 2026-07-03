@@ -1,0 +1,9 @@
+{
+  "rank": 15,
+  "round": 7,
+  "train_IC": 0.1734,
+  "test_IC": 0.0321,
+  "hit_rate": 0.5369,
+  "expression": "abs(cs_zscore(hl_range))",
+  "serialized_tree": "GPNode(operator='abs', children=[GPNode(operator='cs_zscore', children=[GPNode(operator='terminal', children=[], value='hl_range')], value=None)], value=None)"
+}

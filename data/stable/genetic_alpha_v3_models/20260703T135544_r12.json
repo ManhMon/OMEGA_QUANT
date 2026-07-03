@@ -1,0 +1,9 @@
+{
+  "rank": 12,
+  "round": 7,
+  "train_IC": 0.4949,
+  "test_IC": 0.0305,
+  "hit_rate": 0.4402,
+  "expression": "(cs_rank(oc_range) - close)",
+  "serialized_tree": "GPNode(operator='-', children=[GPNode(operator='cs_rank', children=[GPNode(operator='terminal', children=[], value='oc_range')], value=None), GPNode(operator='terminal', children=[], value='close')], value=None)"
+}

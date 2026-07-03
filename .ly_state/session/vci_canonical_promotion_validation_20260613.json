@@ -1,0 +1,59 @@
+{
+  "gate": "VCI_FULL_HSX_HNX_CANONICAL_PROMOTION_20260613",
+  "role_id": 15,
+  "role_name": "data-engineer",
+  "timestamp": "2026-06-13T00:00:00+07:00",
+  "source_file": "data/market_vci_hsx_hnx_2015_now_20260613.parquet",
+  "canonical_file": "data/market_2015_now.parquet",
+  "source_sha256": "2055599b854d772d02ecf348fb3f9c03780672a83e85f7b63e1d6fd3bb03dd4d",
+  "canonical_sha256": "2055599b854d772d02ecf348fb3f9c03780672a83e85f7b63e1d6fd3bb03dd4d",
+  "sha256_match": true,
+  "file_size_bytes": 21933870,
+  "file_size_match": true,
+  "dataframe_equals": true,
+  "schema_match": true,
+  "validation": {
+    "row_count": 1771261,
+    "row_count_expected": 1771261,
+    "row_count_pass": true,
+    "ticker_count": 703,
+    "ticker_count_expected": 703,
+    "ticker_count_pass": true,
+    "hose_tickers": 403,
+    "hose_tickers_expected": 403,
+    "hose_tickers_pass": true,
+    "hnx_tickers": 300,
+    "hnx_tickers_expected": 300,
+    "hnx_tickers_pass": true,
+    "date_min": "2015-01-05",
+    "date_min_gte_2015_01_01": true,
+    "date_max": "2026-06-12",
+    "duplicate_rows": 0,
+    "duplicates_pass": true,
+    "ohlcv_nulls": {
+      "open": 0,
+      "high": 0,
+      "low": 0,
+      "close": 0,
+      "volume": 0
+    },
+    "ohlcv_nulls_pass": true
+  },
+  "exchange_split": {
+    "HOSE": {"rows": 1001584, "tickers": 403},
+    "HNX": {"rows": 769677, "tickers": 300}
+  },
+  "columns": [
+    "ticker", "date", "exchange", "open", "high", "low", "close",
+    "volume", "as_of", "available_at", "source", "price_scale",
+    "adjusted", "rebuild_date"
+  ],
+  "production_code_modified": false,
+  "source_file_altered": false,
+  "l2_report_path": ".ly_state/session/l2_role15_vci_full_hsx_hnx_canonical_promotion_20260613.md",
+  "sod_gate_enforcer_result": "PASS",
+  "sod_gate_enforcer_phases_verified": 115,
+  "sod_gate_enforcer_advisory_warnings": 51,
+  "all_checks_pass": true,
+  "status": "L2_COMPLETE_AWAITING_L3_AUDIT"
+}

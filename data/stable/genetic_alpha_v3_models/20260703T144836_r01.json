@@ -1,0 +1,9 @@
+{
+  "rank": 1,
+  "round": 1,
+  "train_IC": 1.0378,
+  "test_IC": 0.0317,
+  "hit_rate": 0.4784,
+  "expression": "cs_zscore((abs(returns_5d) - returns_1d))",
+  "serialized_tree": "GPNode(operator='cs_zscore', children=[GPNode(operator='-', children=[GPNode(operator='abs', children=[GPNode(operator='terminal', children=[], value='returns_5d')], value=None), GPNode(operator='terminal', children=[], value='returns_1d')], value=None)], value=None)"
+}

@@ -1,0 +1,84 @@
+{
+  "gate_id": "AUTOMATED_ALPHA_DISCOVERY_DYNAMIC_20260615",
+  "enabled": true,
+  "candidates_generated": 10,
+  "candidates_after_screening": 10,
+  "candidates_after_corr_filter": 9,
+  "candidate_cap": 10,
+  "corr_threshold": 0.85,
+  "min_ic": 0.01,
+  "seed": 42,
+  "n_selected": 9,
+  "selected_names": [
+    "auto_mom_ret_5",
+    "auto_mom_ret_10",
+    "auto_mom_ret_20",
+    "auto_mom_ret_60",
+    "auto_mr_zscore_20",
+    "auto_vol_ratio_5_20",
+    "auto_vol_zscore_20",
+    "auto_vol_range_pct",
+    "auto_vol_close_loc"
+  ],
+  "selected_ics": {
+    "auto_mom_ret_5": 0.029878,
+    "auto_mom_ret_10": 0.017515,
+    "auto_mom_ret_20": 0.037159,
+    "auto_mom_ret_60": 0.052696,
+    "auto_mr_zscore_20": 0.048242,
+    "auto_vol_ratio_5_20": 0.013939,
+    "auto_vol_zscore_20": 0.015152,
+    "auto_vol_range_pct": 0.033155,
+    "auto_vol_close_loc": -0.017265
+  },
+  "evidence": {
+    "status": "completed",
+    "candidates_generated": 10,
+    "candidates_screened": 10,
+    "candidates_filtered": 9,
+    "n_selected": 9,
+    "selected_names": [
+      "auto_mom_ret_5",
+      "auto_mom_ret_10",
+      "auto_mom_ret_20",
+      "auto_mom_ret_60",
+      "auto_mr_zscore_20",
+      "auto_vol_ratio_5_20",
+      "auto_vol_zscore_20",
+      "auto_vol_range_pct",
+      "auto_vol_close_loc"
+    ],
+    "selected_ics": {
+      "auto_mom_ret_5": 0.029878,
+      "auto_mom_ret_10": 0.017515,
+      "auto_mom_ret_20": 0.037159,
+      "auto_mom_ret_60": 0.052696,
+      "auto_mr_zscore_20": 0.048242,
+      "auto_vol_ratio_5_20": 0.013939,
+      "auto_vol_zscore_20": 0.015152,
+      "auto_vol_range_pct": 0.033155,
+      "auto_vol_close_loc": -0.017265
+    },
+    "selected_icirs": {
+      "auto_mom_ret_5": 0.0901,
+      "auto_mom_ret_10": 0.0566,
+      "auto_mom_ret_20": 0.1163,
+      "auto_mom_ret_60": 0.1779,
+      "auto_mr_zscore_20": 0.1594,
+      "auto_vol_ratio_5_20": 0.0391,
+      "auto_vol_zscore_20": 0.0426,
+      "auto_vol_range_pct": 0.097,
+      "auto_vol_close_loc": -0.0491
+    },
+    "config": {
+      "candidate_cap": 10,
+      "corr_threshold": 0.85,
+      "min_ic": 0.01,
+      "seed": 42,
+      "return_col": "fwd_ret_5"
+    },
+    "pit_safe": true,
+    "train_only": true,
+    "no_live_promotion": true
+  }
+}

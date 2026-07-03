@@ -1,0 +1,32 @@
+{
+  "gate": "HYBRID_REGIME_FULL_BACKTEST_20260620",
+  "perf_gate": "HYBRID_REGIME_BACKTEST_PERF_20260621",
+  "diag_gate": "HYBRID_REGIME_PROFITABILITY_DIAG_20260621",
+  "config": {
+    "start_date": "2015-01-01",
+    "end_date": "2026-12-31",
+    "capital": 2000000000.0,
+    "folds": 5,
+    "n_test_folds": 1,
+    "embargo_pct": 0.01,
+    "label_horizon": 5,
+    "dynamic_universe": false,
+    "symbol_count": 10,
+    "quick_mode": true,
+    "workers": 1
+  },
+  "aggregated": {
+    "Baseline": {
+      "error": "all_folds_failed",
+      "n_errors": 5
+    },
+    "Hybrid": {
+      "error": "all_folds_failed",
+      "n_errors": 5
+    }
+  },
+  "perf": {
+    "total_elapsed_sec": 37.155362606048584,
+    "total_elapsed_min": 0.6192560434341431
+  }
+}

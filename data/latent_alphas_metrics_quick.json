@@ -1,0 +1,152 @@
+{
+  "gate": "LATENT_ALPHA_MINING_64D_20260617",
+  "timestamp": "2026-06-17T11:54:49.999968+00:00",
+  "seed": 42,
+  "method": "pca",
+  "n_components": 5,
+  "n_features": 114,
+  "train_ratio": 0.6,
+  "train_dates": 363,
+  "test_dates": 242,
+  "features_hash": "a80c73af5a08195c",
+  "features_path": "C:\\Users\\GHC\\repos\\OMEGA_QUANT\\data\\features_advanced_sim.parquet",
+  "vn_market_params": {
+    "round_trip_cost_bps": 27.0,
+    "trading_days_per_year": 248,
+    "ic_min_threshold": 0.02,
+    "ir_min_threshold": 0.3,
+    "turnover_max": 0.3
+  },
+  "component_metrics": {
+    "latent_pca_00": {
+      "ic_mean": -0.009562,
+      "ic_std": 0.433069,
+      "ir": -0.0221,
+      "ic_positive_rate": 0.5,
+      "ic_t_stat": -0.3435,
+      "n_dates": 242,
+      "turnover": 0.1095,
+      "net_ic": -0.009858,
+      "passes_ic_gate": false,
+      "passes_ir_gate": false,
+      "passes_turnover_gate": true,
+      "method": "pca",
+      "component_index": 0,
+      "train_ic_mean": 0.025188,
+      "train_ir": 0.0658,
+      "oos_is_decay_ratio": 0.3796
+    },
+    "latent_pca_01": {
+      "ic_mean": -0.00204,
+      "ic_std": 0.422808,
+      "ir": -0.0048,
+      "ic_positive_rate": 0.5041,
+      "ic_t_stat": -0.0751,
+      "n_dates": 242,
+      "turnover": 0.051,
+      "net_ic": -0.002178,
+      "passes_ic_gate": false,
+      "passes_ir_gate": false,
+      "passes_turnover_gate": true,
+      "method": "pca",
+      "component_index": 1,
+      "train_ic_mean": -0.017151,
+      "train_ir": -0.043,
+      "oos_is_decay_ratio": 0.1189
+    },
+    "latent_pca_02": {
+      "ic_mean": 0.009954,
+      "ic_std": 0.375592,
+      "ir": 0.0265,
+      "ic_positive_rate": 0.5248,
+      "ic_t_stat": 0.4123,
+      "n_dates": 242,
+      "turnover": 0.2205,
+      "net_ic": 0.009359,
+      "passes_ic_gate": false,
+      "passes_ir_gate": false,
+      "passes_turnover_gate": true,
+      "method": "pca",
+      "component_index": 2,
+      "train_ic_mean": -0.018228,
+      "train_ir": -0.0497,
+      "oos_is_decay_ratio": 0.5461
+    },
+    "latent_pca_03": {
+      "ic_mean": 0.027586,
+      "ic_std": 0.371638,
+      "ir": 0.0742,
+      "ic_positive_rate": 0.5083,
+      "ic_t_stat": 1.1547,
+      "n_dates": 242,
+      "turnover": 0.2033,
+      "net_ic": 0.027037,
+      "passes_ic_gate": true,
+      "passes_ir_gate": false,
+      "passes_turnover_gate": true,
+      "method": "pca",
+      "component_index": 3,
+      "train_ic_mean": -0.01308,
+      "train_ir": -0.0359,
+      "oos_is_decay_ratio": 2.109
+    },
+    "latent_pca_04": {
+      "ic_mean": 0.038767,
+      "ic_std": 0.34553,
+      "ir": 0.1122,
+      "ic_positive_rate": 0.5207,
+      "ic_t_stat": 1.7454,
+      "n_dates": 242,
+      "turnover": 0.2385,
+      "net_ic": 0.038123,
+      "passes_ic_gate": true,
+      "passes_ir_gate": false,
+      "passes_turnover_gate": true,
+      "method": "pca",
+      "component_index": 4,
+      "train_ic_mean": 0.047068,
+      "train_ir": 0.1281,
+      "oos_is_decay_ratio": 0.8236
+    }
+  },
+  "ranking": [
+    {
+      "rank": 1,
+      "component": "latent_pca_04",
+      "ir": 0.1122,
+      "ic_mean": 0.038767
+    },
+    {
+      "rank": 2,
+      "component": "latent_pca_03",
+      "ir": 0.0742,
+      "ic_mean": 0.027586
+    },
+    {
+      "rank": 3,
+      "component": "latent_pca_02",
+      "ir": 0.0265,
+      "ic_mean": 0.009954
+    },
+    {
+      "rank": 4,
+      "component": "latent_pca_00",
+      "ir": -0.0221,
+      "ic_mean": -0.009562
+    },
+    {
+      "rank": 5,
+      "component": "latent_pca_01",
+      "ir": -0.0048,
+      "ic_mean": -0.00204
+    }
+  ],
+  "summary": {
+    "n_components_evaluated": 5,
+    "n_pass_all_gates": 0,
+    "n_pass_ic_gate": 2,
+    "n_pass_ir_gate": 0,
+    "best_oos_ir": 0.1122,
+    "best_oos_ic": 0.038767
+  }
+}

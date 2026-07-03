@@ -1,0 +1,23 @@
+{
+  "total_return": 0.2569440202222739,
+  "annualized_sharpe": 0.5134543970416242,
+  "max_drawdown": -0.4806848820408327,
+  "n_days": 576,
+  "cost_breakdown": {
+    "total_turnover": 106.0094560195081,
+    "avg_turnover_per_bar": 0.18404419447831266,
+    "total_commission_cost": 0.18507910884663917,
+    "total_spread_cost": 0.02120189120390162,
+    "total_slippage_cost": 0.040757238815411996,
+    "total_cost": 0.24703823886595278,
+    "avg_cost_per_bar_bps": 4.288858313645013,
+    "capital_vnd": 2000000000.0,
+    "final_w": "[0.16780483 0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.3071911  0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.18320944 0.204421   0.         0.\n 0.         0.         0.         0.         0.13669214 0.        ]",
+    "slippage_nonlinear_exp": 1.0,
+    "settlement_lag_days": 0.0,
+    "halt_limit_haircut_pct": 0.0,
+    "foreign_room_haircut_pct": 0.0,
+    "use_adv_tiered_spread": false,
+    "n_active_bars": 576
+  }
+}

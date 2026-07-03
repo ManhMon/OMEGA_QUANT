@@ -4,3 +4,6 @@
 - [project] Always create a new dedicated branch for major code changes → project-conventions.md
 - [project] OMEGA_QUANT Constitution: SOD, AG Kit rules, Vietnamese response, and timer ban → project-conventions.md
 
+## Reference
+- [reference] Hybrid Regime optimal C3 config, database integration, CQR/Mondrian details → tech-decisions.md
+

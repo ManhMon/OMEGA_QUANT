@@ -11,6 +11,7 @@ from .layer_03_execution_engine import ExecutionEngine
 from .state import StateEngine
 from .orderbook import OrderBookLevel
 from .backtest_liquidation import apply_delisted_liquidations
+from omega.core.vn_market_rules import VnMarketRules
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,8 @@ class BacktestEngine:
                     if side == "HOLD":
                         continue
                     price = prices_by_asset[sym][min(i, len(prices_by_asset[sym]) - 1)]
+                    ref_idx = max(i - 1, 0)
+                    ref_price = prices_by_asset[sym][ref_idx]
                     target_p = {sym: float(signal)}
                     current_p = {sym: float(state.positions.get(sym, 0.0))}
 
@@ -131,6 +134,13 @@ class BacktestEngine:
                         executed_side = order_planned.get("side", side)
 
                     if filled and fill_qty > 0.0:
+                        floor_price, ceiling_price = VnMarketRules.calculate_price_limits(ref_price)
+                        if executed_side == "BUY" and price >= ceiling_price:
+                            trades.append({"timestamp": ts, "symbol": sym, "side": executed_side, "qty": 0.0, "price": price, "warning": "price_limit_buy_block"})
+                            continue
+                        if executed_side == "SELL" and price <= floor_price:
+                            trades.append({"timestamp": ts, "symbol": sym, "side": executed_side, "qty": 0.0, "price": price, "warning": "price_limit_sell_block"})
+                            continue
                         state = self.state.apply_fill(
                             state,
                             sym,

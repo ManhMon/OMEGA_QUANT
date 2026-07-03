@@ -1,0 +1,142 @@
+{
+  "test_id": "llm_scoring_supervised_validation_20260612",
+  "timestamp": "2026-06-12T10:52:38.003Z",
+  "session_id": "l2_role9_llm_scoring_supervised_validation_20260612",
+  "role_id": 9,
+  "role_name": "backend-engineer",
+  "tier": "L2",
+  "platform": "OpenCode",
+  "task": "Supervised CPCV validation for LLM scoring output",
+  "status": "COMPLETED",
+  "validation_type": "supervised",
+  "provider": "mock",
+  "llm_features": {
+    "count": 2,
+    "names": ["alpha_llm_0", "alpha_llm_1"],
+    "unsupervised_only": 2,
+    "deployable": 0
+  },
+  "feature_composition": {
+    "baseline_alphas": 125,
+    "llm_alphas": 2,
+    "total_before_filter": 127,
+    "total_after_filter": 116
+  },
+  "unsupervised_scoring": {
+    "candidates": 2,
+    "accepted": 2,
+    "rejected": 0,
+    "deployable": 0,
+    "unsupervised_only": 2,
+    "alpha_llm_0": {
+      "coverage": 1.0,
+      "variance": 0.0931,
+      "ic": null,
+      "dsr": null,
+      "accepted": true,
+      "deployable": false
+    },
+    "alpha_llm_1": {
+      "coverage": 1.0,
+      "variance": 1.11e-5,
+      "ic": null,
+      "dsr": null,
+      "accepted": true,
+      "deployable": false
+    }
+  },
+  "supervised_validation": {
+    "method": "CPCV",
+    "n_folds": 45,
+    "n_samples": 5972,
+    "n_daily_returns": 11229,
+    "med_train_ic": 0.008532,
+    "med_test_ic": -0.001044,
+    "med_fold_sr": -0.0161,
+    "dsr_pooled": 6.17e-31,
+    "dsr_sr_ann": -0.319,
+    "dsr_pass": false,
+    "fold_dsr": {
+      "dsr": 0.243,
+      "sr_mean_annualized": -0.267,
+      "pass": false
+    },
+    "skew": -0.095,
+    "kurtosis": 4.497
+  },
+  "deployment_status": {
+    "accepted": true,
+    "rejected_for_deployment": true,
+    "deployable": false,
+    "unsupervised_only": true,
+    "is_supervised_validated": false,
+    "supervised_checks_passed": false,
+    "dsr_passed": false,
+    "reason": "No out-of-sample predictive power (DSR ≈ 0, test IC ≈ 0)"
+  },
+  "verdict": {
+    "gate_status": "NEEDS_FIX",
+    "summary": "Formulas passed unsupervised quality checks but FAILED supervised validation",
+    "details": "LLM formulas have good statistical properties (coverage, variance) but lack forward-return predictive power. Test IC ≈ 0, DSR ≈ 0, Sharpe < 0. NOT deployable.",
+    "recommendation": "DO NOT DEPLOY - iterate on LLM synthesis to improve formula quality"
+  },
+  "cpcv_config": {
+    "n_splits": 10,
+    "n_test_splits": 2,
+    "embargo_pct": 0.01,
+    "label_horizon_days": 5,
+    "bar_horizon": 25,
+    "year_start": 2020,
+    "year_end": 2024,
+    "universe_size": 5,
+    "smoke_mode": true
+  },
+  "pit_safety": {
+    "cpcv_embargo": true,
+    "grouped_execution": true,
+    "no_cross_ticker_contamination": true,
+    "walk_forward_loading": true,
+    "verified": true
+  },
+  "output_files": {
+    "backtest_results": ".ly_state/session/llm_scoring_supervised_validation_20260612.json",
+    "l2_report": ".ly_state/session/l2_role9_llm_scoring_supervised_validation_20260612.md",
+    "evidence": ".ly_state/session/llm_scoring_supervised_validation_20260612_evidence.json"
+  },
+  "prior_work": {
+    "smoke_test": {
+      "file": ".ly_state/session/llm_scoring_real_online_smoke_20260612.json",
+      "status": "SUCCESS",
+      "provider": "openai-compatible",
+      "model": "cx/gpt-5.5",
+      "features": 1
+    }
+  },
+  "secrets_check": "PASS",
+  "verification_completed": {
+    "py_compile": {
+      "status": "PASS",
+      "files_checked": [
+        "scripts/backtest_v2_cpcv.py",
+        "src/omega/quant/evolution/llm_symbolic_synthesizer.py",
+        "src/omega/quant/evolution/llm_formula_scorer.py",
+        "src/omega/quant/evolution/genetic_programming.py",
+        "src/omega/quant/evolution/feature_adapter.py",
+        "tests/quant_test_infinite_evolution.py"
+      ]
+    },
+    "pytest": {
+      "status": "PASS",
+      "tests_run": 35,
+      "tests_passed": 35,
+      "tests_failed": 0,
+      "test_file": "tests/quant_test_infinite_evolution.py"
+    },
+    "sod_gate_enforcer": {
+      "status": "PASS",
+      "phases_verified": 102,
+      "all_phases_approved": true,
+      "safe_to_push": true
+    }
+  }
+}

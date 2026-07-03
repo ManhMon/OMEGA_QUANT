@@ -27,6 +27,7 @@ from omega.quant.pipeline_v2 import (
     RegimeAwareWFOverlay,
     RegimeOverlay,
     ThompsonSamplingWeightOverlay,
+    WeightSmoothingOverlay,
 )
 from omega.quant.pipeline.overlays.drawdown_control import DrawdownControlOverlay
 from omega.quant.portfolio.execution_sim import adv_tiered_half_spread
@@ -390,3 +391,28 @@ def test_pipeline_uses_adv_tiered_spread_and_dynamic_capital(tmp_path, monkeypat
     )
     assert adv_tiered_half_spread(captured["daily_adv"][1][0]) == pytest.approx(0.0005)
     assert adv_tiered_half_spread(captured["daily_adv"][1][1]) == pytest.approx(0.0015)
+
+
+def test_weight_smoothing_overlay_defaults_to_non_rescaled_ema():
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    weights = pd.DataFrame(
+        {"HPG": [1.0, 0.0], "SSI": [0.0, 0.0]},
+        index=dates,
+    )
+
+    smoothed = WeightSmoothingOverlay(ema_alpha=0.5).apply(weights, pd.DataFrame(), {})
+
+    assert smoothed.loc[dates[1], "HPG"] == pytest.approx(0.5)
+    assert smoothed.abs().sum(axis=1).loc[dates[1]] == pytest.approx(0.5)
+
+
+def test_weight_smoothing_overlay_exposure_blend_one_matches_old_rescale():
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    weights = pd.DataFrame(
+        {"HPG": [1.0, 0.0], "SSI": [0.0, 0.0]},
+        index=dates,
+    )
+
+    smoothed = WeightSmoothingOverlay(ema_alpha=0.5, exposure_blend=1.0).apply(weights, pd.DataFrame(), {})
+
+    assert smoothed.abs().sum(axis=1).loc[dates[1]] == pytest.approx(0.0)

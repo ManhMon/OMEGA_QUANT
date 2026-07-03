@@ -1,0 +1,9 @@
+{
+  "rank": 8,
+  "round": 9,
+  "train_IC": 0.3571,
+  "test_IC": 0.036,
+  "hit_rate": 0.5274,
+  "expression": "(sqrt(returns_5d) min high)",
+  "serialized_tree": "GPNode(operator='min', children=[GPNode(operator='sqrt', children=[GPNode(operator='terminal', children=[], value='returns_5d')], value=None), GPNode(operator='terminal', children=[], value='high')], value=None)"
+}

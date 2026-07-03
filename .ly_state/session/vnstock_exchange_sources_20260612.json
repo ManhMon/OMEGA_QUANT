@@ -1,0 +1,43 @@
+{
+  "VCI": {
+    "status": "FAILED",
+    "error": "RetryError[<Future at 0x2914bba0f50 state=finished raised ConnectionError>]"
+  },
+  "KBS": {
+    "status": "OK",
+    "rows": 3249,
+    "columns": [
+      "symbol",
+      "organ_name",
+      "en_organ_name",
+      "exchange",
+      "type",
+      "id",
+      "re",
+      "ceiling",
+      "floor"
+    ],
+    "exchange_counts": {
+      "UPCOM": 828,
+      "HOSE": 658,
+      "HNX": 394,
+      "XHNF": 14
+    },
+    "type_counts": {
+      "stock": 1531,
+      "corpbond": 1355,
+      "cw": 233,
+      "bond": 94,
+      "fund": 22,
+      "future": 14
+    }
+  },
+  "VND": {
+    "status": "NOT_AVAILABLE",
+    "reason": "vnstock 4.x Listing only accepts KBS/VCI/MSN sources"
+  },
+  "MSN": {
+    "status": "FAILED",
+    "error": "RetryError[<Future at 0x2914cc6ff00 state=finished raised NotImplementedError>]"
+  }
+}

@@ -54,7 +54,8 @@ class TransactionCostModel:
         order_value: float,          # Notional value in VNĐ
         adv_value: float,            # Average Daily Value in VNĐ
         price: float,                # Execution price
-        side: str = "BUY"            # BUY or SELL
+        side: str = "BUY",           # BUY or SELL
+        regime: str = "normal",
     ) -> CostEstimate:
         """Estimate total transaction cost.
         
@@ -71,13 +72,19 @@ class TransactionCostModel:
         # 1. Commission
         commission = order_value * self.commission_rate
         
-        # 2. Slippage (proportional to order size relative to ADV)
+        # 2. Slippage (sqrt participation)
         participation_rate = order_value / (adv_value + 1e-10)
-        slippage_bps = 5.0 * participation_rate  # Simple linear model
+        slippage_bps = 5.0 * np.sqrt(max(participation_rate, 0.0))
         slippage = order_value * (slippage_bps / 10000)
         
         # 3. Bid-Ask Spread
-        spread_cost = order_value * (self.avg_spread_bps / 10000)
+        regime_spread_scale = {
+            "calm": 0.8,
+            "normal": 1.0,
+            "volatile": 1.35,
+            "crisis": 1.75,
+        }.get(str(regime).lower(), 1.0)
+        spread_cost = order_value * ((self.avg_spread_bps * regime_spread_scale) / 10000)
         
         # 4. Market Impact (square root model)
         # impact = coefficient * sqrt(order_size/ADV) * price

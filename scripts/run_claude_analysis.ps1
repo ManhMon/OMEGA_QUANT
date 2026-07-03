@@ -1,0 +1,2 @@
+# Script chạy phân tích tối ưu hiệu năng OMEGA_QUANT bằng Claude Code CLI
+claude -p "Phân tích mã nguồn OMEGA_QUANT hiện tại và đưa ra kế hoạch + phương án nâng hiệu suất hệ thống do hiện tại lợi nhuận net đang âm, sharpe âm. Nghiên cứu cải tiến mining alpha mạnh cho thị trường Việt Nam (dòng tiền khối ngoại, thanh khoản ngành, ATO/ATC drift), chiến thuật và thuật toán giao dịch cao cấp (T+2.5 sizing, smooth transition GMM-BOCPD, dynamic TC gate) để đảm bảo hiệu suất vượt VNINDEX ít nhất 2 lần. Trả về báo cáo dạng Markdown ngắn gọn."

@@ -1,0 +1,27 @@
+{
+  "total_return": 0.6205716215855617,
+  "annualized_sharpe": 2.0946184130000276,
+  "max_drawdown": -0.09768465634046508,
+  "n_days": 572,
+  "cost_breakdown": {
+    "total_turnover": 26.2027713770582,
+    "avg_turnover_per_bar": 0.04580904086898287,
+    "total_commission_cost": 0.019581422064043653,
+    "total_spread_cost": 0.016372959327907388,
+    "total_slippage_cost": 0.0041979586369567876,
+    "total_other_cost": 0.0,
+    "total_cost": 0.04015234002890783,
+    "avg_cost_per_bar_bps": 0.7019639865193676,
+    "capital_vnd": 2000000000.0,
+    "final_capital_vnd": 2774993950.229488,
+    "final_w": "[0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.18437165 0.         0.         0.\n 0.         0.         0.04233585 0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.        ]",
+    "slippage_nonlinear_exp": 0.6,
+    "settlement_lag_days": 0.0,
+    "halt_limit_haircut_pct": 0.0,
+    "foreign_room_haircut_pct": 0.0,
+    "use_adv_tiered_spread": true,
+    "dynamic_capital_tracking": true,
+    "n_active_bars": 572,
+    "bar_costs": "[0.00000000e+00 0.00000000e+00 0.00000000e+00 ... 2.16619664e-06\n 7.24506552e-06 1.44796369e-04]"
+  }
+}

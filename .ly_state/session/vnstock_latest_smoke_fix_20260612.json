@@ -1,0 +1,139 @@
+{
+  "gate": "VNSTOCK_LATEST_STANDARDIZATION_20260612",
+  "fix_session": "l2_role15_vnstock_latest_standardization_fix_20260612",
+  "date": "2026-06-12",
+  "role": 15,
+  "tier": 2,
+  "fix_type": "NEEDS_FIX_RESPONSE",
+  "prior_audit": ".ly_state/session/audit_reports/role21_vnstock_latest_standardization_20260612.md",
+  "vnstock_version": "4.0.4",
+  "vnstock3_installed": false,
+  "vnstock_data_installed": false,
+  "probe": {
+    "vnstock_version": "4.0.4",
+    "quote_available": true,
+    "listing_available": true,
+    "trading_available": true,
+    "market_available": true
+  },
+  "findings_resolved": {
+    "finding_1_canonical_parquet": {
+      "severity": "HIGH",
+      "status": "RESOLVED_WITH_EVIDENCE",
+      "resolution": "Canonical parquet modification was from separate approved gate CANONICAL_DATA_REPLACEMENT_EXCHANGE_RESOLUTION_20260612, not from vnstock gate",
+      "canonical_sha256_current": "206196b1889b1a308b302b5278cd7de0a55d30cad1a2003db22f4034e2514285",
+      "canonical_sha256_matches_candidate": true,
+      "candidate_gate": "CANONICAL_DATA_REPLACEMENT_EXCHANGE_RESOLUTION_20260612",
+      "candidate_gate_verdict": "[APPROVED]",
+      "candidate_gate_l3_role": 20,
+      "backup_sha256": "e9b0b4f1754db11378aa7be6cc46b4a28ccfe2dc5c47612893ae1cccda8cab5f",
+      "backup_path": "data/market_2015_now.backup_20260612.parquet",
+      "vnstock_gate_modified_canonical": false,
+      "evidence_files": [
+        ".ly_state/session/audit_reports/role20_canonical_data_replacement_exchange_resolution_20260612.md",
+        ".ly_state/session/l2_role15_canonical_data_replacement_exchange_resolution_20260612.md"
+      ]
+    },
+    "finding_2_hardcoded_api_key": {
+      "severity": "HIGH",
+      "status": "RESOLVED",
+      "files_modified": [
+        "src/omega/data/vnstock_adapter.py",
+        "src/omega/quant/data/vnstock.py",
+        "src/omega/data/vnstock_live.py"
+      ],
+      "credential_grep_result": "0 matches in src/ and scripts/",
+      "grep_command": "grep vnstock_e05b9f4c0d4eacd20b900cf99688d3c1 src/ scripts/",
+      "behavior_when_key_unset": "self.api_key=None; os.environ not modified; vnstock 4.x raises at call time"
+    },
+    "finding_3_intraday_vnd_guard": {
+      "severity": "MEDIUM",
+      "status": "RESOLVED",
+      "file_modified": "src/omega/data/vnstock_client.py",
+      "method": "VnstockClient.fetch_intraday()",
+      "normalize_vnd_parameter": true,
+      "normalize_vnd_default": true,
+      "ensure_vnd_scale_called": true,
+      "smoke_check": "PASS"
+    },
+    "finding_4_test_evidence": {
+      "severity": "MEDIUM",
+      "status": "RESOLVED",
+      "note": "All test suites re-run with file-backed output; L3 sandbox temp-path ACL limitation in prior audit was environment-specific"
+    }
+  },
+  "smoke_checks": {
+    "fetch_intraday_signature": "(self, symbol: 'str', page_size: 'int' = 100, *, normalize_vnd: 'bool' = True) -> 'pd.DataFrame'",
+    "ensure_vnd_scale_in_intraday": true,
+    "no_hardcoded_key_vnstock_adapter": true,
+    "no_hardcoded_key_quant_vnstock": true,
+    "no_hardcoded_key_vnstock_live": true,
+    "vnstock_probe": {
+      "vnstock_version": "4.0.4",
+      "quote_available": true,
+      "listing_available": true,
+      "trading_available": true,
+      "market_available": true
+    }
+  },
+  "import_scan": {
+    "vnstock3_imports_in_src": 0,
+    "vnstock_data_imports_in_src": 0,
+    "vnstock3_imports_in_scripts": 0,
+    "vnstock_data_imports_in_scripts": 0,
+    "credential_grep_src": 0,
+    "credential_grep_scripts": 0
+  },
+  "py_compile_results": {
+    "src/omega/data/vnstock_client.py": "PASS",
+    "src/omega/data/vnstock_adapter.py": "PASS",
+    "src/omega/data/vnstock_live.py": "PASS",
+    "src/omega/quant/data/vnstock.py": "PASS"
+  },
+  "pytest_results": {
+    "data_provider_tests": {
+      "files": [
+        "tests/test_benchmark_provider.py",
+        "tests/data_test_vnd_full_exchange_fix.py",
+        "tests/test_data_loader_corporate_action_pit.py"
+      ],
+      "command": "python -B -m pytest tests/test_benchmark_provider.py tests/data_test_vnd_full_exchange_fix.py tests/test_data_loader_corporate_action_pit.py -q -p no:cacheprovider",
+      "passed": 74,
+      "failed": 0
+    },
+    "execution_tests": {
+      "files": [
+        "tests/execution_test_order_router.py"
+      ],
+      "command": "python -B -m pytest tests/execution_test_order_router.py -q -p no:cacheprovider",
+      "passed": 44,
+      "failed": 0
+    },
+    "deployment_flow_tests": {
+      "files": [
+        "tests/data_test_deployment_flow.py"
+      ],
+      "command": "python -B -m pytest tests/data_test_deployment_flow.py -q -p no:cacheprovider",
+      "passed": 13,
+      "failed": 0,
+      "note": "L3 auditor observed 13 failures due to sandbox temp-path ACL. In L2 fix run all 13 passed. Failures were environment-specific, not code defects."
+    },
+    "total_passed": 131,
+    "total_failed": 0
+  },
+  "canonical_data": {
+    "path": "data/market_2015_now.parquet",
+    "sha256": "206196b1889b1a308b302b5278cd7de0a55d30cad1a2003db22f4034e2514285",
+    "size_bytes": 20804033,
+    "modified_by_vnstock_gate": false,
+    "replaced_by_gate": "CANONICAL_DATA_REPLACEMENT_EXCHANGE_RESOLUTION_20260612",
+    "replaced_by_gate_verdict": "[APPROVED]",
+    "backup_available": true,
+    "backup_path": "data/market_2015_now.backup_20260612.parquet"
+  },
+  "pre_existing_failures": [
+    "tests/data_test_sanitizer.py: ImportError DataSanitizer not in omega.data",
+    "tests/data_test_calendar.py: JSON file missing errors"
+  ],
+  "status": "AWAITING_L3_REAUDIT"
+}

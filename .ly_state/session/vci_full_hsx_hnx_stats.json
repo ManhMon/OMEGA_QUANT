@@ -1,0 +1,23 @@
+{
+  "timestamp": "2026-06-13T08:00:45.471148",
+  "gate": "VCI_FULL_HSX_HNX_2015_NOW_20260613",
+  "start_date": "2015-01-01",
+  "end_date": "2026-06-13",
+  "universe_hsx": 403,
+  "universe_hnx": 300,
+  "universe_total": 703,
+  "completed": 703,
+  "stats": {
+    "fetched": 703,
+    "empty": 0,
+    "errors": 0,
+    "rows_raw": 1853541,
+    "rows_post_filter": 1771261,
+    "pre_2015_rows_removed": 82280
+  },
+  "errors": [],
+  "empty_tickers": [],
+  "l2_fix_note": "Post-fetch date filter applied: removed 82280 pre-2015 rows. All 703 tickers preserved.",
+  "output_path": "C:\\Users\\GHC\\repos\\OMEGA_QUANT\\data\\market_vci_hsx_hnx_2015_now_20260613.parquet",
+  "elapsed_seconds": 775.8891158103943
+}

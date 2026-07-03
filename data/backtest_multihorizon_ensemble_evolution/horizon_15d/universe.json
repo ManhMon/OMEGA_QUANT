@@ -1,0 +1,12 @@
+{
+  "(min (mean (delay volume)))": {
+    "feature_name": "(min (mean (delay volume)))",
+    "ic_score": 0.30370030871291415,
+    "coverage": 0.5262266096950051,
+    "category": "evolved",
+    "expression": "(min (mean (delay volume)))",
+    "status": "active",
+    "discovered_date": "2026-06-24",
+    "updated_date": "2026-06-24"
+  }
+}

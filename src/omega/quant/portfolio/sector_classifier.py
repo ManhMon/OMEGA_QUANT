@@ -192,6 +192,75 @@ class SectorClassifier:
             print(f"Could not fetch sector data from vnstock: {e}")
         
         return self._sector_cache
+
+    def get_sector_mapping_pit(
+        self,
+        as_of: Any,
+        sector_history: Optional[pd.DataFrame] = None,
+        symbol_col: str = "ticker",
+        sector_col: str = "sector_code",
+        effective_col: str = "effective_date",
+    ) -> Dict[str, str]:
+        """Return symbol->sector snapshot as of date using latest effective record <= as_of.
+
+        If no history provided, falls back to in-memory cache.
+        """
+        if sector_history is None:
+            return dict(self._sector_cache)
+
+        if sector_history.empty:
+            return {}
+
+        as_of_ts = pd.Timestamp(as_of)
+        history = sector_history.copy()
+        history[effective_col] = pd.to_datetime(history[effective_col])
+        history = history.loc[history[effective_col] <= as_of_ts]
+        if history.empty:
+            return {}
+
+        history = history.sort_values([symbol_col, effective_col])
+        latest = history.groupby(symbol_col, sort=False).tail(1)
+        mapping = dict(zip(latest[symbol_col].astype(str), latest[sector_col].astype(str)))
+        self._sector_cache.update(mapping)
+        return mapping
+
+    def compute_rs_ex_top3(
+        self,
+        panel: pd.DataFrame,
+        as_of: Any,
+        symbol_col: str = "ticker",
+        date_col: str = "date",
+        sector_col: str = "sector_code",
+        return_col: str = "return_1",
+        market_cap_col: str = "market_cap",
+    ) -> pd.DataFrame:
+        """Sector-relative return excluding top-3 mcap names per sector from t-1 cross-section."""
+        required = {symbol_col, date_col, sector_col, return_col, market_cap_col}
+        missing = required.difference(panel.columns)
+        if missing:
+            raise ValueError(f"Missing required columns: {sorted(missing)}")
+
+        df = panel.copy()
+        df[date_col] = pd.to_datetime(df[date_col])
+        df = df.sort_values([symbol_col, date_col])
+        df["_mcap_lag1"] = df.groupby(symbol_col)[market_cap_col].shift(1)
+
+        snapshot = df.loc[df[date_col] == pd.Timestamp(as_of)].copy()
+        if snapshot.empty:
+            return snapshot.assign(rs_ex_top3=pd.Series(dtype=float))
+
+        snapshot["_rank"] = snapshot.groupby(sector_col)["_mcap_lag1"].rank(method="first", ascending=False)
+        snapshot["_include_peer"] = snapshot["_rank"].gt(3) | snapshot["_rank"].isna()
+
+        peer_means = (
+            snapshot.loc[snapshot["_include_peer"]]
+            .groupby(sector_col)[return_col]
+            .mean()
+            .rename("_peer_mean")
+        )
+        snapshot = snapshot.merge(peer_means, on=sector_col, how="left")
+        snapshot["rs_ex_top3"] = snapshot[return_col] - snapshot["_peer_mean"].fillna(0.0)
+        return snapshot.drop(columns=["_mcap_lag1", "_rank", "_include_peer", "_peer_mean"])
     
     def compute_sector_returns(self, clean_df: Dict[str, Any], 
                           sector_mapping: Dict[str, str]) -> Dict[str, List[float]]:

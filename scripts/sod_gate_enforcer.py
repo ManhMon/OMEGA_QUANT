@@ -40,7 +40,29 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-WORKSPACE = Path(__file__).parent.parent  # scripts/ -> workspace/
+
+def _configure_utf8_stdio() -> None:
+    if not sys.platform.startswith('win'):
+        return
+    for stream_name in ('stdout', 'stderr'):
+        stream = getattr(sys, stream_name, None)
+        if stream is None:
+            continue
+        try:
+            stream.reconfigure(encoding='utf-8')
+        except AttributeError:
+            pass
+
+
+_configure_utf8_stdio()
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from extract_lessons import extract_lessons
+
+WORKSPACE = SCRIPT_DIR.parent  # scripts/ -> workspace/
 GATES_FILE = WORKSPACE / ".ly_state" / "session" / "phase_gates.json"
 AGENTS_DIR = WORKSPACE / ".agents" / "agent"
 TASK_GRAPH_FILE = WORKSPACE / ".ly_state" / "session" / "task_graph.json"
@@ -1547,20 +1569,18 @@ def check_sod_compliance() -> bool:
     return all_pass
 
 
-if __name__ == '__main__':
+def main(argv=None):
     """CLI entry point for SoD gate compliance check."""
-    import sys
-    if sys.platform.startswith('win'):
-        try:
-            sys.stdout.reconfigure(encoding='utf-8')
-            sys.stderr.reconfigure(encoding='utf-8')
-        except AttributeError:
-            pass
     import argparse
     parser = argparse.ArgumentParser(description='SOD Gate Enforcer')
     parser.add_argument('--check-before-push', action='store_true',
                         help='Check all gates before allowing git push')
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
+
+    try:
+        extract_lessons()
+    except Exception as exc:
+        print(f"WARNING: lesson extraction failed: {exc}")
     
     if args.check_before_push:
         result = check_sod_compliance()
@@ -1575,3 +1595,7 @@ if __name__ == '__main__':
         status = "PASS" if result else "FAIL"
         print(f"SoD Compliance: [{status}]")
         sys.exit(0 if result else 1)
+
+
+if __name__ == '__main__':
+    main()

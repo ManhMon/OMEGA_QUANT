@@ -1,0 +1,9 @@
+{
+  "rank": 13,
+  "round": 6,
+  "train_IC": 0.2328,
+  "test_IC": 0.0326,
+  "hit_rate": 0.5366,
+  "expression": "(hl_range decay_linear 10)",
+  "serialized_tree": "GPNode(operator='decay_linear', children=[GPNode(operator='terminal', children=[], value='hl_range'), GPNode(operator='terminal', children=[], value='10')], value=None)"
+}

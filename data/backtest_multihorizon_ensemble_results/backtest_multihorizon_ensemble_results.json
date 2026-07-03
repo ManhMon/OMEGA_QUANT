@@ -1,0 +1,139 @@
+{
+  "version": "multihorizon-ensemble",
+  "timestamp": "2026-06-23T17:05:40.386864",
+  "strategy": "multi_horizon_ensemble",
+  "horizons": [
+    15,
+    30,
+    40
+  ],
+  "dynamic_universe": true,
+  "symbol_count": 30,
+  "parallel_backend": "runner",
+  "workers": 4,
+  "evolution": {
+    "horizons": [
+      15,
+      30,
+      40
+    ],
+    "horizon_results": {
+      "15": {
+        "n_alphas": 1,
+        "best_ic": 0.30370030871291415
+      },
+      "30": {
+        "n_alphas": 3,
+        "best_ic": 0.3116490553024397
+      },
+      "40": {
+        "n_alphas": 1,
+        "best_ic": 0.31185931453913807
+      }
+    },
+    "total_candidates": 5,
+    "final_alphas": 5,
+    "duration_s": 66.95223736763,
+    "alphas": [
+      {
+        "expr": "H40d:(mean (div low (add (mul (sub returns volume) rsi) high)))",
+        "ic": 0.31185931453913807,
+        "hit": 0.5662583073104331
+      },
+      {
+        "expr": "H30d:(min (add (mean (mul returns (delay returns))) (min (div (mul high close) (",
+        "ic": 0.3116490553024397,
+        "hit": 0.5633421093387022
+      },
+      {
+        "expr": "H15d:(min (mean (delay volume)))",
+        "ic": 0.30370030871291415,
+        "hit": 0.5262266096950051
+      },
+      {
+        "expr": "H30d:(delay (add (mean (mul returns (delay returns))) (min (div (mul high close)",
+        "ic": 0.2737994415348631,
+        "hit": 0.5632646739972124
+      },
+      {
+        "expr": "H30d:(min (min (mean low)))",
+        "ic": 0.21318566730782393,
+        "hit": 0.5633421093387022
+      }
+    ]
+  },
+  "universe": {
+    "train": {
+      "mode": "dynamic",
+      "start_date": "2015-01-30",
+      "end_date": "2022-06-30",
+      "schedule_size": 89,
+      "evidence_count": 89,
+      "first_rebalance": "2015-01-30",
+      "last_rebalance": "2022-06-27"
+    },
+    "val": {
+      "mode": "dynamic",
+      "start_date": "2022-08-01",
+      "end_date": "2024-06-30",
+      "schedule_size": 23,
+      "evidence_count": 23,
+      "first_rebalance": "2022-08-01",
+      "last_rebalance": "2024-06-10"
+    },
+    "test": {
+      "mode": "dynamic",
+      "start_date": "2024-08-01",
+      "end_date": "2026-06-18",
+      "schedule_size": 23,
+      "evidence_count": 23,
+      "first_rebalance": "2024-08-01",
+      "last_rebalance": "2026-06-12"
+    }
+  },
+  "ensemble": {
+    "n_alphas": 1,
+    "alpha_contributions": 1
+  },
+  "metrics": {
+    "total_return": 0.26535144872053473,
+    "volatility": 0.22871118512345004,
+    "sharpe": 0.6711958909674077,
+    "sortino": 0.8544825551340174,
+    "max_drawdown": -0.27180416620116715,
+    "win_rate": 0.513978494623656,
+    "num_chunks": 4.0
+  },
+  "metrics_extra": {
+    "calmar": 0.5647816581278238,
+    "avg_turnover": 0.011874463519313304,
+    "avg_slippage": 6.022470744590985
+  },
+  "walk_forward": [
+    {
+      "start": "2024-08-02",
+      "end": "2025-08-02",
+      "return": 0.29019213265329435,
+      "sharpe": 1.3830378172076878,
+      "max_dd": -0.19196513540215782
+    },
+    {
+      "start": "2025-02-02",
+      "end": "2026-02-02",
+      "return": 0.3340412077377064,
+      "sharpe": 1.2854695901131552,
+      "max_dd": -0.1895618922085836
+    }
+  ],
+  "dd_breaker": {
+    "limit": -0.15,
+    "status": "BREACHED (halt @ 2025-04-08)"
+  },
+  "alphas": [
+    {
+      "expr": "H40d:(mean (div low (add (mul (sub returns volume) rsi) high)))",
+      "ic": 0.31185931453913807,
+      "hit": 0.5662583073104331
+    }
+  ]
+}

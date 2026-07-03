@@ -34,18 +34,27 @@ RESULTS_JSONL_NAME = "genetic_alpha_v3_results.jsonl"
 BEST_JSON_NAME = "best_evolved_alpha_v3.json"
 TOP_K = 15
 FEATURE_COLS = [
-    "open",
-    "high",
-    "low",
-    "close",
-    "volume",
     "returns_1d",
     "returns_5d",
     "vol_ratio",
     "hl_range",
     "oc_range",
+    "hl_range_cs_z",
+    "oc_range_cs_z",
 ]
-ORTHO_BASELINE_COLS = ["open", "high", "low", "close", "volume"]
+ORTHO_BASELINE_COLS = ["returns_1d", "returns_5d", "vol_ratio", "hl_range", "oc_range"]
+
+
+def _cs_zscore_by_date(values: pd.Series, dates: pd.Series) -> pd.Series:
+    return values.groupby(dates).transform(lambda x: (x - x.mean()) / (x.std(ddof=0) + 1e-9))
+
+
+def _volume_quartile_sector_proxy(volumes: pd.Series, dates: pd.Series) -> pd.Series:
+    def _per_date_bucket(day_volume: pd.Series) -> pd.Series:
+        rank = day_volume.rank(method="first")
+        return pd.qcut(rank, 4, labels=False)
+
+    return volumes.groupby(dates).transform(_per_date_bucket).astype(np.int64)
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,13 +79,21 @@ def load_dataset() -> pd.DataFrame:
         top_n_symbols=15,
         forward_horizons=[1, 3, 5, 10],
     )
+    df = df.sort_values(["ticker", "date"]).copy()
     df = df.dropna(subset=["open", "high", "low", "close", "volume", "fwd_ret_5"])
     df["returns_1d"] = df.groupby("ticker")["close"].transform(lambda x: x.pct_change(1))
     df["returns_5d"] = df.groupby("ticker")["close"].transform(lambda x: x.pct_change(5))
     df["vol_ratio"] = df["volume"] / df.groupby("ticker")["volume"].transform(lambda x: x.rolling(20).mean())
     df["hl_range"] = (df["high"] - df["low"]) / df["close"]
     df["oc_range"] = (df["close"] - df["open"]) / df["close"]
-    return df.dropna()
+    df["hl_range_cs_z"] = _cs_zscore_by_date(df["hl_range"], df["date"])
+    df["oc_range_cs_z"] = _cs_zscore_by_date(df["oc_range"], df["date"])
+    df["__log_market_cap__"] = np.log1p((df["close"] * df["volume"]).clip(lower=0.0))
+    df["__sector__"] = _volume_quartile_sector_proxy(df["volume"], df["date"])
+    df[FEATURE_COLS] = df.groupby("ticker")[FEATURE_COLS].shift(1)
+    df["__log_market_cap__"] = df.groupby("ticker")["__log_market_cap__"].shift(1)
+    df["__sector__"] = df.groupby("ticker")["__sector__"].shift(1)
+    return df.dropna(subset=FEATURE_COLS + ["fwd_ret_5", "__log_market_cap__", "__sector__"])
 
 
 def build_registry_payload(entry: dict[str, object], artifact_path: Path, version: str, pit_embargo: datetime) -> dict[str, object]:
@@ -165,8 +182,13 @@ def main() -> int:
 
     features_train = {col: train_df[col].values for col in FEATURE_COLS}
     features_train["__date__"] = train_df["date"].values
+    features_train["__log_market_cap__"] = train_df["__log_market_cap__"].values
+    features_train["__sector__"] = train_df["__sector__"].values
     target_train = train_df["fwd_ret_5"].values
     features_test = {col: test_df[col].values for col in FEATURE_COLS}
+    features_test["__date__"] = test_df["date"].values
+    features_test["__log_market_cap__"] = test_df["__log_market_cap__"].values
+    features_test["__sector__"] = test_df["__sector__"].values
     target_test = test_df["fwd_ret_5"].values
     ortho_baseline_set = {col: features_train[col] for col in ORTHO_BASELINE_COLS}
 
@@ -182,25 +204,33 @@ def main() -> int:
             population_size=args.population_size,
             generations=args.generations,
             max_depth=4,
-            tournament_size=5,
+            tournament_size=3,
             crossover_rate=0.6,
-            mutation_rate=0.35,
-            elitism_count=2,
+            mutation_rate=0.5,
+            elitism_count=1,
             hall_of_fame_size=10,
-            diversity_threshold=0.4,
+            diversity_threshold=0.3,
             min_observations=500,
             terminal_prob=0.4,
-            use_icir=True,
+            use_icir=False,
+            use_time_fold_ir=True,
+            time_folds=3,
+            fold_ir_std_floor=0.01,
+            neutralize_size_sector=True,
             icir_window=20,
             ortho_baseline_set=ortho_baseline_set,
             ortho_penalty_weight=0.08,
             ortho_correlation_threshold=0.4,
             turnover_penalty_weight=0.01,
+            tree_size_penalty_weight=0.0005,
+            early_stopping_rounds=10,
+            tournament_diversity_weight=0.02,
             n_jobs=args.workers,
         )
 
         engine = GeneticEngine(config=config)
-        with parallel_backend(args.backend):
+        backend = "threading" if args.backend == "threads" else args.backend
+        with parallel_backend(backend):
             hof = engine.evolve(features=features_train, target=target_train)
 
         for ind in hof[:5]:

@@ -1,0 +1,320 @@
+{
+  "metadata": {
+    "task": "HOSE_HNX_DATA_REBUILD_PHASE12_AUDIT_20260612",
+    "role": 15,
+    "tier": 2,
+    "date": "2026-06-12",
+    "canonical_warehouse": "data/market_2015_now.parquet",
+    "rebuilt_warehouse": "data/market_hose_hnx_2015_now_rebuilt_20260612.parquet",
+    "canonical_price_scale": "VND_FULL",
+    "source_price_scale": "THOUSANDS (VCI 4.x)"
+  },
+  "scale_invariant_formulas": [
+    {
+      "id": "SI-001",
+      "name": "Mean Reversion Z-Score",
+      "file": "src/features/signal_module.py",
+      "formula": "(price - rolling_mean) / rolling_std",
+      "scale_invariant_because": "Z-score normalizes price level",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-002",
+      "name": "Momentum (Rate of Change)",
+      "file": "src/features/signal_module.py",
+      "formula": "pct_change(window)",
+      "scale_invariant_because": "Percentage change cancels units",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-003",
+      "name": "Trend (MA Spread Normalized)",
+      "file": "src/features/signal_module.py",
+      "formula": "(short_ma - long_ma) / abs(long_ma)",
+      "scale_invariant_because": "Ratio of price to price",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-004",
+      "name": "RSI",
+      "file": "src/indicators/alpha_discovery.py",
+      "formula": "100 - (100 / (1 + avg_gain/avg_loss))",
+      "scale_invariant_because": "Ratio of gains to losses",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-005",
+      "name": "Intraday Range",
+      "file": "src/omega/quant/evolution/alternative_features.py",
+      "formula": "(high - low) / close",
+      "scale_invariant_because": "Ratio of price to price",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-006",
+      "name": "Gap",
+      "file": "src/omega/quant/evolution/alternative_features.py",
+      "formula": "(open - prev_close) / prev_close",
+      "scale_invariant_because": "Percentage change",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-007",
+      "name": "Volume MA Ratio",
+      "file": "src/omega/quant/evolution/alternative_features.py",
+      "formula": "volume / rolling_mean(volume, 20)",
+      "scale_invariant_because": "Ratio of volume to volume",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-008",
+      "name": "Realized Volatility",
+      "file": "src/omega/quant/evolution/alternative_features.py",
+      "formula": "std(pct_change(close))",
+      "scale_invariant_because": "Std of returns",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-009",
+      "name": "CLV (Close Location Value)",
+      "file": "src/omega/quant/evolution/alternative_features.py",
+      "formula": "((C-L) - (H-C)) / (H-L)",
+      "scale_invariant_because": "Ratio of price differences",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-010",
+      "name": "Forward Return Labels",
+      "file": "src/omega/quant/backtest/label_engine.py, target_module.py, multi_horizon_labels.py",
+      "formula": "(future_price - price) / price",
+      "scale_invariant_because": "Percentage return",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-011",
+      "name": "Cross-Sectional Rank",
+      "file": "src/omega/quant/evolution/alternative_features.py",
+      "formula": "rank(pct=True)",
+      "scale_invariant_because": "Percentile rank",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-012",
+      "name": "Bollinger Width/Position",
+      "file": "src/omega/core/feature_factory.py",
+      "formula": "(upper - lower) / middle; (price - lower) / (upper - lower)",
+      "scale_invariant_because": "Ratio of price differences",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-013",
+      "name": "Spread",
+      "file": "src/omega/core/feature_factory.py",
+      "formula": "(high - low) / close",
+      "scale_invariant_because": "Ratio of price to price",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-014",
+      "name": "Volume Z-Score",
+      "file": "src/omega/core/feature_factory.py",
+      "formula": "(volume - mean_20) / std_20",
+      "scale_invariant_because": "Z-score of volume",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-015",
+      "name": "Cost/Slippage (BPS)",
+      "file": "src/omega/execution/cost_estimator.py, vn_transaction_cost_model.py",
+      "formula": "basis points = (cost / notional) * 10000",
+      "scale_invariant_because": "Ratio expressed in bps",
+      "affected_by_scale": false
+    },
+    {
+      "id": "SI-016",
+      "name": "Almgren-Chriss Impact",
+      "file": "src/omega/execution/market_impact.py, liquidity_stress.py",
+      "formula": "gamma * sigma * sqrt(Q / ADV)",
+      "scale_invariant_because": "Q and ADV in same units cancel in ratio",
+      "affected_by_scale": false,
+      "note": "REQUIRES Q and ADV in same unit (both shares or both VND)"
+    }
+  ],
+  "scale_sensitive_formulas": [
+    {
+      "id": "SS-001",
+      "name": "Price Bucket Classification",
+      "file": "src/omega/core/structure_features.py",
+      "formula": "prices < 10000 (penny), >= 10000 AND <= 50000 (mid), > 50000 (large)",
+      "scale_sensitive_because": "Hardcoded VND thresholds (10000, 50000)",
+      "requires_vnd": true,
+      "broken_if_thousands": "All stocks classified as penny",
+      "affected_by_scale": true
+    },
+    {
+      "id": "SS-002",
+      "name": "Market Cap Proxy (log)",
+      "file": "src/omega/core/structure_features.py",
+      "formula": "np.log1p(close * volume)",
+      "scale_sensitive_because": "close*volume product depends on price unit",
+      "requires_vnd": true,
+      "broken_if_thousands": "log1p dampens but 1000x shift changes distribution",
+      "affected_by_scale": true
+    },
+    {
+      "id": "SS-003",
+      "name": "MACD Line/Histogram",
+      "file": "src/indicators/alpha_discovery.py",
+      "formula": "ema_fast - ema_slow (raw price units)",
+      "scale_sensitive_because": "Absolute price difference in VND",
+      "requires_vnd": false,
+      "broken_if_thousands": "Values 1000x smaller, but ranking may still work",
+      "affected_by_scale": true,
+      "note": "Downstream Spearman IC partially mitigates via rank correlation"
+    },
+    {
+      "id": "SS-004",
+      "name": "ADV VND Notional",
+      "file": "scripts/prepare_full_dataset.py, backtest_v30/31/32",
+      "formula": "adv_20_shares * close_price",
+      "scale_sensitive_because": "close price determines VND notional",
+      "requires_vnd": true,
+      "broken_if_thousands": "ADV_VND would be 1000x too small",
+      "affected_by_scale": true
+    },
+    {
+      "id": "SS-005",
+      "name": "Turnover (close × volume)",
+      "file": "src/omega/core/feature_factory.py",
+      "formula": "volume * close",
+      "scale_sensitive_because": "Product depends on price unit",
+      "requires_vnd": true,
+      "broken_if_thousands": "Turnover in thousands-VND×shares",
+      "affected_by_scale": true
+    },
+    {
+      "id": "SS-006",
+      "name": "VWAP",
+      "file": "src/omega/core/feature_factory.py",
+      "formula": "cumsum(typical_price * volume) / cumsum(volume)",
+      "scale_sensitive_because": "Result in price units (VND or thousands)",
+      "requires_vnd": false,
+      "broken_if_thousands": "VWAP in thousands instead of VND",
+      "affected_by_scale": true,
+      "note": "Relative comparisons still valid; absolute thresholds break"
+    },
+    {
+      "id": "SS-007",
+      "name": "AD Line (CLV × volume)",
+      "file": "src/omega/quant/evolution/alternative_features.py",
+      "formula": "clv * volume (raw shares)",
+      "scale_sensitive_because": "CLV is scale-invariant but absolute AD line values depend on volume units only",
+      "requires_vnd": false,
+      "broken_if_thousands": "AD line itself is volume-based, not price-dependent",
+      "affected_by_scale": false,
+      "note": "Actually scale-invariant since CLV is a ratio and volume is shares"
+    },
+    {
+      "id": "SS-008",
+      "name": "GP Tree mul(close, volume)",
+      "file": "src/evolution/genetic_alpha.py",
+      "formula": "close * volume (arbitrary tree combination)",
+      "scale_sensitive_because": "GP can freely combine price and volume",
+      "requires_vnd": false,
+      "broken_if_thousands": "Signal magnitude 1000x different",
+      "affected_by_scale": true,
+      "note": "Spearman IC screening partially mitigates"
+    },
+    {
+      "id": "SS-009",
+      "name": "Board-Lot Rounding in Backtest",
+      "file": "scripts/backtest_v30_full.py, v31, v32",
+      "formula": "int((weight * CAPITAL) / price / BOARD_LOT)",
+      "scale_sensitive_because": "Price in denominator determines lot count",
+      "requires_vnd": true,
+      "broken_if_thousands": "Position sizes 1000x too large",
+      "affected_by_scale": true
+    },
+    {
+      "id": "SS-010",
+      "name": "Liquidity Threshold (VND)",
+      "file": "src/omega/execution/vn_transaction_cost_model.py",
+      "formula": "ADV >= 50e9 VND (liquid), ADV < 10e9 VND (illiquid)",
+      "scale_sensitive_because": "Thresholds in VND notional",
+      "requires_vnd": true,
+      "broken_if_thousands": "All tickers classified as illiquid",
+      "affected_by_scale": true
+    },
+    {
+      "id": "SS-011",
+      "name": "Order Notional",
+      "file": "src/omega/execution/vn_transaction_cost_model.py",
+      "formula": "order_size * price_vnd",
+      "scale_sensitive_because": "Price determines VND notional",
+      "requires_vnd": true,
+      "broken_if_thousands": "Participation rate 1000x too small",
+      "affected_by_scale": true
+    },
+    {
+      "id": "SS-012",
+      "name": "Order Quantity from Notional",
+      "file": "src/omega/execution/order_generator.py",
+      "formula": "target_notional / (current_price * 1000.0)",
+      "scale_sensitive_because": "Assumes price in thousands, multiplies by 1000",
+      "requires_vnd": false,
+      "broken_if_thousands": "Correct if price in thousands; 1000x WRONG if VND",
+      "affected_by_scale": true,
+      "note": "DOUBLE-SCALING BUG: if warehouse is VND and this multiplies ×1000 again"
+    },
+    {
+      "id": "SS-013",
+      "name": "Trade Notional",
+      "file": "src/omega/execution/trade_blotter.py",
+      "formula": "quantity * price * 1000.0",
+      "scale_sensitive_because": "Hardcoded ×1000 assumes thousands price",
+      "requires_vnd": false,
+      "broken_if_thousands": "Correct if thousands; 1000x WRONG if VND",
+      "affected_by_scale": true
+    },
+    {
+      "id": "SS-014",
+      "name": "PnL Notional",
+      "file": "scripts/pnl_monitor.py (found via grep)",
+      "formula": "abs(quantity) * fill_price * price_scale (price_scale=1000.0)",
+      "scale_sensitive_because": "Hardcoded ×1000 assumes thousands",
+      "requires_vnd": false,
+      "broken_if_thousands": "Correct if thousands; 1000x WRONG if VND",
+      "affected_by_scale": true
+    }
+  ],
+  "adv_analysis": {
+    "definition": "Average Daily Value = rolling_mean(volume, N) × close_price",
+    "units_if_vnd": "VND notional (e.g., 50B VND/day)",
+    "units_if_thousands": "Thousands-VND × shares (meaningless unit)",
+    "consumers_requiring_vnd": [
+      "vn_transaction_cost_model.py (liquid >= 50e9 VND, illiquid < 10e9 VND)",
+      "prepare_full_dataset.py (adv_vnd column)",
+      "backtest_v30/31/32 (tiered slippage: top-30 by ADV)",
+      "select_universe_dynamic.py (ADV >= 2B VND floor)",
+      "liquidity_stress.py (exit_days = qty / (0.1 × ADV))"
+    ],
+    "sanity_check_rebuilt": {
+      "SHB": "704.5B VND/day (very liquid, HNX flagship)",
+      "HPG": "476.1B VND/day (top HOSE blue chip)",
+      "SSI": "416.0B VND/day (top brokerage)",
+      "STB": "381.7B VND/day (Sacombank)",
+      "HAG": "36.8B VND/day (mid-cap, reasonable)"
+    }
+  },
+  "conclusion": {
+    "canonical_scale": "VND_FULL (median close = 10,000 VND)",
+    "rebuilt_scale": "VND_FULL (median close = 9,570 VND)",
+    "scale_ratio_median": 1.0,
+    "risk_areas": [
+      "order_generator.py and trade_blotter.py assume THOUSANDS (×1000 hardcoded) — DOUBLE-SCALE BUG if fed VND data",
+      "vnstock_adapter.py and vnstock_live.py do NOT scale — risk of writing unscaled data to VND warehouse",
+      "structure_features.py price_bucket thresholds assume VND (10000, 50000) — correct for current scale",
+      "GP tree genetic_alpha.py can produce scale-sensitive combos (close*volume) — mitigated by Spearman IC"
+    ]
+  }
+}

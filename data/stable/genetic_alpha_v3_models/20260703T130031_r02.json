@@ -1,0 +1,9 @@
+{
+  "rank": 2,
+  "round": 2,
+  "train_IC": 0.2197,
+  "test_IC": 0.0402,
+  "hit_rate": 0.5369,
+  "expression": "(((vol_ratio max returns_1d) min low) / ((returns_5d ts_mean 20) ts_rank 5))",
+  "serialized_tree": "GPNode(operator='/', children=[GPNode(operator='min', children=[GPNode(operator='max', children=[GPNode(operator='terminal', children=[], value='vol_ratio'), GPNode(operator='terminal', children=[], value='returns_1d')], value=None), GPNode(operator='terminal', children=[], value='low')], value=None), GPNode(operator='ts_rank', children=[GPNode(operator='ts_mean', children=[GPNode(operator='terminal', children=[], value='returns_5d'), GPNode(operator='terminal', children=[], value='20')], value=None), GPNode(operator='terminal', children=[], value='5')], value=None)], value=None)"
+}

@@ -1,0 +1,11 @@
+rank,train_IC,test_IC,hit_rate,expr
+1,0.0348,0.0235,0.4544,"GPNode(operator='/', children=[GPNode(operator='max', children=[GPNode(operator="
+2,0.0219,-0.0033,0.5214,"GPNode(operator='ts_rank', children=[GPNode(operator='terminal', children=[], va"
+3,0.0219,0.0033,0.4544,"GPNode(operator='neg', children=[GPNode(operator='terminal', children=[], value="
+4,0.0221,-0.0032,0.5214,"GPNode(operator='+', children=[GPNode(operator='neg', children=[GPNode(operator="
+5,0.0221,0.0032,0.4544,"GPNode(operator='-', children=[GPNode(operator='-', children=[GPNode(operator='t"
+6,0.0219,0.0033,0.4544,"GPNode(operator='neg', children=[GPNode(operator='*', children=[GPNode(operator="
+7,0.0219,-0.0033,0.5214,"GPNode(operator='ts_mean', children=[GPNode(operator='max', children=[GPNode(ope"
+8,0.0219,-0.0033,0.5214,"GPNode(operator='ts_rank', children=[GPNode(operator='max', children=[GPNode(ope"
+9,0.0219,-0.0033,0.5214,"GPNode(operator='max', children=[GPNode(operator='ts_rank', children=[GPNode(ope"
+10,0.0219,0.0033,0.4544,"GPNode(operator='min', children=[GPNode(operator='terminal', children=[], value="

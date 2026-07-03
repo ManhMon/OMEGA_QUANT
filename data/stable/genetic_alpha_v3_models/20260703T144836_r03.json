@@ -1,0 +1,9 @@
+{
+  "rank": 3,
+  "round": 1,
+  "train_IC": 3.6662,
+  "test_IC": -0.0213,
+  "hit_rate": 0.5362,
+  "expression": "(sigmoid((returns_1d decay_linear 10)) decay_linear 10)",
+  "serialized_tree": "GPNode(operator='decay_linear', children=[GPNode(operator='sigmoid', children=[GPNode(operator='decay_linear', children=[GPNode(operator='terminal', children=[], value='returns_1d'), GPNode(operator='terminal', children=[], value='10')], value=None)], value=None), GPNode(operator='terminal', children=[], value='10')], value=None)"
+}

@@ -1,0 +1,171 @@
+{
+  "task": "CANONICAL_DATA_REPLACEMENT_EXCHANGE_RESOLUTION_20260612",
+  "timestamp": "2026-06-12T19:20:59.279037+07:00",
+  "vnstock_version": "4.0.2",
+  "sources_queried": {
+    "VCI": {
+      "status": "FAILED",
+      "error": "RetryError[<Future at 0x2914bba0f50 state=finished raised ConnectionError>]"
+    },
+    "KBS": {
+      "status": "OK",
+      "rows": 3249,
+      "columns": [
+        "symbol",
+        "organ_name",
+        "en_organ_name",
+        "exchange",
+        "type",
+        "id",
+        "re",
+        "ceiling",
+        "floor"
+      ],
+      "exchange_counts": {
+        "UPCOM": 828,
+        "HOSE": 658,
+        "HNX": 394,
+        "XHNF": 14
+      },
+      "type_counts": {
+        "stock": 1531,
+        "corpbond": 1355,
+        "cw": 233,
+        "bond": 94,
+        "fund": 22,
+        "future": 14
+      }
+    },
+    "VND": {
+      "status": "NOT_AVAILABLE",
+      "reason": "vnstock 4.x Listing only accepts KBS/VCI/MSN sources"
+    },
+    "MSN": {
+      "status": "FAILED",
+      "error": "RetryError[<Future at 0x2914cc6ff00 state=finished raised NotImplementedError>]"
+    }
+  },
+  "primary_source": "KBS",
+  "fallback_source": "VCI (unavailable - ConnectionError)",
+  "old_map_entries": 1444,
+  "authoritative_map_entries": 3255,
+  "resolution_stats": {
+    "kbs_stock_resolved": 1531,
+    "kbs_non_stock_excluded": 1718,
+    "old_map_kept": 0,
+    "conflicts_resolved": 10,
+    "still_unknown": 6
+  },
+  "conflict_details": [
+    {
+      "ticker": "BSR",
+      "old_exchange": "UPCOM",
+      "kbs_exchange": "HOSE",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    },
+    {
+      "ticker": "HBC",
+      "old_exchange": "HOSE",
+      "kbs_exchange": "UPCOM",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    },
+    {
+      "ticker": "LCG",
+      "old_exchange": "HNX",
+      "kbs_exchange": "HOSE",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    },
+    {
+      "ticker": "MCH",
+      "old_exchange": "UPCOM",
+      "kbs_exchange": "HOSE",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    },
+    {
+      "ticker": "MSN",
+      "old_exchange": "UPCOM",
+      "kbs_exchange": "HOSE",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    },
+    {
+      "ticker": "POM",
+      "old_exchange": "HOSE",
+      "kbs_exchange": "UPCOM",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    },
+    {
+      "ticker": "PVX",
+      "old_exchange": "HNX",
+      "kbs_exchange": "UPCOM",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    },
+    {
+      "ticker": "SBS",
+      "old_exchange": "HNX",
+      "kbs_exchange": "UPCOM",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    },
+    {
+      "ticker": "SHB",
+      "old_exchange": "HNX",
+      "kbs_exchange": "HOSE",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    },
+    {
+      "ticker": "VGC",
+      "old_exchange": "HNX",
+      "kbs_exchange": "HOSE",
+      "kbs_type": "stock",
+      "resolution": "KBS_WINS"
+    }
+  ],
+  "conflict_count": 10,
+  "still_unknown_tickers_total": 6,
+  "still_unknown_tickers_in_rebuilt": 6,
+  "still_unknown_in_rebuilt_sample": [
+    "DMS",
+    "DTE",
+    "IHK",
+    "SHG",
+    "TKC",
+    "TNV"
+  ],
+  "kbs_stock_count": 1531,
+  "kbs_non_stock_count": 1718,
+  "kbs_non_stock_types": {
+    "CSTB2601": "cw",
+    "CTCB2512": "cw",
+    "CMBB2520": "cw",
+    "CMWG2515": "cw",
+    "CTCB2523": "cw",
+    "CVHM2603": "cw",
+    "CHPG2613": "cw",
+    "CMWG2601": "cw",
+    "CHDB2602": "cw",
+    "CSHB2514": "cw",
+    "CVIB2603": "cw",
+    "CACB2607": "cw",
+    "CTCB2606": "cw",
+    "CHPG2541": "cw",
+    "CVPB2607": "cw",
+    "CMWG2522": "cw",
+    "CHDB2601": "cw",
+    "CFPT2524": "cw",
+    "CVPB2532": "cw",
+    "CVIC2601": "cw"
+  },
+  "target_exchanges": [
+    "HOSE",
+    "HNX"
+  ],
+  "excluded_type_prefix": "EXCLUDE_"
+}

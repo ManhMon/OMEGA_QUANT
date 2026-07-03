@@ -1,0 +1,17 @@
+{
+  "prompt_hash": "cf93a2a0de87161f131ac6a4ee0e2c14d1e90a6a8f6e1c5066972419d00aec8b",
+  "prompt_version": "vn_alpha_search_v2",
+  "formulas": [
+    "div(ts_rank(volume, 7), ts_rank(volume, 30))",
+    "mul(neg(ts_rank(ret_1d, 3)), div(volume, ts_mean(volume, 20)))",
+    "sub(ts_rank(volume, 5), decay_linear(ts_rank(volume, 20), 10))",
+    "mul(rank(div(volume, ts_mean(volume, 10))), neg(rank(abs(ret_1d))))",
+    "div(ts_std(volume, 5), ts_std(volume, 30))",
+    "mul(decay_linear(rank(volume), 6), neg(ts_rank(ret_1d, 10)))",
+    "sub(ts_rank(abs(ret_1d), 5), ts_rank(volume, 20))",
+    "div(decay_linear(volume, 3), ts_mean(volume, 15))",
+    "mul(rank(ts_std(volume, 10)), neg(ts_rank(ret_1d, 5)))",
+    "sub(ts_rank(div(volume, ts_mean(volume, 20)), 10), ts_rank(abs(ret_1d), 10))"
+  ],
+  "timestamp": "2026-06-12T12:16:03.943356"
+}

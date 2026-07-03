@@ -222,6 +222,13 @@ def run_daily_oracle():
     else:
         logger.info("Sentiment blend script not found, skipping.")
 
+    # 3.45. Conformal price ladder (non-blocking)
+    logger.info("--> STEP 3.45: Generating Conformal Price Ladder")
+    if not run_step("generate_price_ladder.py", ["--date", target_date]):
+        logger.warning("Price ladder failed (non-blocking).")
+    else:
+        logger.info("Price ladder generated.")
+
     # 3.2. Transaction Cost Optimization
     logger.info("--> STEP 3.2: Optimizing Transaction Costs")
     if not run_step("run_cost_optimizer.py", ["--date", target_date]):

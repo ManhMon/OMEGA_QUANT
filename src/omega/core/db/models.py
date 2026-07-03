@@ -313,6 +313,58 @@ class Dataset(Base, PITMixin, VersionedMixin):
     )
 
 
+class NewsArticle(Base):
+    """Persisted RSS/news article cache."""
+    __tablename__ = "news_articles"
+
+    article_id = Column(Integer, primary_key=True, autoincrement=True)
+    source = Column(String(128), nullable=False, index=True)
+    headline = Column(String(512), nullable=False)
+    news_short_content = Column(Text, nullable=True)
+    public_date = Column(DateTime, nullable=False, index=True)
+    url = Column(String(1024), nullable=False, unique=True)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    metadata_json = Column("metadata", JSON, nullable=True)
+
+    __table_args__ = (
+        Index("idx_news_article_source_date", "source", "public_date"),
+    )
+
+
+class MacroData(Base):
+    """Macro time-series observations."""
+    __tablename__ = "macro_data"
+
+    row_id = Column(Integer, primary_key=True, autoincrement=True)
+    series_key = Column(String(128), nullable=False, index=True)
+    observation_date = Column(DateTime, nullable=False, index=True)
+    available_at = Column(DateTime, nullable=True, index=True)
+    frequency = Column(String(16), nullable=True)
+    value = Column(Float, nullable=True)
+    source = Column(String(128), nullable=False, index=True)
+    created_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    metadata_json = Column("metadata", JSON, nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("series_key", "observation_date", "source", name="uq_macro_data_series_date_source"),
+        Index("idx_macro_data_series_date", "series_key", "observation_date"),
+        Index("idx_macro_data_series_available", "series_key", "available_at"),
+        Index("idx_macro_data_source_date", "source", "observation_date"),
+    )
+
+
+class TickerSector(Base):
+    """Latest ticker to sector mapping."""
+    __tablename__ = "ticker_sectors"
+
+    ticker = Column(String(32), primary_key=True)
+    sector = Column(String(256), nullable=False)
+    source = Column(String(128), nullable=False, index=True)
+    effective_date = Column(DateTime, nullable=True, index=True)
+    updated_at = Column(DateTime, nullable=False, default=lambda: datetime.now(timezone.utc))
+    metadata_json = Column("metadata", JSON, nullable=True)
+
+
 class Model(Base, PITMixin):
     """
     Model registry - model metadata and lineage.

@@ -1,0 +1,27 @@
+{
+  "total_return": -0.003323184745319896,
+  "annualized_sharpe": 0.04135230374456098,
+  "max_drawdown": -0.26319949032186135,
+  "n_days": 572,
+  "cost_breakdown": {
+    "total_turnover": 28.774112130249577,
+    "avg_turnover_per_bar": 0.05030439183610066,
+    "total_commission_cost": 0.050285061321686766,
+    "total_spread_cost": 0.02691570080327737,
+    "total_slippage_cost": 0.008817680057619896,
+    "total_other_cost": 0.0,
+    "total_cost": 0.08601844218258403,
+    "avg_cost_per_bar_bps": 1.5038189192759446,
+    "capital_vnd": 2000000000.0,
+    "final_capital_vnd": 2512726008.0340714,
+    "final_w": "[0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.       0.\n 0.       0.       0.073462 0.       0.       0.       0.       0.\n 0.       0.       0.       0.       0.       0.       0.      ]",
+    "slippage_nonlinear_exp": 0.6,
+    "settlement_lag_days": 0.0,
+    "halt_limit_haircut_pct": 0.0,
+    "foreign_room_haircut_pct": 0.0,
+    "use_adv_tiered_spread": true,
+    "dynamic_capital_tracking": true,
+    "n_active_bars": 572,
+    "bar_costs": "[0.00000000e+00 0.00000000e+00 0.00000000e+00 ... 1.50213981e-06\n 1.69355555e-06 4.17147283e-06]"
+  }
+}

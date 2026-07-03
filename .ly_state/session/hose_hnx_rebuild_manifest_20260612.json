@@ -1,0 +1,87 @@
+{
+  "manifest_version": "1.0",
+  "task": "HOSE_HNX_DATA_REBUILD_PHASE12_AUDIT_20260612",
+  "role_id": 15,
+  "tier": 2,
+  "build_date": "2026-06-12",
+  "artifact": {
+    "path": "data/market_hose_hnx_2015_now_rebuilt_20260612.parquet",
+    "format": "parquet",
+    "compression": "snappy",
+    "row_count": 3233304,
+    "column_count": 14,
+    "file_size_bytes_approx": 48000000
+  },
+  "schema": {
+    "ticker": {"dtype": "object", "description": "Stock ticker symbol (e.g., VCB, HPG)"},
+    "date": {"dtype": "datetime64[ns]", "description": "Trading date (midnight normalized)"},
+    "exchange": {"dtype": "object", "description": "Exchange: HOSE, HNX, UPCOM, or UNKNOWN"},
+    "open": {"dtype": "float64", "description": "Opening price in VND"},
+    "high": {"dtype": "float64", "description": "Daily high price in VND"},
+    "low": {"dtype": "float64", "description": "Daily low price in VND"},
+    "close": {"dtype": "float64", "description": "Closing price in VND"},
+    "volume": {"dtype": "int64", "description": "Trading volume (shares)"},
+    "as_of": {"dtype": "object", "description": "Data fetch timestamp (PIT safety)"},
+    "available_at": {"dtype": "datetime64[ns]", "description": "T+1 availability (PIT safety)"},
+    "source": {"dtype": "object", "description": "Data provider: VCI"},
+    "price_scale": {"dtype": "object", "description": "Price unit: VND"},
+    "adjusted": {"dtype": "object", "description": "Adjustment type: backward_adjusted"},
+    "rebuild_date": {"dtype": "object", "description": "Rebuild execution date"}
+  },
+  "source": {
+    "provider": "VCI (Viet Capital Securities)",
+    "library": "vnstock 4.0.2",
+    "api": "Quote.history(symbol, source='VCI', interval='1D')",
+    "raw_price_scale": "THOUSANDS (VCI returns prices in thousands VND)",
+    "scaling_applied": "×1000 for prices with median close < 1000",
+    "adjustment_type": "backward_adjusted (VCI default)"
+  },
+  "coverage": {
+    "date_range": ["2015-01-05", "2026-06-12"],
+    "date_range_days": 4176,
+    "unique_trading_days": 2855,
+    "total_tickers": 1444,
+    "exchange_breakdown": {
+      "HOSE": {"tickers": 172, "rows": 436118},
+      "HNX": {"tickers": 26, "rows": 72307},
+      "UPCOM": {"tickers": 229, "rows": 460684},
+      "UNKNOWN": {"tickers": 1017, "rows": 2264195}
+    },
+    "canonical_ticker_overlap": {
+      "canonical_total": 1534,
+      "rebuilt_total": 1444,
+      "in_both": 1444,
+      "in_canonical_only": 90,
+      "in_rebuilt_only": 0
+    }
+  },
+  "build_process": {
+    "script": "scripts/rebuild_hose_hnx_20260612.py",
+    "universe_source": "Canonical market_2015_now.parquet ticker list",
+    "ticker_filter": "len(ticker) <= 3 (exclude covered warrants)",
+    "total_tickers_attempted": 1534,
+    "api_errors": 258,
+    "rate_limit_sec": 0.3,
+    "checkpoint_mechanism": "Atomic JSON checkpoint + partial parquet",
+    "exchange_resolution": "VCI Company.overview() com_group_code mapping",
+    "exchange_resolution_rate": "333 of 1350 UNKNOWN resolved (24.7%)"
+  },
+  "blockers": {
+    "listing_api_down": {
+      "detail": "VCI Listing endpoint (symbols_by_exchange, all_symbols) returns ConnectionError: JSON decode error",
+      "impact": "Cannot get authoritative ticker-exchange mapping from API; relied on Company.overview() and hardcoded map",
+      "workaround": "Used VCI Company.overview() com_group_code field (VNINDEX→HOSE, HNX30→HNX, UpcomIndex→UPCOM)"
+    },
+    "company_api_limited": {
+      "detail": "VCI Company.overview() works but returns no explicit 'exchange' field; com_group_code used as proxy",
+      "impact": "1,017 tickers remain UNKNOWN exchange (likely delisted, bonds, warrants, or inactive)"
+    },
+    "90_tickers_missing": {
+      "detail": "90 tickers from canonical could not be fetched (API errors during rebuild)",
+      "impact": "Rebuilt covers 1,444 of 1,534 canonical tickers (94.1%)"
+    }
+  },
+  "canonical_not_overwritten": true,
+  "canonical_path": "data/market_2015_now.parquet",
+  "canonical_preserved": true
+}

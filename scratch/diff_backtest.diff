@@ -1,0 +1,499 @@
+diff --git a/scripts/backtest_hybrid_regime.py b/scripts/backtest_hybrid_regime.py
+index ee8376f..ef8f271 100644
+--- a/scripts/backtest_hybrid_regime.py
++++ b/scripts/backtest_hybrid_regime.py
+@@ -10,8 +10,12 @@ Supports dynamic universe selection via DynamicUniverseSelector and
+ aggregates Sharpe, Max DD, and Return across all folds.
+ """
+ 
+-import sys
+ import os
++os.environ.setdefault("OMP_NUM_THREADS", "1")
++os.environ.setdefault("MKL_NUM_THREADS", "1")
++os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
++
++import sys
+ import gc
+ import time
+ import argparse
+@@ -32,6 +36,11 @@ from datetime import datetime
+ 
+ from sklearn.linear_model import Ridge
+ 
++try:
++    from lightgbm import LGBMRegressor
++except Exception:  # pragma: no cover - exercised when optional dep absent
++    LGBMRegressor = None
++
+ from omega.quant import (
+     TradingPipelineV2,
+     PipelineStateManager,
+@@ -118,8 +127,8 @@ def parse_args() -> argparse.Namespace:
+         help="CPCV embargo fraction (default: 0.01)",
+     )
+     parser.add_argument(
+-        "--label-horizon", type=int, default=5,
+-        help="CPCV label horizon in bars (default: 5)",
++        "--label-horizon", type=int, default=60,
++        help="CPCV label horizon in bars (default: 60)",
+     )
+     parser.add_argument(
+         "--workers", type=int, default=0,
+@@ -131,6 +140,10 @@ def parse_args() -> argparse.Namespace:
+              "(e.g. 'hybrid_regime'). When set, produces an alpha improvement "
+              "diagnostic JSON with REALIZED gross/TC/net from 45-fold CPCV.",
+     )
++    parser.add_argument(
++        "--model-type", choices=["ridge", "lightgbm"], default="lightgbm",
++        help="Alpha blending model type (default: lightgbm)",
++    )
+     return parser.parse_args()
+ 
+ 
+@@ -283,6 +296,15 @@ def generate_features(panel: pd.DataFrame) -> pd.DataFrame:
+ 
+         feat_df = feat_panel.reset_index()
+ 
++    float32_cols = [
++        col for col in feat_df.columns
++        if (col.startswith("alpha_") or col.startswith("latent_ae_"))
++        and pd.api.types.is_float_dtype(feat_df[col])
++        and feat_df[col].dtype != np.float32
++    ]
++    if float32_cols:
++        feat_df[float32_cols] = feat_df[float32_cols].astype(np.float32)
++
+     feat_df = feat_df.dropna(subset=["close", "volume", "returns"])
+     feat_df = feat_df.sort_values(["symbol", "date"]).reset_index(drop=True)
+     return feat_df
+@@ -308,9 +330,8 @@ def make_query_fn(
+          This eliminates the per-query rebalance-date loop entirely.
+ 
+     PIT-safe: the returned closure is read-only over precomputed structures;
+-    no mutation of feat_df occurs.  Safe for concurrent access under
+-    joblib loky (process-based) backend — each worker receives its own
+-    copy-on-write view of the closure data.
++    no mutation of feat_df occurs. Safe for concurrent access under
++    joblib threading backend, where workers share closure data read-only.
+     """
+     # Pre-sort feat_df by date for contiguous iloc slicing
+     _feat_sorted = feat_df.sort_values("date").reset_index(drop=True)
+@@ -418,7 +439,16 @@ def build_scenario_overlays(
+                 adaptive_re_entry=True,
+                 bocpd_enabled=False,
+             ),
++            RebalanceFrequencyOverlay(
++                rebalance_every_n_days=5,
++                mode="fixed_interval",
++            ),
+             BoardLotRoundingOverlay(lot_size=100, capital_vnd=capital),
++            TCostOverlay(
++                cost_per_trade_bps=15.0,
++                min_trade_threshold_bps=35.0,
++                use_dynamic_budgeting=True,
++            ),
+         ],
+         "Hybrid": [
+             RiskSizingOverlay(
+@@ -429,8 +459,8 @@ def build_scenario_overlays(
+                 regime_sizing_scale=0.5,
+                 latent_gmm_enabled=True,
+                 latent_gmm_columns=["latent_ae_00", "latent_ae_01", "latent_ae_11"],
+-                latent_gmm_bear_dampening=0.5,
+-                latent_gmm_bull_boost=1.1,
++                latent_gmm_bear_dampening=0.15,
++                latent_gmm_bull_boost=1.25,
+                 latent_gmm_sideways_scale=0.9,
+                 gmm_model=gmm_model,
+                 hmm_params=hmm_params,
+@@ -448,15 +478,18 @@ def build_scenario_overlays(
+                 bocpd_threshold=0.50,
+                 bocpd_cooldown_extension=1,
+                 bocpd_exposure_scale=0.5,
++                gmm_bull_confidence=0.25,
++                gmm_partial_reentry_scale=0.50,
++                gmm_reentry_cooldown_extension=2,
+             ),
+             RebalanceFrequencyOverlay(
+-                rebalance_every_n_days=1,
++                rebalance_every_n_days=5,
+                 mode="fixed_interval",
+             ),
+             BoardLotRoundingOverlay(lot_size=100, capital_vnd=capital),
+             TCostOverlay(
+                 cost_per_trade_bps=15.0,
+-                min_trade_threshold_bps=20.0,
++                min_trade_threshold_bps=35.0,
+                 use_dynamic_budgeting=True,
+             ),
+         ],
+@@ -571,6 +604,7 @@ def train_fold_models(
+     precomputed_lag_cols: Optional[List[str]] = None,
+     pred_lag_df: Optional[pd.DataFrame] = None,
+     close_pivot_full: Optional[pd.DataFrame] = None,
++    model_type: str = "lightgbm",
+ ) -> Tuple[Optional[LatentGMMRegime], Optional[dict], Optional[pd.Series]]:
+     """Train Ridge blending (per GMM regime), HMM, and GMM models on train-fold data.
+ 
+@@ -578,7 +612,7 @@ def train_fold_models(
+     Alpha lag features are computed per-fold (train-only for Ridge training,
+     full-panel for prediction) to eliminate the global-precompute PIT leak
+     where CPCV embargo gaps caused shift(1) to reference held-out dates.
+-    The shared feat_df is never mutated (safe for parallel folds under loky).
++    The shared feat_df is never mutated (safe for parallel folds under threading).
+ 
+     Gate: HYBRID_REGIME_BACKTEST_PERF_20260621 — dynamic blending by GMM regime.
+ 
+@@ -616,7 +650,7 @@ def train_fold_models(
+         Fitted HMM parameters {'pi', 'A', 'mu', 'sigma2'}.
+     composite_signal : pd.Series or None
+         Per-row composite_signal predictions indexed by feat_df.index.
+-        Returned separately to avoid writing into shared feat_df (process-safe under loky).
++        Returned separately to avoid writing into shared feat_df (thread-safe under threading).
+ 
+     Raises
+     ------
+@@ -725,7 +759,7 @@ def train_fold_models(
+         )
+         gmm_model = None
+ 
+-    # --- 3. Ridge blending with dynamic GMM-regime blending ---
++    # --- 3. Alpha blending with dynamic GMM-regime blending ---
+     # PIT-safe: training lags per-fold from train-only data.
+     # Prediction lags from full panel (shift(1) is backward-only, PIT-safe).
+     #
+@@ -737,6 +771,31 @@ def train_fold_models(
+     #   - For prediction: map each row's date to its GMM regime, then apply
+     #     the corresponding Ridge model.
+     composite_signal = None
++    model_type = model_type.lower()
++    if model_type == "lightgbm" and LGBMRegressor is None:
++        raise ImportError("lightgbm is required for --model-type lightgbm")
++
++    def _new_alpha_model():
++        if model_type == "lightgbm":
++            return LGBMRegressor(
++                n_estimators=100,
++                learning_rate=0.03,
++                num_leaves=15,
++                min_child_samples=10,
++                subsample=0.9,
++                colsample_bytree=0.9,
++                random_state=42,
++                n_jobs=1,
++                verbosity=-1,
++            )
++        return Ridge(alpha=1.0)
++
++    def _feature_values(df: pd.DataFrame) -> np.ndarray:
++        values = df[lag_col_names].values
++        if model_type == "ridge":
++            values = np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
++        return values
++
+     all_alpha_cols = [
+         c for c in train_feat.columns
+         if c.startswith("alpha_") and not c.endswith("_lag1")
+@@ -756,8 +815,13 @@ def train_fold_models(
+         # dropna on returns to ensure clean training data.
+         temp_train = train_sorted[["returns", "date"]].copy()
+         lag_col_names_all = [f"{c}_lag1" for c in all_alpha_cols]
+-        for lc in lag_col_names_all:
+-            temp_train[lc] = train_lag_df[lc]  # keep NaN — do NOT fillna(0.0)
++        # Optimized (Gate: HYBRID_REGIME_OOM_FIX_20260624): attach the lag block
++        # in one concat to avoid repeated column inserts and extra copies.
++        if lag_col_names_all:
++            temp_train = pd.concat(
++                [temp_train, train_lag_df[lag_col_names_all]],
++                axis=1,
++            )  # keep NaN — do NOT fillna(0.0)
+ 
+         # Drop first row per symbol where shift(1) produces NaN lags (PIT-safe)
+         first_row_indices = train_sorted.groupby("symbol").head(1).index
+@@ -771,9 +835,10 @@ def train_fold_models(
+             # Compute correlation with target
+             for lc in lag_col_names_all:
+                 x_vals = temp_train[lc].values
++                mask = np.isfinite(x_vals) & np.isfinite(y_vals)
+                 # Avoid constant feature correlation warnings
+-                if np.std(x_vals) > 1e-9 and np.std(y_vals) > 1e-9:
+-                    corr = np.corrcoef(x_vals, y_vals)[0, 1]
++                if np.nanstd(x_vals) > 1e-9 and np.nanstd(y_vals) > 1e-9 and mask.sum() > 1:
++                    corr = np.corrcoef(x_vals[mask], y_vals[mask])[0, 1]
+                     if not np.isnan(corr):
+                         alpha_ics[lc] = corr
+ 
+@@ -834,17 +899,24 @@ def train_fold_models(
+             len(lag_col_names), len(used_categories),
+             used_categories.get("HR", 0), used_categories.get("GP", 0),
+             used_categories.get("LLM", 0), used_categories.get("VN", 0),
+-            {k: f"{alpha_ics[k]:.4f}" for k in lag_col_names[:3]}
++            {k: f"{alpha_ics.get(k, 0.0):.4f}" for k in lag_col_names[:3]}
+             if lag_col_names else {},
+         )
+ 
+         # Build Ridge training matrix using ONLY the selected alpha features
++        # Optimized (Gate: HYBRID_REGIME_OOM_FIX_20260624): build the selected
++        # training matrix in one concat to avoid repeated block growth.
+         ridge_train = temp_train[["returns", "date"]].copy()
+-        for lc in lag_col_names:
+-            ridge_train[lc] = temp_train[lc]
++        if lag_col_names:
++            ridge_train = pd.concat(
++                [ridge_train, temp_train[lag_col_names]],
++                axis=1,
++            )
++        drop_cols = ["returns"] if model_type == "lightgbm" else ["returns"] + lag_col_names
++        ridge_train = ridge_train.dropna(subset=drop_cols)
+         
+         if len(ridge_train) > 10:
+-            X_train = ridge_train[lag_col_names].values
++            X_train = _feature_values(ridge_train)
+             y_train = ridge_train["returns"].values
+ 
+             # --- Predict GMM regime labels for training dates ---
+@@ -864,9 +936,7 @@ def train_fold_models(
+                             "GMM regime labels predicted for %d train dates. "
+                             "Distribution: %s",
+                             len(train_regime_map),
+-                            {k: list(v).count(v[0]) if len(v) > 0 else 0
+-                             for k, v in
+-                             pd.Series(list(train_regime_map.values())).value_counts().items()},
++                            {k: int(v) for k, v in pd.Series(list(train_regime_map.values())).value_counts().items()},
+                         )
+                 except Exception as exc:
+                     logger.warning("GMM regime prediction on train set failed: %s", exc)
+@@ -875,43 +945,40 @@ def train_fold_models(
+             # --- Map training rows to GMM regimes ---
+             ridge_train["gmm_regime"] = ridge_train["date"].map(train_regime_map).fillna("Sideways")
+ 
+-            # --- Fit global fallback Ridge model (all train data) ---
+-            global_ridge = Ridge(alpha=1.0)
+-            global_ridge.fit(X_train, y_train)
++            # --- Fit global fallback model (all train data) ---
++            global_model = _new_alpha_model()
++            global_model.fit(X_train, y_train)
+ 
+-            # --- Fit per-regime Ridge models ---
+-            regime_models: Dict[str, Ridge] = {}
++            # --- Fit per-regime models ---
++            regime_models: Dict[str, Any] = {}
+             regime_names = ["Bull", "Sideways", "Bear"]
+             for regime_name in regime_names:
+                 regime_mask = ridge_train["gmm_regime"] == regime_name
+                 n_regime = regime_mask.sum()
+                 if n_regime >= 10:
+-                    regime_ridge = Ridge(alpha=1.0)
+-                    regime_ridge.fit(
+-                        ridge_train.loc[regime_mask, lag_col_names].values,
++                    regime_model = _new_alpha_model()
++                    regime_model.fit(
++                        _feature_values(ridge_train.loc[regime_mask]),
+                         ridge_train.loc[regime_mask, "returns"].values,
+                     )
+-                    regime_models[regime_name] = regime_ridge
++                    regime_models[regime_name] = regime_model
+                     logger.info(
+-                        "Ridge [%s]: trained on %d samples", regime_name, n_regime,
++                        "%s [%s]: trained on %d samples", model_type, regime_name, n_regime,
+                     )
+                 else:
+                     # Use global fallback for under-represented regimes
+-                    regime_models[regime_name] = global_ridge
++                    regime_models[regime_name] = global_model
+                     logger.info(
+-                        "Ridge [%s]: using global fallback (%d samples < 10)",
+-                        regime_name, n_regime,
++                        "%s [%s]: using global fallback (%d samples < 10)",
++                        model_type, regime_name, n_regime,
+                     )
+ 
+-            # (b) Prediction: compute lags and predict using regime-specific models
+-            # Gate: HYBRID_REGIME_BACKTEST_PERF_20260621 — fillna(0.0) on lag
+-            # features so composite_signal is produced for 100 % of rows,
+-            # preventing downstream TradingPipelineV2 from entering the slow
+-            # online Ridge retraining loop.
++            # (b) Prediction: compute lags and predict using regime-specific models.
++            # LightGBM preserves NaN lag features; Ridge-compatible models still
++            # receive imputed features through _feature_values().
+             if pred_lag_df is not None:
+-                pred_lag_df[lag_col_names] = pred_lag_df[lag_col_names].fillna(0.0)
+                 pred_indices = pred_lag_df.index
+-                pred_X = pred_lag_df[lag_col_names].values
++                pred_X = _feature_values(pred_lag_df)
+ 
+                 # Map prediction rows to GMM regimes
+                 pred_regime_labels = _map_rows_to_gmm_regimes(
+@@ -923,7 +990,7 @@ def train_fold_models(
+                 for regime_name in regime_names:
+                     regime_mask_local = pred_regime_labels == regime_name
+                     if regime_mask_local.any():
+-                        model = regime_models.get(regime_name, global_ridge)
++                        model = regime_models.get(regime_name, global_model)
+                         composite_values[regime_mask_local] = model.predict(
+                             pred_X[regime_mask_local]
+                         )
+@@ -939,9 +1006,8 @@ def train_fold_models(
+                 pred_lag_df_local.columns = [f"{c}_lag1" for c in alpha_cols]
+                 pred_lag_df_local.index = full_sorted.index
+ 
+-                pred_lag_df_local[lag_col_names] = pred_lag_df_local[lag_col_names].fillna(0.0)
+                 pred_indices = pred_lag_df_local.index
+-                pred_X = pred_lag_df_local[lag_col_names].values
++                pred_X = _feature_values(pred_lag_df_local)
+ 
+                 # Map prediction rows to GMM regimes
+                 pred_regime_labels = _map_rows_to_gmm_regimes(
+@@ -953,7 +1019,7 @@ def train_fold_models(
+                 for regime_name in regime_names:
+                     regime_mask_local = pred_regime_labels == regime_name
+                     if regime_mask_local.any():
+-                        model = regime_models.get(regime_name, global_ridge)
++                        model = regime_models.get(regime_name, global_model)
+                         composite_values[regime_mask_local] = model.predict(
+                             pred_X[regime_mask_local]
+                         )
+@@ -971,15 +1037,16 @@ def train_fold_models(
+                     for rn in regime_names:
+                         n_per_regime[rn] = int((pred_regime_labels == rn).sum())
+                 logger.info(
+-                    "Ridge dynamic blending: trained %d regime models + global fallback, "
++                    "%s dynamic blending: trained %d regime models + global fallback, "
+                     "predicted composite_signal for %d rows. "
+                     "Regime distribution: %s",
++                    model_type,
+                     len(regime_models),
+                     len(composite_signal),
+                     n_per_regime,
+                 )
+         else:
+-            logger.warning("Ridge blending: insufficient train data (%d rows).", len(ridge_train))
++            logger.warning("%s blending: insufficient train data (%d rows).", model_type, len(ridge_train))
+ 
+     return gmm_model, hmm_params, composite_signal
+ 
+@@ -1277,6 +1344,7 @@ def run_single_fold(
+     precomputed_lag_cols: Optional[List[str]] = None,
+     pred_lag_df: Optional[pd.DataFrame] = None,
+     close_pivot_full: Optional[pd.DataFrame] = None,
++    model_type: str = "lightgbm",
+ ) -> Dict[str, Dict]:
+     min_test_date = pd.Timestamp(test_dates.min())
+     max_test_date = pd.Timestamp(test_dates.max())
+@@ -1291,6 +1359,7 @@ def run_single_fold(
+         feat_df, train_dates, precomputed_lag_cols=precomputed_lag_cols,
+         pred_lag_df=pred_lag_df,
+         close_pivot_full=close_pivot_full,
++        model_type=model_type,
+     )
+     logger.info(
+         "Fold %d: train models — gmm=%s, hmm_params=%s",
+@@ -1303,7 +1372,7 @@ def run_single_fold(
+     date_mask = (feat_df["date"] >= warmup_start) & (feat_df["date"] <= max_test_date)
+     test_feat = feat_df[date_mask].copy()
+ 
+-    # Inject per-fold composite_signal into test_feat (process-safe under loky)
++    # Inject per-fold composite_signal into test_feat (thread-safe under threading)
+     if composite_signal is not None:
+         common_idx = test_feat.index.intersection(composite_signal.index)
+         test_feat.loc[common_idx, "composite_signal"] = composite_signal.loc[common_idx]
+@@ -1411,14 +1480,6 @@ def run_single_fold(
+             logger.exception("Fold %d (%s) failed", fold_id, scenario_name)
+             results[scenario_name] = {"error": str(exc), "elapsed_sec": elapsed}
+ 
+-    # Gate: HYBRID_REGIME_BACKTEST_PERF_20260621
+-    # Explicit gc.collect() at end of each fold to release memory held by
+-    # intermediate DataFrames, model objects, and overlay state.
+-    # Under the loky (process-based) backend this runs inside the child
+-    # worker process, reclaiming per-worker RSS before the process is
+-    # recycled.  Combined with the main-process gc.collect() after
+-    # Parallel() returns, this keeps total RSS within ~3 GB for n_workers=4
+-    # on a 16 GB machine.
+     gc.collect()
+ 
+     return results
+@@ -1657,8 +1718,10 @@ def save_alpha_improvement_real_json(
+     Compares Baseline vs Hybrid scenario profitability diagnostics from the
+     same CPCV run to measure REALIZED gross/TC/net improvement.
+ 
+-    The Baseline scenario uses standard overlays (no latent GMM, no BOCPD).
+-    The Hybrid scenario uses regime-aware overlays (latent GMM + BOCPD).
++    The Baseline scenario uses standard overlays (no latent GMM, no BOCPD)
++    with weekly rebalancing and transaction-cost gating.
++    The Hybrid scenario uses regime-aware overlays (latent GMM + BOCPD)
++    with the same weekly rebalance cadence plus tuned GMM/TCost settings.
+     Both share the same Ridge-blended composite_signal (all alpha groups
+     including hybrid_regime).
+ 
+@@ -1897,13 +1960,10 @@ def main():
+             "precomputed_lag_cols": None,  # PIT-leak fix: lags computed per-fold
+             "pred_lag_df": pred_lag_df,
+             "close_pivot_full": close_pivot_full,
++            "model_type": args.model_type,
+         })
+ 
+     # Determine worker count: 0=auto, 1=serial, >1=parallel
+-    # Optimized (Gate: HYBRID_REGIME_BACKTEST_PERF_20260621):
+-    # Default auto now caps at min(folds, cpu_count, 4) to stay within
+-    # ~3 GB total RSS on a 16 GB machine when using the loky backend
+-    # (each worker process consumes ~750 MB for the full feat_df copy).
+     n_workers = args.workers
+     if n_workers == 0:
+         n_workers = min(len(fold_specs), os.cpu_count() or 1, 4)
+@@ -1917,16 +1977,8 @@ def main():
+     )
+ 
+     if n_workers > 1 and len(fold_specs) > 1:
+-        # Parallel execution via joblib (Gate: HYBRID_REGIME_BACKTEST_PERF_20260621)
+-        # Uses loky backend for true process-based parallelism — avoids
+-        # Python's GIL bottleneck that limited the previous threading backend.
+-        # Each worker is an independent Python process with its own copy of
+-        # feat_df (copy-on-write on Linux/macOS, serialized on Windows).
+-        # n_workers capped at 4 (auto) to keep total RSS ~3 GB on 16 GB machines.
+-        # gc.collect() runs in both child workers (end of run_single_fold) and
+-        # the main process (after Parallel() returns) to reclaim memory promptly.
+         logger.info(
+-            "Launching joblib parallel with %d workers (loky backend, process-based)",
++            "Launching joblib parallel with %d workers (loky backend, max_nbytes=10M)",
+             n_workers,
+         )
+ 
+@@ -1946,6 +1998,7 @@ def main():
+                 precomputed_lag_cols=spec["precomputed_lag_cols"],
+                 pred_lag_df=spec["pred_lag_df"],
+                 close_pivot_full=spec["close_pivot_full"],
++                model_type=spec["model_type"],
+             )
+ 
+         for spec in fold_specs:
+@@ -1960,13 +2013,11 @@ def main():
+         fold_results = Parallel(
+             n_jobs=n_workers,
+             backend="loky",
++            max_nbytes="10M",
+             verbose=10,
+             batch_size=1,
+         )(delayed(_run_fold_spec)(spec) for spec in fold_specs)
+ 
+-        # Main-process gc.collect() after all loky workers have returned.
+-        # Reclaims any residual references held by the joblib dispatcher
+-        # and the deserialized result objects.
+         gc.collect()
+ 
+         # Rebuild in original fold_specs order — per_fold arrays are
+@@ -1997,6 +2048,7 @@ def main():
+                 precomputed_lag_cols=spec["precomputed_lag_cols"],
+                 pred_lag_df=spec["pred_lag_df"],
+                 close_pivot_full=spec["close_pivot_full"],
++                model_type=spec["model_type"],
+             )
+             all_fold_results.append(fold_res)
+ 
+@@ -2022,6 +2074,7 @@ def main():
+         "Backtest complete. %d folds in %.1fs (%.1f min). Output: %s",
+         len(fold_specs), total_elapsed, total_elapsed / 60, out_path,
+     )
++    gc.collect()
+     return aggregated
+ 
+ 

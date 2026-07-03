@@ -1,0 +1,9 @@
+{
+  "rank": 2,
+  "round": 1,
+  "train_IC": 0.303,
+  "test_IC": 0.015,
+  "hit_rate": 0.5362,
+  "expression": "(returns_1d max hl_range)",
+  "serialized_tree": "GPNode(operator='max', children=[GPNode(operator='terminal', children=[], value='returns_1d'), GPNode(operator='terminal', children=[], value='hl_range')], value=None)"
+}

@@ -99,6 +99,37 @@ def load_current_positions(
     return {h["symbol"]: h for h in holdings}
 
 
+def _build_risk_exposures(
+    current_positions: Dict[str, Dict[str, Any]],
+    capital: float,
+) -> Dict[str, float]:
+    exposures: Dict[str, float] = {}
+    if capital <= 0:
+        return exposures
+
+    for symbol, position in current_positions.items():
+        shares = float(position.get("shares", 0) or 0)
+        current_price = float(position.get("current_price", 0) or 0)
+        avg_price = float(position.get("avg_price", 0) or 0)
+
+        if shares > 0:
+            if current_price > 0:
+                exposures[symbol] = shares * current_price
+                continue
+            if avg_price > 0:
+                exposures[symbol] = shares * avg_price
+                continue
+
+        if "weight" in position and position["weight"] is not None:
+            exposures[symbol] = float(position["weight"]) * capital
+            continue
+
+        value = position.get("value", position.get("value_vnd", 0.0))
+        exposures[symbol] = float(value or 0.0)
+
+    return exposures
+
+
 # ------------------------------------------------------------------ #
 # Diff computation
 # ------------------------------------------------------------------ #
@@ -170,7 +201,10 @@ def compute_order_diffs(
 # Pipeline execution
 # ------------------------------------------------------------------ #
 
-def build_pipeline():
+def build_pipeline(
+    current_positions: Optional[Dict[str, Dict[str, Any]]] = None,
+    capital: float = DEFAULT_CAPITAL,
+):
     """
     Construct a LiveTradingPipeline wired for paper execution.
 
@@ -187,7 +221,10 @@ def build_pipeline():
 
     router = MultiSymbolRouter()
     risk_guard = RealtimeRiskGuard()
-    risk_guard.set_portfolio_state(DEFAULT_CAPITAL, {})
+    risk_guard.set_portfolio_state(
+        capital,
+        _build_risk_exposures(current_positions or {}, capital),
+    )
 
     broker_config = BrokerConfig(
         broker_name="SSI",
@@ -200,7 +237,7 @@ def build_pipeline():
     bridge = LiveExecutionBridge(broker_config)
 
     pre_trade_gate = PreTradeGate()
-    pre_trade_gate.update_margin("PAPER_ACCT", DEFAULT_CAPITAL)
+    pre_trade_gate.update_margin("PAPER_ACCT", capital)
 
     pipeline = LiveTradingPipeline(
         router=router,
@@ -463,7 +500,7 @@ def run_paper_execution_pipeline(
         }
 
     # Step 4: Build pipeline and execute
-    pipeline = build_pipeline()
+    pipeline = build_pipeline(current_positions=current_positions, capital=capital)
     results = execute_diffs(pipeline, diffs)
 
     # Step 5: Update dashboard

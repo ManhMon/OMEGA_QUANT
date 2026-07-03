@@ -1,0 +1,21 @@
+# L2 Report: VNSTOCK_NEWS_INTEGRATION_20260701
+
+- Role: `9 backend-engineer`
+- Gate: `VNSTOCK_NEWS_INTEGRATION_20260701`
+- Scope: `src/omega/data/news_aggregator.py`, `tests/test_news_aggregator.py`
+- Repo-local role file read: `.agents/agent/backend-engineer.md`
+- Repo-local skill files read:
+  - `.agents/skills/nodejs-best-practices/SKILL.md`
+  - `.agents/skills/api-patterns/SKILL.md`
+  - `.agents/skills/database-design/SKILL.md`
+  - `.agents/skills/clean-code/SKILL.md`
+  - `.agents/skills/testing-patterns/SKILL.md`
+  - `.agents/skills/systematic-debugging/SKILL.md`
+- Forbidden path scan result: no authoritative reads from `.gemini\antigravity-ide\scratch\ag-kit`, `.openclaw\skills`, `C:\Users\GHC\.agents`, `.codex\memories`
+- Changes:
+  - `src/omega/data/news_aggregator.py`: migrated vnstock news fetch to `Company(symbol=ticker, source="VCI").news()`; retained `public_date`, `news_title`, `news_short_content`, keyword checks, PIT window filtering
+  - `tests/test_news_aggregator.py`: updated vnstock mocks to `vnstock.Company`; asserted `source="VCI"`; kept PIT/keyword/failure-path coverage
+- Verification:
+  - Command: `pytest tests/test_news_aggregator.py`
+  - Result: `11 passed, 4 warnings in 7.87s`
+  - Warnings: vnai upgrade notice, upstream deprecations, existing `.pytest_cache` path collision warning outside scoped changes

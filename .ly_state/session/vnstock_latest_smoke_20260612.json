@@ -1,0 +1,72 @@
+{
+  "gate": "VNSTOCK_LATEST_STANDARDIZATION_20260612",
+  "date": "2026-06-12",
+  "role": 15,
+  "tier": 2,
+  "vnstock_version_before": "4.0.2",
+  "vnstock_version_after": "4.0.4",
+  "vnstock_package": "vnstock",
+  "vnstock3_installed": false,
+  "vnstock_data_installed": false,
+  "probe": {
+    "vnstock_version": "4.0.4",
+    "quote_available": true,
+    "listing_available": true,
+    "trading_available": true,
+    "market_available": true
+  },
+  "smoke_imports": {
+    "vnstock_client": true,
+    "VnstockClient": true,
+    "RateLimiter": true,
+    "Quote": true,
+    "Listing": true,
+    "Trading": true,
+    "Market": true,
+    "TimeFrame": true,
+    "VND_FULL": true,
+    "ensure_vnd_scale": true,
+    "get_client": true,
+    "market_flow_VNMarketFlowDataSource": true
+  },
+  "listing_sources": ["VCI", "KBS"],
+  "py_compile_results": {
+    "src/omega/data/vnstock_client.py": "PASS",
+    "src/omega/data/vnstock_adapter.py": "PASS",
+    "src/omega/data/market_flow.py": "PASS",
+    "src/omega/data/__init__.py": "PASS",
+    "src/omega/quant/data/vn_market.py": "PASS",
+    "src/omega/quant/data/vci_ingest.py": "PASS",
+    "src/omega/quant/data/vnstock.py": "PASS",
+    "src/omega/quant/portfolio/sector_classifier.py": "PASS",
+    "src/omega/quant/utils/structure_features.py": "PASS"
+  },
+  "pytest_results": {
+    "data_provider_tests": {
+      "files": [
+        "tests/test_benchmark_provider.py",
+        "tests/data_test_vnd_full_exchange_fix.py",
+        "tests/test_data_loader_corporate_action_pit.py"
+      ],
+      "passed": 74,
+      "failed": 0
+    },
+    "deployment_execution_tests": {
+      "files": [
+        "tests/data_test_deployment_flow.py",
+        "tests/execution_test_order_router.py"
+      ],
+      "passed": 57,
+      "failed": 0
+    },
+    "total_passed": 131,
+    "total_failed": 0
+  },
+  "pre_existing_failures": [
+    "tests/data_test_sanitizer.py: ImportError DataSanitizer not in omega.data",
+    "tests/data_test_calendar.py: JSON file missing errors"
+  ],
+  "canonical_data_modified": false,
+  "canonical_data_path": "data/market_2015_now.parquet",
+  "status": "AWAITING_L3"
+}

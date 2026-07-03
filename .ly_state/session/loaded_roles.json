@@ -1,0 +1,347 @@
+{
+  "generated_at": "2026-06-25T16:04:53+00:00",
+  "routes": [
+    {
+      "generated_at": "2026-06-11T04:31:12+00:00",
+      "task_type": "implementation_backend",
+      "role_id": "9",
+      "role_name": "backend-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "cli": "opencode",
+      "role_file": ".agents/agent/backend-engineer.md",
+      "role_file_sha256": "ad9bd607e156e74e83e02860dc2733052b9672167b1c341216efa7d82ee26d1d",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\implementation_backend_backend_engineer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "4f8159eadfbe0c2b8ae6a6d5156d9a93d8f40a598675f652468011a6a5fa5dcb"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-11T04:31:13+00:00",
+      "task_type": "audit_compliance",
+      "role_id": "20",
+      "role_name": "compliance-officer",
+      "tier": "L3",
+      "platform": "Codex",
+      "cli": "codex",
+      "role_file": ".agents/agent/compliance-officer.md",
+      "role_file_sha256": "b15f7b961f3a7ae9d6ec0b11c138be085d2e634171a681d8979d11eba3d82f88",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\audit_compliance_compliance_officer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "4f8159eadfbe0c2b8ae6a6d5156d9a93d8f40a598675f652468011a6a5fa5dcb"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-11T04:31:18+00:00",
+      "task_type": "status",
+      "role_id": "1",
+      "role_name": "project-manager",
+      "tier": "L1",
+      "platform": "Ly",
+      "cli": "ly",
+      "role_file": ".agents/agent/project-manager.md",
+      "role_file_sha256": "24e3ddb062536b9d25dbf4ca77d5c832d5d224f4f86167565318c628619b21ad",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\status_project_manager.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "4f8159eadfbe0c2b8ae6a6d5156d9a93d8f40a598675f652468011a6a5fa5dcb"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-16T05:55:21+00:00",
+      "task_type": "ml_modeling",
+      "role_id": "16",
+      "role_name": "machine-learning-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "cli": "opencode",
+      "role_file": ".agents/agent/machine-learning-engineer.md",
+      "role_file_sha256": "d3ccbce05a31ced0858a3f5dbe93a68f567bd9ed1a304e91839761276cc4b65f",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\ml_modeling_machine_learning_engineer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-16T05:55:26+00:00",
+      "task_type": "status",
+      "role_id": "16",
+      "role_name": "machine-learning-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "cli": "opencode",
+      "role_file": ".agents/agent/machine-learning-engineer.md",
+      "role_file_sha256": "d3ccbce05a31ced0858a3f5dbe93a68f567bd9ed1a304e91839761276cc4b65f",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\status_machine_learning_engineer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-16T06:11:11+00:00",
+      "task_type": "status",
+      "role_id": "20",
+      "role_name": "compliance-officer",
+      "tier": "L3",
+      "platform": "Codex",
+      "cli": "codex",
+      "role_file": ".agents/agent/compliance-officer.md",
+      "role_file_sha256": "9506d0a1f57d099fbf758fdfb8b7c3271b813942fd39c5e6f208c94712320982",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\status_compliance_officer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-16T06:20:20+00:00",
+      "task_type": "status",
+      "role_id": "20",
+      "role_name": "compliance-officer",
+      "tier": "L3",
+      "platform": "Codex",
+      "cli": "codex",
+      "role_file": ".agents/agent/compliance-officer.md",
+      "role_file_sha256": "9506d0a1f57d099fbf758fdfb8b7c3271b813942fd39c5e6f208c94712320982",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\status_compliance_officer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-16T06:21:39+00:00",
+      "task_type": "status",
+      "role_id": "20",
+      "role_name": "compliance-officer",
+      "tier": "L3",
+      "platform": "Codex",
+      "cli": "codex",
+      "role_file": ".agents/agent/compliance-officer.md",
+      "role_file_sha256": "455080784d8b444778a50efe7926619e3ad27b593c32685be1f29fcb9bd23f31",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\status_compliance_officer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-16T06:29:17+00:00",
+      "task_type": "status",
+      "role_id": "20",
+      "role_name": "compliance-officer",
+      "tier": "L3",
+      "platform": "Codex",
+      "cli": "codex",
+      "role_file": ".agents/agent/compliance-officer.md",
+      "role_file_sha256": "455080784d8b444778a50efe7926619e3ad27b593c32685be1f29fcb9bd23f31",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\status_compliance_officer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-16T06:52:12+00:00",
+      "task_type": "status",
+      "role_id": "20",
+      "role_name": "compliance-officer",
+      "tier": "L3",
+      "platform": "Codex",
+      "cli": "codex",
+      "role_file": ".agents/agent/compliance-officer.md",
+      "role_file_sha256": "455080784d8b444778a50efe7926619e3ad27b593c32685be1f29fcb9bd23f31",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\status_compliance_officer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-17T02:44:29+00:00",
+      "task_type": "data_pipeline",
+      "role_id": "14",
+      "role_name": "data-scientist",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "cli": "opencode",
+      "role_file": ".agents/agent/data-scientist.md",
+      "role_file_sha256": "ba6b3397ec3ae9826dd06e24a33f2d0f62f6315ed10f9540788edc0ca31dcba3",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\data_pipeline_data_scientist.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-17T03:06:13+00:00",
+      "task_type": "audit_code",
+      "role_id": "21",
+      "role_name": "code-reviewer",
+      "tier": "L3",
+      "platform": "Codex",
+      "cli": "codex",
+      "role_file": ".agents/agent/code-reviewer.md",
+      "role_file_sha256": "b5c0a539e2aaaea3697f7a32312303897bfc41bc7d99502496e025fa8575cb55",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\audit_code_code_reviewer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-17T03:16:04+00:00",
+      "task_type": "implementation_backend",
+      "role_id": "14",
+      "role_name": "data-scientist",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "cli": "opencode",
+      "role_file": ".agents/agent/data-scientist.md",
+      "role_file_sha256": "ba6b3397ec3ae9826dd06e24a33f2d0f62f6315ed10f9540788edc0ca31dcba3",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\implementation_backend_data_scientist.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-17T03:24:19+00:00",
+      "task_type": "audit_code",
+      "role_id": "21",
+      "role_name": "code-reviewer",
+      "tier": "L3",
+      "platform": "Codex",
+      "cli": "codex",
+      "role_file": ".agents/agent/code-reviewer.md",
+      "role_file_sha256": "b5c0a539e2aaaea3697f7a32312303897bfc41bc7d99502496e025fa8575cb55",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\audit_code_code_reviewer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-21T14:53:39+00:00",
+      "task_type": "audit_compliance",
+      "role_id": "9",
+      "role_name": "backend-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "cli": "opencode",
+      "role_file": ".agents/agent/backend-engineer.md",
+      "role_file_sha256": "a3b3740af91c6a38ccc16ff7add29783e379ed55fae927a23f200d289e34234b",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\audit_compliance_backend_engineer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-21T14:57:57+00:00",
+      "task_type": "audit_compliance",
+      "role_id": "21",
+      "role_name": "code-reviewer",
+      "tier": "L3",
+      "platform": "Codex",
+      "cli": "codex",
+      "role_file": ".agents/agent/code-reviewer.md",
+      "role_file_sha256": "b5c0a539e2aaaea3697f7a32312303897bfc41bc7d99502496e025fa8575cb55",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\audit_compliance_code_reviewer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-21T14:58:30+00:00",
+      "task_type": "implementation_backend",
+      "role_id": "9",
+      "role_name": "backend-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "cli": "opencode",
+      "role_file": ".agents/agent/backend-engineer.md",
+      "role_file_sha256": "a3b3740af91c6a38ccc16ff7add29783e379ed55fae927a23f200d289e34234b",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\implementation_backend_backend_engineer.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-25T16:04:06+00:00",
+      "task_type": "status",
+      "role_id": "1",
+      "role_name": "project-manager",
+      "tier": "L1",
+      "platform": "Ly",
+      "cli": "ly",
+      "role_file": ".agents/agent/project-manager.md",
+      "role_file_sha256": "24ca7529cc77f4b5ba43f48d2a2fbb793b64f8976fdc40bd1168e19ee1aa6f26",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\status_project_manager.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    },
+    {
+      "generated_at": "2026-06-25T16:04:53+00:00",
+      "task_type": "status",
+      "role_id": "1",
+      "role_name": "project-manager",
+      "tier": "L1",
+      "platform": "Ly",
+      "cli": "ly",
+      "role_file": ".agents/agent/project-manager.md",
+      "role_file_sha256": "babe732240f4bd88b89371521306c5afeadea88628aca898028a92a38723bc13",
+      "prompt_path": ".ly_state\\session\\routing_prompts\\status_project_manager.md",
+      "mandatory_skills": [
+        {
+          "path": ".agents/skills/omega-sod/SKILL.md",
+          "sha256": "44ab0b9a8462216d3f52ec55e52bf9f9deae9598a25b4ad78fbc4e271f5a7e9a"
+        }
+      ]
+    }
+  ]
+}

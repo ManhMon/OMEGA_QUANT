@@ -1,0 +1,54 @@
+{
+  "date": "2026-06-11",
+  "portfolio": [
+    {
+      "ticker": "HPG",
+      "weight": 0.111111,
+      "shares": 100
+    },
+    {
+      "ticker": "VPB",
+      "weight": 0.111111,
+      "shares": 100
+    },
+    {
+      "ticker": "ACB",
+      "weight": 0.111111,
+      "shares": 100
+    },
+    {
+      "ticker": "TCB",
+      "weight": 0.111111,
+      "shares": 100
+    },
+    {
+      "ticker": "MBB",
+      "weight": 0.111111,
+      "shares": 100
+    },
+    {
+      "ticker": "HDB",
+      "weight": 0.111111,
+      "shares": 100
+    },
+    {
+      "ticker": "STB",
+      "weight": 0.111111,
+      "shares": 100
+    },
+    {
+      "ticker": "CTG",
+      "weight": 0.111111,
+      "shares": 100
+    },
+    {
+      "ticker": "TPB",
+      "weight": 0.111111,
+      "shares": 100
+    }
+  ],
+  "method": "equal_weight",
+  "generated_at": "2026-06-11T06:37:45.748714Z",
+  "num_positions": 9,
+  "total_weight": 0.999999
+}

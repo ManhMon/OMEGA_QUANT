@@ -1,0 +1,303 @@
+{
+  "session_id": "l2_role9_llm_prompt_synthesis_search_improvement_20260612",
+  "role_id": 9,
+  "role_name": "backend-engineer",
+  "date": "2026-06-12",
+  "timestamp": "2026-06-12T04:19:24.741Z",
+  "task": "Implement approved LLM prompt/synthesis/search improvement Option C for stronger formulas",
+  "status": "completed",
+  "validation_status": "all_checks_passed",
+  "implementation_summary": {
+    "prompt_version_v2": {
+      "implemented": true,
+      "version_name": "vn_alpha_search_v2",
+      "features": [
+        "Vietnamese equity market context (VNIndex, HOSE)",
+        "Frontier market characteristics (T+2, price limits, liquidity gaps)",
+        "Domain-specific alpha ideas (momentum reversal, liquidity divergence)",
+        "Aggregate supervised failure context (median IC, DSR)",
+        "Configurable candidate budget (OMEGA_LLM_MAX_CANDIDATES)"
+      ],
+      "pit_safe": true,
+      "no_label_leakage": true
+    },
+    "cache_versioning": {
+      "implemented": true,
+      "isolation": "prompt_version included in cache key hash",
+      "benefit": "Prevents stale weak formulas from v1 contaminating v2",
+      "verification_check": "Version mismatch detection on retrieval"
+    },
+    "formula_deduplication": {
+      "implemented": true,
+      "method": "normalize_formula() - whitespace removal + lowercase",
+      "benefit": "Detects semantically identical formulas",
+      "taxonomy_category": "duplicate_formula"
+    },
+    "rejection_taxonomy": {
+      "implemented": true,
+      "categories": [
+        "parse_error",
+        "unsafe_token",
+        "duplicate_formula",
+        "execution_failure",
+        "low_coverage",
+        "near_zero_variance",
+        "unstable",
+        "nan_inf"
+      ],
+      "total_categories": 8,
+      "tracked_throughout_pipeline": true
+    },
+    "richer_stats": {
+      "implemented": true,
+      "synthesize_api_change": "returns (nodes, stats) tuple instead of just nodes",
+      "stats_include": [
+        "prompt_version",
+        "max_candidates",
+        "provider_type",
+        "cache_hit",
+        "total_raw",
+        "rejection_taxonomy",
+        "accepted",
+        "rejected_formulas",
+        "accepted_formulas"
+      ],
+      "stats_merging": "synthesis_stats merged with scoring_stats in score_and_filter_formulas"
+    },
+    "backtest_integration": {
+      "implemented": true,
+      "aggregate_summary": true,
+      "pit_safe": true,
+      "no_row_level_labels": true,
+      "summary_includes": [
+        "prompt_version",
+        "provider",
+        "cache_hit",
+        "total_candidates",
+        "accepted",
+        "rejected",
+        "deployable",
+        "unsupervised_only",
+        "rejection_taxonomy",
+        "aggregate_quality (mean_coverage, mean_variance)"
+      ]
+    }
+  },
+  "files_modified": {
+    "primary_implementation": [
+      {
+        "path": "src/omega/quant/evolution/llm_symbolic_synthesizer.py",
+        "lines_before": 884,
+        "lines_after": 1150,
+        "lines_added": 266,
+        "changes": [
+          "Added prompt_version parameter to __init__",
+          "Added max_candidates with env var support",
+          "Implemented _generate_prompt_v2() with Vietnamese market context",
+          "Updated FormulaCache with version namespacing",
+          "Added normalize_formula() method",
+          "Implemented comprehensive rejection taxonomy tracking",
+          "Changed synthesize() to return (nodes, stats) tuple",
+          "Updated score_and_filter_formulas() to merge synthesis_stats"
+        ]
+      },
+      {
+        "path": "scripts/backtest_v2_cpcv.py",
+        "lines_before": 1778,
+        "lines_after": 1798,
+        "lines_added": 20,
+        "changes": [
+          "Updated synthesize() call to handle tuple return",
+          "Pass synthesis_stats to score_and_filter_formulas()",
+          "Build safe aggregate llm_validation_summary",
+          "Persist summary to output JSON (no label leakage)"
+        ]
+      }
+    ],
+    "test_coverage": [
+      {
+        "path": "tests/quant_test_infinite_evolution.py",
+        "lines_before": 1185,
+        "lines_after": 1404,
+        "lines_added": 219,
+        "changes": [
+          "Added 8 new comprehensive tests",
+          "Updated 4 existing tests for new API",
+          "All 43 tests passing"
+        ]
+      }
+    ],
+    "no_changes": [
+      "src/omega/quant/evolution/llm_formula_scorer.py (read-only)"
+    ]
+  },
+  "test_results": {
+    "total_tests": 43,
+    "passed": 43,
+    "failed": 0,
+    "skipped": 0,
+    "duration_seconds": 7.01,
+    "new_tests_added": [
+      "test_prompt_v2_domain_constraints",
+      "test_prompt_v2_aggregate_failure_context",
+      "test_cache_versioning",
+      "test_formula_deduplication",
+      "test_rejection_taxonomy_recorded",
+      "test_synthesize_returns_tuple",
+      "test_max_candidates_from_env",
+      "test_score_and_filter_merges_synthesis_stats"
+    ],
+    "existing_tests_updated": [
+      "test_llm_synthesizer_validation_and_execution",
+      "test_llm_synthesizer_use_mock_false_fallback_no_recursion",
+      "test_synthesizer_score_and_filter_integration",
+      "test_backtest_metadata_propagation"
+    ]
+  },
+  "validation_results": {
+    "py_compile": {
+      "status": "PASS",
+      "syntax_errors": 0,
+      "files_checked": [
+        "src/omega/quant/evolution/llm_symbolic_synthesizer.py",
+        "src/omega/quant/evolution/llm_formula_scorer.py",
+        "scripts/backtest_v2_cpcv.py",
+        "tests/quant_test_infinite_evolution.py"
+      ]
+    },
+    "pytest": {
+      "status": "PASS",
+      "tests_passed": 43,
+      "tests_failed": 0,
+      "command": "python -m pytest tests/quant_test_infinite_evolution.py -v"
+    },
+    "sod_gate_enforcer": {
+      "status": "PASS",
+      "message": "SAFE TO PUSH",
+      "phases_verified": 103,
+      "l3_audit_evidence_present": true,
+      "role_boundary_checks_validated": true,
+      "p0_p1_p2_hardening_passed": true
+    }
+  },
+  "rejection_taxonomy_implementation": {
+    "parse_error": {
+      "description": "Formula parsing failed (syntax errors, malformed expressions)",
+      "stage": "synthesis",
+      "tracked": true
+    },
+    "unsafe_token": {
+      "description": "Safety parser rejection (infix, unknown tokens, bad lookback, depth, trailing)",
+      "stage": "synthesis",
+      "tracked": true
+    },
+    "duplicate_formula": {
+      "description": "Duplicate after normalization",
+      "stage": "synthesis",
+      "tracked": true
+    },
+    "execution_failure": {
+      "description": "Formula execution failed on test data",
+      "stage": "synthesis",
+      "tracked": true
+    },
+    "low_coverage": {
+      "description": "Insufficient non-NaN coverage",
+      "stage": "scoring",
+      "tracked": true
+    },
+    "near_zero_variance": {
+      "description": "Constant or near-constant output",
+      "stage": "scoring",
+      "tracked": true
+    },
+    "unstable": {
+      "description": "Excessive per-ticker variance",
+      "stage": "scoring",
+      "tracked": true
+    },
+    "nan_inf": {
+      "description": "Too many NaN/inf values",
+      "stage": "scoring",
+      "tracked": true
+    }
+  },
+  "pit_safety_verification": {
+    "feature_generation": {
+      "labels_used": false,
+      "unsupervised_only": true,
+      "quality_checks": [
+        "coverage",
+        "variance",
+        "stability"
+      ],
+      "deployable_status": "false for unsupervised-only formulas"
+    },
+    "prompt_generation": {
+      "prior_failure_stats": "aggregate only (median IC, median DSR)",
+      "no_row_level_labels": true,
+      "no_arrays_in_prompt": true,
+      "verified": true
+    },
+    "backtest_integration": {
+      "llm_formulas_added_before_training": true,
+      "aggregate_summary_only": true,
+      "no_per_observation_data": true,
+      "llm_validation_summary_safe": true
+    },
+    "cache_safety": {
+      "no_api_keys_cached": true,
+      "no_secrets_cached": true,
+      "version_isolation": true,
+      "verified": true
+    }
+  },
+  "key_metrics": {
+    "rejection_taxonomy_categories": 8,
+    "new_tests_added": 8,
+    "existing_tests_updated": 4,
+    "total_tests_passing": 43,
+    "net_lines_added": 350,
+    "cache_versioning_enabled": true,
+    "default_max_candidates": 10,
+    "default_prompt_version": "vn_alpha_search_v2",
+    "backward_compatibility": "v1 prompt still available"
+  },
+  "configuration": {
+    "prompt_version": {
+      "default": "vn_alpha_search_v2",
+      "override": "pass prompt_version parameter to __init__"
+    },
+    "max_candidates": {
+      "default": 10,
+      "override": "set OMEGA_LLM_MAX_CANDIDATES env var"
+    },
+    "provider": {
+      "default": "mock",
+      "override": "set OMEGA_LLM_PROVIDER env var + OMEGA_LLM_API_KEY for real provider"
+    },
+    "cache_directory": ".ly_state/session/llm_cache/"
+  },
+  "deployment_readiness": {
+    "ready_for_l3_audit": true,
+    "all_validations_passed": true,
+    "pit_safety_verified": true,
+    "no_api_key_leakage": true,
+    "backward_compatible": true
+  },
+  "l3_audit_scope": [
+    "Verify prompt v2 domain constraints are appropriate for Vietnamese equity market",
+    "Verify rejection taxonomy completeness covers all failure modes",
+    "Verify PIT safety in aggregate stats persistence (no label leakage)",
+    "Verify no row-level label leakage in prompt generation",
+    "Verify cache versioning isolation is effective",
+    "Verify unsupervised-only formulas are correctly marked as non-deployable"
+  ],
+  "evidence_artifacts": [
+    ".ly_state/session/l2_role9_llm_prompt_synthesis_search_improvement_20260612.md",
+    ".ly_state/session/llm_prompt_synthesis_search_improvement_20260612.json",
+    "src/omega/quant/evolution/llm_symbolic_synthesizer.py",
+    "scripts/backtest_v2_cpcv.py",
+    "tests/quant_test_infinite_evolution.py"
+  ]
+}

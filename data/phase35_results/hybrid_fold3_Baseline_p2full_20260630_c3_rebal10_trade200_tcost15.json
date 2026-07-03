@@ -1,0 +1,27 @@
+{
+  "total_return": -0.024010041046893082,
+  "annualized_sharpe": -0.018281215139735983,
+  "max_drawdown": -0.17271746462110824,
+  "n_days": 551,
+  "cost_breakdown": {
+    "total_turnover": 46.33178344445933,
+    "avg_turnover_per_bar": 0.08408672131480822,
+    "total_commission_cost": 0.0346624138645945,
+    "total_spread_cost": 0.05729527015701244,
+    "total_slippage_cost": 0.03975878578337417,
+    "total_other_cost": 0.0,
+    "total_cost": 0.1317164698049811,
+    "avg_cost_per_bar_bps": 2.390498544555011,
+    "capital_vnd": 2000000000.0,
+    "final_capital_vnd": 1778365803.566393,
+    "final_w": "[0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.13776696 0.\n 0.13729831 0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.14944281\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.14930444\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.16119947 0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.         0.         0.         0.         0.         0.\n 0.        ]",
+    "slippage_nonlinear_exp": 0.6,
+    "settlement_lag_days": 0.0,
+    "halt_limit_haircut_pct": 0.0,
+    "foreign_room_haircut_pct": 0.0,
+    "use_adv_tiered_spread": true,
+    "dynamic_capital_tracking": true,
+    "n_active_bars": 551,
+    "bar_costs": "[0.00000000e+00 0.00000000e+00 0.00000000e+00 ... 1.68199347e-05\n 5.04087949e-05 5.12759933e-05]"
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "gate": "CANONICAL_VCI_UPDATER_LEGACY_TRACKING_20260613",
+  "role": "data-engineer (Role 15, L2)",
+  "date": "2026-06-13",
+  "description": "Legacy/obsolete data loader inventory. These files are tracked (NOT deleted) and their functionality is superseded by the canonical VCI updater in scripts/update_market_data.py.",
+  "canonical_replacement": "scripts/update_market_data.py (CANONICAL_VCI_UPDATER_LEGACY_TRACKING_20260613)",
+  "inventory": [
+    {
+      "file": "scripts/batch_market_loader_resume.py",
+      "status": "legacy",
+      "reason": "Parallel batch loader using VnstockVCIDataSource (omega.quant.data.vnstock_vci) with thread pool and checkpoint resume. Superseded by canonical updater which uses the unified VnstockClient adapter (omega.data.vnstock_client) with proper VND_FULL normalization, canonical schema, and atomic write.",
+      "replacement": "scripts/update_market_data.py",
+      "superseded_by_gate": "CANONICAL_VCI_UPDATER_LEGACY_TRACKING_20260613",
+      "issues": [
+        "Imports from omega.quant.data.vnstock_vci (legacy VCI adapter)",
+        "Does not enforce canonical 14-column schema",
+        "No PIT available_at enforcement",
+        "No exchange whitelist validation",
+        "No pre-write validation (duplicates, nulls, OHLC invariants)",
+        "No atomic write with backup"
+      ],
+      "delete_recommendation": "defer to L3 review"
+    },
+    {
+      "file": "src/omega/quant/data/vnstock_vci.py",
+      "status": "legacy",
+      "reason": "V21-era VCI data source using raw vnstock Quote API. Superseded by omega.data.vnstock_client.VnstockClient which provides unified adapter with rate limiting, VND_FULL normalization, and source fallback.",
+      "replacement": "src/omega/data/vnstock_client.py (VnstockClient)",
+      "superseded_by_gate": "VNSTOCK_LATEST_STANDARDIZATION_20260612",
+      "issues": [
+        "Direct vnstock imports (Quote, TimeFrame) instead of unified adapter",
+        "No VND_FULL price normalization at read boundary",
+        "Used by batch_market_loader_resume.py (also legacy)",
+        "Domain: omega.quant.data instead of omega.data"
+      ],
+      "delete_recommendation": "defer to L3 review; check for other importers first"
+    },
+    {
+      "file": "src/omega/quant/data/vci_ingest.py",
+      "status": "legacy",
+      "reason": "V21-era one-shot VCI ingestion script. Hardcoded price normalization, no canonical schema, no PIT columns. Superseded by the canonical updater pipeline.",
+      "replacement": "scripts/update_market_data.py",
+      "superseded_by_gate": "CANONICAL_VCI_UPDATER_LEGACY_TRACKING_20260613",
+      "issues": [
+        "No canonical 14-column schema",
+        "Inline price normalization (not centralized)",
+        "No PIT available_at",
+        "No validation framework",
+        "No incremental update support",
+        "Writes to arbitrary output path"
+      ],
+      "delete_recommendation": "defer to L3 review"
+    },
+    {
+      "file": "scripts/vci_candidate_download_20260612.py",
+      "status": "superseded",
+      "reason": "VCI candidate download for cross-source validation on 2026-06-12. Derived universe from canonical tickers (not VCI Listing). Superseded by vci_full_hsx_hnx_download_20260613.py (full HSX/HNX from VCI Listing) and the canonical updater.",
+      "replacement": "scripts/vci_full_hsx_hnx_download_20260613.py + scripts/update_market_data.py",
+      "superseded_by_gate": "VCI_FULL_HSX_HNX_2015_NOW_20260613",
+      "issues": [
+        "Universe derived from canonical (not VCI Listing API)",
+        "No hard 2015-01-01 lower bound enforcement",
+        "Output: market_vci_candidate_20260612.parquet (one-shot, not canonical)",
+        "Purpose: one-time cross-source validation, now complete"
+      ],
+      "delete_recommendation": "defer to L3 review"
+    },
+    {
+      "file": "scripts/vci_candidate_validate_20260612.py",
+      "status": "superseded",
+      "reason": "Validation script for the 2026-06-12 candidate dataset. One-time validation purpose fulfilled. Superseded by vci_full_hsx_hnx_validate_20260613.py and canonical quality checks in the updater.",
+      "replacement": "scripts/vci_full_hsx_hnx_validate_20260613.py + validate_dataframe() in update_market_data.py",
+      "superseded_by_gate": "VCI_FULL_HSX_HNX_2015_NOW_20260613",
+      "issues": [
+        "Hardcoded canonical row count assertion (1687749)",
+        "One-time validation purpose, now complete",
+        "No reusable validation framework"
+      ],
+      "delete_recommendation": "defer to L3 review"
+    },
+    {
+      "file": "scripts/update_market_data.py (OLD BEHAVIOR)",
+      "status": "replaced",
+      "reason": "Old version was VN30-only with hardcoded TOP_SYMBOLS list (20 tickers), no canonical schema enforcement, no dry-run, no validation framework, no atomic write. Completely rewritten as canonical VCI updater supporting full HSX/HNX universe (703 tickers).",
+      "replacement": "scripts/update_market_data.py (NEW - CANONICAL_VCI_UPDATER_LEGACY_TRACKING_20260613)",
+      "superseded_by_gate": "CANONICAL_VCI_UPDATER_LEGACY_TRACKING_20260613",
+      "old_issues": [
+        "VN30-only: hardcoded TOP_SYMBOLS list (20 tickers out of 703)",
+        "Direct vnstock import instead of unified VnstockClient adapter",
+        "No canonical 14-column schema enforcement",
+        "No dry-run/no-write validation mode",
+        "No pre-write validation (duplicates, nulls, OHLC invariants, exchange whitelist)",
+        "No atomic write with backup",
+        "No PIT available_at enforcement",
+        "No hard 2015-01-01 lower bound",
+        "No incremental backfill support with date range arguments",
+        "Inline VND scale fallback instead of centralized vnd_price_contract"
+      ],
+      "delete_recommendation": "N/A - file replaced in-place"
+    }
+  ],
+  "notes": "Do NOT delete legacy files in this task. Track only. Deletion decisions deferred to L3 Tier 3 review (Code Reviewer role 21)."
+}

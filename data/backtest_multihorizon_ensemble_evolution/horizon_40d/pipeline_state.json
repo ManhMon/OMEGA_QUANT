@@ -1,0 +1,31 @@
+{
+  "history": [
+    {
+      "timestamp": "2026-06-23T17:05:36.503869",
+      "duration_s": 22.821410655975342,
+      "generations": 15,
+      "total_evaluated": 150,
+      "quality_passed": 140,
+      "orthogonal_passed": 1,
+      "newly_promoted": 1,
+      "total_active": 1,
+      "backtest_metrics": {}
+    }
+  ],
+  "active_alphas": [
+    {
+      "expression": "(mean (div low (add (mul (sub returns volume) rsi) high)))",
+      "train_ic": 0.10240992238945777,
+      "test_ic": 0.31185931453913807,
+      "sharpe": 0.0,
+      "hit_rate": 0.5662583073104331,
+      "turnover": 0.0013670139722355883,
+      "max_drawdown": 0.0,
+      "generation": 4,
+      "created_at": "2026-06-23T17:05:20.791937",
+      "status": "active",
+      "depth": 5
+    }
+  ],
+  "last_updated": "2026-06-23T17:05:36.503888"
+}

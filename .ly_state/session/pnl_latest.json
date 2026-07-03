@@ -1,0 +1,11 @@
+{
+  "signal_date": "2026-06-19",
+  "timestamp": "2026-07-02T12:53:20.304849+00:00",
+  "gate": "SIMULATED_TRADING_INTEGRATION_20260619",
+  "total_value": 2000000000.0,
+  "invested_value": 400000000.0,
+  "cash": 1600000000.0,
+  "num_positions": 3,
+  "num_trades_executed": 0,
+  "total_orders_submitted": 4
+}

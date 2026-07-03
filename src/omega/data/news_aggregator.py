@@ -1,19 +1,11 @@
-"""
-News Aggregator Module - OMEGA_QUANT Data Layer
-Phase 25.2: Centralized PIT-Safe Web Scraping for Vietnamese Financial News
+"""PIT-safe VN news aggregation via vnstock + Vietstock."""
 
-Provides:
-- Rate-limited scraping from CafeF (RSS primary, HTML fallback) and Vietstock
-- Mandatory PIT-safety (reference date is strictly required)
-- Normalized output structures compatible with VSIPortfolioEngine
-"""
-
+import json
 import logging
+from pathlib import Path
 import re
 import time
-import xml.etree.ElementTree as ET
-from datetime import datetime, timedelta, timezone
-from email.utils import parsedate_to_datetime
+from datetime import datetime, timedelta
 from typing import List, Optional
 from dataclasses import dataclass
 
@@ -22,11 +14,50 @@ from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
 
-CAFEF_RSS_URL = "https://cafef.vn/thi-truong-chung-khoan.rss"
-CAFEF_HTML_URL = "https://cafef.vn/thi-truong-chung-khoan.chn"
 VIETSTOCK_HTML_URL = "https://vietstock.vn/chung-khoan.htm"
 MAX_ARTICLES_PER_SOURCE = 100
 REQUEST_TIMEOUT = 15
+UNIVERSE_PATH = Path(".ly_state/session/vci_universe_hsx_hnx.json")
+BULLISH_KEYWORDS = {
+    "tang",
+    "tăng",
+    "bứt phá",
+    "bùng nổ",
+    "đột phá",
+    "vượt",
+    "lãi",
+    "tích cực",
+    "khởi sắc",
+    "hồi phục",
+    "mua ròng",
+    "tăng trần",
+}
+BEARISH_KEYWORDS = {
+    "giam",
+    "giảm",
+    "giảm sâu",
+    "bán ròng",
+    "áp lực",
+    "margin call",
+    "lao dốc",
+    "đè nặng",
+    "rủi ro",
+    "tiêu cực",
+    "mất mốc",
+    "giảm sàn",
+}
+COMMON_TICKERS = (
+    "VNM", "FPT", "VIC", "VHM", "HPG", "MSN", "MWG",
+    "TCB", "VCB", "BID", "CTG", "MBB", "ACB", "STB",
+    "VNI", "SSI", "HCM", "VND", "PNJ", "REE", "DGC",
+)
+
+
+def infer_tickers_from_text(text: Optional[str], candidates: Optional[List[str]] = None) -> List[str]:
+    if not text:
+        return []
+    text_upper = text.upper()
+    return [ticker for ticker in (candidates or list(COMMON_TICKERS)) if ticker in text_upper]
 
 
 @dataclass
@@ -40,7 +71,7 @@ class SentimentInput:
 
 
 class NewsAggregator:
-    """Web scraper for Vietnamese financial news sources with strict PIT safety."""
+    """Vietnamese financial news collector with strict PIT safety."""
 
     def __init__(self):
         self.last_request_time = {}
@@ -80,187 +111,79 @@ class NewsAggregator:
             return None
         return BeautifulSoup(response.content, "html.parser")
 
-    # ── CafeF ──────────────────────────────────────────────────────
+    # ── Vnstock ─────────────────────────────────────────────────────
 
-    def _scrape_cafef(self, as_of_time: datetime, hours_back: int = 24) -> List[SentimentInput]:
+    def _load_universe_tickers(self) -> List[str]:
+        if not UNIVERSE_PATH.exists():
+            logger.warning("Universe file not found: %s", UNIVERSE_PATH)
+            return []
+        try:
+            with UNIVERSE_PATH.open(encoding="utf-8") as handle:
+                data = json.load(handle)
+        except Exception as exc:
+            logger.error("Failed reading universe file %s: %s", UNIVERSE_PATH, exc)
+            return []
+        tickers = data.get("hsx", []) + data.get("hnx", [])
+        return [ticker.strip().upper() for ticker in tickers if isinstance(ticker, str) and ticker.strip()]
+
+    def _matches_sentiment_keywords(self, title: Optional[str], summary: Optional[str]) -> bool:
+        haystack = f"{title or ''} {summary or ''}".lower()
+        return any(keyword in haystack for keyword in BULLISH_KEYWORDS | BEARISH_KEYWORDS)
+
+    def _parse_public_date(self, public_date: Optional[str]) -> Optional[datetime]:
+        if not public_date:
+            return None
+        try:
+            return datetime.fromisoformat(public_date)
+        except ValueError:
+            logger.warning("Invalid vnstock public_date: %s", public_date)
+            return None
+
+    def _scrape_vnstock_news(self, as_of_time: datetime, hours_back: int = 24) -> List[SentimentInput]:
         if as_of_time is None:
             raise ValueError("as_of_time is mandatory for PIT safety")
 
-        results = self._scrape_cafef_rss(as_of_time, hours_back)
-        if not results:
-            logger.info("CafeF RSS empty, falling back to HTML scraping")
-            results = self._scrape_cafef_html(as_of_time, hours_back)
-        return results
-
-    def _scrape_cafef_rss(self, as_of_time: datetime, hours_back: int) -> List[SentimentInput]:
-        """Primary: parse CafeF RSS feed for structured article data."""
-        results = []
-        response = self._fetch_raw(CAFEF_RSS_URL, "cafef.vn")
-        if response is None:
-            return results
+        cutoff = as_of_time - timedelta(hours=hours_back)
+        results: List[SentimentInput] = []
 
         try:
-            root = ET.fromstring(response.content)
-        except ET.ParseError as exc:
-            logger.warning("CafeF RSS parse error: %s", exc)
+            from vnstock import Company
+        except Exception as exc:
+            logger.error("vnstock import failed: %s", exc)
             return results
 
-        cutoff = as_of_time - timedelta(hours=hours_back)
-
-        for item in root.iter("item"):
+        for ticker in self._load_universe_tickers():
             if len(results) >= MAX_ARTICLES_PER_SOURCE:
                 break
             try:
-                title_el = item.find("title")
-                pubdate_el = item.find("pubDate")
-                if title_el is None or title_el.text is None:
-                    continue
-
-                headline = title_el.text.strip()
-                if not headline:
-                    continue
-
-                timestamp = as_of_time
-                if pubdate_el is not None and pubdate_el.text:
-                    try:
-                        vntz = timezone(timedelta(hours=7))
-                        parsed = parsedate_to_datetime(pubdate_el.text.strip())
-                        timestamp = parsed.astimezone(vntz).replace(tzinfo=None)
-                    except Exception:
-                        timestamp = as_of_time
-
-                if timestamp > as_of_time:
-                    continue
-                if timestamp < cutoff:
-                    continue
-
-                results.append(SentimentInput(
-                    text=headline,
-                    source="CafeF",
-                    timestamp=timestamp,
-                ))
+                self._rate_limit("vnstock")
+                frame = Company(symbol=ticker, source="VCI").news()
             except Exception as exc:
-                logger.warning("CafeF RSS item error: %s", exc)
+                logger.warning("vnstock news fetch failed for %s: %s", ticker, exc)
+                continue
+            if frame is None or frame.empty:
+                continue
+
+            for row in frame.to_dict(orient="records"):
+                if len(results) >= MAX_ARTICLES_PER_SOURCE:
+                    break
+                timestamp = self._parse_public_date(row.get("public_date"))
+                if timestamp is None or timestamp >= as_of_time or timestamp <= cutoff:
+                    continue
+                title = row.get("news_title")
+                summary = row.get("news_short_content")
+                if not self._matches_sentiment_keywords(title, summary):
+                    continue
+                text = " ".join(part.strip() for part in [title or "", summary or ""] if part and part.strip())
+                if not text:
+                    continue
+                results.append(SentimentInput(
+                    text=text,
+                    source="vnstock",
+                    timestamp=timestamp,
+                    ticker=ticker,
+                ))
         return results
-
-    def _scrape_cafef_html(self, as_of_time: datetime, hours_back: int) -> List[SentimentInput]:
-        """Fallback: scrape CafeF HTML listing page."""
-        results = []
-        soup = self._fetch_html(CAFEF_HTML_URL, "cafef.vn")
-        if soup is None:
-            return results
-
-        cutoff = as_of_time - timedelta(hours=hours_back)
-
-        # Featured articles (top section)
-        self._extract_cafef_featured(soup, as_of_time, cutoff, results)
-
-        # Stream articles (main list)
-        self._extract_cafef_stream(soup, as_of_time, cutoff, results)
-
-        return results
-
-    def _extract_cafef_featured(
-        self, soup: BeautifulSoup, as_of_time: datetime,
-        cutoff: datetime, results: List[SentimentInput]
-    ) -> None:
-        first_item = soup.find("div", class_="firstitem")
-        if first_item:
-            link = first_item.find("h2")
-            if link:
-                link = link.find("a")
-            time_tag = first_item.find("p", class_="time")
-            self._add_cafef_article(link, time_tag, "data-time", as_of_time, cutoff, results)
-
-        for big_item in soup.find_all("div", class_="big"):
-            if len(results) >= MAX_ARTICLES_PER_SOURCE:
-                break
-            link = big_item.find("h3")
-            if link:
-                link = link.find("a")
-            time_tag = big_item.find("p", class_="time")
-            self._add_cafef_article(link, time_tag, "data-time", as_of_time, cutoff, results)
-
-    def _extract_cafef_stream(
-        self, soup: BeautifulSoup, as_of_time: datetime,
-        cutoff: datetime, results: List[SentimentInput]
-    ) -> None:
-        for tlitem in soup.find_all("div", class_="tlitem"):
-            if len(results) >= MAX_ARTICLES_PER_SOURCE:
-                break
-            link = tlitem.find("h3")
-            if link:
-                link = link.find("a")
-            time_tag = tlitem.find("span", class_="time")
-            self._add_cafef_article(link, time_tag, "title", as_of_time, cutoff, results)
-
-    def _add_cafef_article(
-        self, link_tag, time_tag, time_attr: str,
-        as_of_time: datetime, cutoff: datetime,
-        results: List[SentimentInput]
-    ) -> None:
-        if not link_tag:
-            return
-        headline = (link_tag.get("title") or link_tag.get_text()).strip()
-        if not headline:
-            return
-
-        timestamp = as_of_time
-        if time_tag:
-            raw_time = time_tag.get(time_attr) or time_tag.get_text(strip=True)
-            timestamp = self._parse_cafef_time(raw_time, as_of_time)
-
-        if timestamp > as_of_time or timestamp < cutoff:
-            return
-
-        results.append(SentimentInput(
-            text=headline,
-            source="CafeF",
-            timestamp=timestamp,
-        ))
-
-    def _parse_cafef_time(self, time_text: str, reference: datetime) -> datetime:
-        if not time_text:
-            return reference
-        text = time_text.strip()
-
-        # ISO 8601 from <span title="2026-06-19T08:16:00">
-        iso_match = re.search(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})", text)
-        if iso_match:
-            try:
-                return datetime.strptime(iso_match.group(1), "%Y-%m-%dT%H:%M:%S")
-            except ValueError:
-                pass
-
-        # Featured format "DD/MM/YYYY - HH:MM"
-        featured_match = re.search(r"(\d{2}/\d{2}/\d{4})\s*-\s*(\d{2}:\d{2})", text)
-        if featured_match:
-            try:
-                return datetime.strptime(
-                    f"{featured_match.group(1)} {featured_match.group(2)}",
-                    "%d/%m/%Y %H:%M"
-                )
-            except ValueError:
-                pass
-
-        # Relative: "X phút trước", "X giờ trước"
-        text_lower = text.lower()
-        minutes_match = re.search(r"(\d+)\s*phút", text_lower)
-        if minutes_match:
-            return reference - timedelta(minutes=int(minutes_match.group(1)))
-
-        hours_match = re.search(r"(\d+)\s*giờ", text_lower)
-        if hours_match:
-            return reference - timedelta(hours=int(hours_match.group(1)))
-
-        # Legacy: "DD/MM/YYYY HH:MM"
-        if "/" in text and ":" in text:
-            try:
-                return datetime.strptime(text, "%d/%m/%Y %H:%M")
-            except ValueError:
-                pass
-
-        return reference
 
     # ── Vietstock ──────────────────────────────────────────────────
 
@@ -282,7 +205,7 @@ class NewsAggregator:
                 headline, timestamp = self._extract_vietstock_article(article, as_of_time)
                 if not headline:
                     continue
-                if timestamp > as_of_time or timestamp < cutoff:
+                if timestamp >= as_of_time or timestamp <= cutoff:
                     continue
 
                 results.append(SentimentInput(
@@ -367,11 +290,11 @@ class NewsAggregator:
         logger.info("Fetching news from last %d hours as of %s...", hours_back, as_of_time)
 
         try:
-            cafef_news = self._scrape_cafef(as_of_time, hours_back)
-            all_news.extend(cafef_news)
-            logger.info("CafeF: %d articles", len(cafef_news))
+            vnstock_news = self._scrape_vnstock_news(as_of_time, hours_back)
+            all_news.extend(vnstock_news)
+            logger.info("vnstock: %d articles", len(vnstock_news))
         except Exception as exc:
-            logger.error("CafeF scraping failed: %s", exc)
+            logger.error("vnstock scraping failed: %s", exc)
 
         try:
             vietstock_news = self._scrape_vietstock(as_of_time, hours_back)

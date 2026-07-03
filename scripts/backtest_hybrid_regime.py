@@ -20,6 +20,7 @@ import gc
 import time
 import argparse
 import hashlib
+import joblib
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 from joblib import Parallel, delayed
@@ -33,7 +34,7 @@ import logging
 import pandas as pd
 import numpy as np
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 
 from sklearn.linear_model import Ridge
 
@@ -61,6 +62,9 @@ from omega.quant.evolution.unified_feature_adapter import UnifiedFeatureAdapter
 from omega.quant.validation.cpcv import CombinatorialPurgedKFold
 from omega.quant.walk_forward.risk_sizing_overlay import SimpleGaussianHMM
 from omega.quant.strategy.latent_gmm import LatentGMMRegime, LatentGMMConfig
+from omega.quant.models.conformal_predictor import ConformalTrendPredictor
+from omega.core.pit import to_utc_aware
+from omega.core.registry.persistence import DatabaseRegistry
 from phase35_data_loader import DynamicUniverseSelector
 
 logging.basicConfig(
@@ -74,6 +78,7 @@ DEFAULT_DATA_PATH = "data/market_2015_now.parquet"
 SECTOR_MAPPING_FILE = "data/sector_mapping_level2.csv"
 LATENT_AE_PATH = "data/latent_alphas_components.parquet"
 OUTPUT_DIR = "data/phase35_results"
+STABLE_RESULTS_DIR = "data/stable"
 STATE_DIR = ".ly_state/session/pipeline_state_hybrid"
 DEFAULT_ALPHA_SELECTION_TOP_K = 7
 
@@ -133,6 +138,256 @@ class LongOnlyConcentratedOverlay(WeightOverlay):
 
         state[state_key] = prev_selected
         return pd.DataFrame(processed_rows, index=weights.index, columns=weights.columns)
+
+
+def _bucketize_liquidity(series: pd.Series, buckets: int = 3) -> pd.Series:
+    labels = ["low", "mid", "high"]
+    numeric = pd.to_numeric(series, errors="coerce")
+    valid = numeric.dropna()
+    if valid.empty:
+        return pd.Series(["mid"] * len(series), index=series.index, dtype=object)
+    try:
+        bucketed = pd.qcut(valid, q=buckets, labels=labels, duplicates="drop")
+    except ValueError:
+        return pd.Series(["mid"] * len(series), index=series.index, dtype=object)
+    result = pd.Series("mid", index=series.index, dtype=object)
+    result.loc[valid.index] = bucketed.astype(str)
+    return result.astype(str)
+
+
+def _resolve_regime_series(dates: pd.Series, state: Dict[str, Any]) -> pd.Series:
+    labels = state.get("gmm_regime_labels", {})
+    return pd.Series(
+        [
+            str(labels.get(pd.Timestamp(date).strftime("%Y-%m-%d"), "neutral"))
+            .lower()
+            for date in dates
+        ],
+        index=dates.index,
+        dtype=object,
+    )
+
+
+class ConformalGateOverlay(WeightOverlay):
+    def __init__(
+        self,
+        predictor: ConformalTrendPredictor,
+        feature_cols: List[str],
+        alpha: float = 0.2,
+        width_ref: Optional[float] = None,
+        conf_floor: float = 0.25,
+        min_coverage: float = 0.0,
+        max_width_abs: Optional[float] = None,
+        liquidity_col: str = "adv_vnd",
+        liquidity_buckets: int = 3,
+        mode: str = "size",
+    ) -> None:
+        self.predictor = predictor
+        self.feature_cols = list(feature_cols)
+        self.alpha = alpha
+        self.width_ref = width_ref
+        self.conf_floor = conf_floor
+        self.min_coverage = min_coverage
+        self.max_width_abs = max_width_abs
+        self.liquidity_col = liquidity_col
+        self.liquidity_buckets = liquidity_buckets
+        self.mode = mode
+
+    def apply(
+        self,
+        weights: pd.DataFrame,
+        panel: pd.DataFrame,
+        state: Dict[str, Any],
+    ) -> pd.DataFrame:
+        if weights.empty or panel.empty:
+            return weights.copy()
+        if any(col not in panel.columns for col in self.feature_cols):
+            return weights.copy()
+        frame = panel[["date", "symbol", *self.feature_cols]].copy()
+        frame["regime"] = _resolve_regime_series(panel["date"], state)
+        frame["liquidity_bucket"] = _bucketize_liquidity(
+            panel[self.liquidity_col],
+            self.liquidity_buckets,
+        )
+        feature_mask = frame[self.feature_cols].notna().all(axis=1)
+        scale = frame[["date", "symbol"]].copy()
+        scale["confidence"] = self.conf_floor
+        scale["gate"] = True
+        if feature_mask.any():
+            x = frame.loc[feature_mask, self.feature_cols]
+            groups = frame.loc[feature_mask, ["regime", "liquidity_bucket"]]
+            pred = self.predictor.predict(x, groups, alpha=self.alpha)
+            width = np.asarray(pred.upper) - np.asarray(pred.lower)
+            width_ref = max(float(self.width_ref or np.median(width) or 1.0), 1e-12)
+            conf = np.clip(1.0 - width / width_ref, self.conf_floor, 1.0)
+            scale.loc[feature_mask, "confidence"] = conf
+            gate = np.ones(len(x), dtype=bool)
+            if self.mode != "size":
+                # ponytail: keep gating PIT-safe by using prediction interval width only.
+                # If calibrated coverage-based gating is needed later, source it from train/calib metadata only.
+                if self.min_coverage > 0.0:
+                    logger.warning(
+                        "ConformalGateOverlay ignores min_coverage during live gating; width-only gating enforced for PIT safety."
+                    )
+                if self.max_width_abs is not None:
+                    gate &= width <= float(self.max_width_abs)
+            scale.loc[feature_mask, "gate"] = gate
+        conf_pivot = scale.pivot_table(
+            index="date", columns="symbol", values="confidence", aggfunc="last"
+        ).reindex(index=weights.index, columns=weights.columns)
+        gate_pivot = scale.pivot_table(
+            index="date", columns="symbol", values="gate", aggfunc="last"
+        ).reindex(index=weights.index, columns=weights.columns)
+        result = weights.copy()
+        if self.mode in {"size", "size_gate"}:
+            result = result.mul(conf_pivot.fillna(self.conf_floor))
+        if self.mode in {"gate", "size_gate"}:
+            result = result.where(gate_pivot.fillna(True), 0.0)
+        return result
+
+
+def _infer_conformal_feature_cols(feat_df: pd.DataFrame) -> List[str]:
+    excluded = {
+        "date", "symbol", "open", "high", "low", "close", "volume",
+        "target_next_return",
+    }
+    cols = [
+        col for col in feat_df.columns
+        if col not in excluded and pd.api.types.is_numeric_dtype(feat_df[col])
+    ]
+    return cols or [col for col in ["returns", "adv_vnd"] if col in feat_df.columns]
+
+
+def assert_fast_global_embargo_safe(pit_embargo: Any, test_dates: np.ndarray) -> None:
+    if pit_embargo is None:
+        raise ValueError("Global conformal model missing pit_embargo metadata")
+    embargo_ts = pd.Timestamp(pit_embargo)
+    if embargo_ts.tzinfo is not None:
+        embargo_ts = embargo_ts.tz_convert(timezone.utc).tz_localize(None)
+    min_test_date = pd.Timestamp(test_dates.min())
+    if embargo_ts > min_test_date:
+        raise ValueError(
+            "Conformal model pit_embargo exceeds fold test start: "
+            f"{embargo_ts.date()} > {min_test_date.date()}"
+        )
+
+
+def load_conformal_predictor(
+    model_path: Optional[str],
+    registry_key: Optional[str],
+) -> Tuple[ConformalTrendPredictor, Dict[str, Any]]:
+    if model_path:
+        predictor = joblib.load(model_path)
+        return predictor, {"metrics": {}, "path": model_path}
+    if not registry_key:
+        raise ValueError("Conformal enabled but no model path or registry key supplied")
+    registry = DatabaseRegistry(
+        database_url=(
+            f"sqlite:///{(REPO_ROOT / '.ly_state' / 'session' / 'conformal_registry.sqlite').as_posix()}"
+        )
+    )
+    with registry._session_factory() as session:
+        from omega.core.db.persistence import ModelRecord
+        from sqlalchemy import desc, select
+
+        stmt = (
+            select(ModelRecord)
+            .where(ModelRecord.name == registry_key)
+            .order_by(desc(ModelRecord.created_at))
+            .limit(1)
+        )
+        record = session.execute(stmt).scalar_one_or_none()
+    if record is None:
+        raise ValueError(f"No conformal registry model found for key '{registry_key}'")
+    return joblib.load(record.path), {
+        "metrics": record.metrics or {},
+        "path": record.path,
+        "pit_embargo": record.pit_embargo,
+    }
+
+
+def fit_fold_conformal_predictor(
+    feat_df: pd.DataFrame,
+    train_dates: pd.DatetimeIndex,
+    feature_cols: List[str],
+    alpha: float,
+    gmm_model: Optional[LatentGMMRegime],
+) -> Tuple[ConformalTrendPredictor, Dict[str, Any]]:
+    train_feat = feat_df[feat_df["date"].isin(train_dates)].copy()
+    train_feat = train_feat.sort_values(["symbol", "date"])
+    train_feat["target_next_return"] = train_feat.groupby("symbol")["returns"].shift(-1)
+    latent_cols = [
+        col for col in ["latent_ae_00", "latent_ae_01", "latent_ae_11"]
+        if col in train_feat.columns
+    ]
+    labels = {}
+    if gmm_model is not None and gmm_model.is_fitted and latent_cols:
+        date_latent = train_feat.groupby("date")[latent_cols].mean().sort_index()
+        if not date_latent.empty:
+            regime_arr, _ = gmm_model.predict_regime(date_latent)
+            labels = {
+                pd.Timestamp(date).strftime("%Y-%m-%d"): str(label).lower()
+                for date, label in zip(date_latent.index, regime_arr)
+            }
+    train_feat["regime"] = _resolve_regime_series(
+        train_feat["date"],
+        {"gmm_regime_labels": labels},
+    )
+    train_feat["liquidity_bucket"] = _bucketize_liquidity(train_feat["adv_vnd"])
+    available_feature_cols = [
+        col for col in feature_cols
+        if col in train_feat.columns and pd.api.types.is_numeric_dtype(train_feat[col])
+    ]
+    if not available_feature_cols:
+        available_feature_cols = [col for col in ["returns", "adv_vnd"] if col in train_feat.columns]
+    coverage_rank = sorted(
+        available_feature_cols,
+        key=lambda col: int(train_feat[col].notna().sum()),
+        reverse=True,
+    )
+    selected_feature_cols = list(coverage_rank)
+    train_feat = train_feat.dropna(subset=["target_next_return", "regime", "liquidity_bucket"])
+    while selected_feature_cols:
+        candidate = train_feat.dropna(subset=selected_feature_cols)
+        calib_size = max(10, min(len(candidate) // 5, 252))
+        split = len(candidate) - calib_size
+        if len(candidate) >= 30 and split >= 20:
+            train_feat = candidate
+            break
+        selected_feature_cols.pop()
+    else:
+        raise ValueError("Insufficient train rows for per-fold conformal refit")
+    calib_size = max(10, min(len(train_feat) // 5, 252))
+    split = len(train_feat) - calib_size
+    predictor = ConformalTrendPredictor(
+        alpha=alpha,
+        min_group_size=5,
+        random_state=42,
+        alphas=sorted(set([alpha, 0.1, 0.2, 0.5]), reverse=True),
+    )
+    predictor.fit(
+        train_feat.iloc[:split][selected_feature_cols],
+        train_feat.iloc[:split]["target_next_return"],
+        train_feat.iloc[split:][selected_feature_cols],
+        train_feat.iloc[split:]["target_next_return"],
+        train_feat.iloc[split:][["regime", "liquidity_bucket"]],
+    )
+    calib_pred = predictor.predict(
+        train_feat.iloc[split:][selected_feature_cols],
+        train_feat.iloc[split:][["regime", "liquidity_bucket"]],
+        alpha=alpha,
+    )
+    widths = np.asarray(calib_pred.upper) - np.asarray(calib_pred.lower)
+    return predictor, {
+        "feature_cols": selected_feature_cols,
+        "width_ref": float(np.median(widths)) if len(widths) else 1.0,
+        "pit_embargo": to_utc_aware(
+            datetime.combine(
+                pd.Timestamp(train_dates.max()).date(),
+                datetime.min.time(),
+            )
+        ),
+    }
 
 
 def derive_trade_cost_components(cost_per_trade_bps: float) -> dict:
@@ -237,16 +492,16 @@ def parse_args() -> argparse.Namespace:
         help="Rank buffer for retaining existing concentrated positions (default: 2)",
     )
     parser.add_argument(
-        "--cost-per-trade-bps", type=float, default=35.0,
-        help="Transaction cost per trade in basis points (default: 35.0)",
+        "--cost-per-trade-bps", type=float, default=15.0,
+        help="Transaction cost per trade in basis points (default: 15.0)",
     )
     parser.add_argument(
-        "--min-trade-threshold-bps", type=float, default=250.0,
-        help="Minimum trade threshold in basis points to filter churn (default: 250.0)",
+        "--min-trade-threshold-bps", type=float, default=200.0,
+        help="Minimum trade threshold in basis points to filter churn (default: 200.0)",
     )
     parser.add_argument(
-        "--rebalance-every-n-days", type=int, default=15,
-        help="Number of days between portfolio rebalances (default: 15)",
+        "--rebalance-every-n-days", type=int, default=10,
+        help="Number of days between portfolio rebalances (default: 10)",
     )
     parser.add_argument(
         "--rebalance-bear-multiplier", type=float, default=2.0,
@@ -276,7 +531,21 @@ def parse_args() -> argparse.Namespace:
         "--tcost-dynamic-ic-lookback", type=int, default=20,
         help="TCostOverlay dynamic budgeting IC lookback (default: 20)",
     )
+    parser.add_argument("--enable-conformal", action="store_true")
+    parser.add_argument("--conformal-model-path", type=str, default=None)
+    parser.add_argument("--conformal-registry-key", type=str, default=None)
+    parser.add_argument("--conformal-alpha", type=float, default=0.2)
+    parser.add_argument(
+        "--conformal-mode",
+        choices=["size", "gate", "size_gate"],
+        default="size",
+    )
+    parser.add_argument("--conformal-min-coverage", type=float, default=0.0)
+    parser.add_argument("--conformal-conf-floor", type=float, default=0.25)
+    parser.add_argument("--conformal-ladder-diag", action="store_true")
+    parser.add_argument("--fast-global-embargo", action="store_true")
     args = parser.parse_args()
+    args.conformal_refit_per_fold = not args.fast_global_embargo
     if args.static_universe:
         args.dynamic_universe = False
     return args
@@ -446,6 +715,23 @@ def generate_features(panel: pd.DataFrame) -> pd.DataFrame:
     return feat_df
 
 
+def _write_result_payload(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2)
+
+
+def _mirror_result_json(path: Path, payload: Any) -> None:
+    _write_result_payload(path, payload)
+    legacy_root = REPO_ROOT / OUTPUT_DIR
+    stable_root = REPO_ROOT / STABLE_RESULTS_DIR
+    try:
+        rel_path = path.relative_to(legacy_root)
+    except ValueError:
+        return
+    _write_result_payload(stable_root / rel_path, payload)
+
+
 def make_query_fn(
     feat_df: pd.DataFrame,
     dynamic_schedule: Optional[Dict[str, List[str]]] = None,
@@ -543,9 +829,9 @@ def build_scenario_overlays(
     top_k: int = 7,
     concentrated_hysteresis: int = 2,
     hmm_reentry_threshold: float = 0.6,
-    cost_per_trade_bps: float = 35.0,
-    min_trade_threshold_bps: float = 250.0,
-    rebalance_every_n_days: int = 15,
+    cost_per_trade_bps: float = 15.0,
+    min_trade_threshold_bps: float = 200.0,
+    rebalance_every_n_days: int = 10,
     rebalance_bear_multiplier: float = 2.0,
     tail_target_vol_ann: float = 0.2,
     tail_max_abs_weight: float = 0.25,
@@ -553,6 +839,7 @@ def build_scenario_overlays(
     risk_regime_sizing_scale: float = 0.5,
     risk_latent_gmm_bear_dampening: float = 0.45,
     tcost_dynamic_ic_lookback: int = 20,
+    conformal_overlay: Optional[WeightOverlay] = None,
 ) -> Dict[str, list]:
     """Build scenario overlay stacks with optional pre-fitted models.
 
@@ -569,7 +856,7 @@ def build_scenario_overlays(
     """
     sector_file = str(REPO_ROOT / SECTOR_MAPPING_FILE)
     trade_costs = derive_trade_cost_components(cost_per_trade_bps)
-    return {
+    overlays = {
         "Baseline": [
             SectorConcentrationOverlay(
                 max_sector_exposure=0.30,
@@ -668,15 +955,24 @@ def build_scenario_overlays(
             ),
         ],
     }
+    if conformal_overlay is not None:
+        hybrid = list(overlays["Hybrid"])
+        risk_idx = next(
+            idx for idx, overlay in enumerate(hybrid)
+            if isinstance(overlay, RiskSizingOverlay)
+        )
+        hybrid.insert(risk_idx + 1, conformal_overlay)
+        overlays["Conformal"] = hybrid
+    return overlays
 
 
 def build_pipeline_config(
     capital: float,
     hmm_reentry_threshold: float = 0.6,
-    cost_per_trade_bps: float = 35.0,
-    min_trade_threshold_bps: float = 250.0,
+    cost_per_trade_bps: float = 15.0,
+    min_trade_threshold_bps: float = 200.0,
     alpha_turnover_penalty: float = 0.1,
-    rebalance_every_n_days: int = 15,
+    rebalance_every_n_days: int = 10,
     rebalance_bear_multiplier: float = 2.0,
     tail_target_vol_ann: float = 0.2,
     tail_max_abs_weight: float = 0.25,
@@ -729,10 +1025,10 @@ def safe_build_pipeline_config(args: argparse.Namespace) -> dict:
     config_kwargs = {
         "capital": args.capital,
         "hmm_reentry_threshold": getattr(args, "hmm_reentry_threshold", 0.6),
-        "cost_per_trade_bps": getattr(args, "cost_per_trade_bps", 35.0),
-        "min_trade_threshold_bps": getattr(args, "min_trade_threshold_bps", 250.0),
+        "cost_per_trade_bps": getattr(args, "cost_per_trade_bps", 15.0),
+        "min_trade_threshold_bps": getattr(args, "min_trade_threshold_bps", 200.0),
         "alpha_turnover_penalty": getattr(args, "alpha_turnover_penalty", 0.1),
-        "rebalance_every_n_days": getattr(args, "rebalance_every_n_days", 15),
+        "rebalance_every_n_days": getattr(args, "rebalance_every_n_days", 10),
         "rebalance_bear_multiplier": getattr(args, "rebalance_bear_multiplier", 2.0),
         "tail_target_vol_ann": getattr(args, "tail_target_vol_ann", 0.2),
         "tail_max_abs_weight": getattr(args, "tail_max_abs_weight", 0.25),
@@ -959,8 +1255,7 @@ def load_or_create_shared_precomputes(
             "close_pivot_path": str(close_pivot_path.relative_to(REPO_ROOT)),
         },
     }
-    with open(meta_path, "w", encoding="utf-8") as f:
-        json.dump(meta_payload, f, indent=2)
+    _write_result_payload(meta_path, meta_payload)
     return pred_lag_df, close_pivot_full, metadata
 
 
@@ -1773,6 +2068,7 @@ def run_single_fold(
     model_type: str = "lightgbm",
     top_k: int = 5,
     concentrated_hysteresis: int = 2,
+    conformal_cfg: Optional[dict] = None,
 ) -> Dict[str, Dict]:
     min_test_date = pd.Timestamp(test_dates.min())
     max_test_date = pd.Timestamp(test_dates.max())
@@ -1870,6 +2166,33 @@ def run_single_fold(
         test_feat["symbol"].nunique(),
     )
 
+    conformal_overlay = None
+    if conformal_cfg and conformal_cfg.get("enabled"):
+        feature_cols = list(conformal_cfg.get("feature_cols") or [])
+        predictor = conformal_cfg.get("predictor")
+        meta = dict(conformal_cfg.get("model_meta") or {})
+        if conformal_cfg.get("refit_per_fold", True):
+            predictor, meta = fit_fold_conformal_predictor(
+                feat_df,
+                train_dates,
+                feature_cols,
+                float(conformal_cfg.get("alpha", 0.2)),
+                gmm_model,
+            )
+        else:
+            assert_fast_global_embargo_safe(meta.get("pit_embargo"), test_dates)
+        overlay_feature_cols = list(meta.get("feature_cols", feature_cols) or feature_cols)
+        conformal_overlay = ConformalGateOverlay(
+            predictor=predictor,
+            feature_cols=overlay_feature_cols,
+            alpha=float(conformal_cfg.get("alpha", 0.2)),
+            width_ref=meta.get("width_ref"),
+            conf_floor=float(conformal_cfg.get("conf_floor", 0.25)),
+            min_coverage=float(conformal_cfg.get("min_coverage", 0.0)),
+            max_width_abs=conformal_cfg.get("max_width_abs"),
+            mode=str(conformal_cfg.get("mode", "size")),
+        )
+
     # Build per-fold scenario overlays with pre-fitted models (inference-only on test)
     scenarios = build_scenario_overlays(
         capital,
@@ -1878,8 +2201,8 @@ def run_single_fold(
         top_k=top_k,
         concentrated_hysteresis=concentrated_hysteresis,
         hmm_reentry_threshold=float(config.get("hmm_reentry_threshold", 0.6)),
-        cost_per_trade_bps=float(config.get("cost_per_trade_bps", 35.0)),
-        min_trade_threshold_bps=float(config.get("min_trade_threshold_bps", 150.0)),
+        cost_per_trade_bps=float(config.get("cost_per_trade_bps", 15.0)),
+        min_trade_threshold_bps=float(config.get("min_trade_threshold_bps", 200.0)),
         rebalance_every_n_days=int(config.get("rebalance_every_n_days", 10)),
         rebalance_bear_multiplier=float(config.get("rebalance_bear_multiplier", 2.0)),
         tail_target_vol_ann=float(config.get("tail_target_vol_ann", 0.2)),
@@ -1888,6 +2211,7 @@ def run_single_fold(
         risk_regime_sizing_scale=float(config.get("risk_regime_sizing_scale", 0.5)),
         risk_latent_gmm_bear_dampening=float(config.get("risk_latent_gmm_bear_dampening", 0.45)),
         tcost_dynamic_ic_lookback=int(config.get("tcost_dynamic_ic_lookback", 20)),
+        conformal_overlay=conformal_overlay,
     )
 
     query = make_query_fn(test_feat, dynamic_schedule)
@@ -2055,6 +2379,77 @@ def aggregate_fold_results(
     return aggregated
 
 
+def run_all_folds(
+    fold_specs: List[Dict[str, Any]],
+    total_combinatorial_folds: int,
+    workers: int = 1,
+) -> List[Dict[str, Dict]]:
+    all_fold_results: List[Dict[str, Dict]] = []
+    if workers > 1 and len(fold_specs) > 1:
+        parallel_backend = os.environ.get("OMEGA_BACKTEST_BACKEND", "threading")
+
+        def _run_fold_spec(spec):
+            return run_single_fold(
+                fold_id=spec["fold_id"],
+                train_idx=spec["train_idx"],
+                test_dates=spec["test_dates"],
+                ts_index=spec["ts_index"],
+                feat_df=spec["feat_df"],
+                tickers=spec["tickers"],
+                capital=spec["capital"],
+                config=spec["config"],
+                output_tag=spec["output_tag"],
+                dynamic_schedule=spec["dynamic_schedule"],
+                precomputed_lag_cols=spec["precomputed_lag_cols"],
+                pred_lag_df=spec["pred_lag_df"],
+                close_pivot_full=spec["close_pivot_full"],
+                model_type=spec["model_type"],
+                top_k=spec["top_k"],
+                concentrated_hysteresis=spec["concentrated_hysteresis"],
+                conformal_cfg=spec.get("conformal_cfg"),
+            )
+
+        fold_results = Parallel(
+            n_jobs=workers,
+            backend=parallel_backend,
+            verbose=10,
+            batch_size=1,
+        )(delayed(_run_fold_spec)(spec) for spec in fold_specs)
+        all_fold_results.extend(fold_results)
+        gc.collect()
+        return all_fold_results
+    for spec in fold_specs:
+        logger.info(
+            "CPCV Fold %d/%d: %d test days [%s .. %s]",
+            spec["fold_id"], total_combinatorial_folds,
+            len(spec["test_dates"]),
+            pd.Timestamp(spec["test_dates"].min()).date(),
+            pd.Timestamp(spec["test_dates"].max()).date(),
+        )
+        all_fold_results.append(
+            run_single_fold(
+                fold_id=spec["fold_id"],
+                train_idx=spec["train_idx"],
+                test_dates=spec["test_dates"],
+                ts_index=spec["ts_index"],
+                feat_df=spec["feat_df"],
+                tickers=spec["tickers"],
+                capital=spec["capital"],
+                config=spec["config"],
+                output_tag=spec["output_tag"],
+                dynamic_schedule=spec["dynamic_schedule"],
+                precomputed_lag_cols=spec["precomputed_lag_cols"],
+                pred_lag_df=spec["pred_lag_df"],
+                close_pivot_full=spec["close_pivot_full"],
+                model_type=spec["model_type"],
+                top_k=spec["top_k"],
+                concentrated_hysteresis=spec["concentrated_hysteresis"],
+                conformal_cfg=spec.get("conformal_cfg"),
+            )
+        )
+    return all_fold_results
+
+
 def print_comparison_table(aggregated: Dict[str, Dict], args: argparse.Namespace) -> None:
     print("\n" + "=" * 100)
     print("HYBRID GMM-BOCPD WALK-FORWARD CPCV REPORT")
@@ -2172,9 +2567,7 @@ def save_comparison_json(
             "total_elapsed_min": total_elapsed_sec / 60.0,
         },
     }
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(payload, f, indent=2, default=str)
+    _mirror_result_json(out_path, json.loads(json.dumps(payload, default=str)))
     logger.info("Saved comparison JSON to %s", out_path)
     return out_path
 
@@ -2305,9 +2698,7 @@ def save_alpha_improvement_real_json(
         },
     }
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w") as f:
-        json.dump(payload, f, indent=2, default=str)
+    _mirror_result_json(out_path, json.loads(json.dumps(payload, default=str)))
 
     logger.info(
         "Alpha improvement REAL JSON saved to %s — "
@@ -2414,9 +2805,32 @@ def main():
     logger.info("CPCV will generate %d combinatorial folds", total_combinatorial_folds)
 
     config = safe_build_pipeline_config(args)
-
-    all_fold_results: List[Dict[str, Dict]] = []
     fold_counter = 0
+    conformal_cfg = None
+    if getattr(args, "enable_conformal", False):
+        feature_cols = []
+        predictor = None
+        model_meta: Dict[str, Any] = {}
+        if getattr(args, "fast_global_embargo", False):
+            predictor, model_meta = load_conformal_predictor(
+                getattr(args, "conformal_model_path", None),
+                getattr(args, "conformal_registry_key", None),
+            )
+            feature_cols = list(model_meta.get("metrics", {}).get("feature_list") or [])
+        if not feature_cols:
+            feature_cols = _infer_conformal_feature_cols(feat_df)
+        conformal_cfg = {
+            "enabled": True,
+            "predictor": predictor,
+            "model_meta": model_meta,
+            "feature_cols": feature_cols,
+            "alpha": getattr(args, "conformal_alpha", 0.2),
+            "mode": getattr(args, "conformal_mode", "size"),
+            "min_coverage": getattr(args, "conformal_min_coverage", 0.0),
+            "conf_floor": getattr(args, "conformal_conf_floor", 0.25),
+            "refit_per_fold": getattr(args, "conformal_refit_per_fold", True),
+            "ladder_diag": getattr(args, "conformal_ladder_diag", False),
+        }
 
     # Collect fold specs for parallel or serial execution
     fold_specs = []
@@ -2443,6 +2857,7 @@ def main():
             "model_type": args.model_type,
             "top_k": getattr(args, "top_k", 7),
             "concentrated_hysteresis": getattr(args, "risk_concentrated_hysteresis", 2),
+            "conformal_cfg": conformal_cfg,
         })
 
     # Determine worker count: 0=auto, 1=serial, >1=parallel
@@ -2452,92 +2867,11 @@ def main():
     if n_workers < 1:
         n_workers = 1
 
-    logger.info(
-        "Executing %d folds with %d worker(s) (%s mode)",
-        len(fold_specs), n_workers,
-        "parallel" if n_workers > 1 else "serial",
+    all_fold_results = run_all_folds(
+        fold_specs,
+        total_combinatorial_folds,
+        workers=n_workers,
     )
-
-    if n_workers > 1 and len(fold_specs) > 1:
-        parallel_backend = os.environ.get("OMEGA_BACKTEST_BACKEND", "threading")
-        logger.info(
-            "Launching joblib parallel with %d workers (%s backend, shared-memory fold precomputes)",
-            n_workers,
-            parallel_backend,
-        )
-
-        def _run_fold_spec(spec):
-            """Wrapper for joblib: unpacks spec dict into run_single_fold."""
-            return run_single_fold(
-                fold_id=spec["fold_id"],
-                train_idx=spec["train_idx"],
-                test_dates=spec["test_dates"],
-                ts_index=spec["ts_index"],
-                feat_df=spec["feat_df"],
-                tickers=spec["tickers"],
-                capital=spec["capital"],
-                config=spec["config"],
-                output_tag=spec["output_tag"],
-                dynamic_schedule=spec["dynamic_schedule"],
-                precomputed_lag_cols=spec["precomputed_lag_cols"],
-                pred_lag_df=spec["pred_lag_df"],
-                close_pivot_full=spec["close_pivot_full"],
-                model_type=spec["model_type"],
-                top_k=spec["top_k"],
-                concentrated_hysteresis=spec["concentrated_hysteresis"],
-            )
-
-        for spec in fold_specs:
-            logger.info(
-                "Submitting CPCV Fold %d/%d: %d test days [%s .. %s]",
-                spec["fold_id"], total_combinatorial_folds,
-                len(spec["test_dates"]),
-                pd.Timestamp(spec["test_dates"].min()).date(),
-                pd.Timestamp(spec["test_dates"].max()).date(),
-            )
-
-        fold_results = Parallel(
-            n_jobs=n_workers,
-            backend=parallel_backend,
-            verbose=10,
-            batch_size=1,
-        )(delayed(_run_fold_spec)(spec) for spec in fold_specs)
-
-        gc.collect()
-
-        # Rebuild in original fold_specs order — per_fold arrays are
-        # now deterministic and identical to the serial path.
-        for fold_res in fold_results:
-            all_fold_results.append(fold_res)
-    else:
-        # Serial execution (original behavior)
-        for spec in fold_specs:
-            logger.info(
-                "CPCV Fold %d/%d: %d test days [%s .. %s]",
-                spec["fold_id"], total_combinatorial_folds,
-                len(spec["test_dates"]),
-                pd.Timestamp(spec["test_dates"].min()).date(),
-                pd.Timestamp(spec["test_dates"].max()).date(),
-            )
-            fold_res = run_single_fold(
-                fold_id=spec["fold_id"],
-                train_idx=spec["train_idx"],
-                test_dates=spec["test_dates"],
-                ts_index=spec["ts_index"],
-                feat_df=spec["feat_df"],
-                tickers=spec["tickers"],
-                capital=spec["capital"],
-                config=spec["config"],
-                output_tag=spec["output_tag"],
-                dynamic_schedule=spec["dynamic_schedule"],
-                precomputed_lag_cols=spec["precomputed_lag_cols"],
-                pred_lag_df=spec["pred_lag_df"],
-                close_pivot_full=spec["close_pivot_full"],
-                model_type=spec["model_type"],
-                top_k=spec["top_k"],
-                concentrated_hysteresis=spec["concentrated_hysteresis"],
-            )
-            all_fold_results.append(fold_res)
 
     total_elapsed = time.time() - total_start_time
 

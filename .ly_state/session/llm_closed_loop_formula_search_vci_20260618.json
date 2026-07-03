@@ -1,0 +1,729 @@
+{
+  "config": {
+    "max_iterations": 3,
+    "candidates_per_iteration": 10,
+    "prompt_version": "vn_alpha_search_v3_closed_loop",
+    "llm_provider": "openai-compatible"
+  },
+  "final_state": {
+    "current_iteration": 2,
+    "total_raw_generated": 0,
+    "total_safety_validated": 27,
+    "total_unique_after_dedup": 25,
+    "total_scoring_input": 25,
+    "total_scoring_accepted": 24,
+    "total_scoring_rejected": 1,
+    "failed_formulas": [
+      "div(sub(close,ts_mean(close,10)),add(ts_std(close,10),abs(ret_1d)))"
+    ],
+    "bad_motifs": [
+      "div",
+      "div(sub(close, ts_mean(close, 10))"
+    ],
+    "aggregate_failure_stats": {},
+    "iteration_results": [
+      {
+        "iteration": 1,
+        "raw_generated": 0,
+        "safety_validated": 9,
+        "unique_after_dedup": 9,
+        "scoring_input": 9,
+        "scoring_accepted": 8,
+        "scoring_rejected": 1,
+        "synthesis_stats": {
+          "prompt_version": "vn_alpha_search_v3_closed_loop",
+          "max_candidates": 10,
+          "provider_type": "OpenAICompatibleProvider",
+          "cache_hit": true,
+          "total_raw": 0,
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "accepted": 9,
+          "rejected_formulas": [
+            {
+              "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+              "reason": "Execution validation failed",
+              "stage": "validation"
+            }
+          ],
+          "accepted_formulas": [
+            "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+            "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+            "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+            "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+            "sub(ts_rank(high, 7), ts_rank(close, 7))",
+            "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+            "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+            "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+            "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+          ]
+        },
+        "scoring_stats": {
+          "total": 9,
+          "accepted": 8,
+          "rejected": 1,
+          "deployable": 0,
+          "unsupervised_only": 8,
+          "accepted_names": [
+            "alpha_llm_0",
+            "alpha_llm_2",
+            "alpha_llm_3",
+            "alpha_llm_4",
+            "alpha_llm_5",
+            "alpha_llm_6",
+            "alpha_llm_7",
+            "alpha_llm_8"
+          ],
+          "rejected_names": [
+            "alpha_llm_1"
+          ],
+          "rejection_reasons": {
+            "alpha_llm_1": [
+              "Unstable per-ticker: var=7.38e+11 > 1.00e+06"
+            ]
+          },
+          "details": {
+            "alpha_llm_0": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06077852269525072,
+              "stability": 0.060879887193227934,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_1": {
+              "accepted": false,
+              "coverage": 1.0,
+              "variance": 826883479952.7834,
+              "stability": 737853592748.8989,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_2": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06925074822874144,
+              "stability": 0.07052078432441054,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_3": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 3.6255262978668594,
+              "stability": 3.9792795627334367,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_4": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.02886706965031628,
+              "stability": 0.02861253222402968,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_5": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06418586668186968,
+              "stability": 0.06405371256345155,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_6": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.28448891260375225,
+              "stability": 0.2826412454680715,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_7": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.00010610009894762157,
+              "stability": 0.00011721594080251022,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_8": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.20652895589759845,
+              "stability": 0.20793097664783877,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            }
+          },
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 1,
+            "nan_inf": 0
+          },
+          "synthesis": {
+            "prompt_version": "vn_alpha_search_v3_closed_loop",
+            "max_candidates": 10,
+            "provider_type": "OpenAICompatibleProvider",
+            "cache_hit": true,
+            "total_raw": 0,
+            "rejection_taxonomy": {
+              "parse_error": 0,
+              "unsafe_token": 0,
+              "duplicate_formula": 0,
+              "execution_failure": 1,
+              "low_coverage": 0,
+              "near_zero_variance": 0,
+              "unstable": 0,
+              "nan_inf": 0
+            },
+            "accepted": 9,
+            "rejected_formulas": [
+              {
+                "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+                "reason": "Execution validation failed",
+                "stage": "validation"
+              }
+            ],
+            "accepted_formulas": [
+              "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+              "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+              "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+              "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+              "sub(ts_rank(high, 7), ts_rank(close, 7))",
+              "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+              "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+              "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+              "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+            ]
+          }
+        }
+      },
+      {
+        "iteration": 2,
+        "raw_generated": 0,
+        "safety_validated": 9,
+        "unique_after_dedup": 8,
+        "scoring_input": 8,
+        "scoring_accepted": 8,
+        "scoring_rejected": 0,
+        "synthesis_stats": {
+          "prompt_version": "vn_alpha_search_v3_closed_loop",
+          "max_candidates": 10,
+          "provider_type": "OpenAICompatibleProvider",
+          "cache_hit": true,
+          "total_raw": 0,
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "accepted": 9,
+          "rejected_formulas": [
+            {
+              "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+              "reason": "Execution validation failed",
+              "stage": "validation"
+            }
+          ],
+          "accepted_formulas": [
+            "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+            "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+            "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+            "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+            "sub(ts_rank(high, 7), ts_rank(close, 7))",
+            "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+            "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+            "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+            "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+          ]
+        },
+        "scoring_stats": {
+          "total": 8,
+          "accepted": 8,
+          "rejected": 0,
+          "deployable": 0,
+          "unsupervised_only": 8,
+          "accepted_names": [
+            "alpha_llm_0",
+            "alpha_llm_1",
+            "alpha_llm_2",
+            "alpha_llm_3",
+            "alpha_llm_4",
+            "alpha_llm_5",
+            "alpha_llm_6",
+            "alpha_llm_7"
+          ],
+          "rejected_names": [],
+          "rejection_reasons": {},
+          "details": {
+            "alpha_llm_0": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06077852269525072,
+              "stability": 0.060879887193227934,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_1": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06925074822874144,
+              "stability": 0.07052078432441054,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_2": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 3.6255262978668594,
+              "stability": 3.9792795627334367,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_3": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.02886706965031628,
+              "stability": 0.02861253222402968,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_4": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06418586668186968,
+              "stability": 0.06405371256345155,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_5": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.28448891260375225,
+              "stability": 0.2826412454680715,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_6": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.00010610009894762157,
+              "stability": 0.00011721594080251022,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_7": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.20652895589759845,
+              "stability": 0.20793097664783877,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            }
+          },
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "synthesis": {
+            "prompt_version": "vn_alpha_search_v3_closed_loop",
+            "max_candidates": 10,
+            "provider_type": "OpenAICompatibleProvider",
+            "cache_hit": true,
+            "total_raw": 0,
+            "rejection_taxonomy": {
+              "parse_error": 0,
+              "unsafe_token": 0,
+              "duplicate_formula": 0,
+              "execution_failure": 1,
+              "low_coverage": 0,
+              "near_zero_variance": 0,
+              "unstable": 0,
+              "nan_inf": 0
+            },
+            "accepted": 9,
+            "rejected_formulas": [
+              {
+                "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+                "reason": "Execution validation failed",
+                "stage": "validation"
+              }
+            ],
+            "accepted_formulas": [
+              "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+              "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+              "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+              "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+              "sub(ts_rank(high, 7), ts_rank(close, 7))",
+              "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+              "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+              "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+              "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+            ]
+          }
+        }
+      },
+      {
+        "iteration": 3,
+        "raw_generated": 0,
+        "safety_validated": 9,
+        "unique_after_dedup": 8,
+        "scoring_input": 8,
+        "scoring_accepted": 8,
+        "scoring_rejected": 0,
+        "synthesis_stats": {
+          "prompt_version": "vn_alpha_search_v3_closed_loop",
+          "max_candidates": 10,
+          "provider_type": "OpenAICompatibleProvider",
+          "cache_hit": true,
+          "total_raw": 0,
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "accepted": 9,
+          "rejected_formulas": [
+            {
+              "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+              "reason": "Execution validation failed",
+              "stage": "validation"
+            }
+          ],
+          "accepted_formulas": [
+            "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+            "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+            "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+            "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+            "sub(ts_rank(high, 7), ts_rank(close, 7))",
+            "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+            "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+            "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+            "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+          ]
+        },
+        "scoring_stats": {
+          "total": 8,
+          "accepted": 8,
+          "rejected": 0,
+          "deployable": 0,
+          "unsupervised_only": 8,
+          "accepted_names": [
+            "alpha_llm_0",
+            "alpha_llm_1",
+            "alpha_llm_2",
+            "alpha_llm_3",
+            "alpha_llm_4",
+            "alpha_llm_5",
+            "alpha_llm_6",
+            "alpha_llm_7"
+          ],
+          "rejected_names": [],
+          "rejection_reasons": {},
+          "details": {
+            "alpha_llm_0": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06077852269525072,
+              "stability": 0.060879887193227934,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_1": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06925074822874144,
+              "stability": 0.07052078432441054,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_2": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 3.6255262978668594,
+              "stability": 3.9792795627334367,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_3": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.02886706965031628,
+              "stability": 0.02861253222402968,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_4": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06418586668186968,
+              "stability": 0.06405371256345155,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_5": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.28448891260375225,
+              "stability": 0.2826412454680715,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_6": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.00010610009894762157,
+              "stability": 0.00011721594080251022,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_7": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.20652895589759845,
+              "stability": 0.20793097664783877,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            }
+          },
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "synthesis": {
+            "prompt_version": "vn_alpha_search_v3_closed_loop",
+            "max_candidates": 10,
+            "provider_type": "OpenAICompatibleProvider",
+            "cache_hit": true,
+            "total_raw": 0,
+            "rejection_taxonomy": {
+              "parse_error": 0,
+              "unsafe_token": 0,
+              "duplicate_formula": 0,
+              "execution_failure": 1,
+              "low_coverage": 0,
+              "near_zero_variance": 0,
+              "unstable": 0,
+              "nan_inf": 0
+            },
+            "accepted": 9,
+            "rejected_formulas": [
+              {
+                "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+                "reason": "Execution validation failed",
+                "stage": "validation"
+              }
+            ],
+            "accepted_formulas": [
+              "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+              "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+              "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+              "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+              "sub(ts_rank(high, 7), ts_rank(close, 7))",
+              "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+              "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+              "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+              "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "summary": {
+    "total_raw_generated": 0,
+    "total_safety_validated": 27,
+    "total_unique_after_dedup": 25,
+    "total_scoring_input": 25,
+    "total_scoring_accepted": 24,
+    "total_scoring_rejected": 1,
+    "total_candidates_generated": 0,
+    "total_candidates_accepted": 24,
+    "final_candidate_count": 24,
+    "failed_formulas_count": 1,
+    "bad_motifs_count": 2,
+    "final_candidate_count_after_topk": 10
+  },
+  "requires_full_cpcv": true,
+  "deployment_ready": false,
+  "top_k_selection": {
+    "top_k": 10,
+    "selected": 10,
+    "selection_mode": "unsupervised",
+    "metric_name": "variance",
+    "top_scores": [
+      3.6255262978668594,
+      3.6255262978668594,
+      3.6255262978668594,
+      0.28448891260375225,
+      0.28448891260375225,
+      0.28448891260375225,
+      0.20652895589759845,
+      0.20652895589759845,
+      0.20652895589759845,
+      0.06925074822874144
+    ],
+    "all_scores": [
+      3.6255262978668594,
+      3.6255262978668594,
+      3.6255262978668594,
+      0.28448891260375225,
+      0.28448891260375225,
+      0.28448891260375225,
+      0.20652895589759845,
+      0.20652895589759845,
+      0.20652895589759845,
+      0.06925074822874144,
+      0.06925074822874144,
+      0.06925074822874144,
+      0.06418586668186968,
+      0.06418586668186968,
+      0.06418586668186968,
+      0.06077852269525072,
+      0.06077852269525072,
+      0.06077852269525072,
+      0.02886706965031628,
+      0.02886706965031628,
+      0.02886706965031628,
+      0.00010610009894762157,
+      0.00010610009894762157,
+      0.00010610009894762157
+    ]
+  }
+}

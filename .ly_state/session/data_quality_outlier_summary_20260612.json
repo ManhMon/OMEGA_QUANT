@@ -1,0 +1,57 @@
+{
+  "target_abs_gt": {
+    "0.3": {
+      "rows": 154,
+      "tickers": 26
+    },
+    "0.5": {
+      "rows": 32,
+      "tickers": 3
+    },
+    "1.0": {
+      "rows": 8,
+      "tickers": 1
+    },
+    "5.0": {
+      "rows": 8,
+      "tickers": 1
+    },
+    "10.0": {
+      "rows": 8,
+      "tickers": 1
+    }
+  },
+  "ret1d_abs_gt": {
+    "0.2": {
+      "rows": 15,
+      "tickers": 2
+    },
+    "0.3": {
+      "rows": 14,
+      "tickers": 1
+    },
+    "0.5": {
+      "rows": 14,
+      "tickers": 1
+    },
+    "1.0": {
+      "rows": 7,
+      "tickers": 1
+    },
+    "5.0": {
+      "rows": 7,
+      "tickers": 1
+    },
+    "10.0": {
+      "rows": 7,
+      "tickers": 1
+    }
+  },
+  "price_scale_jumps": {
+    "rows": 14,
+    "tickers": 1,
+    "top_tickers": {
+      "SBS": 14
+    }
+  }
+}

@@ -1,0 +1,91 @@
+================================================================================
+BASELINE RISK/SIZING OPTIMIZATION — SUMMARY
+GATE: BASELINE_RISK_SIZING_OPTIMIZATION_20260616
+Role: 14 (Data Scientist, Tier 2)
+Date: 2026-06-16
+================================================================================
+
+OBJECTIVE
+---------
+Improve Sharpe/PnL/MaxDD via PIT-safe risk/sizing controls on top of the
+trusted dynamic baseline, without adding new alpha signals.
+
+TRUSTED DYNAMIC BASELINE (12-fold OOS, verified)
+-------------------------------------------------
+  Portfolio IC:              0.0249
+  Median IC (approx):        0.0167
+  Raw Signal IC:             0.0200
+  Raw Signal Daily CS IC:    0.0216
+  Portfolio Sharpe:          3.1106
+  Max Drawdown:              -12.25%
+  Avg PnL:                   ~616M VND
+  Folds:                     12 (3yr train, 1yr test)
+  Config:                    Dynamic universe, formulaic v3_pruned,
+                             winner guard, DD control 10%, sector cap 40%
+  Source:                    phase35_backtest_results_dynamic_universe_best_config_20260615_baseline.json
+
+EXISTING KNOB ANALYSIS
+-----------------------
+1. Drawdown threshold (10%): Well-calibrated. Tighter (5-8%) reduces MaxDD
+   at cost of PnL/Sharpe (earlier stop-outs). Looser (12-15%) increases
+   MaxDD with marginal PnL gain.
+
+2. Sector cap (40%): Generous for VN market. Hardcoded — no CLI flag.
+   Tightening to 25-30% could reduce concentration risk.
+
+3. Top-N stocks (15): Balanced. More dilutes alpha, fewer concentrates risk.
+
+4. Rebalance freq (7): P9 dynamic adjustment already active (vol-regime aware).
+
+IMPLEMENTED: RISK/SIZING OVERLAY
+---------------------------------
+GATE: BASELINE_RISK_SIZING_OPTIMIZATION_20260616
+
+Two independent, opt-in, default-off features:
+
+A) INVERSE-VOLATILITY SIZING
+   - Replaces equal-weight within top-N with 1/realized_vol weights
+   - PIT-safe: trailing window only (default 20 days)
+   - Floor prevents degenerate zero-vol weights (default 0.3)
+   - Expected: reduces portfolio vol, improves Sharpe
+
+B) CONFIDENCE SCALING
+   - Scales total gross exposure by rolling signal IC strength
+   - PIT-safe: trailing window only (default 60 days)
+   - Range: [0.3, 1.2] (never fully de-risks, caps upside leverage)
+   - Expected: reduces exposure when signal quality degrades
+
+PIT SAFETY: Both features use ONLY trailing data. No current-bar data,
+no forward returns, no OOS labels.
+
+TEST RESULTS
+------------
+Unit tests (NEW):       21 passed, 0 failed
+Regression tests:       911 passed, 0 failed (full tests/phase35/ suite)
+Execution time:         37.68 seconds
+
+OOS EVALUATION STATUS
+----------------------
+Status: NOT EXECUTED (system constraint: paging file too small for
+PyTorch import chain — WinError 1455)
+
+Deferred commands for full OOS evaluation:
+  --risk-sizing-overlay --risk-sizing-inverse-vol
+  --risk-sizing-overlay --risk-sizing-confidence
+  --risk-sizing-overlay --risk-sizing-inverse-vol --risk-sizing-confidence
+
+PROMOTION CRITERIA: Strict 12-fold OOS must beat baseline on ALL of
+Sharpe AND PnL AND MaxDD simultaneously. No degradation on any metric.
+
+FILES MODIFIED
+--------------
+  src/omega/quant/walk_forward/risk_sizing_overlay.py  (NEW)
+  src/omega/quant/alpha/phase35.py                     (constructor + run_fold)
+  scripts/run_phase35_backtest.py                      (CLI flags + serialize)
+  tests/phase35/test_risk_sizing_overlay.py            (NEW, 21 tests)
+
+SOD BOUNDARY
+------------
+  No self-approval. Tier 3 audit required (Code Reviewer + QA Engineer).
+  No live promotion until strict OOS evidence + audit approval.
+================================================================================

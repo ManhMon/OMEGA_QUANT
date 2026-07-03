@@ -1,0 +1,9 @@
+{
+  "rank": 4,
+  "round": 3,
+  "train_IC": 0.2084,
+  "test_IC": 0.0368,
+  "hit_rate": 0.5369,
+  "expression": "((sqrt(returns_1d) ts_mean 10) ts_rank 10)",
+  "serialized_tree": "GPNode(operator='ts_rank', children=[GPNode(operator='ts_mean', children=[GPNode(operator='sqrt', children=[GPNode(operator='terminal', children=[], value='returns_1d')], value=None), GPNode(operator='terminal', children=[], value='10')], value=None), GPNode(operator='terminal', children=[], value='10')], value=None)"
+}

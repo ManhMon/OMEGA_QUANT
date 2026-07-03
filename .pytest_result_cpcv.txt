@@ -1,0 +1,18 @@
+﻿..............                                                           [100%]
+============================== warnings summary ===============================
+tests/quant_test_closed_loop_cpcv_fixes.py::test_count_correctness_no_negatives
+  \U0001f4e6 Vnstock 4.0.4 is available\n  Current: 4.0.2 (Python 3.14)\n  Update: pip install vnstock --upgrade\n  Release: https://vnstocks.com/docs/tai-lieu/lich-su-phien-ban
+
+tests/quant_test_closed_loop_cpcv_fixes.py::test_count_correctness_no_negatives
+  omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+
+tests/quant_test_closed_loop_cpcv_fixes.py::test_count_correctness_no_negatives
+  The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+
+tests/quant_test_closed_loop_cpcv_fixes.py: 23 warnings
+  An input array is constant; the correlation coefficient is not defined.
+
+..\..\AppData\Local\Programs\Python\Python314\Lib\site-packages\_pytest\cacheprovider.py:475
+  could not create cache path C:\Users\GHC\repos\OMEGA_QUANT\.pytest_cache\v\cache\nodeids: [WinError 183] Cannot create a file when that file already exists: 'C:\\Users\\GHC\\repos\\OMEGA_QUANT\\.pytest_cache\\v\\cache'
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html

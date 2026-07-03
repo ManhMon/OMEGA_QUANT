@@ -1,0 +1,29 @@
+{
+  "run_date": "2026-06-17T16:10:37.995087",
+  "total_promoted": 0,
+  "target_horizon": 5,
+  "multi_target_horizons": [
+    3,
+    5,
+    10
+  ],
+  "multi_target_weights": [
+    0.5,
+    0.3,
+    0.2
+  ],
+  "train_ratio": 0.7,
+  "pit_safety": {
+    "t1_lag": true,
+    "chronological_split": true,
+    "no_lookahead": true
+  },
+  "orthogonalization": {
+    "enabled": true
+  },
+  "alternative_features": {
+    "enabled": true,
+    "expected_columns": 35
+  },
+  "alphas": []
+}

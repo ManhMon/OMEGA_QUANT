@@ -1,0 +1,27 @@
+{
+  "total_return": -0.10639982515166291,
+  "annualized_sharpe": -0.6479663066342192,
+  "max_drawdown": -0.11499309895964008,
+  "n_days": 572,
+  "cost_breakdown": {
+    "total_turnover": 7.502842953107253,
+    "avg_turnover_per_bar": 0.013116858309628065,
+    "total_commission_cost": 0.013424671230437694,
+    "total_spread_cost": 0.007367291024748593,
+    "total_slippage_cost": 0.004398043174049975,
+    "total_other_cost": 0.0,
+    "total_cost": 0.02519000542923626,
+    "avg_cost_per_bar_bps": 0.4403847103013332,
+    "capital_vnd": 2000000000.0,
+    "final_capital_vnd": 3510108563.401486,
+    "final_w": "[0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.\n 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.\n 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.\n 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.\n 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0. 0.\n 0. 0. 0. 0. 0. 0. 0.]",
+    "slippage_nonlinear_exp": 0.6,
+    "settlement_lag_days": 0.0,
+    "halt_limit_haircut_pct": 0.0,
+    "foreign_room_haircut_pct": 0.0,
+    "use_adv_tiered_spread": true,
+    "dynamic_capital_tracking": true,
+    "n_active_bars": 572,
+    "bar_costs": "[0. 0. 0. ... 0. 0. 0.]"
+  }
+}

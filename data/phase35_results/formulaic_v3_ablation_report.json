@@ -1,0 +1,56 @@
+{
+  "gate": "FORMULAIC_ALPHA_V3_PRUNE_20260614",
+  "version": "v3_pruned",
+  "date": "2026-06-14",
+  "v2_set_name": "mean_reversion_liquidity",
+  "v2_n_candidates": 8,
+  "v2_candidates": [
+    "alpha_fml006_vp_corr_10",
+    "alpha_fml012_mean_rev_rank_10",
+    "alpha_fml033_vol_vol_interact_10",
+    "alpha_fml045_liq_turnover_5",
+    "alpha_fml052_close_zscore_mr_20",
+    "alpha_fml067_vol_price_diverge_10",
+    "alpha_fml078_range_compression_10",
+    "alpha_fml089_amihud_illiq_20"
+  ],
+  "v2_cpcv12_portfolio_ic": 0.0037,
+  "v2_cpcv12_raw_ic": 0.0083,
+  "v3_set_name": "v3_pruned",
+  "v3_n_candidates": 5,
+  "v3_candidates": [
+    "alpha_fml052_close_zscore_mr_20",
+    "alpha_fml012_mean_rev_rank_10",
+    "alpha_fml045_liq_turnover_5",
+    "alpha_fml067_vol_price_diverge_10",
+    "alpha_fml006_vp_corr_10"
+  ],
+  "v3_expected_mean_candidate_ic": 0.01,
+  "v3_excluded": [
+    "alpha_fml033_vol_vol_interact_10",
+    "alpha_fml078_range_compression_10",
+    "alpha_fml089_amihud_illiq_20"
+  ],
+  "v3_exclusion_rationale": {
+    "alpha_fml089_amihud_illiq_20": "Negative CPCV12 IC (-0.0610). Amihud illiquidity ratio shows strong negative signal \u2014 harmful to portfolio. No transformation evidence available to rehabilitate.",
+    "alpha_fml078_range_compression_10": "Negative CPCV12 IC (-0.0100). Range compression signal anti-predictive in Vietnam market. No transformation evidence available to rehabilitate.",
+    "alpha_fml033_vol_vol_interact_10": "Weak CPCV12 IC (~0.0037, at portfolio average). Volatility-volume interaction adds noise without improving mean IC. Pruned for parsimony."
+  },
+  "ic_evidence_by_candidate": {
+    "alpha_fml052_close_zscore_mr_20": 0.0164,
+    "alpha_fml012_mean_rev_rank_10": 0.0104,
+    "alpha_fml045_liq_turnover_5": 0.0091,
+    "alpha_fml067_vol_price_diverge_10": 0.008,
+    "alpha_fml006_vp_corr_10": 0.0059,
+    "alpha_fml033_vol_vol_interact_10": 0.0037,
+    "alpha_fml078_range_compression_10": -0.01,
+    "alpha_fml089_amihud_illiq_20": -0.061
+  },
+  "v3_retained_all_positive_ic": true,
+  "v3_no_momentum": true,
+  "v3_no_amihud": true,
+  "v3_no_range_compression": true,
+  "pit_safe": true,
+  "deterministic": true,
+  "default_unchanged": true
+}

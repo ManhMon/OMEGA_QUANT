@@ -1,0 +1,9 @@
+{
+  "rank": 4,
+  "round": 2,
+  "train_IC": 0.4642,
+  "test_IC": 0.0311,
+  "hit_rate": 0.4932,
+  "expression": "(((hl_range ts_mean 10) - cs_zscore(low)) - returns_1d)",
+  "serialized_tree": "GPNode(operator='-', children=[GPNode(operator='-', children=[GPNode(operator='ts_mean', children=[GPNode(operator='terminal', children=[], value='hl_range'), GPNode(operator='terminal', children=[], value='10')], value=None), GPNode(operator='cs_zscore', children=[GPNode(operator='terminal', children=[], value='low')], value=None)], value=None), GPNode(operator='terminal', children=[], value='returns_1d')], value=None)"
+}

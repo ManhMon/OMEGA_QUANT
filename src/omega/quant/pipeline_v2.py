@@ -682,18 +682,24 @@ class ThompsonSamplingWeightOverlay(WeightOverlay):
 
 
 class WeightSmoothingOverlay(WeightOverlay):
-    def __init__(self, ema_alpha: float = 0.2):
+    def __init__(self, ema_alpha: float = 0.05, exposure_blend: float = 0.0):
         self.ema_alpha = ema_alpha
+        self.exposure_blend = float(exposure_blend)
     def apply(self, weights: pd.DataFrame, panel: pd.DataFrame, state: Dict[str, Any]) -> pd.DataFrame:
-        # Use pandas ewm for recursive exponential smoothing across rows (dates) for each asset column
         smoothed = weights.ewm(alpha=self.ema_alpha, adjust=False).mean()
-        
-        # Scale back to matching exposure to keep same leverage
-        target_exposure = weights.abs().sum(axis=1)
-        current_exposure = smoothed.abs().sum(axis=1).replace(0, 1.0)
-        smoothed = smoothed.mul(target_exposure / current_exposure, axis=0)
-        
-        logger.info("Weight smoothing applied: ema_alpha=%.2f", self.ema_alpha)
+        if self.exposure_blend > 0.0:
+            target_exposure = weights.abs().sum(axis=1)
+            current_exposure = smoothed.abs().sum(axis=1).replace(0, 1.0)
+            blend_exposure = (
+                self.exposure_blend * target_exposure
+                + (1.0 - self.exposure_blend) * current_exposure
+            )
+            smoothed = smoothed.mul(blend_exposure / current_exposure, axis=0)
+        logger.info(
+            "Weight smoothing applied: ema_alpha=%.2f, exposure_blend=%.2f",
+            self.ema_alpha,
+            self.exposure_blend,
+        )
         return smoothed
 
 

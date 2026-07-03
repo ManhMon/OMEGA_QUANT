@@ -1,0 +1,18 @@
+{
+  "gate_id": "AUTOMATED_ALPHA_DISCOVERY_DYNAMIC_20260615",
+  "enabled": true,
+  "candidates_generated": 20,
+  "candidates_after_screening": 0,
+  "candidates_after_corr_filter": 0,
+  "candidate_cap": 50,
+  "corr_threshold": 0.85,
+  "min_ic": 0.02,
+  "seed": 42,
+  "n_selected": 0,
+  "selected_names": [],
+  "selected_ics": {},
+  "evidence": {
+    "status": "no_screened",
+    "reason": "No candidates passed IC threshold 0.02"
+  }
+}

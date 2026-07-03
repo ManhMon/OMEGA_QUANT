@@ -104,7 +104,7 @@ class LiveTradingPipeline:
                 logger.info("Using default broker SSI for %s", symbol)
 
             # Step 2: Realtime risk check
-            verdict = self.risk_guard.check_order(symbol, quantity, price, adv_20d)
+            verdict = self.risk_guard.check_order(symbol, quantity, price, adv_20d, side=side)
             if verdict != RiskVerdict.PASS:
                 return PipelineResult(
                     symbol=symbol,

@@ -1,0 +1,31 @@
+REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT
+ROLE: 20 compliance-officer - Codex L3 Independent Review.
+GATE: MULTI_MODEL_ML_ENSEMBLE_20260616
+L2_SESSION: l2_role16_ml_ensemble_20260616
+L2_ROLE: 16 machine-learning-engineer
+
+SKILL SOURCE CONTRACT:
+REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent
+REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills
+First read REPO_AGENT_ROOT\compliance-officer.md and parse frontmatter; read required SKILL.md only from REPO_SKILL_ROOT. Any skill from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local files read and forbidden path scan result.
+
+SCOPE:
+- src/omega/quant/ml/ensemble_multi.py
+- src/omega/quant/ml/ml_engine.py
+- src/omega/quant/alpha/phase35.py
+- scripts/run_phase35_backtest.py
+- .ly_state/session/l2_role16_ml_ensemble_20260616.md
+
+CHECKS:
+1. Verify l2_role_id=16 != l3_role_id=20.
+2. Verify code changes match approved scope.
+3. Check PIT safety: verify ensemble uses only train-period target/features and lagged market regime features. No look-ahead bias.
+4. Validate SOD boundaries: write audit report to `.ly_state/session/audit_reports/role20_ml_ensemble_20260616.md` only. Do not edit source code.
+5. Verify L2 report lists repo-local skill source evidence and forbidden path scan results.
+6. Run all tests to make sure there are no regression errors.
+
+VERDICT:
+Write [APPROVED] or [NEEDS_FIX] to .ly_state/session/audit_reports/role20_ml_ensemble_20260616.md using the exact template.
+
+GATE UPDATE:
+The L1 orchestrator will finalize the gate update in phase_gates.json. Do not update phase_gates.json yourself.

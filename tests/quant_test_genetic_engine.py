@@ -12,8 +12,10 @@ from omega.quant.evolution.genetic_engine import (
     GeneticEngine,
     GPConfig,
     GPNode,
-    GPIndividual
+    GPIndividual,
+    _neutralize_cross_section,
 )
+from scipy.stats import spearmanr
 
 
 @pytest.fixture
@@ -118,4 +120,88 @@ def test_gp_constant_terminal_and_ts_operators(sample_data):
     assert not np.all(res == 0.0)
     assert len(res) == len(features['f1'])
 
+def test_genetic_engine_breeds_between_generations(sample_data):
+    """Evolution should create offspring after each non-final generation."""
+    features, target = sample_data
+    config = GPConfig(
+        population_size=12,
+        generations=3,
+        min_observations=100,
+        early_stopping_rounds=0,
+        n_jobs=1,
+    )
+    engine = GeneticEngine(config)
+    calls = 0
+    original_next_generation = engine._next_generation
 
+    def counted_next_generation():
+        nonlocal calls
+        calls += 1
+        original_next_generation()
+
+    engine._next_generation = counted_next_generation
+    engine.evolve(features, target)
+
+    assert calls == 2
+
+def test_tree_size_penalty_rewards_parsimony(sample_data):
+    """Equivalent larger trees should score lower."""
+    features, target = sample_data
+    config = GPConfig(min_observations=100, tree_size_penalty_weight=0.01)
+    simple = GPIndividual(tree=GPNode(operator='terminal', value='f1'))
+    bloated = GPIndividual(tree=GPNode(
+        operator='+',
+        children=[
+            GPNode(operator='terminal', value='f1'),
+            GPNode(operator='terminal', value='0'),
+        ],
+    ))
+
+    simple.evaluate(features, target, [], config)
+    bloated.evaluate(features, target, [], config)
+
+    assert bloated.complexity_penalty > simple.complexity_penalty
+    assert bloated.fitness < simple.fitness
+
+
+def test_time_fold_ir_stable_alpha_beats_spike():
+    dates = np.repeat(np.arange(90), 3)
+    target = np.tile(np.array([0.0, 1.0, -1.0]), 90)
+    stable_alpha = np.tile(np.array([0.1, 0.9, -1.1]), 90)
+    spike_alpha = np.tile(np.array([1.0, 0.0, -1.0]), 90)
+    spike_alpha[30 * 3:] = np.tile(np.array([0.0, -1.0, 1.0]), 60)
+    features = {
+        'stable_alpha': stable_alpha,
+        'spike_alpha': spike_alpha,
+        '__date__': dates,
+        '__log_market_cap__': np.tile(np.array([1.0, 2.0, 3.0]), 90),
+    }
+    config = GPConfig(
+        min_observations=10,
+        use_time_fold_ir=True,
+        time_folds=3,
+        fold_ir_std_floor=0.01,
+        neutralize_size_sector=True,
+    )
+
+    stable = GPIndividual(tree=GPNode(operator='terminal', value='stable_alpha'))
+    spike = GPIndividual(tree=GPNode(operator='terminal', value='spike_alpha'))
+
+    stable.evaluate(features, target, [], config)
+    spike.evaluate(features, target, [], config)
+
+    assert stable.ic_score > spike.ic_score
+
+
+def test_sector_neutralization_removes_sector_effect():
+    dates = np.repeat(np.arange(30), 6)
+    sectors = np.tile(np.array([0, 0, 1, 1, 2, 2]), 30)
+    alpha = sectors.astype(float)
+    target = sectors.astype(float)
+    log_mcap = np.tile(np.array([1.0, 1.2, 2.0, 2.2, 3.0, 3.2]), 30)
+
+    neutralized = _neutralize_cross_section(alpha, log_mcap, sectors, dates)
+    ic, _ = spearmanr(neutralized, target)
+
+    assert np.isfinite(neutralized).all()
+    assert abs(0.0 if np.isnan(ic) else float(ic)) < 1e-6

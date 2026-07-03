@@ -1,0 +1,9 @@
+{
+  "rank": 2,
+  "round": 1,
+  "train_IC": 0.09,
+  "test_IC": 0.19,
+  "hit_rate": 0.54,
+  "expression": "y",
+  "serialized_tree": "u"
+}

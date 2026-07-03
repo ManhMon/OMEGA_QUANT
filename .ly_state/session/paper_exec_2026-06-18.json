@@ -1,0 +1,133 @@
+{
+  "gate": "SIMULATED_TRADING_INTEGRATION_20260619",
+  "timestamp": "2026-06-19T00:37:07.293624+00:00",
+  "signal_date": "2026-06-18",
+  "signal_source": "STRONG_ALPHAS_INTEGRATION_20260618",
+  "total_diffs": 11,
+  "total_executed": 11,
+  "completed": 11,
+  "failed": 0,
+  "results": [
+    {
+      "symbol": "BID",
+      "side": "BUY",
+      "quantity": 3700,
+      "price": 42750.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_088B5FC1B282",
+      "error": null,
+      "target_weight": 0.0791,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "CTG",
+      "side": "BUY",
+      "quantity": 2800,
+      "price": 33950.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_5F8071A120FB",
+      "error": null,
+      "target_weight": 0.0475,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "EVF",
+      "side": "BUY",
+      "quantity": 5700,
+      "price": 13950.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_B99F285F0E14",
+      "error": null,
+      "target_weight": 0.0398,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "FPT",
+      "side": "SELL",
+      "quantity": 1500,
+      "price": 100000.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_6A8540D09D7D",
+      "error": null,
+      "target_weight": 0.0,
+      "current_weight": 0.08
+    },
+    {
+      "symbol": "HPG",
+      "side": "SELL",
+      "quantity": 3000,
+      "price": 30000.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_B0D75F359EA3",
+      "error": null,
+      "target_weight": 0.0,
+      "current_weight": 0.05
+    },
+    {
+      "symbol": "MSB",
+      "side": "BUY",
+      "quantity": 7500,
+      "price": 15700.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_DD4C4E6CEA3A",
+      "error": null,
+      "target_weight": 0.0589,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "STB",
+      "side": "BUY",
+      "quantity": 1200,
+      "price": 70900.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_A3B4D9C1AC2B",
+      "error": null,
+      "target_weight": 0.0425,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "TPB",
+      "side": "BUY",
+      "quantity": 6600,
+      "price": 16200.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_B774806A3215",
+      "error": null,
+      "target_weight": 0.0535,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "VHM",
+      "side": "BUY",
+      "quantity": 600,
+      "price": 144400.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_ED5C0CF17D4A",
+      "error": null,
+      "target_weight": 0.0433,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "VNM",
+      "side": "SELL",
+      "quantity": 2000,
+      "price": 80000.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_0BE5BCC12D75",
+      "error": null,
+      "target_weight": 0.0,
+      "current_weight": 0.1
+    },
+    {
+      "symbol": "VSC",
+      "side": "BUY",
+      "quantity": 5500,
+      "price": 19900.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_E82AE7BD4E71",
+      "error": null,
+      "target_weight": 0.0547,
+      "current_weight": 0.0
+    }
+  ]
+}

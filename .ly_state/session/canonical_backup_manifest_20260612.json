@@ -1,0 +1,14 @@
+{
+  "canonical_path": "data\\market_2015_now.parquet",
+  "canonical_sha256": "e9b0b4f1754db11378aa7be6cc46b4a28ccfe2dc5c47612893ae1cccda8cab5f",
+  "canonical_size_bytes": 35513722,
+  "backup_path": "data\\market_2015_now.backup_20260612.parquet",
+  "backup_sha256": "e9b0b4f1754db11378aa7be6cc46b4a28ccfe2dc5c47612893ae1cccda8cab5f",
+  "backup_size_bytes": 35513722,
+  "backup_matches_canonical": true,
+  "candidate_path": "data\\market_hose_hnx_2015_now_canonical_candidate_20260612.parquet",
+  "candidate_sha256": "206196b1889b1a308b302b5278cd7de0a55d30cad1a2003db22f4034e2514285",
+  "candidate_size_bytes": 20804033,
+  "canonical_not_modified": true,
+  "timestamp": "2026-06-12T19:20:59.229397+07:00"
+}

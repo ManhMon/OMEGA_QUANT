@@ -1,0 +1,81 @@
+{
+  "gate": "HYBRID_REGIME_ALPHA_IMPROVEMENT_20260621",
+  "fix_version": "FIX1",
+  "timestamp": "20260621_174836",
+  "measurement_type": "REALIZED_45_FOLD_CPCV",
+  "alpha_group": "hybrid_regime",
+  "alpha_columns": [
+    "alpha_hr_vam_20_20",
+    "alpha_hr_vpp_20",
+    "alpha_hr_rpb_10",
+    "alpha_hr_xdisp_20",
+    "alpha_hr_lsr_20",
+    "alpha_hr_vce_10_40",
+    "alpha_hr_smd_10_30"
+  ],
+  "alpha_columns_found": [],
+  "alpha_columns_missing": [
+    "alpha_hr_vam_20_20",
+    "alpha_hr_vpp_20",
+    "alpha_hr_rpb_10",
+    "alpha_hr_xdisp_20",
+    "alpha_hr_lsr_20",
+    "alpha_hr_vce_10_40",
+    "alpha_hr_smd_10_30"
+  ],
+  "cpcv_config": {
+    "n_splits": 5,
+    "n_test_splits": 1,
+    "embargo_pct": 0.01,
+    "label_horizon": 5,
+    "workers": 1
+  },
+  "baseline": {
+    "mean_gross": null,
+    "mean_tc": null,
+    "mean_net": null,
+    "per_fold_gross": [],
+    "per_fold_tc": [],
+    "per_fold_net": [],
+    "per_fold_return": [],
+    "n_folds": 0,
+    "mean_sharpe": NaN,
+    "mean_max_dd": NaN,
+    "mean_return": NaN
+  },
+  "hybrid": {
+    "mean_gross": null,
+    "mean_tc": null,
+    "mean_net": null,
+    "per_fold_gross": [],
+    "per_fold_tc": [],
+    "per_fold_net": [],
+    "per_fold_return": [],
+    "n_folds": 0,
+    "mean_sharpe": NaN,
+    "mean_max_dd": NaN,
+    "mean_return": NaN
+  },
+  "realized_improvement": {
+    "gross_return_delta": null,
+    "net_return_delta": null
+  },
+  "summary": {
+    "baseline_mean_gross_pct": null,
+    "baseline_mean_tc_pct": null,
+    "baseline_mean_net_pct": null,
+    "hybrid_mean_gross_pct": null,
+    "hybrid_mean_tc_pct": null,
+    "hybrid_mean_net_pct": null,
+    "improvement_gross_pct": null,
+    "improvement_net_pct": null,
+    "target_mean_gross_pct": 8.76,
+    "hybrid_target_met": false
+  },
+  "pit_safe": true,
+  "runtime": {
+    "total_elapsed_sec": 37.155362606048584,
+    "total_elapsed_min": 0.6192560434341431,
+    "n_folds_total": 0
+  }
+}

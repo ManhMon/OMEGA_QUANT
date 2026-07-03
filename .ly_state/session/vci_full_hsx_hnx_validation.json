@@ -1,0 +1,310 @@
+{
+  "file_exists": {
+    "status": "PASS",
+    "detail": "C:\\Users\\GHC\\repos\\OMEGA_QUANT\\data\\market_vci_hsx_hnx_2015_now_20260613.parquet"
+  },
+  "file_loads": {
+    "status": "PASS",
+    "detail": "1771261 rows, 14 cols"
+  },
+  "schema_all_expected_cols": {
+    "status": "PASS",
+    "detail": "Present: 14/14"
+  },
+  "columns": [
+    "ticker",
+    "date",
+    "exchange",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "as_of",
+    "available_at",
+    "source",
+    "price_scale",
+    "adjusted",
+    "rebuild_date"
+  ],
+  "universe_count_matches": {
+    "status": "PASS",
+    "detail": "Data tickers: 703, Universe: 703"
+  },
+  "all_universe_tickers_in_data": {
+    "status": "PASS",
+    "detail": "Missing: 0"
+  },
+  "no_extra_tickers": {
+    "status": "PASS",
+    "detail": "Extra: 0"
+  },
+  "zero_errors": {
+    "status": "PASS",
+    "detail": "errors=0"
+  },
+  "zero_empty": {
+    "status": "PASS",
+    "detail": "empty=0"
+  },
+  "fetch_stats": {
+    "fetched": 703,
+    "empty": 0,
+    "errors": 0,
+    "rows_raw": 1853541,
+    "rows_post_filter": 1771261,
+    "pre_2015_rows_removed": 82280
+  },
+  "only_hose_hnx": {
+    "status": "PASS",
+    "detail": "Found: ['HNX', 'HOSE']"
+  },
+  "hose_has_data": {
+    "status": "PASS",
+    "detail": "HOSE rows: 1001584"
+  },
+  "hnx_has_data": {
+    "status": "PASS",
+    "detail": "HNX rows: 769677"
+  },
+  "row_count_positive": {
+    "status": "PASS",
+    "detail": "1771261"
+  },
+  "ticker_count_matches_universe": {
+    "status": "PASS",
+    "detail": "703 vs 703"
+  },
+  "row_count": 1771261,
+  "ticker_count": 703,
+  "date_count": 2855,
+  "min_date_gte_2015": {
+    "status": "PASS",
+    "detail": "Min: 2015-01-05 00:00:00 (must be >= 2015-01-01)"
+  },
+  "no_pre_2015_rows": {
+    "status": "PASS",
+    "detail": "Pre-2015 rows: 0"
+  },
+  "max_date_current": {
+    "status": "PASS",
+    "detail": "Max: 2026-06-12 00:00:00"
+  },
+  "no_future_dates": {
+    "status": "PASS",
+    "detail": "Max: 2026-06-12 00:00:00 vs today: 2026-06-18 00:00:00"
+  },
+  "date_min": "2015-01-05 00:00:00",
+  "date_max": "2026-06-12 00:00:00",
+  "no_duplicate_ticker_date": {
+    "status": "PASS",
+    "detail": "Duplicates: 0"
+  },
+  "no_null_open": {
+    "status": "PASS",
+    "detail": "0 nulls (0.0000%)"
+  },
+  "no_null_high": {
+    "status": "PASS",
+    "detail": "0 nulls (0.0000%)"
+  },
+  "no_null_low": {
+    "status": "PASS",
+    "detail": "0 nulls (0.0000%)"
+  },
+  "no_null_close": {
+    "status": "PASS",
+    "detail": "0 nulls (0.0000%)"
+  },
+  "no_null_volume": {
+    "status": "PASS",
+    "detail": "0 nulls (0.0000%)"
+  },
+  "null_ohlcv": {
+    "open": 0,
+    "high": 0,
+    "low": 0,
+    "close": 0,
+    "volume": 0
+  },
+  "no_nonpositive_open": {
+    "status": "PASS",
+    "detail": "0 (0.0000%)"
+  },
+  "no_nonpositive_high": {
+    "status": "PASS",
+    "detail": "0 (0.0000%)"
+  },
+  "no_nonpositive_low": {
+    "status": "PASS",
+    "detail": "0 (0.0000%)"
+  },
+  "no_nonpositive_close": {
+    "status": "PASS",
+    "detail": "0 (0.0000%)"
+  },
+  "no_negative_volume": {
+    "status": "PASS",
+    "detail": "0"
+  },
+  "non_positive": {
+    "open": 0,
+    "high": 0,
+    "low": 0,
+    "close": 0,
+    "volume_negative": 0,
+    "volume_zero": 273916
+  },
+  "ohlc_invariants_hold": {
+    "status": "PASS",
+    "detail": "Violations: 0"
+  },
+  "price_scale_vnd": {
+    "status": "PASS",
+    "detail": "['VND']"
+  },
+  "source_vnstock_vci": {
+    "status": "PASS",
+    "detail": "['vnstock_vci']"
+  },
+  "adjusted_backward": {
+    "status": "PASS",
+    "detail": "['backward_adjusted']"
+  },
+  "prices_in_vnd_range": {
+    "status": "PASS",
+    "detail": "Median close: 10700 (should be > 1000 for VND_FULL)"
+  },
+  "hose_full_coverage": {
+    "status": "PASS",
+    "detail": "Missing: 0"
+  },
+  "hnx_full_coverage": {
+    "status": "PASS",
+    "detail": "Missing: 0"
+  },
+  "empty_tickers": [],
+  "errors": [],
+  "sample_head": [
+    {
+      "ticker": "AAA",
+      "date": "2015-01-05 00:00:00",
+      "exchange": "HOSE",
+      "open": 5410.0,
+      "high": 5450.0,
+      "low": 5330.0,
+      "close": 5370.0,
+      "volume": 284100
+    },
+    {
+      "ticker": "AAA",
+      "date": "2015-01-06 00:00:00",
+      "exchange": "HOSE",
+      "open": 5330.0,
+      "high": 5450.0,
+      "low": 5220.0,
+      "close": 5450.0,
+      "volume": 453200
+    },
+    {
+      "ticker": "AAA",
+      "date": "2015-01-07 00:00:00",
+      "exchange": "HOSE",
+      "open": 5450.0,
+      "high": 5800.0,
+      "low": 5410.0,
+      "close": 5650.0,
+      "volume": 1209900
+    },
+    {
+      "ticker": "AAA",
+      "date": "2015-01-08 00:00:00",
+      "exchange": "HOSE",
+      "open": 5650.0,
+      "high": 5650.0,
+      "low": 5490.0,
+      "close": 5530.0,
+      "volume": 338400
+    },
+    {
+      "ticker": "AAA",
+      "date": "2015-01-09 00:00:00",
+      "exchange": "HOSE",
+      "open": 5530.0,
+      "high": 5570.0,
+      "low": 5410.0,
+      "close": 5410.0,
+      "volume": 753100
+    }
+  ],
+  "sample_tail": [
+    {
+      "ticker": "YEG",
+      "date": "2026-06-08 00:00:00",
+      "exchange": "HOSE",
+      "open": 8850.0,
+      "high": 8880.0,
+      "low": 8680.0,
+      "close": 8700.0,
+      "volume": 591500
+    },
+    {
+      "ticker": "YEG",
+      "date": "2026-06-09 00:00:00",
+      "exchange": "HOSE",
+      "open": 8660.0,
+      "high": 8780.0,
+      "low": 8570.0,
+      "close": 8610.0,
+      "volume": 693700
+    },
+    {
+      "ticker": "YEG",
+      "date": "2026-06-10 00:00:00",
+      "exchange": "HOSE",
+      "open": 8740.0,
+      "high": 8740.0,
+      "low": 8600.0,
+      "close": 8650.0,
+      "volume": 528500
+    },
+    {
+      "ticker": "YEG",
+      "date": "2026-06-11 00:00:00",
+      "exchange": "HOSE",
+      "open": 8610.0,
+      "high": 8620.0,
+      "low": 8500.0,
+      "close": 8530.0,
+      "volume": 549300
+    },
+    {
+      "ticker": "YEG",
+      "date": "2026-06-12 00:00:00",
+      "exchange": "HOSE",
+      "open": 8590.0,
+      "high": 8650.0,
+      "low": 8500.0,
+      "close": 8600.0,
+      "volume": 433900
+    }
+  ],
+  "year_distribution": {
+    "2015": 120011,
+    "2016": 130222,
+    "2017": 141676,
+    "2018": 153446,
+    "2019": 158685,
+    "2020": 163464,
+    "2021": 167507,
+    "2022": 169990,
+    "2023": 171024,
+    "2024": 169118,
+    "2025": 161162,
+    "2026": 64956
+  },
+  "file_size_mb": 20.9,
+  "timestamp": "2026-06-18T15:21:29.073784",
+  "all_pass": true,
+  "output_path": "C:\\Users\\GHC\\repos\\OMEGA_QUANT\\data\\market_vci_hsx_hnx_2015_now_20260613.parquet"
+}

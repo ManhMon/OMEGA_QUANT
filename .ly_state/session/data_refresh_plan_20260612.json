@@ -1,0 +1,50 @@
+{
+  "audit_date": "2026-06-12",
+  "canonical_file": "data/market_2015_now.parquet",
+  "canonical_checksum_sha256": "E9B0B4F1754DB11378AA7BE6CC46B4A28CCFE2DC5C47612893AE1CCCDA8CAB5F",
+  "canonical_size_bytes": 35513722,
+  "canonical_rows": 3392283,
+  "canonical_tickers": 1534,
+  "canonical_date_range": "2015-01-05 to 2026-06-01",
+  "checkpoint_discrepancy": {
+    "checkpoint_rows": 3845845,
+    "actual_rows": 3392283,
+    "delta": -453562,
+    "note": "Checkpoint records 3,845,845 rows but actual file has 3,392,283. Delta likely due to deduplication or cleaning passes."
+  },
+  "refresh_plan": {
+    "status": "SMALL_SAMPLE_ONLY",
+    "full_refresh_feasible": true,
+    "full_refresh_blocker": null,
+    "source_access": "vnstock VCI works without credentials (dummy_key fallback)",
+    "vnstock_version": "4.0.2 (4.0.4 available)",
+    "vnstock_deprecation_notice": "Vnstock class deprecated as of 31/08/2025. Migration to vnstock.api recommended.",
+    "encoding_workaround": "Requires chcp 65001 (UTF-8) on Windows to avoid charmap errors in Vnstock constructor",
+    "sample_fetch": {
+      "symbols": ["SBS", "HHV", "DTD", "VCB", "HPG", "FPT"],
+      "date_range": "2026-05-01 to 2026-06-12",
+      "rows_fetched": 192,
+      "output_path": "data/market_2015_now_refreshed_20260612.parquet",
+      "price_scale": "thousands (raw VCI, needs x1000 to match canonical VND)"
+    },
+    "recommended_full_refresh_steps": [
+      "1. Set console to UTF-8: chcp 65001",
+      "2. Fetch all 1534 tickers in batches of 20 with 0.5s rate limit",
+      "3. Apply x1000 price scaling (close < 1000 threshold)",
+      "4. Rename time -> date, add ticker column",
+      "5. Run DataValidator on each batch",
+      "6. Deduplicate on (ticker, date)",
+      "7. Write to data/market_2015_now_refreshed_20260612.parquet (NOT canonical)",
+      "8. Validate merged dataset before any canonical replacement",
+      "9. Create .metadata.json sidecar with checksum"
+    ]
+  },
+  "risks": {
+    "overwrite_canonical": "Both update scripts write directly to canonical without backup",
+    "vnstock_deprecation": "Vnstock() class deprecated; future versions may break",
+    "encoding_windows": "Windows console encoding (cp1252) breaks vnstock init",
+    "price_scale_mismatch": "VCI returns thousands; canonical stores VND. Incorrect scaling would corrupt data.",
+    "schema_drift": "Different scripts produce different column sets (as_of, available_at, time)"
+  },
+  "next_action": "TARGETED_QUARANTINE_THEN_FULL_REBUILD"
+}

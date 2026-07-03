@@ -1,0 +1,429 @@
+{
+  "gate_id": "AUTOMATED_ALPHA_DISCOVERY_DYNAMIC_20260615",
+  "candidates_evaluated": 16,
+  "candidates_recommended": 14,
+  "diagnostics": [
+    {
+      "alpha_name": "auto_mom_ret_5",
+      "marginal_ic": 0.029878,
+      "marginal_icir": 0.0901,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3255,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.029877724614566715,
+          "candidate_icir": 0.09014416598313013,
+          "composite_ic": 0.029877724614566715,
+          "composite_icir": 0.09014416598313013,
+          "marginal_ic": 0.029877724614566715
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_mom_ret_10",
+      "marginal_ic": 0.017515,
+      "marginal_icir": 0.0566,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3058,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.017514595496246878,
+          "candidate_icir": 0.056553104296303655,
+          "composite_ic": 0.017514595496246878,
+          "composite_icir": 0.056553104296303655,
+          "marginal_ic": 0.017514595496246878
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_mom_ret_20",
+      "marginal_ic": 0.037159,
+      "marginal_icir": 0.1163,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.2752,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.03715947352310988,
+          "candidate_icir": 0.11633490556658672,
+          "composite_ic": 0.03715947352310988,
+          "composite_icir": 0.11633490556658672,
+          "marginal_ic": 0.03715947352310988
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_mom_ret_60",
+      "marginal_ic": 0.052696,
+      "marginal_icir": 0.1779,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.1645,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.0526964560862866,
+          "candidate_icir": 0.1778977107449221,
+          "composite_ic": 0.0526964560862866,
+          "composite_icir": 0.1778977107449221,
+          "marginal_ic": 0.0526964560862866
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_mr_zscore_20",
+      "marginal_ic": 0.048242,
+      "marginal_icir": 0.1594,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.2811,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.04824242424242424,
+          "candidate_icir": 0.15937226562166715,
+          "composite_ic": 0.04824242424242424,
+          "composite_icir": 0.15937226562166715,
+          "marginal_ic": 0.04824242424242424
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_vol_ratio_5_20",
+      "marginal_ic": 0.013939,
+      "marginal_icir": 0.0391,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.1261,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.013939393939393935,
+          "candidate_icir": 0.03914265672803211,
+          "composite_ic": 0.013939393939393935,
+          "composite_icir": 0.03914265672803211,
+          "marginal_ic": 0.013939393939393935
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_vol_zscore_20",
+      "marginal_ic": 0.015152,
+      "marginal_icir": 0.0426,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.2792,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.01515151515151516,
+          "candidate_icir": 0.042636856363799325,
+          "composite_ic": 0.01515151515151516,
+          "composite_icir": 0.042636856363799325,
+          "marginal_ic": 0.01515151515151516
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_vol_range_pct",
+      "marginal_ic": 0.033155,
+      "marginal_icir": 0.097,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3332,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.03315508021390374,
+          "candidate_icir": 0.09700247139046929,
+          "composite_ic": 0.03315508021390374,
+          "composite_icir": 0.09700247139046929,
+          "marginal_ic": 0.03315508021390374
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_vol_close_loc",
+      "marginal_ic": -0.017265,
+      "marginal_icir": -0.0491,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3199,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "SKIP_LOW_IC",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": -0.01726508785332315,
+          "candidate_icir": -0.04914878860256055,
+          "composite_ic": -0.01726508785332315,
+          "composite_icir": -0.04914878860256055,
+          "marginal_ic": -0.01726508785332315
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_turnover_ratio",
+      "marginal_ic": 0.010182,
+      "marginal_icir": 0.0284,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.275,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.010181818181818179,
+          "candidate_icir": 0.028372478773822946,
+          "composite_ic": 0.010181818181818179,
+          "composite_icir": 0.028372478773822946,
+          "marginal_ic": 0.010181818181818179
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_upper_shadow",
+      "marginal_ic": 0.01696,
+      "marginal_icir": 0.0444,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3295,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.016959511077158134,
+          "candidate_icir": 0.044417571397183796,
+          "composite_ic": 0.016959511077158134,
+          "composite_icir": 0.044417571397183796,
+          "marginal_ic": 0.016959511077158134
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_lower_shadow",
+      "marginal_ic": -0.019099,
+      "marginal_icir": -0.056,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3278,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "SKIP_LOW_IC",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": -0.019098548510313212,
+          "candidate_icir": -0.05597857955737803,
+          "composite_ic": -0.019098548510313212,
+          "composite_icir": -0.05597857955737803,
+          "marginal_ic": -0.019098548510313212
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_rsi_14",
+      "marginal_ic": 0.06355,
+      "marginal_icir": 0.1942,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.2851,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.06354978354978354,
+          "candidate_icir": 0.19422169191423985,
+          "composite_ic": 0.06354978354978354,
+          "composite_icir": 0.19422169191423985,
+          "marginal_ic": 0.06354978354978354
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_vol_atr_ratio_5_20",
+      "marginal_ic": 0.032364,
+      "marginal_icir": 0.0938,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.1184,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.03236363636363636,
+          "candidate_icir": 0.0938211232395471,
+          "composite_ic": 0.03236363636363636,
+          "composite_icir": 0.0938211232395471,
+          "marginal_ic": 0.03236363636363636
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_vol_std_ratio_10_30",
+      "marginal_ic": 0.0397,
+      "marginal_icir": 0.122,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.0703,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.039700374531835204,
+          "candidate_icir": 0.12202680634522797,
+          "composite_ic": 0.039700374531835204,
+          "composite_icir": 0.12202680634522797,
+          "marginal_ic": 0.039700374531835204
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_mom_accel_5_10",
+      "marginal_ic": 0.034418,
+      "marginal_icir": 0.0974,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3125,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.034417570197386706,
+          "candidate_icir": 0.09735321375943345,
+          "composite_ic": 0.034417570197386706,
+          "composite_icir": 0.09735321375943345,
+          "marginal_ic": 0.034417570197386706
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    }
+  ],
+  "summary": {
+    "total_evaluated": 16,
+    "total_recommended": 14,
+    "avg_marginal_ic": 0.02553410755033931,
+    "avg_max_corr": 0.0
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "(mean (div low (add (mul (sub returns volume) rsi) high)))": {
+    "feature_name": "(mean (div low (add (mul (sub returns volume) rsi) high)))",
+    "ic_score": 0.31185931453913807,
+    "coverage": 0.5662583073104331,
+    "category": "evolved",
+    "expression": "(mean (div low (add (mul (sub returns volume) rsi) high)))",
+    "status": "active",
+    "discovered_date": "2026-06-24",
+    "updated_date": "2026-06-24"
+  }
+}

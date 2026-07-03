@@ -1,0 +1,15 @@
+You are Role 9 - Backend Engineer (L2) running on OpenCode platform. Your task is to implement Phase 0 of the Restructuring Plan.
+
+TASK: Resolve 3 circular dependencies and create primitives.py to isolate returns/rsi helper functions.
+
+STEPS TO EXECUTE:
+1. Create `src/omega/quant/alpha/primitives.py`. Move `compute_returns`, `compute_rsi`, `_safe_divide`, and `_round_to_board_lot` from `src/omega/quant/ultimate_alpha_arsenal.py` into it.
+2. Update `src/omega/quant/promoted_alphas.py` to import `compute_returns` and `compute_rsi` from `omega.quant.alpha.primitives` (or relative `.alpha.primitives`).
+3. Update `src/omega/quant/ultimate_alpha_arsenal.py` to import `_safe_divide`, `_round_to_board_lot`, `compute_returns`, and `compute_rsi` from `.alpha.primitives`. Remove their duplicate local definitions in `ultimate_alpha_arsenal.py`.
+4. Ensure no circular imports remain.
+
+Verify by running:
+pytest tests/quant_test_parity_arsenal.py
+python scripts/test_imports.py
+
+Once done, write a short summary of changes. Do not touch other files.

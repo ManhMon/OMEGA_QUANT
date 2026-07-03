@@ -32,6 +32,7 @@ if str(_REPO_ROOT) not in sys.path:
 from scripts.run_paper_execution_pipeline import (
     compute_order_diffs,
     OrderDiff,
+    _build_risk_exposures,
     load_latest_signal,
     load_current_positions,
     execute_diffs,
@@ -42,6 +43,8 @@ from scripts.run_paper_execution_pipeline import (
     BOARD_LOT,
     DEFAULT_CAPITAL,
 )
+from omega.execution.broker_gateway import OrderSide
+from omega.quant.risk.realtime_risk import RealtimeRiskGuard, RiskLimits, RiskVerdict
 
 
 # ------------------------------------------------------------------ #
@@ -182,6 +185,130 @@ class TestComputeOrderDiffs:
         assert len(diffs) == 2
         assert diffs[0].symbol == "AAA"
         assert diffs[1].symbol == "ZZZ"
+
+
+class TestRiskExposureBuild:
+    def test_prefers_shares_times_current_price_over_weight(self):
+        exposures = _build_risk_exposures(CURRENT_POSITIONS, DEFAULT_CAPITAL)
+
+        assert exposures == {
+            "VNM": 80_000_000.0,
+            "SSI": 50_000_000.0,
+        }
+
+    def test_falls_back_to_absolute_position_value(self):
+        current_positions = {
+            "VCG": {"shares": 7700, "current_price": 20800.0},
+        }
+
+        exposures = _build_risk_exposures(current_positions, DEFAULT_CAPITAL)
+
+        assert exposures == {"VCG": 160_160_000.0}
+
+    def test_falls_back_to_avg_price_before_weight_or_value(self):
+        current_positions = {
+            "VCI": {"shares": 1000, "avg_price": 35_500.0, "weight": 0.10, "value": 999.0},
+        }
+
+        exposures = _build_risk_exposures(current_positions, DEFAULT_CAPITAL)
+
+        assert exposures == {"VCI": 35_500_000.0}
+
+    def test_falls_back_to_weight_when_share_price_unavailable(self):
+        current_positions = {
+            "BID": {"shares": 1000, "weight": 0.03, "value": 1_000_000.0},
+        }
+
+        exposures = _build_risk_exposures(current_positions, DEFAULT_CAPITAL)
+
+        assert exposures == {"BID": 0.03 * DEFAULT_CAPITAL}
+
+
+class TestRealtimeRiskGuardSellBehavior:
+    def test_sell_large_notional_bypasses_max_notional_check(self):
+        guard = RealtimeRiskGuard(RiskLimits(max_notional_currency=50_000_000.0))
+        guard.set_portfolio_state(
+            total_equity=1_000_000_000.0,
+            exposures={"VNM": 200_000_000.0},
+        )
+
+        verdict = guard.check_order(
+            symbol="VNM",
+            quantity=1_000,
+            price=100_000.0,
+            adv_20d=1_000_000,
+            side=OrderSide.SELL,
+        )
+
+        assert verdict == RiskVerdict.PASS
+
+    def test_sell_existing_large_holding_bypasses_concentration_rejection(self):
+        guard = RealtimeRiskGuard(RiskLimits(max_concentration_pct=0.20))
+        guard.set_portfolio_state(
+            total_equity=1_000_000_000.0,
+            exposures={"VNM": 400_000_000.0},
+        )
+
+        verdict = guard.check_order(
+            symbol="VNM",
+            quantity=1_000,
+            price=100_000.0,
+            adv_20d=1_000_000,
+            side=OrderSide.SELL,
+        )
+
+        assert verdict == RiskVerdict.PASS
+
+    def test_sell_beyond_existing_holding_is_rejected(self):
+        guard = RealtimeRiskGuard(RiskLimits(max_concentration_pct=0.20))
+        guard.set_portfolio_state(
+            total_equity=1_000_000_000.0,
+            exposures={"VNM": 50_000_000.0},
+        )
+
+        verdict = guard.check_order(
+            symbol="VNM",
+            quantity=1_000,
+            price=100_000.0,
+            adv_20d=1_000_000,
+            side=OrderSide.SELL,
+        )
+
+        assert verdict == RiskVerdict.FAIL_CONCENTRATION
+
+    def test_sell_tolerance_allows_small_rounding_gap(self):
+        guard = RealtimeRiskGuard(RiskLimits(max_concentration_pct=0.20))
+        guard.set_portfolio_state(
+            total_equity=1_000_000_000.0,
+            exposures={"VNM": 99_950_000.0},
+        )
+
+        verdict = guard.check_order(
+            symbol="VNM",
+            quantity=1_000,
+            price=100_000.0,
+            adv_20d=1_000_000,
+            side=OrderSide.SELL,
+        )
+
+        assert verdict == RiskVerdict.PASS
+
+    def test_buy_still_rejects_new_concentration_violation(self):
+        guard = RealtimeRiskGuard(RiskLimits(max_concentration_pct=0.20))
+        guard.set_portfolio_state(
+            total_equity=1_000_000_000.0,
+            exposures={"VNM": 150_000_000.0},
+        )
+
+        verdict = guard.check_order(
+            symbol="VNM",
+            quantity=1_000,
+            price=100_000.0,
+            adv_20d=1_000_000,
+            side=OrderSide.BUY,
+        )
+
+        assert verdict == RiskVerdict.FAIL_CONCENTRATION
 
 
 # ------------------------------------------------------------------ #
@@ -449,6 +576,21 @@ class TestRunPaperExecutionPipeline:
         real_pnl_after = real_pnl_latest.read_text() if real_pnl_latest.exists() else None
         assert real_risk_before == real_risk_after, "Real risk_status.json should not be modified by test"
         assert real_pnl_before == real_pnl_after, "Real pnl_latest.json should not be modified by test"
+
+    def test_build_pipeline_receives_current_positions_and_capital(self):
+        with patch("scripts.run_paper_execution_pipeline.build_pipeline") as mock_build:
+            mock_pipeline = MagicMock()
+            mock_build.return_value = mock_pipeline
+
+            run_paper_execution_pipeline(
+                signal=SAMPLE_SIGNAL,
+                current_positions=CURRENT_POSITIONS,
+            )
+
+        mock_build.assert_called_once_with(
+            current_positions=CURRENT_POSITIONS,
+            capital=SAMPLE_SIGNAL["capital"],
+        )
 
     def test_pipeline_handles_all_failures(self, tmp_path):
         """Pipeline handles case where all orders fail."""

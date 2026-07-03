@@ -1,10 +1,13 @@
 import logging
-import numpy as np
-from typing import Dict, List, Optional, Set
+from typing import Dict, Optional
 from dataclasses import dataclass
 from enum import Enum
 
+from omega.execution.broker_gateway import OrderSide
+
 logger = logging.getLogger(__name__)
+
+SELL_EXPOSURE_TOLERANCE_VND = 100_000.0
 
 class RiskVerdict(Enum):
     PASS = "PASS"
@@ -47,6 +50,7 @@ class RealtimeRiskGuard:
         quantity: int, 
         price: float, 
         adv_20d: float,
+        side: Optional[OrderSide] = None,
         cost_estimate: Optional[float] = None,
         cost_limit: Optional[float] = None
     ) -> RiskVerdict:
@@ -58,6 +62,8 @@ class RealtimeRiskGuard:
             quantity: Order quantity
             price: Order price
             adv_20d: 20-day Average Daily Volume
+            side: Optional order side. SELL orders reduce exposure and bypass
+                concentration-limit growth checks, but naked short sells remain rejected.
             cost_estimate: Estimated transaction cost from TransactionCostOptimizer
             cost_limit: Maximum allowable transaction cost
             
@@ -82,7 +88,7 @@ class RealtimeRiskGuard:
                 return RiskVerdict.FAIL_COST
         
         # 1. Max Notional Check
-        if notional > self.limits.max_notional_currency:
+        if side != OrderSide.SELL and notional > self.limits.max_notional_currency:
             logger.warning(f"Risk Reject {symbol}: Notional {notional:,.0f} > Limit {self.limits.max_notional_currency:,.0f}")
             return RiskVerdict.FAIL_NOTIONAL
 
@@ -94,7 +100,21 @@ class RealtimeRiskGuard:
 
         # 3. Concentration Check
         current_notional = self._exposure.get(symbol, 0.0)
-        new_total_notional = current_notional + notional
+        exposure_delta = -notional if side == OrderSide.SELL else notional
+        new_total_notional = current_notional + exposure_delta
+
+        if new_total_notional < -SELL_EXPOSURE_TOLERANCE_VND:
+            logger.warning(
+                "Risk Reject %s: SELL notional %.0f exceeds held exposure %.0f",
+                symbol,
+                notional,
+                current_notional,
+            )
+            return RiskVerdict.FAIL_CONCENTRATION
+
+        if side == OrderSide.SELL:
+            return RiskVerdict.PASS
+
         concentration = new_total_notional / self._total_equity
         
         if concentration > self.limits.max_concentration_pct:

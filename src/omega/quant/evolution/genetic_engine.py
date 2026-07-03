@@ -40,6 +40,101 @@ logger = logging.getLogger(__name__)
 DATE_CHUNK_CACHE_KEY = '__date_chunk_indices__'
 
 
+def _neutralize_cross_section(
+    alpha_arr: np.ndarray,
+    log_mcap_arr: np.ndarray,
+    sector_arr: np.ndarray,
+    date_arr: np.ndarray,
+) -> np.ndarray:
+    residuals = np.asarray(alpha_arr, dtype=np.float64).copy()
+    if log_mcap_arr is None or sector_arr is None or date_arr is None:
+        return residuals
+
+    log_mcap_arr = np.asarray(log_mcap_arr, dtype=np.float64)
+    sector_arr = np.asarray(sector_arr)
+    date_arr = np.asarray(date_arr)
+    for current_date in pd.unique(date_arr[pd.notna(date_arr)]):
+        mask = date_arr == current_date
+        if np.count_nonzero(mask) < 2:
+            continue
+        alpha_slice = residuals[mask]
+        mcap_slice = log_mcap_arr[mask]
+        sector_slice = sector_arr[mask]
+        valid = np.isfinite(alpha_slice) & np.isfinite(mcap_slice) & pd.notna(sector_slice)
+        if np.count_nonzero(valid) < 2:
+            continue
+        valid_sector = pd.factorize(sector_slice[valid], sort=True)[0]
+        sector_dummies = np.eye(max(int(valid_sector.max()) + 1, 1), dtype=np.float64)[valid_sector]
+        design_parts = [
+            np.ones(np.count_nonzero(valid), dtype=np.float64),
+            mcap_slice[valid],
+        ]
+        if sector_dummies.shape[1] > 1:
+            design_parts.append(sector_dummies[:, 1:])
+        design = np.column_stack(design_parts)
+        alpha_valid = alpha_slice[valid]
+        try:
+            beta, _, rank, _ = np.linalg.lstsq(design, alpha_valid, rcond=None)
+        except np.linalg.LinAlgError:
+            continue
+        if rank < design.shape[1]:
+            continue
+        alpha_slice[valid] = alpha_valid - design @ beta
+        alpha_slice[valid & (np.abs(alpha_slice) < 1e-12)] = 0.0
+        residuals[mask] = alpha_slice
+    return residuals
+
+
+def _compute_time_fold_ir(
+    alpha: np.ndarray,
+    target: np.ndarray,
+    features: Dict[str, np.ndarray],
+    config: "GPConfig",
+) -> float:
+    date_arr = features.get('__date__')
+    log_mcap_arr = features.get('__log_market_cap__')
+    sector_arr = features.get('__sector__')
+    if date_arr is None:
+        return 0.0
+
+    date_arr = np.asarray(date_arr)
+    valid_dates = np.sort(pd.unique(date_arr[pd.notna(date_arr)]))
+    if valid_dates.size == 0:
+        return 0.0
+
+    fold_ics: List[float] = []
+    for fold_dates in np.array_split(valid_dates, max(1, int(config.time_folds))):
+        if len(fold_dates) == 0:
+            continue
+        fold_mask = np.isin(date_arr, fold_dates)
+        if np.count_nonzero(fold_mask) < 2:
+            continue
+        alpha_fold = np.asarray(alpha[fold_mask], dtype=np.float64)
+        target_fold = np.asarray(target[fold_mask], dtype=np.float64)
+        fold_features = {
+            key: np.asarray(value)[fold_mask]
+            for key, value in features.items()
+            if len(np.asarray(value)) == len(date_arr)
+        }
+        if config.neutralize_size_sector and log_mcap_arr is not None and sector_arr is not None:
+            alpha_fold = _neutralize_cross_section(
+                alpha_fold,
+                fold_features.get('__log_market_cap__'),
+                fold_features.get('__sector__'),
+                fold_features.get('__date__'),
+            )
+        valid = np.isfinite(alpha_fold) & np.isfinite(target_fold)
+        if np.count_nonzero(valid) < 2:
+            continue
+        ic_value, _ = spearmanr(alpha_fold[valid], target_fold[valid])
+        if not np.isnan(ic_value):
+            fold_ics.append(float(ic_value))
+
+    if len(fold_ics) < 2:
+        return 0.0
+    return float(np.mean(fold_ics) / max(float(np.std(fold_ics, ddof=1)), float(config.fold_ir_std_floor)))
+
+
 def _chunked_average_ranks(
     order: np.ndarray,
     values: np.ndarray,
@@ -94,9 +189,14 @@ def _protected_div(a: np.ndarray, b: np.ndarray) -> np.ndarray:
         return np.where(np.abs(b) > 1e-9, a / b, 0.0)
 
 
-def _protected_log(x: np.ndarray) -> np.ndarray:
-    """Logarithm with negative/zero protection."""
-    return np.log(np.abs(x) + 1e-9)
+def _signed_log(x: np.ndarray) -> np.ndarray:
+    """Sign-preserving logarithm: sign(x) * log1p(|x|).
+
+    Unlike log(|x|), this keeps the sign of the input so negative and
+    positive values of equal magnitude are not folded together, and it is
+    NaN-free on the whole real line (log1p(|x|) >= 0 always).
+    """
+    return np.sign(x) * np.log1p(np.abs(x))
 
 
 def _protected_sqrt(x: np.ndarray) -> np.ndarray:
@@ -260,6 +360,10 @@ class GPConfig:
     ts_ops: List[str] = field(default_factory=lambda: ['ts_std', 'ts_mean', 'ts_rank', 'decay_linear'])
     ts_windows: List[int] = field(default_factory=lambda: [5, 10, 20])
     use_icir: bool = False
+    neutralize_size_sector: bool = False
+    use_time_fold_ir: bool = False
+    time_folds: int = 3
+    fold_ir_std_floor: float = 0.01
     icir_window: int = 20
     
     # Multi-target fitness (Phase 2.2)
@@ -278,6 +382,9 @@ class GPConfig:
     ortho_penalty_weight: float = 0.05          # max penalty magnitude
     ortho_correlation_threshold: float = 0.5     # |corr| above which penalty kicks in
     turnover_penalty_weight: float = 0.0025
+    tree_size_penalty_weight: float = 0.00025
+    early_stopping_rounds: int = 10
+    tournament_diversity_weight: float = 0.01
 
     # Parallel evaluation (Phase 2.4)
     # n_jobs: number of parallel threads for population evaluation.
@@ -321,7 +428,13 @@ class GPIndividual:
         try:
             # Execute expression tree
             alpha_series = self._execute_tree(self.tree, features)
-            
+
+            # Coverage: fraction of finite alpha values BEFORE any NaN
+            # scrubbing below. Operators that mask rows (e.g. a NaN-producing
+            # transform) shrink coverage; scaling IC by this fraction stops a
+            # high IC computed over a tiny valid subset from looking strong.
+            valid_fraction = float(np.mean(np.isfinite(alpha_series)))
+
             # Variance guard: reject constant signals
             if np.std(alpha_series) < 1e-6:
                 self.fitness = -np.inf
@@ -357,7 +470,10 @@ class GPIndividual:
             # sign-flipped trees. With signed fitness GP only optimizes
             # for IC > 0; users who want a short-only strategy can wrap
             # the signal in a unary minus operator instead.
-            self.ic_score = float(ic)
+            # Coverage penalty: scale IC by the fraction of non-NaN alpha
+            # values so signals valid on only a sliver of the sample are
+            # discounted proportionally.
+            self.ic_score = float(ic) * valid_fraction
             
             # Turnover calculation
             alpha_sign = np.sign(alpha_series)
@@ -366,7 +482,7 @@ class GPIndividual:
                 self.turnover_rate = signal_changes / len(alpha_series)
                 self.transaction_cost_penalty = config.turnover_penalty_weight * self.turnover_rate
             
-            # Progressive complexity penalty
+            # Progressive complexity penalty: depth + node count parsimony.
             depth = self.tree.depth()
             if depth <= 2:
                 self.complexity_penalty = 0.002 * depth
@@ -374,6 +490,7 @@ class GPIndividual:
                 self.complexity_penalty = 0.003 * depth
             else:
                 self.complexity_penalty = 0.008 * depth
+            self.complexity_penalty += config.tree_size_penalty_weight * self.tree.size()
             
             # Diversity penalty
             self.diversity_penalty = 0.0
@@ -474,6 +591,17 @@ class GPIndividual:
                 return 0.0
             ic_value, _ = spearmanr(alpha_values[valid], target_values[valid])
             return float(ic_value) if not np.isnan(ic_value) else 0.0
+
+        if getattr(config, 'use_time_fold_ir', False):
+            return _compute_time_fold_ir(alpha_series, target, features, config)
+
+        if getattr(config, 'neutralize_size_sector', False):
+            alpha_series = _neutralize_cross_section(
+                alpha_series,
+                features.get('__log_market_cap__'),
+                features.get('__sector__'),
+                features.get('__date__'),
+            )
 
         def _compute_icir_loop(date_chunks: Tuple[np.ndarray, ...]) -> float:
             chunk_ics: List[float] = []
@@ -624,7 +752,7 @@ class GPIndividual:
             if node.operator == 'abs':
                 return np.abs(child_val)
             elif node.operator == 'log':
-                return _protected_log(child_val)
+                return _signed_log(child_val)
             elif node.operator == 'sqrt':
                 return _protected_sqrt(child_val)
             elif node.operator == 'exp':
@@ -855,8 +983,16 @@ class GeneticEngine:
     
     def tournament_selection(self) -> GPIndividual:
         """Select individual via tournament selection."""
-        tournament = random.sample(self.population, self.config.tournament_size)
-        return max(tournament, key=lambda ind: ind.fitness)
+        tournament = random.sample(self.population, min(self.config.tournament_size, len(self.population)))
+        seen: set[str] = set()
+
+        def score(ind: GPIndividual) -> float:
+            expr = ind.tree.to_string()
+            duplicate_penalty = self.config.tournament_diversity_weight if expr in seen else 0.0
+            seen.add(expr)
+            return ind.fitness - duplicate_penalty
+
+        return max(tournament, key=score)
     
     def crossover(self, parent1: GPIndividual, parent2: GPIndividual) -> GPIndividual:
         """Crossover two individuals."""
@@ -873,24 +1009,41 @@ class GeneticEngine:
     def mutate(self, individual: GPIndividual) -> GPIndividual:
         """Mutate individual."""
         if random.random() > self.config.mutation_rate:
-            return individual
+            return GPIndividual(tree=individual.tree.copy())
         
         tree = individual.tree.copy()
         subtree = tree.get_random_subtree()
         new_subtree = self.generate_random_tree(depth=0)
         tree.replace_subtree(subtree, new_subtree)
         return GPIndividual(tree=tree)
+
+    def _next_generation(self) -> None:
+        """Breed offspring for the next generation."""
+        next_population = [
+            GPIndividual(tree=ind.tree.copy())
+            for ind in self.population[:self.config.elitism_count]
+        ]
+        while len(next_population) < self.config.population_size:
+            parent1 = self.tournament_selection()
+            parent2 = self.tournament_selection()
+            child = self.crossover(parent1, parent2)
+            next_population.append(self.mutate(child))
+        self.population = next_population[:self.config.population_size]
     
     def update_hall_of_fame(self) -> None:
         """Update Hall of Fame."""
         candidates = sorted(self.population, key=lambda ind: ind.fitness, reverse=True)
         self.hall_of_fame = []
+        seen_expressions: set[str] = set()
         # Invalidate diversity-penalty cache (HoF identity changes)
         if hasattr(self.hall_of_fame, '_alpha_cache'):
             self.hall_of_fame._alpha_cache = None
         for candidate in candidates:
             if len(self.hall_of_fame) >= self.config.hall_of_fame_size:
                 break
+            expression = candidate.tree.to_string()
+            if expression in seen_expressions:
+                continue
             # Phase 6 fix: with signed-IC fitness, individuals with negative
             # IC have fitness < 0 (penalties only subtract). Skip them so
             # the HoF never holds anti-correlated alphas.
@@ -898,6 +1051,7 @@ class GeneticEngine:
                 continue
             if candidate.diversity_penalty <= 0 or len(self.hall_of_fame) == 0:
                 self.hall_of_fame.append(candidate)
+                seen_expressions.add(expression)
     
     def evolve(
         self,
@@ -908,7 +1062,7 @@ class GeneticEngine:
             np.random.seed(self.config.random_seed)
             random.seed(self.config.random_seed)
             
-        self.feature_names = [k for k in features.keys() if not k.startswith('target')]
+        self.feature_names = [k for k in features.keys() if not k.startswith('target') and not k.startswith('__')]
         
         logger.info(f"Starting GP evolution: pop={self.config.population_size}, gen={self.config.generations}")
         
@@ -926,9 +1080,11 @@ class GeneticEngine:
         self.initialize_population()
         
         t_start = time.monotonic()
+        best_fitness_seen = -np.inf
+        stagnant_generations = 0
         for generation in range(self.config.generations):
-            # Stochastic GP: Subsample training data to 100,000 rows per generation to speed up evaluations
-            if len(target) > 100000:
+            # Time-fold IR requires chronological full-sample date structure.
+            if len(target) > 100000 and not self.config.use_time_fold_ir:
                 if self.config.random_seed is not None:
                     # Deterministically vary indices per generation using seeded generator
                     rng = np.random.RandomState(self.config.random_seed + generation)
@@ -965,7 +1121,8 @@ class GeneticEngine:
             self.history.append({
                 'generation': generation,
                 'best_fitness': best.fitness,
-                'best_ic': best.ic_score
+                'best_ic': best.ic_score,
+                'best_tree_size': best.tree.size(),
             })
             
             logger.info(f"Gen {generation+1}: IC={best.ic_score:.4f}, Fitness={best.fitness:.4f}")
@@ -983,5 +1140,22 @@ class GeneticEngine:
                     f"({100*(generation+1)/self.config.generations:.0f}%) "
                     f"elapsed={elapsed:.1f}s eta={remaining:.1f}s"
                 )
+
+            if best.fitness > best_fitness_seen + 1e-6:
+                best_fitness_seen = best.fitness
+                stagnant_generations = 0
+            else:
+                stagnant_generations += 1
+            if (
+                self.config.early_stopping_rounds > 0
+                and stagnant_generations >= self.config.early_stopping_rounds
+            ):
+                logger.info(
+                    f"Early stopping: no best-fitness improvement for "
+                    f"{self.config.early_stopping_rounds} generations"
+                )
+                break
+            if generation + 1 < self.config.generations:
+                self._next_generation()
         
         return self.hall_of_fame

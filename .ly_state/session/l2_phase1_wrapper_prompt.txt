@@ -1,0 +1,16 @@
+Role: Senior Backend Engineer (Role 9) on Tier 2 (OpenCode)
+
+Task: Overwrite `src/omega/quant/ultimate_alpha_arsenal.py` to make it a backward compatibility wrapper for the new `src/omega/quant/alpha/` modular package.
+
+Requirements:
+1. Overwrite the file `src/omega/quant/ultimate_alpha_arsenal.py` entirely (use write tool with overwrite=True or similar, do not edit line-by-line).
+2. The wrapper must:
+   - Import all functions, primitives, and metadata from the modular package `src.omega.quant.alpha`.
+   - Expose the exact same public functions and constants as before by importing and re-exporting them.
+   - Use a deprecation warning `warnings.warn("ultimate_alpha_arsenal is deprecated; import from omega.quant.alpha instead.", DeprecationWarning, stacklevel=2)` when the module is imported.
+   - Re-export the following explicitly (add them to `__all__` or just import them so they are available):
+     * `compute_ultimate_alphas`
+     * `get_alpha_metadata`
+     * all individual `compute_*` functions (momentum, volatility, liquidity, trend, price_action, mean_reversion, money_flow, vn_specific, microstructure, correlation, volume_profile, momentum_extensions, cross_sectional).
+     * all primitives (`_safe_divide`, `_round_to_board_lot`, `compute_returns`, `compute_rsi`).
+3. Run `pytest tests/quant_test_parity_arsenal.py` to verify that everything still matches the baseline parquet.

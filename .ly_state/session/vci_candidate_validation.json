@@ -1,0 +1,91 @@
+{
+  "file_exists": true,
+  "row_count": 1763089,
+  "col_count": 14,
+  "columns": [
+    "ticker",
+    "date",
+    "exchange",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "as_of",
+    "available_at",
+    "source",
+    "price_scale",
+    "adjusted",
+    "rebuild_date"
+  ],
+  "schema_compatible": true,
+  "missing_cols": [],
+  "extra_cols": [],
+  "exchanges": [
+    "HNX",
+    "HOSE"
+  ],
+  "only_hose_hnx": true,
+  "date_range_cand": "2011-03-15 00:00:00 to 2026-06-12 00:00:00",
+  "date_range_canon": "2015-01-05 00:00:00 to 2026-06-12 00:00:00",
+  "max_date_match": true,
+  "min_date_covers": true,
+  "duplicate_count": 0,
+  "null_ohlcv": {
+    "open": 0,
+    "high": 0,
+    "low": 0,
+    "close": 0,
+    "volume": 0
+  },
+  "non_positive": {
+    "open": 0,
+    "high": 0,
+    "low": 0,
+    "close": 0,
+    "volume_zero": 278116,
+    "volume_negative": 0
+  },
+  "cand_tickers": 665,
+  "canon_tickers": 666,
+  "hose_samples": [
+    "AAA",
+    "AAM",
+    "AAT",
+    "ABR",
+    "ABS",
+    "ABT",
+    "ACB",
+    "ACC",
+    "ACG",
+    "ACL"
+  ],
+  "hnx_samples": [
+    "ADC",
+    "ALT",
+    "AMC",
+    "AME",
+    "AMV",
+    "API",
+    "APS",
+    "ARM",
+    "ATS",
+    "BAB"
+  ],
+  "close_median": 10410.0,
+  "price_scale_values": [
+    "VND"
+  ],
+  "source_values": [
+    "vnstock_vci"
+  ],
+  "dtype_diffs": [],
+  "tickers_only_canonical": [
+    "BTW"
+  ],
+  "tickers_only_candidate": [],
+  "rows_in_canonical_range": 1684909,
+  "canonical_intact": true,
+  "timestamp": "2026-06-12T23:45:56.837942",
+  "output_path": "C:\\Users\\GHC\\repos\\OMEGA_QUANT\\data\\market_vci_candidate_20260612.parquet"
+}

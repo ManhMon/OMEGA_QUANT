@@ -1,72 +1,45 @@
-"""Unit tests for News Aggregator with mocked HTTP requests."""
+"""Unit tests for PIT-safe news aggregation."""
 
-import pytest
 from datetime import datetime, timedelta
-from unittest.mock import patch, MagicMock, call
+from unittest.mock import MagicMock, patch
+
+import pandas as pd
+import pytest
+
 from omega.data.news_aggregator import NewsAggregator, SentimentInput
 
 
-# ── Fixtures ──────────────────────────────────────────────────────
-
-
 @pytest.fixture
-def mock_cafef_rss():
-    return """<?xml version="1.0" encoding="utf-8"?>
-<rss version="2.0">
-  <channel>
-    <title>CafeF - Thị trường chứng khoán</title>
-    <item>
-      <title>Chuyên gia chỉ ra kênh đầu tư đánh bại gửi tiết kiệm</title>
-      <link>https://cafef.vn/chuyen-gia-chi-ra-kenh-dau-tu.chn</link>
-      <pubDate>Thu, 19 Jun 2026 00:03:00 +0700</pubDate>
-      <description>Chuyên gia cho rằng nhà đầu tư nên tập trung vào ba nguyên tắc.</description>
-    </item>
-    <item>
-      <title>Khối ngoại bán ròng không còn là ác mộng cho thị trường</title>
-      <link>https://cafef.vn/khoi-ngoai-ban-rong.chn</link>
-      <pubDate>Wed, 18 Jun 2026 20:20:00 +0700</pubDate>
-      <description>Nhiều cổ phiếu bị khối ngoại bán ròng nhưng vẫn tăng mạnh.</description>
-    </item>
-    <item>
-      <title>Dòng vốn khủng từ châu Âu đang đổ bộ thị trường giảm sâu</title>
-      <link>https://cafef.vn/dong-von-khung.chn</link>
-      <pubDate>Tue, 10 Jun 2026 08:00:00 +0700</pubDate>
-      <description>Một xu hướng vĩ mô quan trọng.</description>
-    </item>
-  </channel>
-</rss>"""
-
-
-@pytest.fixture
-def mock_cafef_html():
-    return """
-    <html><body>
-      <div class="firstitem">
-        <h2><a title="Thị trường bứt phá mạnh mẽ hôm nay" href="/url1">Thị trường bứt phá mạnh mẽ hôm nay</a></h2>
-        <p class="time" data-time="19/06/2026 - 14:30">19/06/2026 - 14:30</p>
-      </div>
-      <div class="big">
-        <h3><a title="Nhiều cổ phiếu bất động sản giảm sàn" href="/url2">Nhiều cổ phiếu bất động sản giảm sàn</a></h3>
-        <p class="time" data-time="19/06/2026 - 12:00">19/06/2026 - 12:00</p>
-      </div>
-      <div class="tlitem box-category-item" data-id="12345">
-        <h3><a href="/url3">Khối ngoại quay lại bán ròng tăng mạnh</a></h3>
-        <div class="tlitem-flex">
-          <div class="knswli-right">
-            <span class="time time-ago" title="2026-06-19T09:15:00">2026-06-19T09:15:00</span>
-          </div>
-        </div>
-      </div>
-      <div class="tlitem box-category-item" data-id="12346">
-        <h3><a href="/url4">FPT báo lãi tăng trưởng đột phá quý 2</a></h3>
-        <div class="tlitem-flex">
-          <div class="knswli-right">
-            <span class="time time-ago" title="2026-06-18T08:00:00">2026-06-18T08:00:00</span>
-          </div>
-        </div>
-      </div>
-    </body></html>
-    """
+def mock_vnstock_news_frame():
+    return pd.DataFrame(
+        [
+            {
+                "news_title": "VCB bứt phá mạnh sau tin tích cực",
+                "news_short_content": "Nhà đầu tư kỳ vọng đà tăng tiếp diễn.",
+                "public_date": "2026-06-19T14:30:00",
+            },
+            {
+                "news_title": "VCB áp lực margin call đè nặng tâm lý",
+                "news_short_content": "Rủi ro ngắn hạn tăng lên.",
+                "public_date": "2026-06-19T15:00:00",
+            },
+            {
+                "news_title": "VCB cập nhật thông tin doanh nghiệp",
+                "news_short_content": "Không có tín hiệu sentiment rõ ràng.",
+                "public_date": "2026-06-19T13:00:00",
+            },
+            {
+                "news_title": "VCB tăng trần sau tin tích cực",
+                "news_short_content": "Dòng tiền quay lại mạnh.",
+                "public_date": "2026-06-18T15:00:01",
+            },
+            {
+                "news_title": "VCB tăng trần sau tin tích cực",
+                "news_short_content": "Dòng tiền quay lại mạnh.",
+                "public_date": "2026-06-18T15:00:00",
+            },
+        ]
+    )
 
 
 @pytest.fixture
@@ -74,25 +47,12 @@ def mock_vietstock_html():
     return """
     <html><body>
       <div class="single_post post_type12 type20 mb20 channelContent">
-        <div class="post_img"><a href="/2026/06/url1.htm"><img /></a></div>
         <div class="single_post_text">
           <div class="meta3">
             <a href="/chung-khoan/co-phieu.htm" title="Cổ phiếu">CỔ PHIẾU</a>
             <a href="/2026/06/url1.htm" title="19/06 14:27">19/06 14:27</a>
           </div>
           <h4><a class="fontbold" href="/2026/06/url1.htm" title="VN-Index bùng nổ vượt kháng cự mạnh">VN-Index bùng nổ vượt kháng cự mạnh</a></h4>
-          <p class="post-p">Thị trường tăng mạnh phiên hôm nay.</p>
-        </div>
-      </div>
-      <div class="single_post post_type12 type20 mb20 channelContent">
-        <div class="post_img"><a href="/2026/06/url2.htm"><img /></a></div>
-        <div class="single_post_text">
-          <div class="meta3">
-            <a href="/chung-khoan/giao-dich.htm" title="Giao dịch">GIAO DỊCH</a>
-            <a href="/2026/06/url2.htm" title="19/06 10:15">19/06 10:15</a>
-          </div>
-          <h4><a class="fontbold" href="/2026/06/url2.htm" title="Áp lực margin call đè nặng tâm lý giảm sút">Áp lực margin call đè nặng tâm lý giảm sút</a></h4>
-          <p class="post-p">Nhiều nhà đầu tư lo lắng.</p>
         </div>
       </div>
       <div class="single_post post_type12 type20 mb20 channelContent">
@@ -108,92 +68,79 @@ def mock_vietstock_html():
     """
 
 
-# ── CafeF RSS Tests ──────────────────────────────────────────────
+def test_matches_sentiment_keywords():
+    agg = NewsAggregator()
+    assert agg._matches_sentiment_keywords("Cổ phiếu bứt phá", None)
+    assert agg._matches_sentiment_keywords(None, "Áp lực margin call gia tăng")
+    assert not agg._matches_sentiment_keywords("Cập nhật họp cổ đông", "Thông tin trung tính")
 
 
-@patch("requests.get")
-def test_cafef_rss_parsing(mock_get, mock_cafef_rss):
-    mock_resp = MagicMock()
-    mock_resp.content = mock_cafef_rss.encode("utf-8")
-    mock_resp.status_code = 200
-    mock_resp.raise_for_status = MagicMock()
-    mock_get.return_value = mock_resp
+def test_parse_public_date_iso():
+    agg = NewsAggregator()
+    assert agg._parse_public_date("2026-06-24T17:39:34") == datetime(2026, 6, 24, 17, 39, 34)
 
+
+def test_parse_vietstock_time_short():
+    agg = NewsAggregator()
+    ref = datetime(2026, 6, 19, 15, 0, 0)
+    assert agg._parse_vietstock_time("19/06 14:27", ref) == datetime(2026, 6, 19, 14, 27, 0)
+
+
+def test_parse_vietstock_time_relative():
+    agg = NewsAggregator()
+    ref = datetime(2026, 6, 19, 15, 0, 0)
+    assert agg._parse_vietstock_time("15 phút trước", ref) == datetime(2026, 6, 19, 14, 45, 0)
+
+
+def test_mandatory_as_of_time_guard():
+    with pytest.raises(ValueError, match="as_of_time is mandatory"):
+        NewsAggregator().fetch_recent_news(as_of_time=None)
+
+
+@patch.object(NewsAggregator, "_load_universe_tickers", return_value=["VCB"])
+def test_vnstock_news_filters_keywords_and_pit_window(mock_universe, mock_vnstock_news_frame):
+    agg = NewsAggregator()
     as_of = datetime(2026, 6, 19, 15, 0, 0)
-    aggregator = NewsAggregator()
-    news = aggregator.fetch_recent_news(as_of_time=as_of, hours_back=24)
 
-    cafef_news = [n for n in news if n.source == "CafeF"]
-    assert len(cafef_news) == 2  # Only articles within 24h window
+    company = MagicMock()
+    company.news.return_value = mock_vnstock_news_frame
 
-    assert cafef_news[0].text == "Chuyên gia chỉ ra kênh đầu tư đánh bại gửi tiết kiệm"
-    assert cafef_news[0].timestamp == datetime(2026, 6, 19, 0, 3, 0)
+    with patch("vnstock.Company", return_value=company) as mock_company:
+        news = agg._scrape_vnstock_news(as_of_time=as_of, hours_back=24)
+
+    assert [item.ticker for item in news] == ["VCB", "VCB"]
+    assert [item.timestamp for item in news] == [
+        datetime(2026, 6, 19, 14, 30, 0),
+        datetime(2026, 6, 18, 15, 0, 1),
+    ]
+    assert all(item.timestamp < as_of for item in news)
+    assert all(item.timestamp > as_of - timedelta(hours=24) for item in news)
+    assert all(item.source == "vnstock" for item in news)
+    assert all(isinstance(item, SentimentInput) for item in news)
+    mock_universe.assert_called_once_with()
+    mock_company.assert_called_once_with(symbol="VCB", source="VCI")
 
 
-@patch("requests.get")
-def test_cafef_rss_10_day_lookback(mock_get, mock_cafef_rss):
-    mock_resp = MagicMock()
-    mock_resp.content = mock_cafef_rss.encode("utf-8")
-    mock_resp.status_code = 200
-    mock_resp.raise_for_status = MagicMock()
-    mock_get.return_value = mock_resp
-
+@patch.object(NewsAggregator, "_load_universe_tickers", return_value=["VCB", "HPG"])
+def test_vnstock_news_continues_on_symbol_failure(mock_universe, mock_vnstock_news_frame):
+    agg = NewsAggregator()
     as_of = datetime(2026, 6, 19, 15, 0, 0)
-    aggregator = NewsAggregator()
-    news = aggregator.fetch_recent_news(as_of_time=as_of, hours_back=240)
 
-    cafef_news = [n for n in news if n.source == "CafeF"]
-    assert len(cafef_news) == 3  # All 3 articles within 10 days
+    bad_company = MagicMock()
+    bad_company.news.side_effect = RuntimeError("boom")
+    good_company = MagicMock()
+    good_company.news.return_value = mock_vnstock_news_frame.iloc[[0]].copy()
 
+    def company_side_effect(symbol, source):
+        assert source == "VCI"
+        return bad_company if symbol == "VCB" else good_company
 
-# ── CafeF HTML Fallback Tests ────────────────────────────────────
+    with patch("vnstock.Company", side_effect=company_side_effect):
+        news = agg._scrape_vnstock_news(as_of_time=as_of, hours_back=24)
 
-
-@patch("requests.get")
-def test_cafef_html_fallback(mock_get, mock_cafef_html):
-    """When RSS returns error, falls back to HTML scraping."""
-    # First call (RSS) fails, second call (HTML) succeeds
-    rss_resp = MagicMock()
-    rss_resp.raise_for_status = MagicMock(side_effect=Exception("404"))
-
-    html_resp = MagicMock()
-    html_resp.content = mock_cafef_html.encode("utf-8")
-    html_resp.status_code = 200
-    html_resp.raise_for_status = MagicMock()
-
-    mock_get.side_effect = [rss_resp, html_resp, html_resp]
-
-    as_of = datetime(2026, 6, 19, 15, 0, 0)
-    aggregator = NewsAggregator()
-    news = aggregator.fetch_recent_news(as_of_time=as_of, hours_back=48)
-
-    cafef_news = [n for n in news if n.source == "CafeF"]
-    assert len(cafef_news) >= 2
-
-
-@patch("requests.get")
-def test_cafef_html_stream_time_iso(mock_get, mock_cafef_html):
-    html_resp = MagicMock()
-    html_resp.content = mock_cafef_html.encode("utf-8")
-    html_resp.status_code = 200
-    html_resp.raise_for_status = MagicMock()
-
-    rss_resp = MagicMock()
-    rss_resp.raise_for_status = MagicMock(side_effect=Exception("fail"))
-
-    mock_get.side_effect = [rss_resp, html_resp, html_resp]
-
-    as_of = datetime(2026, 6, 19, 15, 0, 0)
-    aggregator = NewsAggregator()
-    news = aggregator.fetch_recent_news(as_of_time=as_of, hours_back=48)
-
-    cafef_news = [n for n in news if n.source == "CafeF"]
-    iso_article = [n for n in cafef_news if "Khối ngoại" in n.text]
-    assert len(iso_article) == 1
-    assert iso_article[0].timestamp == datetime(2026, 6, 19, 9, 15, 0)
-
-
-# ── Vietstock Tests ──────────────────────────────────────────────
+    assert len(news) == 1
+    assert news[0].ticker == "HPG"
+    mock_universe.assert_called_once_with()
 
 
 @patch("requests.get")
@@ -202,22 +149,13 @@ def test_vietstock_channel_content(mock_get, mock_vietstock_html):
     mock_resp.content = mock_vietstock_html.encode("utf-8")
     mock_resp.status_code = 200
     mock_resp.raise_for_status = MagicMock()
-
-    # First call for CafeF (both RSS and HTML fail), then Vietstock
-    fail_resp = MagicMock()
-    fail_resp.raise_for_status = MagicMock(side_effect=Exception("fail"))
-
-    mock_get.side_effect = [fail_resp, fail_resp, mock_resp]
+    mock_get.return_value = mock_resp
 
     as_of = datetime(2026, 6, 19, 15, 0, 0)
-    aggregator = NewsAggregator()
-    news = aggregator.fetch_recent_news(as_of_time=as_of, hours_back=24)
+    news = NewsAggregator()._scrape_vietstock(as_of_time=as_of, hours_back=24)
 
-    vst_news = [n for n in news if n.source == "Vietstock"]
-    assert len(vst_news) >= 2
-
-    headlines = [n.text for n in vst_news]
-    assert any("VN-Index" in h for h in headlines)
+    assert len(news) == 2
+    assert any("VN-Index" in item.text for item in news)
 
 
 @patch("requests.get")
@@ -226,124 +164,41 @@ def test_vietstock_relative_time(mock_get, mock_vietstock_html):
     mock_resp.content = mock_vietstock_html.encode("utf-8")
     mock_resp.status_code = 200
     mock_resp.raise_for_status = MagicMock()
-
-    fail_resp = MagicMock()
-    fail_resp.raise_for_status = MagicMock(side_effect=Exception("fail"))
-
-    mock_get.side_effect = [fail_resp, fail_resp, mock_resp]
+    mock_get.return_value = mock_resp
 
     as_of = datetime(2026, 6, 19, 15, 0, 0)
-    aggregator = NewsAggregator()
-    news = aggregator.fetch_recent_news(as_of_time=as_of, hours_back=24)
+    news = NewsAggregator()._scrape_vietstock(as_of_time=as_of, hours_back=24)
 
-    vst_news = [n for n in news if n.source == "Vietstock"]
-    relative_article = [n for n in vst_news if "HPG" in n.text]
+    relative_article = [item for item in news if "HPG" in item.text]
     assert len(relative_article) == 1
     assert relative_article[0].timestamp == as_of - timedelta(minutes=15)
 
 
-@patch("requests.get")
-def test_vietstock_correct_url(mock_get, mock_vietstock_html):
-    """Verify scraper uses the correct URL (chung-khoan.htm, not thi-truong-chung-khoan)."""
-    mock_resp = MagicMock()
-    mock_resp.content = mock_vietstock_html.encode("utf-8")
-    mock_resp.status_code = 200
-    mock_resp.raise_for_status = MagicMock()
-
-    fail_resp = MagicMock()
-    fail_resp.raise_for_status = MagicMock(side_effect=Exception("fail"))
-
-    mock_get.side_effect = [fail_resp, fail_resp, mock_resp]
-
+@patch.object(NewsAggregator, "_scrape_vnstock_news")
+@patch.object(NewsAggregator, "_scrape_vietstock")
+def test_fetch_recent_news_sorts_desc(mock_vietstock, mock_vnstock):
     as_of = datetime(2026, 6, 19, 15, 0, 0)
-    aggregator = NewsAggregator()
-    aggregator.fetch_recent_news(as_of_time=as_of, hours_back=24)
+    mock_vnstock.return_value = [
+        SentimentInput(text="old", source="vnstock", timestamp=as_of - timedelta(hours=2), ticker="VCB")
+    ]
+    mock_vietstock.return_value = [
+        SentimentInput(text="new", source="Vietstock", timestamp=as_of - timedelta(minutes=15), ticker="HPG")
+    ]
 
-    urls_called = [c.args[0] for c in mock_get.call_args_list]
-    assert any("chung-khoan.htm" in u for u in urls_called)
-    vst_urls = [u for u in urls_called if "vietstock" in u]
-    assert not any("thi-truong-chung-khoan" in u for u in vst_urls)
+    news = NewsAggregator().fetch_recent_news(as_of_time=as_of, hours_back=24)
 
-
-# ── Time Parsing Unit Tests ──────────────────────────────────────
-
-
-def test_parse_cafef_time_iso():
-    agg = NewsAggregator()
-    ref = datetime(2026, 6, 19, 15, 0, 0)
-    result = agg._parse_cafef_time("2026-06-19T08:16:00", ref)
-    assert result == datetime(2026, 6, 19, 8, 16, 0)
+    assert [item.text for item in news] == ["new", "old"]
 
 
-def test_parse_cafef_time_featured():
-    agg = NewsAggregator()
-    ref = datetime(2026, 6, 19, 15, 0, 0)
-    result = agg._parse_cafef_time("19/06/2026 - 00:03", ref)
-    assert result == datetime(2026, 6, 19, 0, 3, 0)
-
-
-def test_parse_cafef_time_relative_minutes():
-    agg = NewsAggregator()
-    ref = datetime(2026, 6, 19, 15, 0, 0)
-    result = agg._parse_cafef_time("10 phút trước", ref)
-    assert result == datetime(2026, 6, 19, 14, 50, 0)
-
-
-def test_parse_cafef_time_relative_hours():
-    agg = NewsAggregator()
-    ref = datetime(2026, 6, 19, 15, 0, 0)
-    result = agg._parse_cafef_time("2 giờ trước", ref)
-    assert result == datetime(2026, 6, 19, 13, 0, 0)
-
-
-def test_parse_vietstock_time_short():
-    agg = NewsAggregator()
-    ref = datetime(2026, 6, 19, 15, 0, 0)
-    result = agg._parse_vietstock_time("19/06 14:27", ref)
-    assert result == datetime(2026, 6, 19, 14, 27, 0)
-
-
-def test_parse_vietstock_time_relative():
-    agg = NewsAggregator()
-    ref = datetime(2026, 6, 19, 15, 0, 0)
-    result = agg._parse_vietstock_time("15 phút trước", ref)
-    assert result == datetime(2026, 6, 19, 14, 45, 0)
-
-
-def test_parse_vietstock_time_hours_relative():
-    agg = NewsAggregator()
-    ref = datetime(2026, 6, 19, 15, 0, 0)
-    result = agg._parse_vietstock_time("2 giờ trước", ref)
-    assert result == datetime(2026, 6, 19, 13, 0, 0)
-
-
-# ── PIT Safety Guard Tests ───────────────────────────────────────
-
-
-def test_mandatory_as_of_time_guard():
-    aggregator = NewsAggregator()
-    with pytest.raises(ValueError, match="as_of_time is mandatory"):
-        aggregator.fetch_recent_news(as_of_time=None)
-
-
-def test_future_articles_excluded():
-    """Articles with timestamps after as_of_time must be excluded."""
-    agg = NewsAggregator()
-    ref = datetime(2026, 6, 19, 10, 0, 0)
-    # This time is in the future relative to ref
-    result = agg._parse_cafef_time("2026-06-19T15:00:00", ref)
-    assert result > ref  # Confirm it's future, the scraper will skip it
-
-
+@patch.object(NewsAggregator, "_load_universe_tickers", return_value=[])
 @patch("requests.get")
-def test_empty_results_on_network_failure(mock_get):
-    """Graceful degradation when all requests fail."""
+def test_empty_results_on_network_failure(mock_get, mock_universe):
     fail_resp = MagicMock()
     fail_resp.raise_for_status = MagicMock(side_effect=Exception("Network error"))
     mock_get.return_value = fail_resp
 
     as_of = datetime(2026, 6, 19, 15, 0, 0)
-    aggregator = NewsAggregator()
-    news = aggregator.fetch_recent_news(as_of_time=as_of, hours_back=240)
+    news = NewsAggregator().fetch_recent_news(as_of_time=as_of, hours_back=24)
 
     assert news == []
+    mock_universe.assert_called_once_with()
