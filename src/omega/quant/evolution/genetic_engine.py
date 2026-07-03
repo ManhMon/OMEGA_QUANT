@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 DATE_CHUNK_CACHE_KEY = '__date_chunk_indices__'
 NEUTRALIZATION_CACHE_KEY = '__neutralization_cache__'
+HOF_ALPHA_CACHE_KEY = '__hof_alphas__'
 
 
 def _build_neutralization_cache(
@@ -439,6 +440,7 @@ class GPConfig:
     # -1 = use all CPUs, 1 = sequential fallback.
     n_jobs: int = -1
     random_seed: Optional[int] = None
+    use_fast_penalties: bool = True
 
 
 # =============================================================================
@@ -500,11 +502,15 @@ class GPIndividual:
             # Handle inf/nan
             alpha_series = np.nan_to_num(alpha_series, nan=0.0, posinf=0.0, neginf=0.0)
             
-            # Align with target and drop NaN
-            combined = pd.DataFrame({'alpha': alpha_series, 'target': target}).dropna()
-            
+            if getattr(config, 'use_fast_penalties', True):
+                valid_mask = pd.notna(target)
+                n_valid = int(np.count_nonzero(valid_mask))
+            else:
+                combined = pd.DataFrame({'alpha': alpha_series, 'target': target}).dropna()
+                n_valid = len(combined)
+
             # Observation threshold
-            if len(combined) < config.min_observations:
+            if n_valid < config.min_observations:
                 self.fitness = -np.inf
                 return
             
@@ -543,23 +549,16 @@ class GPIndividual:
             # Diversity penalty
             self.diversity_penalty = 0.0
             if hall_of_fame:
-                # Cache HoF alphas: re-execute only if not cached at this features id
-                _cache_key = id(features)
-                _cache = getattr(hall_of_fame, '_alpha_cache', None)
-                if _cache is None or _cache.get('key') != _cache_key:
-                    _cache = {'key': _cache_key, 'alphas': []}
+                hof_alphas = features.get(HOF_ALPHA_CACHE_KEY)
+                if hof_alphas is None:
+                    hof_alphas = []
                     for hof_individual in hall_of_fame:
                         try:
-                            hof_a = self._execute_tree(hof_individual.tree, features)
-                            hof_a = np.nan_to_num(hof_a, nan=0.0, posinf=0.0, neginf=0.0)
-                            _cache['alphas'].append(hof_a)
+                            hof_alpha = self._execute_tree(hof_individual.tree, features)
+                            hof_alphas.append(np.nan_to_num(hof_alpha, nan=0.0, posinf=0.0, neginf=0.0))
                         except Exception:
-                            _cache['alphas'].append(None)
-                    try:
-                        hall_of_fame._alpha_cache = _cache
-                    except Exception:
-                        pass
-                for hof_alpha in _cache['alphas']:
+                            hof_alphas.append(None)
+                for hof_alpha in hof_alphas:
                     if hof_alpha is None:
                         continue
                     try:
@@ -873,6 +872,20 @@ class GeneticEngine:
         GPIndividual.fast_path_hits = 0
         GPIndividual.fallback_hits = 0
 
+    def _build_hof_alpha_cache(
+        self,
+        hall_of_fame: List[GPIndividual],
+        features: Dict[str, np.ndarray],
+    ) -> List[Optional[np.ndarray]]:
+        cache: List[Optional[np.ndarray]] = []
+        for hof_individual in hall_of_fame:
+            try:
+                hof_alpha = hof_individual._execute_tree(hof_individual.tree, features)
+                cache.append(np.nan_to_num(hof_alpha, nan=0.0, posinf=0.0, neginf=0.0))
+            except Exception:
+                cache.append(None)
+        return cache
+
     def get_icir_stats(self) -> Dict[str, Any]:
         """Return ICIR fast-path telemetry.
 
@@ -1084,9 +1097,6 @@ class GeneticEngine:
         candidates = sorted(self.population, key=lambda ind: ind.fitness, reverse=True)
         self.hall_of_fame = []
         seen_expressions: set[str] = set()
-        # Invalidate diversity-penalty cache (HoF identity changes)
-        if hasattr(self.hall_of_fame, '_alpha_cache'):
-            self.hall_of_fame._alpha_cache = None
         for candidate in candidates:
             if len(self.hall_of_fame) >= self.config.hall_of_fame_size:
                 break
@@ -1146,6 +1156,11 @@ class GeneticEngine:
                 gen_features = features
                 gen_target = target
 
+            if self.config.use_fast_penalties and self.hall_of_fame:
+                if gen_features is features:
+                    gen_features = dict(gen_features)
+                gen_features[HOF_ALPHA_CACHE_KEY] = self._build_hof_alpha_cache(self.hall_of_fame, gen_features)
+
             if self.config.use_icir and '__date__' in gen_features:
                 gen_features = dict(gen_features)
                 gen_features[DATE_CHUNK_CACHE_KEY] = self._precompute_date_chunks(gen_features, gen_target)
@@ -1168,7 +1183,7 @@ class GeneticEngine:
                     individual.evaluate(gen_features, gen_target, self.hall_of_fame, self.config)
             else:
                 self.population = list(Parallel(
-                    n_jobs=self.config.n_jobs, prefer='threads', batch_size='auto'
+                    n_jobs=self.config.n_jobs, batch_size='auto'
                 )(
                     delayed(_evaluate_individual)(
                         ind, gen_features, gen_target, self.hall_of_fame, self.config

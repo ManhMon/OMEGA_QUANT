@@ -226,6 +226,7 @@ def main() -> int:
             early_stopping_rounds=10,
             tournament_diversity_weight=0.02,
             n_jobs=args.workers,
+            use_fast_penalties=True,
         )
 
         engine = GeneticEngine(config=config)
