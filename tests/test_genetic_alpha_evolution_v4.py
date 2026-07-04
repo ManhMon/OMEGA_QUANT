@@ -86,6 +86,32 @@ def test_v4_subtree_cache_keeps_signal_identical():
     assert len(features[v4.SUBTREE_CACHE_KEY]) == cache_size
 
 
+def test_v4_target_neutralized_cache_persists_on_main_features(monkeypatch):
+    features = _make_features()
+    features[ge.FOLD_STRUCTURE_CACHE_KEY] = ge._build_time_fold_structure(features["__date__"], 3)
+    signal = np.array([1, 2, 3, 4, 5, 6, 6, 5, 4, 3, 2, 1], dtype=float)
+    target = np.array([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6], dtype=float)
+    config = ge.GPConfig(use_time_fold_ir=True, time_folds=3, fold_ir_std_floor=0.03, neutralize_size_sector=True)
+    calls = 0
+    original = ge._neutralize_cross_section
+
+    def counting_neutralize(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(ge, "_neutralize_cross_section", counting_neutralize)
+
+    first = v4._compute_time_fold_ir_v4(signal, target, features, config, pre_neutralized=True)
+    second = v4._compute_time_fold_ir_v4(signal, target, features, config, pre_neutralized=True)
+
+    assert first == second
+    assert calls == len(features[ge.FOLD_STRUCTURE_CACHE_KEY])
+    assert set(features[v4.TARGET_NEUTRALIZED_CACHE_KEY]) == {
+        (id(target), fold_idx) for fold_idx in range(len(features[ge.FOLD_STRUCTURE_CACHE_KEY]))
+    }
+
+
 def test_build_feature_bank_matches_v3_feature_logic():
     frame = pd.DataFrame(
         {

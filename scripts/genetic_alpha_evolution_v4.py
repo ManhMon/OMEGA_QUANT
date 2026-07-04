@@ -137,10 +137,11 @@ def _compute_daily_ic_mean(alpha: np.ndarray, target: np.ndarray, features: dict
 
 def _neutralize_target_once(
     target_fold: np.ndarray,
+    features: dict[str, Any],
     fold_features: dict[str, np.ndarray],
     fold_cache_key: tuple[int, int],
 ) -> np.ndarray:
-    cache = _thread_safe_feature_cache(fold_features, TARGET_NEUTRALIZED_CACHE_KEY, dict)
+    cache = _thread_safe_feature_cache(features, TARGET_NEUTRALIZED_CACHE_KEY, dict)
     cached = cache.get(fold_cache_key)
     if cached is not None:
         return cached
@@ -219,7 +220,7 @@ def _compute_time_fold_ir_v4(
                     fold_features.get("__date__"),
                     neutralization_cache=fold_features.get(ge.NEUTRALIZATION_CACHE_KEY),
                 )
-            target_fold = _neutralize_target_once(target_fold, fold_features, (id(target), fold_idx))
+            target_fold = _neutralize_target_once(target_fold, features, fold_features, (id(target), fold_idx))
         ic_value = _compute_daily_ic_mean(alpha_fold, target_fold, fold_features)
         if np.isfinite(ic_value):
             fold_ics.append(float(ic_value))
@@ -315,13 +316,16 @@ def load_dataset(args: Any) -> pd.DataFrame:
 
 class GPIndividualV4(ORIGINAL_GPINDIVIDUAL):
     def _execute_tree(self, node: ge.GPNode, features: dict[str, np.ndarray]) -> np.ndarray:
+        lock = _thread_safe_feature_cache(features, SUBTREE_CACHE_LOCK_KEY, threading.Lock)
         cache = _thread_safe_feature_cache(features, SUBTREE_CACHE_KEY, dict)
         cache_key = (id(features.get(FEATURE_BANK_KEY, features.get("__date__"))), node.to_string())
-        cached = cache.get(cache_key)
+        with lock:
+            cached = cache.get(cache_key)
         if cached is not None:
             return cached.copy()
         result = super()._execute_tree(node, features)
-        cache[cache_key] = np.asarray(result, dtype=np.float64).copy()
+        with lock:
+            cache[cache_key] = np.asarray(result, dtype=np.float64).copy()
         return result
 
 
