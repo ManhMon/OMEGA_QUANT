@@ -1,12 +1,12 @@
 # Kế hoạch Triển khai GP Production Run & Tối ưu hóa Sửa lỗi Hệ thống
 
-Kế hoạch này khắc phục các lỗi logic của script GP và tích hợp, thực hiện chạy thực tế (Production Run) với cấu hình workflow hiện hành (3 rounds, 50 generations, 2 workers), và chạy kiểm định backtest trên toàn bộ tập dữ liệu lịch sử.
+Kế hoạch này khắc phục các lỗi logic của script GP và tích hợp, thực hiện chạy thực tế (Production Run) với cấu hình workflow hiện hành (3 rounds, population size 100, 25 generations, 2 workers), và chạy kiểm định backtest trên toàn bộ tập dữ liệu lịch sử.
 
 ## User Review Required
 
 > [!IMPORTANT]
 > - **Sửa đổi mã nguồn**: Việc sửa đổi logic sắp xếp, thứ tự validate, cảnh báo p-value, và xử lý crash ngày giao dịch trong [genetic_alpha_evolution_v3.py](file:///c:/Users/GHC/repos/OMEGA_QUANT/scripts/genetic_alpha_evolution_v3.py) sẽ được giao cho OpenCode (L2, Role 16) sửa đổi và kiểm thử trước.
-> - **Thời gian chạy Production**: Chạy 3 rounds x 50 generations với tập dữ liệu đầy đủ theo workflow hiện hành vẫn là tác vụ nặng và cần theo dõi log trong môi trường Windows local.
+> - **Thời gian chạy Production**: Chạy 3 rounds x population size 100 x 25 generations với tập dữ liệu đầy đủ theo workflow hiện hành vẫn là tác vụ nặng và cần theo dõi log trong môi trường Windows local.
 
 ## Open Questions
 
@@ -33,7 +33,7 @@ Không có câu hỏi mở.
 - **Lệnh thực thi**:
   ```powershell
   $env:PYTHONPATH = "C:\Users\GHC\repos\OMEGA_QUANT\src"
-  python scripts/genetic_alpha_evolution_v3.py --rounds 3 --population-size 150 --generations 50 --workers 2 --backend threads
+  python scripts/genetic_alpha_evolution_v3.py --rounds 3 --population-size 100 --generations 25 --workers 2 --backend threads
   ```
 
 ### 3. Tích hợp và Backtest

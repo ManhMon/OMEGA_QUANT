@@ -35,7 +35,7 @@ jobs:
         env:
           PYTHONPATH: src
         run: |
-          python scripts/genetic_alpha_evolution_v3.py --rounds 3 --population-size 150 --generations 50 --workers 2 --backend threads
+          python scripts/genetic_alpha_evolution_v3.py --rounds 3 --population-size 100 --generations 25 --workers 2 --backend threads
 
       - name: Upload GP artifacts
         if: always()
