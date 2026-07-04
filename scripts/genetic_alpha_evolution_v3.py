@@ -418,14 +418,16 @@ def run_gate6_validation(best_entry: dict[str, object], validation_df: pd.DataFr
     failing_regimes = [
         name for name, info in regime_ic.items() if info["ic"] is not None and float(info["ic"]) < GATE6_MIN_REGIME_IC
     ]
+    permutation_failed = permutation["p_value"] > GATE6_PERMUTATION_P_THRESHOLD
     feature_fingerprint = build_feature_fingerprint(validation_df)
     return {
         "feature_fingerprint": feature_fingerprint,
         "regime_ic": regime_ic,
         "failing_regimes": failing_regimes,
+        "permutation_failed": permutation_failed,
         "cost_metrics": cost_metrics,
         "permutation": permutation,
-        "passed": not failing_regimes,
+        "passed": not failing_regimes and not permutation_failed,
     }
 
 
@@ -485,6 +487,14 @@ def write_l2_report(report_path: Path, gate6_metrics: dict[str, Any] | None, ver
 
 def build_candidate_id(expression: str) -> str:
     return hashlib.sha1(expression.encode("utf-8")).hexdigest()[:12]
+
+
+def _searchsorted_date_index(dates: list[pd.Timestamp], split_date: pd.Timestamp) -> int:
+    if not dates:
+        raise ValueError("dates must not be empty")
+    date_array = np.asarray(dates, dtype="datetime64[ns]")
+    idx = int(np.searchsorted(date_array, np.datetime64(pd.Timestamp(split_date)), side="left"))
+    return min(max(idx, 0), len(dates) - 1)
 
 
 def select_ensemble(
@@ -563,13 +573,13 @@ def build_split_windows(dates: list[pd.Timestamp]) -> dict[str, tuple[pd.Timesta
     idx = UNIVERSE_LOOKBACK_TRADING_DAYS
     train = (dates[idx], dates[idx + train_len - 1])
     val_start = advance_trading_days(train[1], trading_calendar, EMBARGO_TRADING_DAYS + 1)
-    idx = dates.index(val_start)
+    idx = _searchsorted_date_index(dates, val_start)
     val = (dates[idx], dates[idx + val_len - 1])
     oos_start = advance_trading_days(val[1], trading_calendar, EMBARGO_TRADING_DAYS + 1)
-    idx = dates.index(oos_start)
+    idx = _searchsorted_date_index(dates, oos_start)
     oos = (dates[idx], dates[idx + oos_len - 1])
     lockbox_start = advance_trading_days(oos[1], trading_calendar, EMBARGO_TRADING_DAYS + 1)
-    idx = dates.index(lockbox_start)
+    idx = _searchsorted_date_index(dates, lockbox_start)
     lockbox = (dates[idx], dates[-1])
     return {"train": train, "val": val, "oos": oos, "lockbox": lockbox}
 
@@ -640,7 +650,8 @@ def export_gp_views(registry: DatabaseRegistry) -> list[dict[str, object]]:
                 "serialized_tree": metrics.get("serialized_tree"),
             }
         )
-    rows.sort(key=lambda row: (int(row["rank"]), str(row["version"])))
+    rows.sort(key=lambda row: str(row["version"]), reverse=True)
+    rows.sort(key=lambda row: int(row["rank"]))
     for directory in (STABLE_RESULTS_DIR, LEGACY_RESULTS_DIR):
         directory.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(rows).to_csv(directory / RESULTS_CSV_NAME, index=False)
@@ -665,6 +676,24 @@ def register_top_models(results_for_save: list[dict[str, object]], pit_embargo: 
     rows = export_gp_views(registry)
     print(f"Registered {registered} evolved models in .ly_state/session/conformal_registry.sqlite")
     return rows
+
+
+def validate_and_register_models(
+    results_for_save: list[dict[str, object]],
+    pit_embargo: datetime,
+    gate6_metrics: dict[str, Any],
+) -> list[dict[str, object]]:
+    permutation = gate6_metrics["permutation"]
+    if gate6_metrics["permutation_failed"]:
+        raise ValueError(
+            f"Gate 6 failed: permutation p-value {permutation['p_value']:.6f} > "
+            f"{GATE6_PERMUTATION_P_THRESHOLD:.2f}"
+        )
+    if gate6_metrics["failing_regimes"]:
+        raise ValueError(
+            f"Gate 6 failed: regime IC below {GATE6_MIN_REGIME_IC} for {gate6_metrics['failing_regimes']}"
+        )
+    return register_top_models(results_for_save, pit_embargo)
 
 
 def main() -> int:
@@ -774,13 +803,15 @@ def main() -> int:
                 hit = compute_hit_rate(val_signal, target_val, features_val)
                 if np.isnan(val_ic_daily):
                     continue
+                candidate_id = build_candidate_id(ind.tree.to_string())
                 all_hof.append(
                     {
-                        "id": build_candidate_id(ind.tree.to_string()),
+                        "id": candidate_id,
                         "round": round_id + 1,
                         "train_FoldIR": round(ind.ic_score, 4),
                         "train_IC_daily": round(train_ic_daily, 4),
                         "val_IC_daily": round(val_ic_daily, 4),
+                        "val_IC_daily_raw": float(val_ic_daily),
                         "oos_IC_daily": round(oos_ic_daily, 4),
                         "lockbox_IC_daily": round(lockbox_ic_daily, 4),
                         "hit_rate": round(float(hit), 4),
@@ -802,7 +833,7 @@ def main() -> int:
             except Exception:
                 continue
 
-    all_hof.sort(key=lambda x: x["val_IC_daily"], reverse=True)
+    all_hof.sort(key=lambda x: (-float(x["val_IC_daily_raw"]), str(x["id"])))
 
     print("\n" + "=" * 80)
     print("FINAL RESULTS - ALL ROUNDS COMBINED")
@@ -855,25 +886,6 @@ def main() -> int:
             f"LockboxIC_daily={ensemble_metrics['lockbox_IC_daily']:.4f}"
         )
 
-    if results_for_save:
-        pit_embargo = to_utc_aware(
-            datetime.combine(pd.Timestamp(train_df["date"].max()).date(), time.min)
-        )
-        exported_rows = register_top_models(results_for_save, pit_embargo)
-
-        best = exported_rows[0]
-        with (STABLE_RESULTS_DIR / BEST_JSON_NAME).open("w", encoding="utf-8") as handle:
-            json.dump(best, handle, indent=2)
-        with (LEGACY_RESULTS_DIR / BEST_JSON_NAME).open("w", encoding="utf-8") as handle:
-            json.dump(best, handle, indent=2)
-
-        print(
-            f"\nBest alpha: ValIC_daily={best['val_IC_daily']}, "
-            f"OOSIC_daily={best['oos_IC_daily']}, TrainFoldIR={best['train_FoldIR']}"
-        )
-        print(f"Expression: {best['expression']}")
-        print("Saved DB-backed GP views to data/stable/genetic_alpha_v3_results.csv")
-
     gate6_metrics = None
     if all_hof:
         gate6_metrics = run_gate6_validation(all_hof[0], validation_df)
@@ -895,12 +907,24 @@ def main() -> int:
             f"observed_ic={permutation['observed_ic']:.4f}, p_value={permutation['p_value']:.6f}, "
             f"null_mean={permutation['null_mean']:.6f}, null_std={permutation['null_std']:.6f}, seed={permutation['random_seed']}"
         )
-        if permutation["p_value"] > GATE6_PERMUTATION_P_THRESHOLD:
-            print(f"Gate 6 warning: permutation p-value > {GATE6_PERMUTATION_P_THRESHOLD:.2f}")
-        if gate6_metrics["failing_regimes"]:
-            raise ValueError(
-                f"Gate 6 failed: regime IC below {GATE6_MIN_REGIME_IC} for {gate6_metrics['failing_regimes']}"
-            )
+    if results_for_save:
+        pit_embargo = to_utc_aware(
+            datetime.combine(pd.Timestamp(train_df["date"].max()).date(), time.min)
+        )
+        exported_rows = validate_and_register_models(results_for_save, pit_embargo, gate6_metrics)
+
+        best = exported_rows[0]
+        with (STABLE_RESULTS_DIR / BEST_JSON_NAME).open("w", encoding="utf-8") as handle:
+            json.dump(best, handle, indent=2)
+        with (LEGACY_RESULTS_DIR / BEST_JSON_NAME).open("w", encoding="utf-8") as handle:
+            json.dump(best, handle, indent=2)
+
+        print(
+            f"\nBest alpha: ValIC_daily={best['val_IC_daily']}, "
+            f"OOSIC_daily={best['oos_IC_daily']}, TrainFoldIR={best['train_FoldIR']}"
+        )
+        print(f"Expression: {best['expression']}")
+        print("Saved DB-backed GP views to data/stable/genetic_alpha_v3_results.csv")
 
     write_l2_report(SESSION_DIR / GATE6_REPORT_NAME, gate6_metrics, verification)
 
