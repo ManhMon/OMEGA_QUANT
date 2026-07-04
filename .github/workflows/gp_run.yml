@@ -1,0 +1,52 @@
+name: GP Production Run
+
+on:
+  workflow_dispatch:
+
+jobs:
+  gp-production-run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Pipeline validation
+        env:
+          PYTHONPATH: src
+        run: |
+          python -m pytest tests/test_genetic_alpha_evolution_v3.py tests/test_genetic_alpha_evolution_v3_gate6.py tests/test_genetic_engine_liquidity.py
+          python smoke_test.py
+
+      - name: Run GP production job
+        env:
+          PYTHONPATH: src
+        run: |
+          python scripts/genetic_alpha_evolution_v3.py --rounds 3 --population-size 150 --generations 50 --workers 2 --backend threads
+
+      - name: Upload GP artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gp-production-run-artifacts
+          path: |
+            data/stable/genetic_alpha_v3_results.csv
+            data/stable/best_evolved_alpha_v3.json
+            data/phase35_results/best_evolved_alpha_v3.json
+            .ly_state/session/l2_role16_gp_gate6_20260704.md
+            .ly_state/session/conformal_registry.sqlite
+            data/stable/genetic_alpha_v3_models/
+          if-no-files-found: warn

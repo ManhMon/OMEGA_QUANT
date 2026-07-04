@@ -1,0 +1,7 @@
+joblib
+numpy
+pandas
+pyarrow
+pytest
+scipy
+SQLAlchemy
