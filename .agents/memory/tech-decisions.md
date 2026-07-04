@@ -93,3 +93,37 @@ updated: 2026-07-02
   - Traded-Value Filter: Added CLI parameters `--min-avg-volume` and `--avg-volume-window`. Volume checks evaluate `traded_value = close * volume` in VND and shift by ticker at $T-1$ for PIT safety.
   - Consistent Selection: Replaced raw daily validation IC ranking with engine-consistent scorer evaluating intervals under the same target residualization, liquidity masking, and fold IR constraints.
   - Sector Proxy Semantics: Documented in code comments that 'sector' refers to the dynamically-computed volume-quartile proxy rather than economic sectors.
+
+## 9. GP Production Run & Bug Fixes Plan (GP_PRODUCTION_RUN_PLAN_REVIEW_V4)
+- **Audit Date**: 2026-07-04
+- **Gate**: `GP_PRODUCTION_RUN_PLAN_REVIEW_V4` (Approved by Claude Code & Codex L3)
+- **Proposed Logic Modifications**:
+  - Stable Sort: Two-pass sorting in `export_gp_views` (`version` reverse-chronological primary, `rank` secondary).
+  - Validate-Before-Register: Refactored database model registration to validate top models against Gate 6 criteria *before* performing database/registry writes or exporting file artifacts.
+  - Hard p-value Constraint: Raise ValueError on hoán vị p-value > 0.05 to reject non-significant models.
+  - Searchsorted Split: Replace `dates.index(...)` with `np.searchsorted(dates, split_date)` plus index bounds guard.
+  - Unrounded Tie-break: Order candidates in `all_hof` using full-precision `val_IC_daily` with candidate ID tie-breaker.
+- **Verification & Acceptance Criteria**:
+  - Explicit schema validation assert on parquet outputs (`alpha_gp_00` column presence and non-null) before backtest.
+  - Conformal backtest trained on-the-fly per fold without direct model JSON loads as predictors.
+  - Mandatory regression tests: `test_stable_sorting`, `test_searchsorted_split_handling`, `test_no_register_on_gate_fail`, `test_p_value_hard_fail`, `test_unrounded_val_ic_sorting`.
+
+## 10. Future Performance Roadmap for GP Evolution Engine V4 (WorldQuant-Style Architecture)
+- **Core Speed Optimization Guidelines**:
+  1. **Feature Bank**: Precalculate all base time-series indicators (e.g. rolling std, rolling mean) globally and reuse them instead of executing time-series operators dynamically inside candidate trees.
+  2. **NumPy over Pandas**: Convert the entire data pipeline to NumPy contiguous arrays to bypass Pandas overhead and GIL-holding operations.
+  3. **Vectorization**: Eradicate all Python loops (especially per-date daily IC loops) by computing rank correlation cross-sectionally using vectorized matrix operations.
+  4. **Numba JIT**: Compile performance-critical rolling, ranking, and correlation operations to machine code using `@jit`.
+  5. **Batch Fitness**: Evaluate batches of 32–256 candidates simultaneously to maximize CPU pipeline utilization.
+  6. **Parallel CPU**: Run multiple independent worker processes using optimal parallel backends.
+  7. **Subtree Cache**: Implement memoization of identical sub-trees to avoid redundant computations within and across generations.
+  8. **Compile GP**: Translate symbolic GP trees directly to bytecode or stack-based representation before execution.
+  9. **Early Rejection**: Terminate evaluation of candidates that fail to pass basic sanity or initial fold requirements.
+  10. **Search Space Reduction**: Enforce strict constraints on tree depth and primitive vocabulary size.
+  11. **Island Model**: Distribute the population into independent islands running on separate nodes.
+  12. **Walk-forward**: Restrict evaluation and backtesting purely to relevant split windows.
+  13. **GPU Acceleration**: Offload large-scale matrix operations to GPU tensors (e.g. using CuPy or PyTorch), keeping I/O latency in mind.
+  14. **Distributed Computing**: Scale execution horizontally across multiple machines using Ray, Dask, or Apache Spark.
+- **WorldQuant-Style Pipeline Architecture**:
+  - `Feature Bank` $\rightarrow$ `GP Engine` $\rightarrow$ `IC Engine` $\rightarrow$ `Alpha Pool` $\rightarrow$ `Correlation Filter` $\rightarrow$ `Ensemble`.
+
