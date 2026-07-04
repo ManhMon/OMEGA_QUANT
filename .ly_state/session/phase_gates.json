@@ -1704,7 +1704,6 @@
     "l2_role_id": 16,
     "l2_role_name": "machine-learning-engineer",
     "l3_session_id": "none",
-    "l3_session_key": "role21_gp_v4_plan_review_20260704",
     "l3_role_id": 21,
     "l3_role_name": "code-reviewer",
     "audit_report_path": ".ly_state/session/audit_reports/role21_gp_v4_plan_review_20260704.md",
@@ -1717,9 +1716,10 @@
       ".agents/skills/clean-code/SKILL.md",
       ".agents/skills/testing-patterns/SKILL.md",
       ".agents/skills/audit-cycle/SKILL.md",
-      ".agents/skills/omega-sod/SKILL.md"
+      ".agents/skills/omega-sod/SKILL.md",
+      ".ly_state/session/gp_v4_optimization_plan.md"
     ],
-    "forbidden_path_scan": "No authoritative reliance on forbidden paths; scoped scan found forbidden path strings only in repo-local SOD contract docs and V4 plan forbidden-path evidence explicitly marked non-authoritative. No forbidden-path files were read or written.",
-    "timestamp": "2026-07-04T21:55:00+07:00"
+    "forbidden_path_scan": "No authoritative reliance on forbidden paths; scoped plan scan found only declared scan-evidence strings: Antigravity scratch false, OpenClaw skills false, C:\\Users\\GHC\\.agents true but explicitly non-authoritative and not read, Codex memories false.",
+    "timestamp": "2026-07-04T21:40:00+07:00"
   }
 }
