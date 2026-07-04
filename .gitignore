@@ -26,3 +26,9 @@ pytest_temp/
 Thumbs.db
 data/precomputed_alpha_features.parquet
 *.parquet
+
+# Generated GP Evolution models and results
+data/stable/genetic_alpha_v3_models/
+data/stable/genetic_alpha_v3_results.*
+data/stable/best_evolved_alpha_v3.json
+data/phase35_results/
