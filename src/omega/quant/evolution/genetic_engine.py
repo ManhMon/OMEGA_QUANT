@@ -253,16 +253,26 @@ def _compute_time_fold_ir(
                 fold_features.get('__date__'),
                 neutralization_cache=neutralization_cache,
             )
-        valid = np.isfinite(alpha_fold) & np.isfinite(target_fold)
-        if np.count_nonzero(valid) < 2:
+        fold_date_arr = fold_features.get('__date__')
+        if fold_date_arr is None:
             continue
-        ic_value, _ = spearmanr(alpha_fold[valid], target_fold[valid])
-        if not np.isnan(ic_value):
-            fold_ics.append(float(ic_value))
+        fold_date_arr = np.asarray(fold_date_arr)
+        daily_ics: List[float] = []
+        for current_date in pd.unique(fold_date_arr[pd.notna(fold_date_arr)]):
+            date_mask = fold_date_arr == current_date
+            valid = date_mask & np.isfinite(alpha_fold) & np.isfinite(target_fold)
+            if np.count_nonzero(valid) <= 5:
+                continue
+            ic_value, _ = spearmanr(alpha_fold[valid], target_fold[valid])
+            if not np.isnan(ic_value):
+                daily_ics.append(float(ic_value))
+        if daily_ics:
+            fold_ics.append(float(np.mean(daily_ics)))
 
     if len(fold_ics) < 2:
         return 0.0
-    result = float(np.mean(fold_ics) / max(float(np.std(fold_ics, ddof=1)), float(config.fold_ir_std_floor)))
+    raw_ir = float(np.mean(fold_ics) / max(float(np.std(fold_ics, ddof=1)), float(config.fold_ir_std_floor)))
+    result = float(np.clip(raw_ir, -2.0, 2.0))
     logger.debug(
         "_compute_time_fold_ir dt=%.4fs folds=%d dates=%d cache=%s result=%.6f",
         time.perf_counter() - t0,
@@ -1206,7 +1216,12 @@ class GeneticEngine:
         if depth >= self.config.max_depth - 1:
             return GPNode(operator='terminal', value=random.choice(self.feature_names))
         
-        op_type = random.choice(['unary', 'binary', 'ts'])
+        op_types = ['binary']
+        if self.config.unary_ops:
+            op_types.append('unary')
+        if self.config.ts_ops:
+            op_types.append('ts')
+        op_type = random.choice(op_types)
         
         if op_type == 'unary':
             op = random.choice(self.config.unary_ops)

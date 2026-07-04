@@ -248,6 +248,22 @@ class TestFilters(unittest.TestCase):
         # Fallback to sorted universe is expected
         self.assertGreater(len(selected), 0)
 
+    def test_select_pit_universe_for_window_uses_only_prior_history(self):
+        loader = self._make_loader(min_history=5)
+        df = _make_synthetic_df(n_dates=320, n_tickers=10, seed=42)
+        start_date = df['date'].sort_values().iloc[260]
+        end_date = df['date'].sort_values().iloc[300]
+        window_df, evidence = loader.select_pit_universe_for_window(
+            df,
+            start_date,
+            end_date,
+            top_n=5,
+            lookback_trading_days=60,
+        )
+        self.assertTrue((window_df['date'] >= start_date).all())
+        self.assertTrue((window_df['date'] <= end_date).all())
+        self.assertEqual(evidence['history_end_exclusive'], str(start_date.date()))
+
 
 # ---------------------------------------------------------------------------
 # Tests: Static behavior preserved (default disabled)

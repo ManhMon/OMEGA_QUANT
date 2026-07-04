@@ -135,6 +135,20 @@ def test_fix_c_fold_structure_cache_matches_recomputed_ir():
     assert fast == pytest.approx(slow, abs=1e-12)
 
 
+def test_time_fold_ir_uses_daily_cs_ic_and_cap():
+    dates = np.repeat(np.arange(16), 6)
+    alpha = np.tile(np.arange(6, dtype=float), 16)
+    target = alpha.copy()
+    features = {
+        'f1': alpha,
+        '__date__': dates,
+        '__log_market_cap__': np.tile(np.linspace(1.0, 2.0, 6), 16),
+        '__sector__': np.tile(np.arange(6) % 3, 16),
+    }
+    config = GPConfig(use_time_fold_ir=True, time_folds=8, fold_ir_std_floor=0.03)
+    assert _compute_time_fold_ir(alpha, target, features, config) == pytest.approx(2.0)
+
+
 def test_fix_b_hof_corr_cache_scoped_by_generation_membership():
     alpha = np.linspace(-1.0, 1.0, 128)
     target = alpha + 0.2

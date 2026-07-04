@@ -426,6 +426,40 @@ class Phase35DataLoader:
         self._rolling_universe_evidence = [ev for _, _, ev in result]
         return result
 
+    def select_pit_universe_for_window(
+        self,
+        full_df: pd.DataFrame,
+        start_date: Any,
+        end_date: Any,
+        *,
+        top_n: int = 30,
+        lookback_trading_days: int = 252,
+    ) -> Tuple[pd.DataFrame, Dict[str, Any]]:
+        """Select PIT-safe universe for a window using only prior trading days."""
+        start_ts = pd.Timestamp(start_date)
+        end_ts = pd.Timestamp(end_date)
+        unique_dates = np.sort(full_df['date'].dropna().unique())
+        history_dates = unique_dates[unique_dates < start_ts.to_datetime64()]
+        history_dates = history_dates[-lookback_trading_days:]
+        history_df = full_df[full_df['date'].isin(history_dates)].copy()
+        selected, evidence = self.select_rolling_universe(history_df, top_n=top_n)
+        window_df = full_df[
+            (full_df['date'] >= start_ts) &
+            (full_df['date'] <= end_ts) &
+            (full_df['ticker'].isin(selected))
+        ].copy()
+        evidence = dict(evidence)
+        evidence.update({
+            'window_start': str(start_ts.date()),
+            'window_end': str(end_ts.date()),
+            'history_end_exclusive': str(start_ts.date()),
+            'lookback_trading_days': int(lookback_trading_days),
+            'window_rows': int(len(window_df)),
+            'window_symbols': int(window_df['ticker'].nunique()),
+            'pit_safe': True,
+        })
+        return window_df, evidence
+
     def get_rolling_universe_evidence(self) -> List[Dict[str, Any]]:
         """GATE: PIT_ROLLING_UNIVERSE_AND_VECTOR_DIMS_20260615
 
@@ -733,7 +767,7 @@ class Phase35DataLoader:
         self,
         start_date: str = "2015-01-01",
         end_date: str = "2026-05-08",
-        top_n_symbols: int = 30,
+        top_n_symbols: Optional[int] = 30,
         forward_horizons: List[int] = [1, 3, 5],
         enable_data_cleaning: bool = True,
         normalization_mode: str = "expanding_zscore",
@@ -782,9 +816,10 @@ class Phase35DataLoader:
         # Apply filters
         df = self.apply_filters(df)
 
-        # Select top symbols
-        top_symbols = self.get_top_symbols(df, top_n=top_n_symbols, metric='value')
-        df = df[df['ticker'].isin(top_symbols)].copy()
+        # Select top symbols when requested.
+        if top_n_symbols is not None and top_n_symbols > 0:
+            top_symbols = self.get_top_symbols(df, top_n=top_n_symbols, metric='value')
+            df = df[df['ticker'].isin(top_symbols)].copy()
 
         # GATE: DEFAULT_DATA_HYGIENE_NORMALIZATION_20260614
         # Apply normalization (after filter, before forward returns)

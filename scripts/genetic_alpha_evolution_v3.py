@@ -33,6 +33,8 @@ RESULTS_CSV_NAME = "genetic_alpha_v3_results.csv"
 RESULTS_JSONL_NAME = "genetic_alpha_v3_results.jsonl"
 BEST_JSON_NAME = "best_evolved_alpha_v3.json"
 TOP_K = 15
+EMBARGO_TRADING_DAYS = 5
+UNIVERSE_LOOKBACK_TRADING_DAYS = 252
 FEATURE_COLS = [
     "returns_1d",
     "returns_5d",
@@ -76,7 +78,7 @@ def load_dataset() -> pd.DataFrame:
     df = loader.load_and_prepare(
         start_date="2015-01-05",
         end_date="2026-05-14",
-        top_n_symbols=100,
+        top_n_symbols=None,
         forward_horizons=[1, 3, 5, 10],
     )
     df = df.sort_values(["ticker", "date"]).copy()
@@ -96,20 +98,75 @@ def load_dataset() -> pd.DataFrame:
     return df.dropna(subset=FEATURE_COLS + ["fwd_ret_5", "__log_market_cap__", "__sector__"])
 
 
+def compute_daily_cs_ic(signal: np.ndarray, target: np.ndarray, dates: np.ndarray) -> float:
+    daily_ics: list[float] = []
+    for current_date in pd.unique(pd.Series(dates).dropna()):
+        mask = dates == current_date
+        valid = mask & np.isfinite(signal) & np.isfinite(target)
+        if np.count_nonzero(valid) <= 5:
+            continue
+        ic_value, _ = spearmanr(signal[valid], target[valid])
+        if not np.isnan(ic_value):
+            daily_ics.append(float(ic_value))
+    return float(np.mean(daily_ics)) if daily_ics else 0.0
+
+
+def build_split_windows(dates: list[pd.Timestamp]) -> dict[str, tuple[pd.Timestamp, pd.Timestamp]]:
+    if len(dates) <= UNIVERSE_LOOKBACK_TRADING_DAYS + (3 * EMBARGO_TRADING_DAYS) + 30:
+        raise ValueError("Not enough trading days for PIT train/val/oos/lockbox split")
+    usable = len(dates) - UNIVERSE_LOOKBACK_TRADING_DAYS - (3 * EMBARGO_TRADING_DAYS)
+    train_len = max(int(usable * 0.55), 20)
+    val_len = max(int(usable * 0.15), 10)
+    oos_len = max(int(usable * 0.15), 10)
+    lockbox_len = usable - train_len - val_len - oos_len
+    if lockbox_len <= 0:
+        raise ValueError("Lockbox window collapsed; increase data range")
+
+    idx = UNIVERSE_LOOKBACK_TRADING_DAYS
+    train = (dates[idx], dates[idx + train_len - 1])
+    idx += train_len + EMBARGO_TRADING_DAYS
+    val = (dates[idx], dates[idx + val_len - 1])
+    idx += val_len + EMBARGO_TRADING_DAYS
+    oos = (dates[idx], dates[idx + oos_len - 1])
+    idx += oos_len + EMBARGO_TRADING_DAYS
+    lockbox = (dates[idx], dates[-1])
+    return {"train": train, "val": val, "oos": oos, "lockbox": lockbox}
+
+
+def build_pit_splits(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    loader = Phase35DataLoader(warehouse_path="data/market_2015_now.parquet")
+    unique_dates = [pd.Timestamp(date) for date in sorted(df["date"].unique())]
+    windows = build_split_windows(unique_dates)
+    split_frames: dict[str, pd.DataFrame] = {}
+    for split_name, (start_date, end_date) in windows.items():
+        split_df, _evidence = loader.select_pit_universe_for_window(
+            df,
+            start_date,
+            end_date,
+            top_n=100,
+            lookback_trading_days=UNIVERSE_LOOKBACK_TRADING_DAYS,
+        )
+        split_frames[split_name] = split_df.sort_values(["ticker", "date"]).copy()
+    return split_frames
+
+
 def build_registry_payload(entry: dict[str, object], artifact_path: Path, version: str, pit_embargo: datetime) -> dict[str, object]:
     return {
         "name": f"genetic_alpha_v3_rank_{int(entry['rank']):02d}",
         "version": version,
         "path": str(artifact_path),
         "status": "ready",
-        "metrics": {
-            "rank": entry["rank"],
-            "round": entry["round"],
-            "train_IC": entry["train_IC"],
-            "test_IC": entry["test_IC"],
-            "hit_rate": entry["hit_rate"],
-            "expression": entry["expression"],
-            "serialized_tree": entry["serialized_tree"],
+            "metrics": {
+                "rank": entry["rank"],
+                "round": entry["round"],
+                "train_FoldIR": entry["train_FoldIR"],
+                "train_IC_daily": entry["train_IC_daily"],
+                "val_IC_daily": entry["val_IC_daily"],
+                "oos_IC_daily": entry["oos_IC_daily"],
+                "lockbox_IC_daily": entry["lockbox_IC_daily"],
+                "hit_rate": entry["hit_rate"],
+                "expression": entry["expression"],
+                "serialized_tree": entry["serialized_tree"],
         },
         "pit_embargo": pit_embargo,
     }
@@ -130,8 +187,11 @@ def export_gp_views(registry: DatabaseRegistry) -> list[dict[str, object]]:
                 "pit_embargo": record.pit_embargo.isoformat(),
                 "rank": metrics.get("rank"),
                 "round": metrics.get("round"),
-                "train_IC": metrics.get("train_IC"),
-                "test_IC": metrics.get("test_IC"),
+                "train_FoldIR": metrics.get("train_FoldIR"),
+                "train_IC_daily": metrics.get("train_IC_daily"),
+                "val_IC_daily": metrics.get("val_IC_daily"),
+                "oos_IC_daily": metrics.get("oos_IC_daily"),
+                "lockbox_IC_daily": metrics.get("lockbox_IC_daily"),
                 "hit_rate": metrics.get("hit_rate"),
                 "expression": metrics.get("expression"),
                 "serialized_tree": metrics.get("serialized_tree"),
@@ -172,28 +232,41 @@ def main() -> int:
     print("=" * 80)
 
     df = load_dataset()
-    dates = sorted(df["date"].unique())
-    split_idx = int(len(dates) * 0.7)
-    train_df = df[df["date"].isin(dates[:split_idx])]
-    test_df = df[df["date"].isin(dates[split_idx:])]
+    split_frames = build_pit_splits(df)
+    train_df = split_frames["train"]
+    val_df = split_frames["val"]
+    oos_df = split_frames["oos"]
+    lockbox_df = split_frames["lockbox"]
 
     print(f"Features: {len(FEATURE_COLS)} ({FEATURE_COLS})")
-    print(f"Train: {len(train_df)} rows, Test: {len(test_df)} rows")
+    print(
+        f"Train/Val/OOS/Lockbox: {len(train_df)}/{len(val_df)}/{len(oos_df)}/{len(lockbox_df)} rows"
+    )
 
     features_train = {col: train_df[col].values for col in FEATURE_COLS}
     features_train["__date__"] = train_df["date"].values
     features_train["__log_market_cap__"] = train_df["__log_market_cap__"].values
     features_train["__sector__"] = train_df["__sector__"].values
     target_train = train_df["fwd_ret_5"].values
-    features_test = {col: test_df[col].values for col in FEATURE_COLS}
-    features_test["__date__"] = test_df["date"].values
-    features_test["__log_market_cap__"] = test_df["__log_market_cap__"].values
-    features_test["__sector__"] = test_df["__sector__"].values
-    target_test = test_df["fwd_ret_5"].values
+    features_val = {col: val_df[col].values for col in FEATURE_COLS}
+    features_val["__date__"] = val_df["date"].values
+    features_val["__log_market_cap__"] = val_df["__log_market_cap__"].values
+    features_val["__sector__"] = val_df["__sector__"].values
+    target_val = val_df["fwd_ret_5"].values
+    features_oos = {col: oos_df[col].values for col in FEATURE_COLS}
+    features_oos["__date__"] = oos_df["date"].values
+    features_oos["__log_market_cap__"] = oos_df["__log_market_cap__"].values
+    features_oos["__sector__"] = oos_df["__sector__"].values
+    target_oos = oos_df["fwd_ret_5"].values
+    features_lockbox = {col: lockbox_df[col].values for col in FEATURE_COLS}
+    features_lockbox["__date__"] = lockbox_df["date"].values
+    features_lockbox["__log_market_cap__"] = lockbox_df["__log_market_cap__"].values
+    features_lockbox["__sector__"] = lockbox_df["__sector__"].values
+    target_lockbox = lockbox_df["fwd_ret_5"].values
     ortho_baseline_set = {col: features_train[col] for col in ORTHO_BASELINE_COLS}
 
     all_hof: list[dict[str, object]] = []
-    best_test_ic = -999.0
+    best_val_ic = -999.0
 
     for round_id in range(args.rounds):
         seed = round_id * 42
@@ -214,8 +287,8 @@ def main() -> int:
             terminal_prob=0.4,
             use_icir=False,
             use_time_fold_ir=True,
-            time_folds=3,
-            fold_ir_std_floor=0.01,
+            time_folds=8,
+            fold_ir_std_floor=0.03,
             neutralize_size_sector=True,
             icir_window=20,
             ortho_baseline_set=ortho_baseline_set,
@@ -227,6 +300,8 @@ def main() -> int:
             tournament_diversity_weight=0.02,
             n_jobs=args.workers,
             use_fast_penalties=True,
+            unary_ops=[op for op in GPConfig().unary_ops if op not in ["rank", "cs_rank", "cs_zscore"]],
+            ts_ops=[],
         )
 
         engine = GeneticEngine(config=config)
@@ -236,32 +311,43 @@ def main() -> int:
 
         for ind in hof[:5]:
             try:
-                signal = ind._execute_tree(ind.tree, features_test)
-                signal = np.nan_to_num(signal, nan=0.0, posinf=0.0, neginf=0.0)
-                if np.std(signal) < 1e-6:
+                train_signal = np.nan_to_num(ind._execute_tree(ind.tree, features_train), nan=0.0, posinf=0.0, neginf=0.0)
+                val_signal = np.nan_to_num(ind._execute_tree(ind.tree, features_val), nan=0.0, posinf=0.0, neginf=0.0)
+                oos_signal = np.nan_to_num(ind._execute_tree(ind.tree, features_oos), nan=0.0, posinf=0.0, neginf=0.0)
+                lockbox_signal = np.nan_to_num(ind._execute_tree(ind.tree, features_lockbox), nan=0.0, posinf=0.0, neginf=0.0)
+                if min(np.std(train_signal), np.std(val_signal), np.std(oos_signal), np.std(lockbox_signal)) < 1e-6:
                     continue
-                ic, _ = spearmanr(signal, target_test)
-                hit = (np.sign(signal) == np.sign(target_test)).mean()
-                if np.isnan(ic):
+                train_ic_daily = compute_daily_cs_ic(train_signal, target_train, train_df["date"].values)
+                val_ic_daily = compute_daily_cs_ic(val_signal, target_val, val_df["date"].values)
+                oos_ic_daily = compute_daily_cs_ic(oos_signal, target_oos, oos_df["date"].values)
+                lockbox_ic_daily = compute_daily_cs_ic(lockbox_signal, target_lockbox, lockbox_df["date"].values)
+                hit = (np.sign(val_signal) == np.sign(target_val)).mean()
+                if np.isnan(val_ic_daily):
                     continue
                 all_hof.append(
                     {
                         "round": round_id + 1,
-                        "train_IC": round(ind.ic_score, 4),
-                        "test_IC": round(float(ic), 4),
+                        "train_FoldIR": round(ind.ic_score, 4),
+                        "train_IC_daily": round(train_ic_daily, 4),
+                        "val_IC_daily": round(val_ic_daily, 4),
+                        "oos_IC_daily": round(oos_ic_daily, 4),
+                        "lockbox_IC_daily": round(lockbox_ic_daily, 4),
                         "hit_rate": round(float(hit), 4),
                         "expr": ind.tree.to_string()[:120],
                         "expression": ind.tree.to_string(),
                         "serialized_tree": repr(ind.tree),
                     }
                 )
-                if ic > best_test_ic:
-                    best_test_ic = float(ic)
-                    print(f"  NEW BEST: TestIC={ic:.4f}, TrainIC={ind.ic_score:.4f}")
+                if val_ic_daily > best_val_ic:
+                    best_val_ic = float(val_ic_daily)
+                    print(
+                        f"  NEW BEST: ValIC_daily={val_ic_daily:.4f}, "
+                        f"TrainFoldIR={ind.ic_score:.4f}, OOSIC_daily={oos_ic_daily:.4f}"
+                    )
             except Exception:
                 continue
 
-    all_hof.sort(key=lambda x: x["test_IC"], reverse=True)
+    all_hof.sort(key=lambda x: x["val_IC_daily"], reverse=True)
 
     print("\n" + "=" * 80)
     print("FINAL RESULTS - ALL ROUNDS COMBINED")
@@ -270,16 +356,20 @@ def main() -> int:
     results_for_save: list[dict[str, object]] = []
     for i, entry in enumerate(all_hof[:TOP_K]):
         print(
-            f"  #{i + 1}: Round{entry['round']} TrainIC={entry['train_IC']:.4f}, "
-            f"TestIC={entry['test_IC']:.4f}, Hit={entry['hit_rate']:.4f}"
+            f"  #{i + 1}: Round{entry['round']} TrainFoldIR={entry['train_FoldIR']:.4f}, "
+            f"ValIC_daily={entry['val_IC_daily']:.4f}, OOSIC_daily={entry['oos_IC_daily']:.4f}, "
+            f"LockboxIC_daily={entry['lockbox_IC_daily']:.4f}, Hit={entry['hit_rate']:.4f}"
         )
         print(f"       {entry['expr'][:80]}")
         results_for_save.append(
             {
                 "rank": i + 1,
                 "round": entry["round"],
-                "train_IC": entry["train_IC"],
-                "test_IC": entry["test_IC"],
+                "train_FoldIR": entry["train_FoldIR"],
+                "train_IC_daily": entry["train_IC_daily"],
+                "val_IC_daily": entry["val_IC_daily"],
+                "oos_IC_daily": entry["oos_IC_daily"],
+                "lockbox_IC_daily": entry["lockbox_IC_daily"],
                 "hit_rate": entry["hit_rate"],
                 "expression": entry["expression"],
                 "serialized_tree": entry["serialized_tree"],
@@ -298,7 +388,10 @@ def main() -> int:
         with (LEGACY_RESULTS_DIR / BEST_JSON_NAME).open("w", encoding="utf-8") as handle:
             json.dump(best, handle, indent=2)
 
-        print(f"\nBest alpha: TestIC={best['test_IC']}, TrainIC={best['train_IC']}")
+        print(
+            f"\nBest alpha: ValIC_daily={best['val_IC_daily']}, "
+            f"OOSIC_daily={best['oos_IC_daily']}, TrainFoldIR={best['train_FoldIR']}"
+        )
         print(f"Expression: {best['expression']}")
         print("Saved DB-backed GP views to data/stable/genetic_alpha_v3_results.csv")
 
