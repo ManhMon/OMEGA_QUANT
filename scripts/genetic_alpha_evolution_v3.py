@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -45,6 +46,9 @@ FEATURE_COLS = [
     "oc_range_cs_z",
 ]
 ORTHO_BASELINE_COLS = ["returns_1d", "returns_5d", "vol_ratio", "hl_range", "oc_range"]
+ENSEMBLE_VAL_IC_THRESHOLD = 0.015
+ENSEMBLE_MAX_CORR = 0.6
+ENSEMBLE_MAX_ALPHAS = 10
 
 
 def _cs_zscore_by_date(values: pd.Series, dates: pd.Series) -> pd.Series:
@@ -111,6 +115,71 @@ def compute_daily_cs_ic(signal: np.ndarray, target: np.ndarray, dates: np.ndarra
     return float(np.mean(daily_ics)) if daily_ics else 0.0
 
 
+def build_candidate_id(expression: str) -> str:
+    return hashlib.sha1(expression.encode("utf-8")).hexdigest()[:12]
+
+
+def select_ensemble(
+    candidates: list[dict[str, object]],
+    val_ic_threshold: float = ENSEMBLE_VAL_IC_THRESHOLD,
+    max_corr: float = ENSEMBLE_MAX_CORR,
+    max_alphas: int = ENSEMBLE_MAX_ALPHAS,
+) -> tuple[list[dict[str, object]], np.ndarray]:
+    pool = [candidate for candidate in candidates if float(candidate["val_IC_daily"]) >= val_ic_threshold]
+    pool.sort(key=lambda candidate: float(candidate["val_IC_daily"]), reverse=True)
+    if not pool:
+        return [], np.array([], dtype=float)
+
+    selected: list[dict[str, object]] = []
+    for candidate in pool:
+        if len(selected) >= max_alphas:
+            break
+        signal = np.asarray(candidate["val_signal"], dtype=float)
+        is_diverse = True
+        for existing in selected:
+            existing_signal = np.asarray(existing["val_signal"], dtype=float)
+            corr = np.corrcoef(signal, existing_signal)[0, 1]
+            if np.isnan(corr):
+                continue
+            if abs(corr) > max_corr:
+                is_diverse = False
+                break
+        if is_diverse:
+            selected.append(candidate)
+
+    if not selected:
+        selected = [pool[0]]
+
+    val_ics = np.array([float(candidate["val_IC_daily"]) for candidate in selected], dtype=float)
+    ic_weights = val_ics / val_ics.sum()
+    equal_weights = np.full(len(selected), 1.0 / len(selected), dtype=float)
+    weights = 0.5 * ic_weights + 0.5 * equal_weights
+    return selected, weights / weights.sum()
+
+
+def evaluate_ensemble(
+    selected: list[dict[str, object]],
+    weights: np.ndarray,
+    oos_target: np.ndarray,
+    lockbox_target: np.ndarray,
+    oos_dates: np.ndarray,
+    lockbox_dates: np.ndarray,
+) -> dict[str, float]:
+    if not selected or len(weights) != len(selected):
+        return {"oos_IC_daily": 0.0, "lockbox_IC_daily": 0.0}
+
+    oos_ensemble = np.zeros_like(oos_target, dtype=float)
+    lockbox_ensemble = np.zeros_like(lockbox_target, dtype=float)
+    for candidate, weight in zip(selected, weights):
+        oos_ensemble += float(weight) * np.asarray(candidate["oos_signal"], dtype=float)
+        lockbox_ensemble += float(weight) * np.asarray(candidate["lockbox_signal"], dtype=float)
+
+    return {
+        "oos_IC_daily": compute_daily_cs_ic(oos_ensemble, oos_target, oos_dates),
+        "lockbox_IC_daily": compute_daily_cs_ic(lockbox_ensemble, lockbox_target, lockbox_dates),
+    }
+
+
 def build_split_windows(dates: list[pd.Timestamp]) -> dict[str, tuple[pd.Timestamp, pd.Timestamp]]:
     if len(dates) <= UNIVERSE_LOOKBACK_TRADING_DAYS + (3 * EMBARGO_TRADING_DAYS) + 30:
         raise ValueError("Not enough trading days for PIT train/val/oos/lockbox split")
@@ -165,6 +234,7 @@ def build_registry_payload(entry: dict[str, object], artifact_path: Path, versio
                 "oos_IC_daily": entry["oos_IC_daily"],
                 "lockbox_IC_daily": entry["lockbox_IC_daily"],
                 "hit_rate": entry["hit_rate"],
+                "id": entry["id"],
                 "expression": entry["expression"],
                 "serialized_tree": entry["serialized_tree"],
         },
@@ -193,6 +263,7 @@ def export_gp_views(registry: DatabaseRegistry) -> list[dict[str, object]]:
                 "oos_IC_daily": metrics.get("oos_IC_daily"),
                 "lockbox_IC_daily": metrics.get("lockbox_IC_daily"),
                 "hit_rate": metrics.get("hit_rate"),
+                "id": metrics.get("id"),
                 "expression": metrics.get("expression"),
                 "serialized_tree": metrics.get("serialized_tree"),
             }
@@ -326,6 +397,7 @@ def main() -> int:
                     continue
                 all_hof.append(
                     {
+                        "id": build_candidate_id(ind.tree.to_string()),
                         "round": round_id + 1,
                         "train_FoldIR": round(ind.ic_score, 4),
                         "train_IC_daily": round(train_ic_daily, 4),
@@ -336,6 +408,9 @@ def main() -> int:
                         "expr": ind.tree.to_string()[:120],
                         "expression": ind.tree.to_string(),
                         "serialized_tree": repr(ind.tree),
+                        "val_signal": val_signal.copy(),
+                        "oos_signal": oos_signal.copy(),
+                        "lockbox_signal": lockbox_signal.copy(),
                     }
                 )
                 if val_ic_daily > best_val_ic:
@@ -354,6 +429,7 @@ def main() -> int:
     print("=" * 80)
 
     results_for_save: list[dict[str, object]] = []
+    selected_ensemble, ensemble_weights = select_ensemble(all_hof)
     for i, entry in enumerate(all_hof[:TOP_K]):
         print(
             f"  #{i + 1}: Round{entry['round']} TrainFoldIR={entry['train_FoldIR']:.4f}, "
@@ -363,6 +439,7 @@ def main() -> int:
         print(f"       {entry['expr'][:80]}")
         results_for_save.append(
             {
+                "id": entry["id"],
                 "rank": i + 1,
                 "round": entry["round"],
                 "train_FoldIR": entry["train_FoldIR"],
@@ -371,9 +448,31 @@ def main() -> int:
                 "oos_IC_daily": entry["oos_IC_daily"],
                 "lockbox_IC_daily": entry["lockbox_IC_daily"],
                 "hit_rate": entry["hit_rate"],
+                "val_signal": np.asarray(entry["val_signal"], dtype=float).tolist(),
+                "oos_signal": np.asarray(entry["oos_signal"], dtype=float).tolist(),
+                "lockbox_signal": np.asarray(entry["lockbox_signal"], dtype=float).tolist(),
                 "expression": entry["expression"],
                 "serialized_tree": entry["serialized_tree"],
             }
+        )
+
+    if selected_ensemble:
+        ensemble_metrics = evaluate_ensemble(
+            selected=selected_ensemble,
+            weights=ensemble_weights,
+            oos_target=target_oos,
+            lockbox_target=target_lockbox,
+            oos_dates=oos_df["date"].values,
+            lockbox_dates=lockbox_df["date"].values,
+        )
+        ensemble_ids = [candidate["id"] for candidate in selected_ensemble]
+        print(
+            f"Ensemble: size={len(selected_ensemble)}, ids={ensemble_ids}, "
+            f"weights={np.round(ensemble_weights, 4).tolist()}"
+        )
+        print(
+            f"Ensemble report-only: OOSIC_daily={ensemble_metrics['oos_IC_daily']:.4f}, "
+            f"LockboxIC_daily={ensemble_metrics['lockbox_IC_daily']:.4f}"
         )
 
     if results_for_save:
