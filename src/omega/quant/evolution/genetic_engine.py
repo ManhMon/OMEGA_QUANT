@@ -203,6 +203,18 @@ def _batch_neutralize_cross_section(
     return residuals
 
 
+def _evaluation_mask(
+    alpha_series: np.ndarray,
+    target: np.ndarray,
+    features: Dict[str, np.ndarray],
+) -> np.ndarray:
+    mask = np.isfinite(alpha_series) & np.isfinite(target)
+    liquidity_mask = features.get('__liquidity_mask__')
+    if liquidity_mask is not None:
+        mask &= np.asarray(liquidity_mask, dtype=bool)
+    return mask
+
+
 def _compute_time_fold_ir(
     alpha: np.ndarray,
     target: np.ndarray,
@@ -253,6 +265,14 @@ def _compute_time_fold_ir(
                 fold_features.get('__date__'),
                 neutralization_cache=neutralization_cache,
             )
+        if config.neutralize_size_sector and log_mcap_arr is not None and sector_arr is not None:
+            target_fold = _neutralize_cross_section(
+                target_fold,
+                fold_features.get('__log_market_cap__'),
+                fold_features.get('__sector__'),
+                fold_features.get('__date__'),
+                neutralization_cache=neutralization_cache,
+            )
         fold_date_arr = fold_features.get('__date__')
         if fold_date_arr is None:
             continue
@@ -260,7 +280,7 @@ def _compute_time_fold_ir(
         daily_ics: List[float] = []
         for current_date in pd.unique(fold_date_arr[pd.notna(fold_date_arr)]):
             date_mask = fold_date_arr == current_date
-            valid = date_mask & np.isfinite(alpha_fold) & np.isfinite(target_fold)
+            valid = date_mask & _evaluation_mask(alpha_fold, target_fold, fold_features)
             if np.count_nonzero(valid) <= 5:
                 continue
             ic_value, _ = spearmanr(alpha_fold[valid], target_fold[valid])
@@ -645,11 +665,10 @@ class GPIndividual:
             ic_alpha_series = alpha_series if neutralized_alpha_series is None else neutralized_alpha_series
 
             if getattr(config, 'use_fast_penalties', True):
-                valid_mask = pd.notna(target)
+                valid_mask = _evaluation_mask(ic_alpha_series, target, features)
                 n_valid = int(np.count_nonzero(valid_mask))
             else:
-                combined = pd.DataFrame({'alpha': alpha_series, 'target': target}).dropna()
-                n_valid = len(combined)
+                n_valid = int(np.count_nonzero(_evaluation_mask(ic_alpha_series, target, features)))
 
             # Observation threshold
             if n_valid < config.min_observations:
@@ -810,8 +829,12 @@ class GPIndividual:
         horizons = list(getattr(config, 'multi_target_horizons', []) or [])
         weights = list(getattr(config, 'multi_target_weights', []) or [])
         
-        def _compute_spearman_ic(alpha_values: np.ndarray, target_values: np.ndarray) -> float:
-            valid = np.isfinite(alpha_values) & np.isfinite(target_values)
+        def _compute_spearman_ic(
+            alpha_values: np.ndarray,
+            target_values: np.ndarray,
+            eval_features: Dict[str, np.ndarray],
+        ) -> float:
+            valid = _evaluation_mask(alpha_values, target_values, eval_features)
             if np.count_nonzero(valid) < 2:
                 return 0.0
             ic_value, _ = spearmanr(alpha_values[valid], target_values[valid])
@@ -826,9 +849,17 @@ class GPIndividual:
                 pre_neutralized=pre_neutralized,
             )
 
-        if getattr(config, 'neutralize_size_sector', False) and not pre_neutralized:
-            alpha_series = _neutralize_cross_section(
-                alpha_series,
+        if getattr(config, 'neutralize_size_sector', False):
+            if not pre_neutralized:
+                alpha_series = _neutralize_cross_section(
+                    alpha_series,
+                    features.get('__log_market_cap__'),
+                    features.get('__sector__'),
+                    features.get('__date__'),
+                    neutralization_cache=features.get(NEUTRALIZATION_CACHE_KEY),
+                )
+            target = _neutralize_cross_section(
+                target,
                 features.get('__log_market_cap__'),
                 features.get('__sector__'),
                 features.get('__date__'),
@@ -840,7 +871,15 @@ class GPIndividual:
             for chunk_indices in date_chunks:
                 alpha_chunk = alpha_series[chunk_indices]
                 target_chunk = target[chunk_indices]
-                valid = np.isfinite(alpha_chunk) & np.isfinite(target_chunk)
+                chunk_features = {}
+                for key, value in features.items():
+                    try:
+                        value_arr = np.asarray(value)
+                    except ValueError:
+                        continue
+                    if value_arr.ndim > 0 and len(value_arr) == len(alpha_series):
+                        chunk_features[key] = value_arr[chunk_indices]
+                valid = _evaluation_mask(alpha_chunk, target_chunk, chunk_features)
                 if np.count_nonzero(valid) < 2:
                     continue
                 ic_value, _ = spearmanr(alpha_chunk[valid], target_chunk[valid])
@@ -848,7 +887,7 @@ class GPIndividual:
                     chunk_ics.append(float(ic_value))
 
             if not chunk_ics:
-                return _compute_spearman_ic(alpha_series, target)
+                return _compute_spearman_ic(alpha_series, target, features)
 
             ic_std = float(np.std(chunk_ics))
             if ic_std < 1e-9:
@@ -900,7 +939,7 @@ class GPIndividual:
                             )
                             chunk_ics = chunk_ics[np.isfinite(chunk_ics)]
                             if chunk_ics.size == 0:
-                                return _compute_spearman_ic(alpha_series, target)
+                                return _compute_spearman_ic(alpha_series, target, features)
                             ic_std = float(np.std(chunk_ics))
                             if ic_std < 1e-9:
                                 return float(np.mean(chunk_ics))
@@ -909,11 +948,7 @@ class GPIndividual:
                         GPIndividual.fallback_hits += 1
                         return _compute_icir_loop(date_chunk_cache['date_chunks'])
 
-                valid = (
-                    np.isfinite(alpha_series)
-                    & np.isfinite(target)
-                    & pd.notna(features['__date__'])
-                )
+                valid = _evaluation_mask(alpha_series, target, features) & pd.notna(features['__date__'])
                 if np.count_nonzero(valid) < 2:
                     return 0.0
 
@@ -933,14 +968,14 @@ class GPIndividual:
                         chunk_ics.append(float(ic_value))
 
                 if not chunk_ics:
-                    return _compute_spearman_ic(alpha_series, target)
+                    return _compute_spearman_ic(alpha_series, target, features)
 
                 ic_std = float(np.std(chunk_ics))
                 if ic_std < 1e-9:
                     return float(np.mean(chunk_ics))
                 return float(np.mean(chunk_ics) / ic_std)
 
-            return _compute_spearman_ic(alpha_series, target)
+            return _compute_spearman_ic(alpha_series, target, features)
         
         # Normalize weights (default to equal weights if mismatch)
         if len(weights) != len(horizons):
@@ -954,7 +989,7 @@ class GPIndividual:
         for horizon, weight in zip(horizons, weights):
             key = f'target_h{horizon}'
             target_h = features.get(key, target)
-            valid = np.isfinite(alpha_series) & np.isfinite(target_h)
+            valid = _evaluation_mask(alpha_series, target_h, features)
             if np.count_nonzero(valid) < 2:
                 continue
             ic_h, _ = spearmanr(alpha_series[valid], target_h[valid])

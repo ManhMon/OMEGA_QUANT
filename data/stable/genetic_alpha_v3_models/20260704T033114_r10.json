@@ -1,0 +1,9 @@
+{
+  "rank": 10,
+  "round": 3,
+  "train_IC": 2.8621,
+  "test_IC": 0.0193,
+  "hit_rate": 0.5216,
+  "expression": "(((20 decay_linear (sqrt(oc_range) ts_rank 10)) max returns_5d) * cs_rank(((((returns_1d ts_std 5) / cs_rank(hl_range)) + oc_range_cs_z) decay_linear 20)))",
+  "serialized_tree": "GPNode(operator='*', children=[GPNode(operator='max', children=[GPNode(operator='decay_linear', children=[GPNode(operator='terminal', children=[], value='20'), GPNode(operator='ts_rank', children=[GPNode(operator='sqrt', children=[GPNode(operator='terminal', children=[], value='oc_range')], value=None), GPNode(operator='terminal', children=[], value='10')], value=None)], value=None), GPNode(operator='terminal', children=[], value='returns_5d')], value=None), GPNode(operator='cs_rank', children=[GPNode(operator='decay_linear', children=[GPNode(operator='+', children=[GPNode(operator='/', children=[GPNode(operator='ts_std', children=[GPNode(operator='terminal', children=[], value='returns_1d'), GPNode(operator='terminal', children=[], value='5')], value=None), GPNode(operator='cs_rank', children=[GPNode(operator='terminal', children=[], value='hl_range')], value=None)], value=None), GPNode(operator='terminal', children=[], value='oc_range_cs_z')], value=None), GPNode(operator='terminal', children=[], value='20')], value=None)], value=None)], value=None)"
+}

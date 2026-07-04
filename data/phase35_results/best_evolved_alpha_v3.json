@@ -7,9 +7,13 @@
   "pit_embargo": "2022-12-09T00:00:00+00:00",
   "rank": 1,
   "round": 6,
-  "train_IC": 0.1696,
-  "test_IC": 0.0366,
+  "train_FoldIR": null,
+  "train_IC_daily": null,
+  "val_IC_daily": null,
+  "oos_IC_daily": null,
+  "lockbox_IC_daily": null,
   "hit_rate": 0.444,
+  "id": null,
   "expression": "((((neg(rank(sigmoid(returns_5d))) ts_mean hl_range) - returns_1d) min (oc_range max (((hl_range ts_mean 10) - returns_1d) min (low ts_std (((returns_5d ts_mean 20) ts_std 10) ts_rank 20))))) min ((low ts_std ((volume max returns_5d) ts_rank 20)) * (low ts_std (open ts_mean 10))))",
   "serialized_tree": "GPNode(operator='min', children=[GPNode(operator='min', children=[GPNode(operator='-', children=[GPNode(operator='ts_mean', children=[GPNode(operator='neg', children=[GPNode(operator='rank', children=[GPNode(operator='sigmoid', children=[GPNode(operator='terminal', children=[], value='returns_5d')], value=None)], value=None)], value=None), GPNode(operator='terminal', children=[], value='hl_range')], value=None), GPNode(operator='terminal', children=[], value='returns_1d')], value=None), GPNode(operator='max', children=[GPNode(operator='terminal', children=[], value='oc_range'), GPNode(operator='min', children=[GPNode(operator='-', children=[GPNode(operator='ts_mean', children=[GPNode(operator='terminal', children=[], value='hl_range'), GPNode(operator='terminal', children=[], value='10')], value=None), GPNode(operator='terminal', children=[], value='returns_1d')], value=None), GPNode(operator='ts_std', children=[GPNode(operator='terminal', children=[], value='low'), GPNode(operator='ts_rank', children=[GPNode(operator='ts_std', children=[GPNode(operator='ts_mean', children=[GPNode(operator='terminal', children=[], value='returns_5d'), GPNode(operator='terminal', children=[], value='20')], value=None), GPNode(operator='terminal', children=[], value='10')], value=None), GPNode(operator='terminal', children=[], value='20')], value=None)], value=None)], value=None)], value=None)], value=None), GPNode(operator='*', children=[GPNode(operator='ts_std', children=[GPNode(operator='terminal', children=[], value='low'), GPNode(operator='ts_rank', children=[GPNode(operator='max', children=[GPNode(operator='terminal', children=[], value='volume'), GPNode(operator='terminal', children=[], value='returns_5d')], value=None), GPNode(operator='terminal', children=[], value='20')], value=None)], value=None), GPNode(operator='ts_std', children=[GPNode(operator='terminal', children=[], value='low'), GPNode(operator='ts_mean', children=[GPNode(operator='terminal', children=[], value='open'), GPNode(operator='terminal', children=[], value='10')], value=None)], value=None)], value=None)], value=None)"
 }

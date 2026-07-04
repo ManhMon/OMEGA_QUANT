@@ -1582,5 +1582,46 @@
     ],
     "notes": "APPROVED: L2 forbidden-path wording fixed; implementation parity checks pass; sod_gate_enforcer passes.",
     "timestamp": "2026-07-03T23:38:36.7260317+07:00"
+  },
+  "GATE7_NEUTRALIZATION_LIQUIDITY_20260704": {
+    "phase_name": "GATE7_NEUTRALIZATION_LIQUIDITY_20260704",
+    "l2_session_id": "l2_role16_gate7_neutralization_liquidity_20260704",
+    "l2_completed": true,
+    "l2_role_id": 16,
+    "l2_role_name": "machine-learning-engineer",
+    "l3_session_id": "role23_gate7_neutralization_liquidity_20260704",
+    "l3_session_key": "role23_gate7_neutralization_liquidity_20260704",
+    "l3_role_id": 23,
+    "l3_role_name": "performance-tester",
+    "audit_report_path": ".ly_state/session/audit_reports/role23_gate7_neutralization_liquidity_20260704.md",
+    "final_verdict": "[APPROVED]",
+    "sod_boundary_checked": true,
+    "writer_auditor_separated": true,
+    "repo_local_skill_sources": [
+      ".agents/agent/performance-tester.md",
+      ".agents/skills/performance-profiling/SKILL.md",
+      ".agents/skills/webapp-testing/SKILL.md",
+      ".agents/skills/audit-cycle/SKILL.md",
+      ".agents/skills/systematic-debugging/SKILL.md",
+      ".ly_state/session/l2_role16_gate7_neutralization_liquidity_20260704.md",
+      "scripts/genetic_alpha_evolution_v3.py",
+      "src/omega/quant/evolution/genetic_engine.py",
+      "tests/test_genetic_engine_liquidity.py"
+    ],
+    "forbidden_path_scan": "No authoritative reliance on forbidden paths; scoped read/write/path-loading scan clean. One literal forbidden-path string remains in repo-local Gate 6 report-template evidence and is explicitly non-authoritative.",
+    "checks": {
+      "writer_auditor_separated": "APPROVED: l2_role_id 16 != l3_role_id 23",
+      "time_folds_contract": "APPROVED: script config changed time_folds=8 to time_folds=3",
+      "pit_liquidity_filter": "APPROVED: --min-avg-volume uses avg_traded_value=close*volume rolling mean shifted per ticker by 1",
+      "split_liquidity_mask": "APPROVED: __liquidity_mask__ added to train, val, oos, lockbox",
+      "evaluation_mask": "APPROVED: helper combines finite alpha/target and optional __liquidity_mask__; used for observation counts and IC paths",
+      "target_neutralization": "APPROVED: alpha and target are neutralized in script daily IC, time-fold IR, and pooled IC paths",
+      "l2_skill_sources": "APPROVED: L2 report lists repo-local .agents/agent and .agents/skills sources only"
+    },
+    "verification": [
+      "pytest tests/test_genetic_engine_liquidity.py -v: 2 passed, 4 warnings",
+      "forbidden authoritative path scan: clean"
+    ],
+    "timestamp": "2026-07-04T16:15:10+07:00"
   }
 }

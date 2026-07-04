@@ -1,0 +1,9 @@
+{
+  "rank": 15,
+  "round": 6,
+  "train_IC": 0.8259,
+  "test_IC": 0.0125,
+  "hit_rate": 0.5216,
+  "expression": "cs_rank((((returns_5d / (returns_5d / vol_ratio)) - ((((vol_ratio - hl_range) min sigmoid(oc_range_cs_z)) decay_linear 10) ts_std (cs_zscore(vol_ratio) min oc_range_cs_z))) decay_linear 20))",
+  "serialized_tree": "GPNode(operator='cs_rank', children=[GPNode(operator='decay_linear', children=[GPNode(operator='-', children=[GPNode(operator='/', children=[GPNode(operator='terminal', children=[], value='returns_5d'), GPNode(operator='/', children=[GPNode(operator='terminal', children=[], value='returns_5d'), GPNode(operator='terminal', children=[], value='vol_ratio')], value=None)], value=None), GPNode(operator='ts_std', children=[GPNode(operator='decay_linear', children=[GPNode(operator='min', children=[GPNode(operator='-', children=[GPNode(operator='terminal', children=[], value='vol_ratio'), GPNode(operator='terminal', children=[], value='hl_range')], value=None), GPNode(operator='sigmoid', children=[GPNode(operator='terminal', children=[], value='oc_range_cs_z')], value=None)], value=None), GPNode(operator='terminal', children=[], value='10')], value=None), GPNode(operator='min', children=[GPNode(operator='cs_zscore', children=[GPNode(operator='terminal', children=[], value='vol_ratio')], value=None), GPNode(operator='terminal', children=[], value='oc_range_cs_z')], value=None)], value=None)], value=None), GPNode(operator='terminal', children=[], value='20')], value=None)], value=None)"
+}

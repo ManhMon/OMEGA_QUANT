@@ -1,0 +1,9 @@
+{
+  "rank": 2,
+  "round": 1,
+  "train_IC": 5.3476,
+  "test_IC": 0.0039,
+  "hit_rate": 0.5216,
+  "expression": "sigmoid(cs_rank((((rank(oc_range_cs_z) min sigmoid(returns_5d)) decay_linear 20) - hl_range)))",
+  "serialized_tree": "GPNode(operator='sigmoid', children=[GPNode(operator='cs_rank', children=[GPNode(operator='-', children=[GPNode(operator='decay_linear', children=[GPNode(operator='min', children=[GPNode(operator='rank', children=[GPNode(operator='terminal', children=[], value='oc_range_cs_z')], value=None), GPNode(operator='sigmoid', children=[GPNode(operator='terminal', children=[], value='returns_5d')], value=None)], value=None), GPNode(operator='terminal', children=[], value='20')], value=None), GPNode(operator='terminal', children=[], value='hl_range')], value=None)], value=None)], value=None)"
+}

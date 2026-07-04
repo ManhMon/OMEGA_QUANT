@@ -25,7 +25,12 @@ from omega.core.pit import to_utc_aware
 from omega.core.registry.persistence import DatabaseRegistry
 from omega.data.calendar import VNTradingCalendar
 from omega.execution.vn_transaction_cost_model import VNTransactionCostModel
-from omega.quant.evolution.genetic_engine import GPConfig, GeneticEngine
+from omega.quant.evolution.genetic_engine import (
+    GPConfig,
+    GeneticEngine,
+    _evaluation_mask,
+    _neutralize_cross_section,
+)
 from phase35_data_loader import Phase35DataLoader
 
 LEGACY_RESULTS_DIR = REPO_ROOT / "data" / "phase35_results"
@@ -104,10 +109,22 @@ def parse_args() -> argparse.Namespace:
         choices=["threads", "loky", "multiprocessing"],
         default="threads",
     )
+    parser.add_argument(
+        "--min-avg-volume",
+        type=float,
+        default=500000.0,
+        help="Minimum trailing average traded value in VND (close * volume)",
+    )
+    parser.add_argument(
+        "--avg-volume-window",
+        type=int,
+        default=20,
+        help="Window for trailing average traded value calculation",
+    )
     return parser.parse_args()
 
 
-def load_dataset() -> pd.DataFrame:
+def load_dataset(args: argparse.Namespace) -> pd.DataFrame:
     loader = Phase35DataLoader(warehouse_path="data/market_2015_now.parquet")
     df = loader.load_and_prepare(
         start_date="2015-01-05",
@@ -125,11 +142,70 @@ def load_dataset() -> pd.DataFrame:
     df["hl_range_cs_z"] = _cs_zscore_by_date(df["hl_range"], df["date"])
     df["oc_range_cs_z"] = _cs_zscore_by_date(df["oc_range"], df["date"])
     df["__log_market_cap__"] = np.log1p((df["close"] * df["volume"]).clip(lower=0.0))
+    # NOTE: 'sector' here = liquidity quartile proxy, not economic sector classification.
     df["__sector__"] = _volume_quartile_sector_proxy(df["volume"], df["date"])
+    df["traded_value"] = df["close"] * df["volume"]
+    df["avg_traded_value"] = (
+        df.groupby("ticker")["traded_value"]
+        .rolling(args.avg_volume_window, min_periods=5)
+        .mean()
+        .reset_index(level=0, drop=True)
+    )
+    df["avg_traded_value"] = df.groupby("ticker")["avg_traded_value"].shift(1)
+    df["liquidity_mask"] = (df["avg_traded_value"] > args.min_avg_volume).fillna(False)
     df[FEATURE_COLS] = df.groupby("ticker")[FEATURE_COLS].shift(1)
     df["__log_market_cap__"] = df.groupby("ticker")["__log_market_cap__"].shift(1)
     df["__sector__"] = df.groupby("ticker")["__sector__"].shift(1)
+    exclusion_rate = 1.0 - float(df["liquidity_mask"].mean())
+    if exclusion_rate > 0.5:
+        print(
+            f"Warning: liquidity filter excludes {exclusion_rate:.1%} of rows; "
+            "consider lowering --min-avg-volume."
+        )
     return df.dropna(subset=FEATURE_COLS + ["fwd_ret_5", "__log_market_cap__", "__sector__"])
+
+
+def compute_engine_consistent_daily_ic(
+    signal: np.ndarray,
+    target: np.ndarray,
+    features: dict[str, np.ndarray],
+    config: GPConfig,
+) -> float:
+    alpha = np.asarray(signal, dtype=np.float64)
+    target_arr = np.asarray(target, dtype=np.float64)
+    eval_features = dict(features)
+    if config.neutralize_size_sector and "__sector__" in eval_features:
+        alpha = _neutralize_cross_section(
+            alpha,
+            eval_features.get("__log_market_cap__"),
+            eval_features.get("__sector__"),
+            eval_features.get("__date__"),
+        )
+        target_arr = _neutralize_cross_section(
+            target_arr,
+            eval_features.get("__log_market_cap__"),
+            eval_features.get("__sector__"),
+            eval_features.get("__date__"),
+        )
+
+    dates = np.asarray(eval_features["__date__"])
+    daily_ics: list[float] = []
+    for current_date in pd.unique(pd.Series(dates).dropna()):
+        date_mask = dates == current_date
+        valid = date_mask & _evaluation_mask(alpha, target_arr, eval_features)
+        if np.count_nonzero(valid) <= 5:
+            continue
+        ic_value, _ = spearmanr(alpha[valid], target_arr[valid])
+        if not np.isnan(ic_value):
+            daily_ics.append(float(ic_value))
+    return float(np.mean(daily_ics)) if daily_ics else 0.0
+
+
+def compute_hit_rate(signal: np.ndarray, target: np.ndarray, features: dict[str, np.ndarray]) -> float:
+    valid = _evaluation_mask(np.asarray(signal, dtype=np.float64), np.asarray(target, dtype=np.float64), features)
+    if not np.any(valid):
+        return 0.0
+    return float((np.sign(signal[valid]) == np.sign(target[valid])).mean())
 
 
 def compute_daily_cs_ic(signal: np.ndarray, target: np.ndarray, dates: np.ndarray) -> float:
@@ -599,7 +675,7 @@ def main() -> int:
     print("GENETIC ALPHA EVOLUTION V3 - ANTI-CONVERGENCE")
     print("=" * 80)
 
-    df = load_dataset()
+    df = load_dataset(args)
     verification.append(f"dataset_loaded rows={len(df)} fingerprint={build_feature_fingerprint(df)}")
     split_frames = build_pit_splits(df)
     train_df = split_frames["train"]
@@ -616,21 +692,25 @@ def main() -> int:
     features_train["__date__"] = train_df["date"].values
     features_train["__log_market_cap__"] = train_df["__log_market_cap__"].values
     features_train["__sector__"] = train_df["__sector__"].values
+    features_train["__liquidity_mask__"] = train_df["liquidity_mask"].values
     target_train = train_df["fwd_ret_5"].values
     features_val = {col: val_df[col].values for col in FEATURE_COLS}
     features_val["__date__"] = val_df["date"].values
     features_val["__log_market_cap__"] = val_df["__log_market_cap__"].values
     features_val["__sector__"] = val_df["__sector__"].values
+    features_val["__liquidity_mask__"] = val_df["liquidity_mask"].values
     target_val = val_df["fwd_ret_5"].values
     features_oos = {col: oos_df[col].values for col in FEATURE_COLS}
     features_oos["__date__"] = oos_df["date"].values
     features_oos["__log_market_cap__"] = oos_df["__log_market_cap__"].values
     features_oos["__sector__"] = oos_df["__sector__"].values
+    features_oos["__liquidity_mask__"] = oos_df["liquidity_mask"].values
     target_oos = oos_df["fwd_ret_5"].values
     features_lockbox = {col: lockbox_df[col].values for col in FEATURE_COLS}
     features_lockbox["__date__"] = lockbox_df["date"].values
     features_lockbox["__log_market_cap__"] = lockbox_df["__log_market_cap__"].values
     features_lockbox["__sector__"] = lockbox_df["__sector__"].values
+    features_lockbox["__liquidity_mask__"] = lockbox_df["liquidity_mask"].values
     target_lockbox = lockbox_df["fwd_ret_5"].values
     validation_df = pd.concat([val_df, oos_df, lockbox_df], axis=0, ignore_index=True)
     ortho_baseline_set = {col: features_train[col] for col in ORTHO_BASELINE_COLS}
@@ -657,7 +737,7 @@ def main() -> int:
             terminal_prob=0.4,
             use_icir=False,
             use_time_fold_ir=True,
-            time_folds=8,
+            time_folds=3,
             fold_ir_std_floor=0.03,
             neutralize_size_sector=True,
             icir_window=20,
@@ -687,11 +767,11 @@ def main() -> int:
                 lockbox_signal = np.nan_to_num(ind._execute_tree(ind.tree, features_lockbox), nan=0.0, posinf=0.0, neginf=0.0)
                 if min(np.std(train_signal), np.std(val_signal), np.std(oos_signal), np.std(lockbox_signal)) < 1e-6:
                     continue
-                train_ic_daily = compute_daily_cs_ic(train_signal, target_train, train_df["date"].values)
-                val_ic_daily = compute_daily_cs_ic(val_signal, target_val, val_df["date"].values)
-                oos_ic_daily = compute_daily_cs_ic(oos_signal, target_oos, oos_df["date"].values)
-                lockbox_ic_daily = compute_daily_cs_ic(lockbox_signal, target_lockbox, lockbox_df["date"].values)
-                hit = (np.sign(val_signal) == np.sign(target_val)).mean()
+                train_ic_daily = compute_engine_consistent_daily_ic(train_signal, target_train, features_train, config)
+                val_ic_daily = compute_engine_consistent_daily_ic(val_signal, target_val, features_val, config)
+                oos_ic_daily = compute_engine_consistent_daily_ic(oos_signal, target_oos, features_oos, config)
+                lockbox_ic_daily = compute_engine_consistent_daily_ic(lockbox_signal, target_lockbox, features_lockbox, config)
+                hit = compute_hit_rate(val_signal, target_val, features_val)
                 if np.isnan(val_ic_daily):
                     continue
                 all_hof.append(
