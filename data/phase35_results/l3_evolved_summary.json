@@ -1,7 +1,0 @@
-{
-  "avg_net_sharpe": 0.4943,
-  "avg_total_return": 1.2,
-  "avg_max_drawdown": -3.6,
-  "n_evolved_alphas": 3,
-  "config": "top8_rebal10_cost25bps"
-}
