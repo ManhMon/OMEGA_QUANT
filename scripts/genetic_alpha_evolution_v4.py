@@ -49,6 +49,8 @@ BATCH_FITNESS_SIZE = 32
 ISLAND_COUNT = 3
 ISLAND_MIGRATION_INTERVAL = 5
 ISLAND_MIGRATION_RATE = 0.05
+_DATE_GROUPS_CACHE: dict[tuple[int, int, Any, Any], dict[Any, np.ndarray]] = {}
+_DATE_GROUPS_CACHE_LOCK = threading.Lock()
 
 
 @dataclass
@@ -130,7 +132,12 @@ def _build_fold_views(features: dict[str, np.ndarray], fold_structure: tuple[tup
     neutralization_cache = features.get(ge.NEUTRALIZATION_CACHE_KEY)
     if neutralization_cache is not None:
         for fold_view in fold_views:
-            fold_view[ge.NEUTRALIZATION_CACHE_KEY] = neutralization_cache
+            if isinstance(neutralization_cache, dict):
+                fold_view[ge.NEUTRALIZATION_CACHE_KEY] = {
+                    key: value for key, value in neutralization_cache.items() if key != "__date_groups__"
+                }
+            else:
+                fold_view[ge.NEUTRALIZATION_CACHE_KEY] = neutralization_cache
     return fold_views
 
 
@@ -147,8 +154,42 @@ def _batch_post_process(alpha_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarra
 
 
 def _group_row_indices_by_date(date_arr: np.ndarray) -> dict[Any, np.ndarray]:
-    date_series = pd.Series(np.asarray(date_arr))
-    return {current_date: indices.to_numpy(dtype=np.int64, copy=False) for current_date, indices in date_series.groupby(date_series, sort=False).groups.items()}
+    date_arr = np.asarray(date_arr)
+    first_val = date_arr[0] if date_arr.size else None
+    last_val = date_arr[-1] if date_arr.size else None
+    cache_key = (id(date_arr), len(date_arr), first_val, last_val)
+    with _DATE_GROUPS_CACHE_LOCK:
+        if len(_DATE_GROUPS_CACHE) > 500:
+            _DATE_GROUPS_CACHE.clear()
+        cached = _DATE_GROUPS_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    date_series = pd.Series(date_arr)
+    date_groups = {
+        current_date: indices.to_numpy(dtype=np.int64, copy=False)
+        for current_date, indices in date_series.groupby(date_series, sort=False).groups.items()
+    }
+    with _DATE_GROUPS_CACHE_LOCK:
+        return _DATE_GROUPS_CACHE.setdefault(cache_key, date_groups)
+
+
+def _get_date_groups(
+    date_arr: np.ndarray,
+    neutralization_cache: dict[Any, tuple[np.ndarray, np.ndarray]] | None,
+) -> dict[Any, np.ndarray]:
+    if isinstance(neutralization_cache, dict):
+        date_groups = neutralization_cache.get("__date_groups__")
+        if date_groups is not None:
+            max_index = -1
+            for row_idx in date_groups.values():
+                if row_idx.size:
+                    max_index = max(max_index, int(row_idx[-1]))
+            if max_index < len(date_arr):
+                return date_groups
+        date_groups = _group_row_indices_by_date(date_arr)
+        neutralization_cache["__date_groups__"] = date_groups
+        return date_groups
+    return _group_row_indices_by_date(date_arr)
 
 
 def _optimized_neutralize_cross_section(
@@ -169,7 +210,7 @@ def _optimized_neutralize_cross_section(
     date_cache = neutralization_cache
     if date_cache is None:
         date_cache = ge._build_neutralization_cache(log_mcap_arr, sector_arr, date_arr)
-    date_groups = _group_row_indices_by_date(date_arr)
+    date_groups = _get_date_groups(date_arr, neutralization_cache)
     for current_date in pd.unique(date_arr[pd.notna(date_arr)]):
         row_idx = date_groups.get(current_date)
         if row_idx is None or row_idx.size < 2:
@@ -213,7 +254,7 @@ def _optimized_batch_neutralize_cross_section(
         return residuals
 
     date_arr = np.asarray(date_arr)
-    date_groups = _group_row_indices_by_date(date_arr)
+    date_groups = _get_date_groups(date_arr, neutralization_cache)
     for current_date in pd.unique(date_arr[pd.notna(date_arr)]):
         cached = neutralization_cache.get(current_date)
         if cached is None:
@@ -957,7 +998,7 @@ def write_l2_report(report_path: Path, gate6_metrics: dict[str, Any] | None, ver
         "## Forbidden Path Scan",
         "- `.gemini\\antigravity-ide\\scratch\\ag-kit` is not present and non-authoritative.",
         "- `.openclaw\\skills` is not present and non-authoritative.",
-        "- `C:\\Users\\GHC\\.agents` is not present and non-authoritative.",
+        "- `C:\\Users\\GHC\\.agents` is outside repo scope and non-authoritative.",
         "- `.codex\\memories` is not present and non-authoritative.",
         "",
         "## Verification",

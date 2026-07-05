@@ -150,6 +150,67 @@ def test_optimized_batch_neutralize_cross_section_matches_original():
     np.testing.assert_allclose(actual, expected, equal_nan=True)
 
 
+def test_date_group_cache_shared_by_single_and_batch_paths(monkeypatch):
+    features = _make_features()
+    cache = ge._build_neutralization_cache(
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+    )
+    alpha = np.array([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 6.0, 5.0, np.nan, 3.0, 2.0, 1.0])
+    alpha_matrix = np.column_stack([alpha, alpha[::-1]])
+    calls = 0
+    original_groupby = pd.Series.groupby
+
+    def counting_groupby(self, *args, **kwargs):
+        nonlocal calls
+        calls += 1
+        return original_groupby(self, *args, **kwargs)
+
+    v4._DATE_GROUPS_CACHE.clear()
+    monkeypatch.setattr(pd.Series, "groupby", counting_groupby)
+
+    v4._optimized_neutralize_cross_section(
+        alpha,
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+        cache,
+    )
+    v4._optimized_batch_neutralize_cross_section(alpha_matrix, features["__date__"], cache)
+
+    assert calls == 1
+    first_val = features["__date__"][0]
+    last_val = features["__date__"][-1]
+    assert (id(features["__date__"]), len(features["__date__"]), first_val, last_val) in v4._DATE_GROUPS_CACHE
+
+
+def test_neutralization_cache_stores_shared_date_groups():
+    features = _make_features()
+    cache = ge._build_neutralization_cache(
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+    )
+    alpha = np.array([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 6.0, 5.0, np.nan, 3.0, 2.0, 1.0])
+    alpha_matrix = np.column_stack([alpha, alpha[::-1]])
+
+    assert "__date_groups__" not in cache
+
+    v4._optimized_neutralize_cross_section(
+        alpha,
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+        cache,
+    )
+    shared = cache["__date_groups__"]
+
+    v4._optimized_batch_neutralize_cross_section(alpha_matrix, features["__date__"], cache)
+
+    assert cache["__date_groups__"] is shared
+
+
 def test_build_feature_bank_matches_v3_feature_logic():
     frame = pd.DataFrame(
         {
