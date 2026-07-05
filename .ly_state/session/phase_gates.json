@@ -1795,7 +1795,8 @@
       ".ly_state/session/l2_role16_gp_v4_advanced_impl_20260705.md",
       "scripts/genetic_alpha_evolution_v4.py",
       "scripts/benchmark_v4_advanced.py",
-      "tests/test_genetic_alpha_evolution_v4.py"
+      "tests/test_genetic_alpha_evolution_v4.py",
+      "src/omega/quant/evolution/genetic_engine.py"
     ],
     "forbidden_path_scan": "No authoritative reliance on forbidden paths; .gemini\\antigravity-ide\\scratch\\ag-kit is not present and non-authoritative; .openclaw\\skills is not present and non-authoritative; C:\\Users\\GHC\\.agents is present and non-authoritative, not read or used as source; .codex\\memories is not present and non-authoritative."
   }
