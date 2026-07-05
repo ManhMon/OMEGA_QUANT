@@ -26,4 +26,6 @@ updated: 2026-05-25
      ```
 
 - **Memory Update Gate (Chốt cập nhật bộ nhớ)**: Mỗi khi một cổng kiểm duyệt đạt trạng thái `[APPROVED]` và trước khi kết thúc phiên/chuyển phase, L1 bắt buộc phải kiểm tra và cập nhật các thay đổi kiến trúc, kết quả tối ưu, hoặc tham số mới vào `tech-decisions.md` để đảm bảo bộ nhớ không bị out-of-date.
+- **Unsandboxed Heavy Computations Policy (Chạy ngoài Sandbox cho Tác vụ Nặng)**: Đối với toàn bộ các tiến trình kiểm thử hiệu năng (benchmark), chạy tiến hóa GP, thử nghiệm lại (backtest), hoặc quét tham số có khối lượng xử lý tính toán nặng, L1/L2/L3 bắt buộc phải đăng ký xin quyền chạy ngoài Sandbox (`unsandboxed` permission) để giải phóng giới hạn phần cứng (Platform Cap 4GB) và khai thác tối đa cấu hình phần cứng vật lý (20GB+ RAM).
+
 
