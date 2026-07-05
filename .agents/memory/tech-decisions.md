@@ -142,4 +142,14 @@ updated: 2026-07-02
 - **CPython Address Reuse Cache Trap**: Discovered that Python's `id(arr)` can return duplicate memory address keys if temporary numpy arrays are garbage collected and new arrays allocate the same memory block. Resolved by keying the date-groups cache using a composite tuple: `(id(date_arr), len(date_arr), date_arr[0], date_arr[-1])` to guarantee 100% numerical correctness.
 - **Multiprocessing Serialization Bug (Lock Pickling)**: Identified that storing a `threading.Lock` under `SUBTREE_CACHE_LOCK_KEY` in the `features` dictionary prevents standard Python serialization (pickling) required for joblib `loky` and `multiprocessing` backends on Windows. Resolved by removing the lock object from `features` and storing thread locks in a static, module-level weakref/dictionary cache mapping `id(features)` to `threading.Lock` instances. This restores full capability to scale evaluations horizontally across up to 10+ CPU processes.
 
+## 13. GP V4 Advanced Batch Parallelization & Thread-Safe Cache (2026-07-05)
+- **Decision Date**: 2026-07-05
+- **Approved Gate**: `GP_PARALLEL_OPTIMIZATION_20260705` (Approved)
+- **Problem**: In GP V4 Advanced, evaluating the candidate trees recursively was serial on a single CPU core. As generations progressed, tree depth/complexity increased, doubling the runtime per generation (Gen 2: 11.2 min, Gen 3: 22.3 min, Gen 4: 23.2 min). The main bottlenecks were: (1) heavy global lock contention recursive per node, and (2) recursive `node.to_string()` cache key construction.
+- **Solution**:
+  - **Threaded Parallelization**: Implemented joblib `Parallel(n_jobs=self.config.n_jobs, prefer="threads")` to run raw tree evaluations (`_execute_tree`) in parallel for the batch.
+  - **Atomic GIL Operations**: Removed per-node get/set locks inside `_execute_tree` as CPython dictionary operations are atomic, converting lock contention to benign races with `.copy()` array isolation.
+  - **Thread-safe cache helpers**: Added `_feature_cache_get` and `_feature_cache_set` locking only cache creation/eviction.
+
+
 

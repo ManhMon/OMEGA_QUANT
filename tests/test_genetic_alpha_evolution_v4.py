@@ -1,4 +1,5 @@
 import os
+import pickle
 import sys
 from types import SimpleNamespace
 
@@ -84,6 +85,16 @@ def test_v4_subtree_cache_keeps_signal_identical():
     cache_size = len(features[v4.SUBTREE_CACHE_KEY])
     patched._execute_tree(tree, features)
     assert len(features[v4.SUBTREE_CACHE_KEY]) == cache_size
+
+
+def test_v4_subtree_cache_features_remain_picklable():
+    shared = ge.GPNode(operator="+", children=[ge.GPNode(operator="terminal", value="returns_1d"), ge.GPNode(operator="terminal", value="returns_5d")])
+    tree = ge.GPNode(operator="*", children=[shared, shared])
+    features = _make_features()
+
+    ge.GPIndividual(tree=tree)._execute_tree(tree, features)
+
+    pickle.dumps(features)
 
 
 def test_v4_target_neutralized_cache_persists_on_main_features(monkeypatch):

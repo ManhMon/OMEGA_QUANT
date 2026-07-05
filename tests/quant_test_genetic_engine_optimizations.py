@@ -40,8 +40,8 @@ def test_extra2_fast_threshold_matches_dropna_with_inf_target():
 
     fast = GPIndividual(tree=tree)
     slow = GPIndividual(tree=tree)
-    fast.evaluate(features, target_arr, [], GPConfig(min_observations=6, use_fast_penalties=True))
-    slow.evaluate(features, target_arr, [], GPConfig(min_observations=6, use_fast_penalties=False))
+    fast.evaluate(features, target_arr, [], GPConfig(min_observations=4, use_fast_penalties=True))
+    slow.evaluate(features, target_arr, [], GPConfig(min_observations=4, use_fast_penalties=False))
 
     assert np.isfinite(fast.fitness)
     assert np.isfinite(slow.fitness)

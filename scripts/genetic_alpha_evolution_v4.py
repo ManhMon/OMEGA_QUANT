@@ -37,7 +37,6 @@ ORIGINAL_NEUTRALIZE_CROSS_SECTION = ge._neutralize_cross_section
 ORIGINAL_BATCH_NEUTRALIZE_CROSS_SECTION = ge._batch_neutralize_cross_section
 SESSION_REPORT_NAME = "l2_role16_gp_v4_advanced_impl_20260705.md"
 SUBTREE_CACHE_KEY = "__subtree_cache__"
-SUBTREE_CACHE_LOCK_KEY = "__subtree_cache_lock__"
 TARGET_NEUTRALIZED_CACHE_KEY = "__target_neutralized_cache__"
 FEATURE_BANK_KEY = "__feature_bank__"
 BATCH_FOLD_IR_CACHE_KEY = "__batch_fold_ir_cache__"
@@ -51,6 +50,8 @@ ISLAND_MIGRATION_INTERVAL = 5
 ISLAND_MIGRATION_RATE = 0.05
 _DATE_GROUPS_CACHE: dict[tuple[int, int, Any, Any], dict[Any, np.ndarray]] = {}
 _DATE_GROUPS_CACHE_LOCK = threading.Lock()
+_FEATURE_LOCK_CACHE: dict[int, threading.Lock] = {}
+_FEATURE_LOCK_CACHE_GUARD = threading.Lock()
 
 
 @dataclass
@@ -66,11 +67,33 @@ class GPConfigV4(ORIGINAL_GPCONFIG):
 
 
 def _thread_safe_feature_cache(features: dict[str, Any], key: str, factory: Any) -> Any:
-    lock = features.setdefault(SUBTREE_CACHE_LOCK_KEY, threading.Lock())
+    lock = _get_feature_lock(features)
     with lock:
         if key not in features:
             features[key] = factory()
         return features[key]
+
+
+def _feature_cache_get(features: dict[str, Any], cache_key: str, key: Any) -> Any:
+    lock = _get_feature_lock(features)
+    with lock:
+        cache = features.get(cache_key)
+        return None if cache is None else cache.get(key)
+
+
+def _feature_cache_set(features: dict[str, Any], cache_key: str, key: Any, value: Any) -> None:
+    cache = _thread_safe_feature_cache(features, cache_key, dict)
+    lock = _get_feature_lock(features)
+    with lock:
+        cache[key] = value
+
+
+def _get_feature_lock(features: dict[str, Any]) -> threading.Lock:
+    feature_id = id(features)
+    with _FEATURE_LOCK_CACHE_GUARD:
+        if len(_FEATURE_LOCK_CACHE) > 4096:
+            _FEATURE_LOCK_CACHE.clear()
+        return _FEATURE_LOCK_CACHE.setdefault(feature_id, threading.Lock())
 
 
 def _feature_array_length(features: dict[str, np.ndarray]) -> int:
@@ -480,8 +503,7 @@ def _neutralize_target_once(
     fold_features: dict[str, np.ndarray],
     fold_cache_key: tuple[int, int],
 ) -> np.ndarray:
-    cache = _thread_safe_feature_cache(features, TARGET_NEUTRALIZED_CACHE_KEY, dict)
-    cached = cache.get(fold_cache_key)
+    cached = _feature_cache_get(features, TARGET_NEUTRALIZED_CACHE_KEY, fold_cache_key)
     if cached is not None:
         return cached
     neutralized = ge._neutralize_cross_section(
@@ -491,8 +513,12 @@ def _neutralize_target_once(
         fold_features.get("__date__"),
         neutralization_cache=fold_features.get(ge.NEUTRALIZATION_CACHE_KEY),
     )
-    cache[fold_cache_key] = neutralized
+    _feature_cache_set(features, TARGET_NEUTRALIZED_CACHE_KEY, fold_cache_key, neutralized)
     return neutralized
+
+
+def _execute_tree_for_batch(individual: ge.GPIndividual, features: dict[str, np.ndarray]) -> np.ndarray:
+    return individual._execute_tree(individual.tree, features)
 
 
 def compute_engine_consistent_daily_ic(
@@ -670,16 +696,12 @@ def load_dataset(args: Any) -> pd.DataFrame:
 
 class GPIndividualV4(ORIGINAL_GPINDIVIDUAL):
     def _execute_tree(self, node: ge.GPNode, features: dict[str, np.ndarray]) -> np.ndarray:
-        lock = _thread_safe_feature_cache(features, SUBTREE_CACHE_LOCK_KEY, threading.Lock)
-        cache = _thread_safe_feature_cache(features, SUBTREE_CACHE_KEY, dict)
         cache_key = (id(features.get(FEATURE_BANK_KEY, features.get("__date__"))), node.to_string())
-        with lock:
-            cached = cache.get(cache_key)
+        cached = _feature_cache_get(features, SUBTREE_CACHE_KEY, cache_key)
         if cached is not None:
             return cached.copy()
         result = super()._execute_tree(node, features)
-        with lock:
-            cache[cache_key] = np.asarray(result, dtype=np.float64).copy()
+        _feature_cache_set(features, SUBTREE_CACHE_KEY, cache_key, np.asarray(result, dtype=np.float64).copy())
         return result
 
     def _score_alpha_series(
@@ -778,10 +800,21 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
 
     def _evaluate_population_with_batch_neutralization(self, features: dict[str, np.ndarray], target: np.ndarray) -> None:
         batch_size = max(1, int(getattr(self.config, "batch_fitness_size", BATCH_FITNESS_SIZE)))
+        use_threaded_tree_eval = int(getattr(self.config, "n_jobs", 1) or 1) > 1
         for start in range(0, len(self.population), batch_size):
             batch = self.population[start:start + batch_size]
             try:
-                raw_alpha = np.column_stack([ind._execute_tree(ind.tree, features) for ind in batch])
+                if use_threaded_tree_eval:
+                    raw_columns = ge.Parallel(
+                        n_jobs=self.config.n_jobs,
+                        batch_size="auto",
+                        prefer="threads",
+                    )(
+                        ge.delayed(_execute_tree_for_batch)(ind, features) for ind in batch
+                    )
+                else:
+                    raw_columns = [ind._execute_tree(ind.tree, features) for ind in batch]
+                raw_alpha = np.column_stack(raw_columns)
                 std = np.nanstd(raw_alpha, axis=0)
                 keep_mask = np.isfinite(std) & (std >= 1e-6)
                 prepared_rows: list[tuple[ge.GPIndividual, np.ndarray | None, float]] = []
@@ -812,6 +845,7 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
                     neutralized_alpha = processed_alpha
                     active_indices = np.empty(0, dtype=np.int64)
                     score_cache = {}
+                active_index_lookup = {int(idx): pos for pos, idx in enumerate(active_indices)}
                 active_pos = 0
                 for local_idx, individual in enumerate(batch):
                     if local_idx not in score_cache:
@@ -827,7 +861,7 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
                     candidate_features[BATCH_FOLD_IR_CACHE_KEY] = score_cache
                     candidate_features["__batch_candidate_id__"] = local_idx
                     candidate_features["__candidate_tree_text__"] = individual.tree.to_string()
-                    neutralized_idx = int(np.where(active_indices == local_idx)[0][0])
+                    neutralized_idx = active_index_lookup[local_idx]
                     individual._score_alpha_series(
                         alpha_series,
                         valid_fraction_value,
