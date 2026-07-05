@@ -35,7 +35,7 @@ ORIGINAL_GPCONFIG = ge.GPConfig
 ORIGINAL_COMPUTE_TIME_FOLD_IR = ge._compute_time_fold_ir
 ORIGINAL_NEUTRALIZE_CROSS_SECTION = ge._neutralize_cross_section
 ORIGINAL_BATCH_NEUTRALIZE_CROSS_SECTION = ge._batch_neutralize_cross_section
-SESSION_REPORT_NAME = "l2_role16_gp_v4_advanced_impl_20260705.md"
+SESSION_REPORT_NAME = "l2_role16_gp_numba_jit_vm_implementation_20260705.md"
 SUBTREE_CACHE_KEY = "__subtree_cache__"
 TARGET_NEUTRALIZED_CACHE_KEY = "__target_neutralized_cache__"
 FEATURE_BANK_KEY = "__feature_bank__"
@@ -48,10 +48,528 @@ BATCH_FITNESS_SIZE = 32
 ISLAND_COUNT = 3
 ISLAND_MIGRATION_INTERVAL = 5
 ISLAND_MIGRATION_RATE = 0.05
+MAX_VM_STACK_DEPTH = 12
 _DATE_GROUPS_CACHE: dict[tuple[int, int, Any, Any], dict[Any, np.ndarray]] = {}
 _DATE_GROUPS_CACHE_LOCK = threading.Lock()
 _FEATURE_LOCK_CACHE: dict[int, threading.Lock] = {}
 _FEATURE_LOCK_CACHE_GUARD = threading.Lock()
+VM_CONTEXT_KEY = "__gp_vm_context__"
+VM_PROGRAM_CACHE_KEY = "__gp_vm_program_cache__"
+
+OP_ADD = 1
+OP_SUB = 2
+OP_MUL = 3
+OP_DIV = 4
+OP_ABS = 5
+OP_LOG = 6
+OP_SQRT = 7
+OP_EXP = 8
+OP_SIGMOID = 9
+OP_RANK = 10
+OP_CS_RANK = 11
+OP_CS_ZSCORE = 12
+OP_NEG = 13
+OP_TS_STD = 14
+OP_TS_MEAN = 15
+OP_TS_RANK = 16
+OP_DECAY_LINEAR = 17
+OP_MAX = 18
+OP_MIN = 19
+OP_CONST = 50
+OP_VAR = 100
+_UNARY_OPCODE_MAP = {
+    "abs": OP_ABS,
+    "log": OP_LOG,
+    "sqrt": OP_SQRT,
+    "exp": OP_EXP,
+    "sigmoid": OP_SIGMOID,
+    "rank": OP_RANK,
+    "cs_rank": OP_CS_RANK,
+    "cs_zscore": OP_CS_ZSCORE,
+    "neg": OP_NEG,
+}
+_BINARY_OPCODE_MAP = {
+    "+": OP_ADD,
+    "-": OP_SUB,
+    "*": OP_MUL,
+    "/": OP_DIV,
+    "max": OP_MAX,
+    "min": OP_MIN,
+}
+_TS_OPCODE_MAP = {
+    "ts_std": OP_TS_STD,
+    "ts_mean": OP_TS_MEAN,
+    "ts_rank": OP_TS_RANK,
+    "decay_linear": OP_DECAY_LINEAR,
+}
+
+
+def _safe_float_terminal(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _max_stack_depth(node: ge.GPNode) -> int:
+    if not node.children:
+        return 1
+    if len(node.children) == 1:
+        return _max_stack_depth(node.children[0])
+    left_depth = _max_stack_depth(node.children[0])
+    right_depth = _max_stack_depth(node.children[1])
+    return max(left_depth, right_depth + 1)
+
+
+def _compile_tree_to_rpn(node: ge.GPNode, feature_names: list[str]) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    feature_index = {name: idx for idx, name in enumerate(feature_names)}
+    opcodes: list[int] = []
+    operands: list[int] = []
+    const_values: list[float] = []
+
+    def _compile(current: ge.GPNode) -> bool:
+        if not current.children:
+            if current.value in feature_index:
+                opcodes.append(OP_VAR)
+                operands.append(feature_index[current.value])
+                return True
+            const_value = _safe_float_terminal(current.value)
+            if const_value is None:
+                return False
+            operands.append(len(const_values))
+            opcodes.append(OP_CONST)
+            const_values.append(const_value)
+            return True
+
+        if len(current.children) == 1:
+            opcode = _UNARY_OPCODE_MAP.get(current.operator)
+            if opcode is None or not _compile(current.children[0]):
+                return False
+            opcodes.append(opcode)
+            operands.append(0)
+            return True
+
+        if len(current.children) == 2 and current.operator in _TS_OPCODE_MAP:
+            window = _safe_float_terminal(current.children[1].value)
+            if window is None or not _compile(current.children[0]):
+                return False
+            opcodes.append(_TS_OPCODE_MAP[current.operator])
+            operands.append(max(2, min(int(window), 60)))
+            return True
+
+        if len(current.children) == 2:
+            opcode = _BINARY_OPCODE_MAP.get(current.operator)
+            if opcode is None:
+                return False
+            if not _compile(current.children[0]) or not _compile(current.children[1]):
+                return False
+            opcodes.append(opcode)
+            operands.append(0)
+            return True
+
+        return False
+
+    if not _compile(node):
+        return None
+    if _max_stack_depth(node) > MAX_VM_STACK_DEPTH:
+        return None
+    return (
+        np.asarray(opcodes, dtype=np.int32),
+        np.asarray(operands, dtype=np.int32),
+        np.asarray(const_values, dtype=np.float64),
+    )
+
+
+def _build_ticker_group_offsets(tickers: np.ndarray | None, dates: np.ndarray) -> np.ndarray:
+    dates = np.asarray(dates)
+    if dates.ndim != 1:
+        raise ValueError("date metadata must be a 1D array")
+    if tickers is not None:
+        tickers = np.asarray(tickers)
+        if tickers.ndim != 1 or tickers.size != dates.size:
+            raise ValueError("ticker/date metadata must be 1D arrays with equal length")
+    if dates.size == 0:
+        return np.array([0], dtype=np.int32)
+    offsets = [0]
+    start = 0
+    current = None if tickers is None else tickers[0]
+    for idx in range(1, dates.size):
+        boundary = False
+        if tickers is None:
+            prev_date = dates[idx - 1]
+            curr_date = dates[idx]
+            boundary = pd.notna(prev_date) and pd.notna(curr_date) and curr_date < prev_date
+        else:
+            boundary = tickers[idx] != current
+        if boundary:
+            if pd.notna(dates[start:idx]).any():
+                valid_dates = dates[start:idx][pd.notna(dates[start:idx])]
+                if valid_dates.size and np.any(valid_dates[1:] < valid_dates[:-1]):
+                    raise ValueError("row-order contract requires (ticker, date) sorting within each ticker")
+            offsets.append(idx)
+            start = idx
+            if tickers is not None:
+                current = tickers[idx]
+    if pd.notna(dates[start:]).any():
+        valid_dates = dates[start:][pd.notna(dates[start:])]
+        if valid_dates.size and np.any(valid_dates[1:] < valid_dates[:-1]):
+            raise ValueError("row-order contract requires (ticker, date) sorting within each ticker")
+    offsets.append(dates.size)
+    return np.asarray(offsets, dtype=np.int32)
+
+
+def _build_date_group_index(dates: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    date_groups = _group_row_indices_by_date(np.asarray(dates))
+    if not date_groups:
+        return np.empty(0, dtype=np.int32), np.array([0], dtype=np.int32)
+    counts = np.fromiter((indices.size for indices in date_groups.values()), dtype=np.int32)
+    offsets = np.empty(counts.size + 1, dtype=np.int32)
+    offsets[0] = 0
+    offsets[1:] = np.cumsum(counts, dtype=np.int32)
+    flat = np.empty(int(offsets[-1]), dtype=np.int32)
+    cursor = 0
+    for indices in date_groups.values():
+        size = int(indices.size)
+        flat[cursor:cursor + size] = np.asarray(indices, dtype=np.int32)
+        cursor += size
+    return flat, offsets
+
+
+def _build_vm_context(features: dict[str, np.ndarray]) -> dict[str, Any] | None:
+    feature_names = [name for name in features.keys() if not name.startswith("__") and not name.startswith("target")]
+    if not feature_names:
+        return None
+    row_count = len(np.asarray(features[feature_names[0]]))
+    if row_count == 0:
+        return None
+    feature_matrix = np.column_stack([np.asarray(features[name], dtype=np.float64) for name in feature_names])
+    tickers = features.get("__ticker__")
+    dates = features.get("__date__")
+    if tickers is not None:
+        if dates is None:
+            raise ValueError("row-order contract requires __date__ when __ticker__ is provided")
+        ticker_group_offsets = _build_ticker_group_offsets(np.asarray(tickers), np.asarray(dates))
+    elif dates is not None:
+        ticker_group_offsets = _build_ticker_group_offsets(None, np.asarray(dates))
+    else:
+        ticker_group_offsets = np.array([0, row_count], dtype=np.int32)
+    if dates is None:
+        date_flat_indices = np.arange(row_count, dtype=np.int32)
+        date_group_offsets = np.array([0, row_count], dtype=np.int32)
+    else:
+        date_flat_indices, date_group_offsets = _build_date_group_index(np.asarray(dates))
+    return {
+        "cache_token": id(features),
+        "feature_names": feature_names,
+        "feature_matrix": feature_matrix,
+        "ticker_group_offsets": ticker_group_offsets,
+        "date_flat_indices": date_flat_indices,
+        "date_group_offsets": date_group_offsets,
+        "stack": np.empty((MAX_VM_STACK_DEPTH, row_count), dtype=np.float64),
+    }
+
+
+def _get_vm_context(features: dict[str, np.ndarray]) -> dict[str, Any] | None:
+    cached = features.get(VM_CONTEXT_KEY)
+    if cached is not None:
+        return cached
+    context = _build_vm_context(features)
+    if context is not None:
+        features[VM_CONTEXT_KEY] = context
+        features.setdefault(FEATURE_BANK_KEY, context["feature_matrix"])
+    return context
+
+
+def _get_vm_program(node: ge.GPNode, feature_names: list[str], features: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
+    cache = _thread_safe_feature_cache(features, VM_PROGRAM_CACHE_KEY, dict)
+    cache_key = (tuple(feature_names), node.to_string())
+    program = cache.get(cache_key)
+    if program is not None:
+        return program
+    program = _compile_tree_to_rpn(node, feature_names)
+    if program is not None:
+        cache[cache_key] = program
+    return program
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
+def _numba_protected_div(left: np.ndarray, right: np.ndarray, out: np.ndarray) -> None:
+    for idx in range(left.size):
+        denom = right[idx]
+        if np.isfinite(left[idx]) and np.isfinite(denom) and abs(denom) > 1e-12:
+            out[idx] = left[idx] / denom
+        else:
+            out[idx] = 0.0
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
+def _numba_rank_pct(x: np.ndarray, out: np.ndarray) -> None:
+    values = np.empty(x.size, dtype=np.float64)
+    values[:] = x
+    order = np.argsort(values)
+    valid_count = 0
+    idx = 0
+    while idx < x.size:
+        row = order[idx]
+        if not np.isfinite(values[row]):
+            out[row] = np.nan
+            idx += 1
+            continue
+        end = idx + 1
+        while end < x.size and values[order[end]] == values[row]:
+            end += 1
+        avg_rank = 0.5 * ((idx + 1) + end)
+        for pos in range(idx, end):
+            out[order[pos]] = avg_rank
+        valid_count += end - idx
+        idx = end
+    if valid_count == 0:
+        for row in range(out.size):
+            out[row] = np.nan
+        return
+    scale = float(valid_count)
+    for row in range(out.size):
+        if np.isfinite(out[row]):
+            out[row] = out[row] / scale
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
+def _numba_rolling_mean(x: np.ndarray, window: int, ticker_group_offsets: np.ndarray, out: np.ndarray) -> None:
+    values = np.empty(x.size, dtype=np.float64)
+    values[:] = x
+    out[:] = 0.0
+    for group_idx in range(ticker_group_offsets.size - 1):
+        start = ticker_group_offsets[group_idx]
+        stop = ticker_group_offsets[group_idx + 1]
+        for row in range(start + window - 1, stop):
+            acc = 0.0
+            valid = True
+            for offset in range(window):
+                value = values[row - window + 1 + offset]
+                if not np.isfinite(value):
+                    valid = False
+                    break
+                acc += value
+            if valid:
+                out[row] = acc / window
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
+def _numba_rolling_std(x: np.ndarray, window: int, ticker_group_offsets: np.ndarray, out: np.ndarray) -> None:
+    values = np.empty(x.size, dtype=np.float64)
+    values[:] = x
+    out[:] = 0.0
+    for group_idx in range(ticker_group_offsets.size - 1):
+        start = ticker_group_offsets[group_idx]
+        stop = ticker_group_offsets[group_idx + 1]
+        for row in range(start + window - 1, stop):
+            acc = 0.0
+            acc_sq = 0.0
+            valid = True
+            for offset in range(window):
+                value = values[row - window + 1 + offset]
+                if not np.isfinite(value):
+                    valid = False
+                    break
+                acc += value
+                acc_sq += value * value
+            if valid:
+                mean = acc / window
+                if window <= 1:
+                    out[row] = 0.0
+                    continue
+                var = max((acc_sq - window * mean * mean) / (window - 1), 0.0)
+                out[row] = np.sqrt(var)
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
+def _numba_rolling_rank(x: np.ndarray, window: int, ticker_group_offsets: np.ndarray, out: np.ndarray) -> None:
+    values = np.empty(x.size, dtype=np.float64)
+    values[:] = x
+    out[:] = 0.0
+    for group_idx in range(ticker_group_offsets.size - 1):
+        start = ticker_group_offsets[group_idx]
+        stop = ticker_group_offsets[group_idx + 1]
+        for row in range(start + window - 1, stop):
+            current = values[row]
+            if not np.isfinite(current):
+                continue
+            less_count = 0
+            equal_count = 0
+            valid = True
+            for offset in range(window):
+                value = values[row - window + 1 + offset]
+                if not np.isfinite(value):
+                    valid = False
+                    break
+                if value < current:
+                    less_count += 1
+                elif value == current:
+                    equal_count += 1
+            if valid:
+                out[row] = (less_count + 0.5 * equal_count) / window
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
+def _numba_rolling_decay(x: np.ndarray, window: int, ticker_group_offsets: np.ndarray, out: np.ndarray) -> None:
+    values = np.empty(x.size, dtype=np.float64)
+    values[:] = x
+    out[:] = 0.0
+    weight_sum = window * (window + 1) / 2.0
+    for group_idx in range(ticker_group_offsets.size - 1):
+        start = ticker_group_offsets[group_idx]
+        stop = ticker_group_offsets[group_idx + 1]
+        for row in range(start + window - 1, stop):
+            acc = 0.0
+            valid = True
+            for offset in range(window):
+                value = values[row - window + 1 + offset]
+                if not np.isfinite(value):
+                    valid = False
+                    break
+                acc += value * (offset + 1)
+            if valid:
+                out[row] = acc / weight_sum
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
+def _numba_cs_rank(x: np.ndarray, date_flat_indices: np.ndarray, date_group_offsets: np.ndarray, out: np.ndarray) -> None:
+    values = np.empty(x.size, dtype=np.float64)
+    values[:] = x
+    out[:] = np.nan
+    for group_idx in range(date_group_offsets.size - 1):
+        start = date_group_offsets[group_idx]
+        stop = date_group_offsets[group_idx + 1]
+        count = stop - start
+        if count <= 0:
+            continue
+        vals = np.empty(count, dtype=np.float64)
+        order = np.empty(count, dtype=np.int64)
+        for local_idx in range(count):
+            vals[local_idx] = values[date_flat_indices[start + local_idx]]
+            order[local_idx] = local_idx
+        order = order[np.argsort(vals)]
+        valid_count = 0
+        idx = 0
+        while idx < count:
+            local_row = order[idx]
+            if not np.isfinite(vals[local_row]):
+                idx += 1
+                continue
+            end = idx + 1
+            while end < count and vals[order[end]] == vals[local_row]:
+                end += 1
+            avg_rank = 0.5 * ((valid_count + 1) + (valid_count + end - idx))
+            for pos in range(idx, end):
+                out[date_flat_indices[start + order[pos]]] = avg_rank
+            valid_count += end - idx
+            idx = end
+        if valid_count > 0:
+            for local_idx in range(count):
+                row_idx = date_flat_indices[start + local_idx]
+                if np.isfinite(out[row_idx]):
+                    out[row_idx] = out[row_idx] / valid_count
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
+def _numba_cs_zscore(x: np.ndarray, date_flat_indices: np.ndarray, date_group_offsets: np.ndarray, out: np.ndarray) -> None:
+    values = np.empty(x.size, dtype=np.float64)
+    values[:] = x
+    out[:] = np.nan
+    for group_idx in range(date_group_offsets.size - 1):
+        start = date_group_offsets[group_idx]
+        stop = date_group_offsets[group_idx + 1]
+        acc = 0.0
+        acc_sq = 0.0
+        count = 0
+        for pos in range(start, stop):
+            value = values[date_flat_indices[pos]]
+            if np.isfinite(value):
+                acc += value
+                acc_sq += value * value
+                count += 1
+        if count == 0:
+            continue
+        mean = acc / count
+        std = np.sqrt(max(acc_sq / count - mean * mean, 0.0)) + 1e-9
+        for pos in range(start, stop):
+            row_idx = date_flat_indices[pos]
+            value = values[row_idx]
+            if np.isfinite(value):
+                out[row_idx] = (value - mean) / std
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
+def _numba_execute_rpn(
+    opcodes: np.ndarray,
+    operands: np.ndarray,
+    const_values: np.ndarray,
+    feature_matrix: np.ndarray,
+    ticker_group_offsets: np.ndarray,
+    date_flat_indices: np.ndarray,
+    date_group_offsets: np.ndarray,
+    stack: np.ndarray,
+) -> np.ndarray:
+    row_count = feature_matrix.shape[0]
+    sp = -1
+    for pc in range(opcodes.size):
+        opcode = opcodes[pc]
+        operand = operands[pc]
+        if opcode == OP_VAR:
+            sp += 1
+            stack[sp, :] = feature_matrix[:, operand]
+        elif opcode == OP_CONST:
+            sp += 1
+            stack[sp, :] = const_values[operand]
+        elif opcode == OP_ADD:
+            stack[sp - 1, :] = stack[sp - 1, :] + stack[sp, :]
+            sp -= 1
+        elif opcode == OP_SUB:
+            stack[sp - 1, :] = stack[sp - 1, :] - stack[sp, :]
+            sp -= 1
+        elif opcode == OP_MUL:
+            stack[sp - 1, :] = stack[sp - 1, :] * stack[sp, :]
+            sp -= 1
+        elif opcode == OP_DIV:
+            _numba_protected_div(stack[sp - 1, :], stack[sp, :], stack[sp - 1, :])
+            sp -= 1
+        elif opcode == OP_MAX:
+            stack[sp - 1, :] = np.maximum(stack[sp - 1, :], stack[sp, :])
+            sp -= 1
+        elif opcode == OP_MIN:
+            stack[sp - 1, :] = np.minimum(stack[sp - 1, :], stack[sp, :])
+            sp -= 1
+        elif opcode == OP_ABS:
+            stack[sp, :] = np.abs(stack[sp, :])
+        elif opcode == OP_LOG:
+            stack[sp, :] = np.sign(stack[sp, :]) * np.log1p(np.abs(stack[sp, :]))
+        elif opcode == OP_SQRT:
+            stack[sp, :] = np.sqrt(np.abs(stack[sp, :]))
+        elif opcode == OP_EXP:
+            stack[sp, :] = np.exp(np.clip(stack[sp, :], -50.0, 50.0))
+        elif opcode == OP_SIGMOID:
+            stack[sp, :] = 1.0 / (1.0 + np.exp(-np.clip(stack[sp, :], -50.0, 50.0)))
+        elif opcode == OP_NEG:
+            stack[sp, :] = -stack[sp, :]
+        elif opcode == OP_RANK:
+            _numba_rank_pct(stack[sp, :], stack[sp, :])
+        elif opcode == OP_CS_RANK:
+            _numba_cs_rank(stack[sp, :], date_flat_indices, date_group_offsets, stack[sp, :])
+        elif opcode == OP_CS_ZSCORE:
+            _numba_cs_zscore(stack[sp, :], date_flat_indices, date_group_offsets, stack[sp, :])
+        elif opcode == OP_TS_STD:
+            _numba_rolling_std(stack[sp, :], operand, ticker_group_offsets, stack[sp, :])
+        elif opcode == OP_TS_MEAN:
+            _numba_rolling_mean(stack[sp, :], operand, ticker_group_offsets, stack[sp, :])
+        elif opcode == OP_TS_RANK:
+            _numba_rolling_rank(stack[sp, :], operand, ticker_group_offsets, stack[sp, :])
+        elif opcode == OP_DECAY_LINEAR:
+            _numba_rolling_decay(stack[sp, :], operand, ticker_group_offsets, stack[sp, :])
+    result = np.empty(row_count, dtype=np.float64)
+    result[:] = stack[sp, :]
+    return result
 
 
 @dataclass
@@ -696,11 +1214,31 @@ def load_dataset(args: Any) -> pd.DataFrame:
 
 class GPIndividualV4(ORIGINAL_GPINDIVIDUAL):
     def _execute_tree(self, node: ge.GPNode, features: dict[str, np.ndarray]) -> np.ndarray:
-        cache_key = (id(features.get(FEATURE_BANK_KEY, features.get("__date__"))), node.to_string())
+        context = _get_vm_context(features)
+        cache_token = id(features.get(FEATURE_BANK_KEY, features.get("__date__")))
+        if context is not None:
+            cache_token = int(context["cache_token"])
+        cache_key = (cache_token, node.to_string())
         cached = _feature_cache_get(features, SUBTREE_CACHE_KEY, cache_key)
         if cached is not None:
             return cached.copy()
-        result = super()._execute_tree(node, features)
+        result: np.ndarray | None = None
+        if context is not None:
+            program = _get_vm_program(node, context["feature_names"], features)
+            if program is not None:
+                opcodes, operands, const_values = program
+                result = _numba_execute_rpn(
+                    opcodes,
+                    operands,
+                    const_values,
+                    context["feature_matrix"],
+                    context["ticker_group_offsets"],
+                    context["date_flat_indices"],
+                    context["date_group_offsets"],
+                    context["stack"],
+                )
+        if result is None:
+            result = super()._execute_tree(node, features)
         _feature_cache_set(features, SUBTREE_CACHE_KEY, cache_key, np.asarray(result, dtype=np.float64).copy())
         return result
 
@@ -1015,16 +1553,17 @@ def write_l2_report(report_path: Path, gate6_metrics: dict[str, Any] | None, ver
         ".agents/skills/ml-dl-rl/SKILL.md",
         ".agents/skills/backtesting-pit-safety/SKILL.md",
         ".agents/skills/vietnam-market-data/SKILL.md",
+        ".ly_state/session/gp_numba_jit_vm_plan.md",
         "scripts/genetic_alpha_evolution_v4.py",
-        "tests/test_genetic_alpha_evolution_v4.py",
+        "tests/test_gp_numba_jit_vm.py",
     ]
     lines = [
-        "# L2 Report - GP V4 Advanced Implementation",
+        "# L2 Report - GP Numba JIT VM Implementation",
         "",
-        "- Session: `l2_role16_gp_v4_advanced_impl_20260705`",
-        "- Gate: `GP_V4_ADVANCED_IMPLEMENTATION`",
+        "- Session: `l2_role16_gp_numba_jit_vm_implementation_20260705`",
+        "- Gate: `GP_NUMBA_JIT_VM_IMPLEMENTATION`",
         "- Role: `16 machine-learning-engineer`",
-        "- Scope: `scripts/genetic_alpha_evolution_v4.py`, `tests/test_genetic_alpha_evolution_v4.py`",
+        "- Scope: `scripts/genetic_alpha_evolution_v4.py`, `tests/test_gp_numba_jit_vm.py`",
         "",
         "## Repo-Local Files Read",
         *[f"- `{path}`" for path in role_and_skill_files],

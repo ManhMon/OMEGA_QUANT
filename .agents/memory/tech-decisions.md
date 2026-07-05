@@ -151,5 +151,16 @@ updated: 2026-07-02
   - **Atomic GIL Operations**: Removed per-node get/set locks inside `_execute_tree` as CPython dictionary operations are atomic, converting lock contention to benign races with `.copy()` array isolation.
   - **Thread-safe cache helpers**: Added `_feature_cache_get` and `_feature_cache_set` locking only cache creation/eviction.
 
+## 14. GP Numba JIT-Compiled Stack-Based VM (2026-07-05)
+- **Decision Date**: 2026-07-05
+- **Approved Gate**: `GP_NUMBA_JIT_VM_IMPLEMENTATION` (Approved)
+- **Problem**: Python GIL and object-traversal overhead serialize execution of recursive `_execute_tree` calls even when using multiple threads. High latency on large datasets (1.25M rows) results in ~22 minutes per generation.
+- **Solution**:
+  - **RPN Bytecode Compiler**: Flattened symbolic trees into parallel `opcodes` (int32) and `operands` (int32) arrays.
+  - **JIT VM Executor**: Implemented `@njit(cache=True, nogil=True, error_model='numpy')` function `_numba_execute_rpn` using a fixed 2D stack to guarantee memory stays $\le 4\text{ GB}$.
+  - **Ticker rolling boundaries**: Provided `ticker_group_offsets` for contiguous time-series calculations.
+  - **Daily CS boundaries**: Passed `date_flat_indices` and `date_group_offsets` to execute `cs_rank` and `cs_zscore` slice-by-slice without matrix transposition or cross-date leakage.
+
+
 
 
