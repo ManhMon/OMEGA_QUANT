@@ -127,3 +127,12 @@ updated: 2026-07-02
 - **WorldQuant-Style Pipeline Architecture**:
   - `Feature Bank` $\rightarrow$ `GP Engine` $\rightarrow$ `IC Engine` $\rightarrow$ `Alpha Pool` $\rightarrow$ `Correlation Filter` $\rightarrow$ `Ensemble`.
 
+## 11. GP V4 Advanced Optimization (Rules 5, 9, 11) Design Decisions
+- **Decision Date**: 2026-07-05
+- **Approved Plan Gate**: `GP_V4_ADVANCED_PLAN_REVIEW`
+- **Design Parameters**:
+  - **Early Rejection**: Chronological evaluation (Fold 0 -> Fold 1 -> Fold 2) on Train Folds only. Hard penalty of `-2.0` on failure, with 5% random auditing.
+  - **Island Model**: 3 independent processes/threads with distinct deterministic seeds (`base_seed + island_idx * 1000`) and island-specific caches. Ring migration of symbolic JSON trees every 5 generations.
+  - **Batch Fitness**: Gộp lô 32 ứng viên sau khi tính xong tín hiệu 1D, xử lý song song OLS neutralization và Spearman IC bằng mảng NumPy 3D để tối ưu hóa CPU.
+  - **Performance Acceptance**: Wall-clock speedup $\ge 3.0x$ compared to V4 basic, peak RSS memory $\le 4GB$. Measured via `scripts/benchmark_v4_advanced.py`.
+
