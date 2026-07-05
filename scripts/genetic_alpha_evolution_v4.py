@@ -142,59 +142,31 @@ def _batch_post_process(alpha_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarra
     return standardized, valid_fraction.astype(np.float64, copy=False)
 
 
-def _rankdata_average_3d(values: np.ndarray) -> np.ndarray:
-    order = np.argsort(values, axis=1, kind="mergesort")
-    sorted_values = np.take_along_axis(values, order, axis=1)
-    ordinal = np.broadcast_to(np.arange(1, values.shape[1] + 1, dtype=np.float64)[None, :, None], values.shape)
-    sorted_ordinal = np.take_along_axis(ordinal, order, axis=1)
-    sorted_ranks = np.empty_like(sorted_ordinal)
-    for row in range(values.shape[0]):
-        row_vals = sorted_values[row]
-        row_ord = sorted_ordinal[row]
-        row_ranks = sorted_ranks[row]
-        for col in range(values.shape[2]):
-            start = 0
-            while start < row_vals.shape[0]:
-                end = start + 1
-                while end < row_vals.shape[0] and row_vals[end, col] == row_vals[start, col]:
-                    end += 1
-                avg_rank = 0.5 * (row_ord[start, col] + row_ord[end - 1, col])
-                row_ranks[start:end, col] = avg_rank
-                start = end
-    inverse = np.argsort(order, axis=1, kind="mergesort")
-    return np.take_along_axis(sorted_ranks, inverse, axis=1)
-
-
-def _pearson_by_slice_3d(a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    a_centered = a - np.mean(a, axis=1, keepdims=True)
-    b_centered = b - np.mean(b, axis=1, keepdims=True)
-    num = np.sum(a_centered * b_centered, axis=1)
-    denom = np.sqrt(np.sum(a_centered * a_centered, axis=1) * np.sum(b_centered * b_centered, axis=1))
-    return np.divide(num, denom, out=np.full_like(num, np.nan), where=denom > 1e-12)
-
-
-def _batch_daily_ic_matrix(alpha_matrix: np.ndarray, target_matrix: np.ndarray, date_arr: np.ndarray, eval_mask: np.ndarray) -> np.ndarray:
-    valid_dates = pd.unique(date_arr[pd.notna(date_arr)])
-    if len(valid_dates) == 0:
-        return np.empty((0, alpha_matrix.shape[1]), dtype=np.float64)
-    counts = [int(np.count_nonzero((date_arr == current_date) & eval_mask)) for current_date in valid_dates]
-    usable = [idx for idx, count in enumerate(counts) if count > 5]
-    if not usable:
-        return np.empty((0, alpha_matrix.shape[1]), dtype=np.float64)
-    max_count = max(counts[idx] for idx in usable)
-    alpha_cube = np.full((len(usable), max_count, alpha_matrix.shape[1]), np.nan, dtype=np.float64)
-    target_cube = np.full_like(alpha_cube, np.nan)
-    for out_idx, date_idx in enumerate(usable):
-        current_date = valid_dates[date_idx]
-        row_mask = (date_arr == current_date) & eval_mask
-        alpha_slice = alpha_matrix[row_mask]
-        target_slice = target_matrix[row_mask]
-        count = alpha_slice.shape[0]
-        alpha_cube[out_idx, :count, :] = alpha_slice
-        target_cube[out_idx, :count, :] = target_slice
-    alpha_ranks = _rankdata_average_3d(alpha_cube)
-    target_ranks = _rankdata_average_3d(target_cube)
-    return _pearson_by_slice_3d(alpha_ranks, target_ranks)
+@njit(cache=True)
+def _numba_batch_daily_ics(
+    alpha_matrix: np.ndarray,
+    target: np.ndarray,
+    date_ids: np.ndarray,
+    eval_mask_matrix: np.ndarray,
+) -> np.ndarray:
+    candidate_count = alpha_matrix.shape[1]
+    n_dates = 0
+    for i in range(date_ids.size):
+        if date_ids[i] >= n_dates:
+            n_dates = date_ids[i] + 1
+    out = np.empty((n_dates, candidate_count), dtype=np.float64)
+    out[:] = np.nan
+    for candidate_idx in range(candidate_count):
+        daily_ics = _numba_daily_ics(
+            alpha_matrix[:, candidate_idx],
+            target,
+            date_ids,
+            eval_mask_matrix[:, candidate_idx],
+        )
+        limit = min(n_dates, daily_ics.size)
+        for date_idx in range(limit):
+            out[date_idx, candidate_idx] = daily_ics[date_idx]
+    return out
 
 
 def _batch_fold_ir_scores(
@@ -204,6 +176,7 @@ def _batch_fold_ir_scores(
     config: ge.GPConfig,
     *,
     tree_texts: list[str],
+    pre_neutralized: bool = False,
 ) -> dict[int, tuple[float, bool]]:
     fold_structure = features.get(ge.FOLD_STRUCTURE_CACHE_KEY)
     if fold_structure is None:
@@ -212,7 +185,7 @@ def _batch_fold_ir_scores(
     if not fold_structure:
         return {idx: (0.0, False) for idx in range(alpha_matrix.shape[1])}
     fold_views = _build_fold_views(features, fold_structure)
-    target_col = np.asarray(target, dtype=np.float64)[:, None]
+    target_arr = np.asarray(target, dtype=np.float64)
     scores: dict[int, tuple[float, bool]] = {}
     fold_means_by_candidate: list[list[float]] = [[] for _ in range(alpha_matrix.shape[1])]
     rejected = [False] * alpha_matrix.shape[1]
@@ -220,22 +193,29 @@ def _batch_fold_ir_scores(
     for fold_idx, (fold_mask, _fold_dates) in enumerate(fold_structure):
         fold_features = fold_views[fold_idx]
         alpha_fold = np.asarray(alpha_matrix[fold_mask], dtype=np.float64)
-        target_fold = np.asarray(target_col[fold_mask], dtype=np.float64)
+        target_fold = np.asarray(target_arr[fold_mask], dtype=np.float64)
         if config.neutralize_size_sector and fold_features.get("__sector__") is not None:
-            alpha_fold = ge._batch_neutralize_cross_section(
-                alpha_fold,
-                np.asarray(fold_features["__date__"]),
-                fold_features[ge.NEUTRALIZATION_CACHE_KEY],
+            if not pre_neutralized:
+                alpha_fold = ge._batch_neutralize_cross_section(
+                    alpha_fold,
+                    np.asarray(fold_features["__date__"]),
+                    fold_features[ge.NEUTRALIZATION_CACHE_KEY],
+                )
+            target_fold = _neutralize_target_once(
+                target_fold,
+                features,
+                fold_features,
+                (id(target), fold_idx),
             )
-            target_fold = ge._batch_neutralize_cross_section(
-                np.repeat(target_fold, alpha_fold.shape[1], axis=1),
-                np.asarray(fold_features["__date__"]),
-                fold_features[ge.NEUTRALIZATION_CACHE_KEY],
-            )
-        else:
-            target_fold = np.repeat(target_fold, alpha_fold.shape[1], axis=1)
-        eval_mask = ge._evaluation_mask(alpha_fold[:, 0], target_fold[:, 0], fold_features)
-        daily_ic_matrix = _batch_daily_ic_matrix(alpha_fold, target_fold, np.asarray(fold_features["__date__"]), eval_mask)
+        eval_mask_matrix = np.column_stack(
+            [ge._evaluation_mask(alpha_fold[:, idx], target_fold, fold_features) for idx in range(alpha_fold.shape[1])]
+        )
+        daily_ic_matrix = _numba_batch_daily_ics(
+            alpha_fold,
+            target_fold,
+            _factorize_dates(np.asarray(fold_features["__date__"])),
+            np.asarray(eval_mask_matrix, dtype=np.bool_),
+        )
         fold_ics = np.nanmean(daily_ic_matrix, axis=0) if daily_ic_matrix.size else np.full(alpha_fold.shape[1], np.nan)
         for candidate_idx, fold_ic in enumerate(fold_ics.tolist()):
             if np.isfinite(fold_ic):
@@ -673,7 +653,14 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
                     )
                     active_indices = np.flatnonzero(keep_mask)
                     tree_texts = [batch[idx].tree.to_string() for idx in active_indices]
-                    batch_scores = _batch_fold_ir_scores(neutralized_alpha, target, features, self.config, tree_texts=tree_texts)
+                    batch_scores = _batch_fold_ir_scores(
+                        neutralized_alpha,
+                        target,
+                        features,
+                        self.config,
+                        tree_texts=tree_texts,
+                        pre_neutralized=True,
+                    )
                     score_cache = {
                         int(active_indices[idx]): batch_scores[idx]
                         for idx in range(len(active_indices))
@@ -773,6 +760,11 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
         stagnant_generations = 0
         for generation in range(self.config.generations):
             gen_features, gen_target = self._prepare_generation_features(features, target, generation)
+            pre_neutralized = bool(
+                self.config.neutralize_size_sector
+                and gen_features.get(ge.NEUTRALIZATION_CACHE_KEY) is not None
+                and self._should_use_batch_neutralization(gen_features)
+            )
             evaluated_islands: list[list[ge.GPIndividual]] = []
             base_seed = int(self.config.random_seed or 0) + generation * 10_000
             for island_idx, island in enumerate(islands):
@@ -780,6 +772,8 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
                 island_features.pop(SUBTREE_CACHE_KEY, None)
                 island_features.pop(TARGET_NEUTRALIZED_CACHE_KEY, None)
                 island_features.pop(BATCH_FOLD_IR_CACHE_KEY, None)
+                if pre_neutralized:
+                    island_features["__pre_neutralized__"] = True
                 island_seed = base_seed + island_idx * 1000
                 np.random.seed(island_seed)
                 random.seed(island_seed)

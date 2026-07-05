@@ -224,6 +224,64 @@ def test_rule5_batch_fold_ir_matches_scalar_within_tolerance():
         assert batched[idx][1] is False
 
 
+def test_rule5_batch_fold_ir_matches_scalar_random_probe():
+    rng = np.random.default_rng(42)
+    row_count = 72
+    dates = pd.to_datetime(["2024-01-02"] * 12 + ["2024-01-03"] * 12 + ["2024-01-04"] * 12 + ["2024-01-05"] * 12 + ["2024-01-08"] * 12 + ["2024-01-09"] * 12).to_numpy()
+    features = {
+        "returns_1d": rng.normal(size=row_count),
+        "returns_5d": rng.normal(size=row_count),
+        "__date__": dates,
+        "__log_market_cap__": rng.uniform(10.0, 20.0, size=row_count),
+        "__sector__": np.tile(np.array([0, 0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5]), 6),
+        "__liquidity_mask__": rng.random(row_count) > 0.2,
+    }
+    features[ge.FOLD_STRUCTURE_CACHE_KEY] = ge._build_time_fold_structure(features["__date__"], 3)
+    features[ge.NEUTRALIZATION_CACHE_KEY] = ge._build_neutralization_cache(
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+    )
+    target = rng.normal(size=row_count)
+    alpha_matrix = rng.normal(size=(row_count, 9))
+
+    for neutralize_size_sector in (False, True):
+        config = ge.GPConfig(
+            use_time_fold_ir=True,
+            time_folds=3,
+            fold_ir_std_floor=0.03,
+            neutralize_size_sector=neutralize_size_sector,
+            early_reject_audit_rate=1.0,
+        )
+        batch_input = alpha_matrix
+        pre_neutralized = False
+        if neutralize_size_sector:
+            batch_input = ge._batch_neutralize_cross_section(
+                alpha_matrix,
+                np.asarray(features["__date__"]),
+                features[ge.NEUTRALIZATION_CACHE_KEY],
+            )
+            pre_neutralized = True
+        batched = v4._batch_fold_ir_scores(
+            batch_input,
+            target,
+            dict(features),
+            config,
+            tree_texts=[f"tree_{idx}" for idx in range(alpha_matrix.shape[1])],
+            pre_neutralized=pre_neutralized,
+        )
+        for idx in range(alpha_matrix.shape[1]):
+            scalar = v4._compute_time_fold_ir_v4(
+                alpha_matrix[:, idx],
+                target,
+                dict(features),
+                config,
+                pre_neutralized=False,
+            )
+            assert abs(batched[idx][0] - scalar) <= 1e-12
+            assert batched[idx][1] is False
+
+
 def test_rule11_island_migration_replaces_bottom_of_next_island():
     config = ge.GPConfig(population_size=20, island_count=3, island_migration_rate=0.05)
     engine = v4.GeneticEngineV4(config=config)

@@ -13,6 +13,7 @@ from types import SimpleNamespace
 
 import numpy as np
 import psutil
+from joblib import parallel_backend
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "scripts"))
@@ -79,6 +80,10 @@ def build_engine(args: argparse.Namespace, features: dict[str, np.ndarray]) -> G
     return GeneticEngine(config=config)
 
 
+def _joblib_backend_name(name: str) -> str:
+    return "threading" if name == "threads" else name
+
+
 def run_benchmark(args: argparse.Namespace) -> dict[str, float | int]:
     v4.install_v4_optimizations()
     df = v4.load_dataset(args)
@@ -95,14 +100,17 @@ def run_benchmark(args: argparse.Namespace) -> dict[str, float | int]:
 
     sampler = threading.Thread(target=sample_rss, daemon=True)
     sampler.start()
-    t0 = time.perf_counter()
-    if hasattr(engine, "config"):
-        engine.config.generations = 1
-    engine.evolve(features=features, target=target)
-    if hasattr(engine, "config"):
-        engine.config.generations = 5
-    engine.evolve(features=features, target=target)
-    wall_clock = time.perf_counter() - t0
+    backend = _joblib_backend_name(args.backend)
+    with parallel_backend(backend):
+        if hasattr(engine, "config"):
+            engine.config.generations = 1
+        engine.evolve(features=features, target=target)
+    with parallel_backend(backend):
+        if hasattr(engine, "config"):
+            engine.config.generations = 5
+        t0 = time.perf_counter()
+        engine.evolve(features=features, target=target)
+        wall_clock = time.perf_counter() - t0
     stop_event.set()
     sampler.join(timeout=1.0)
     return {
