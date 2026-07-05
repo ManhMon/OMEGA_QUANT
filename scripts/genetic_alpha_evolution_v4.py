@@ -1,8 +1,12 @@
-"""Genetic Alpha Evolution V4 - performance-optimized wrapper over V3."""
+"""Genetic Alpha Evolution V4 - advanced optimization wrapper over V3."""
 
 from __future__ import annotations
 
+import hashlib
+import random
 import threading
+import time as pytime
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -24,12 +28,35 @@ except ModuleNotFoundError:  # ponytail: perf ceiling until numba installed.
 
 
 ORIGINAL_GPINDIVIDUAL = ge.GPIndividual
+ORIGINAL_GENETIC_ENGINE = ge.GeneticEngine
+ORIGINAL_GPCONFIG = ge.GPConfig
 ORIGINAL_COMPUTE_TIME_FOLD_IR = ge._compute_time_fold_ir
-SESSION_REPORT_NAME = "l2_role16_gp_v4_impl_20260704.md"
+SESSION_REPORT_NAME = "l2_role16_gp_v4_advanced_impl_20260705.md"
 SUBTREE_CACHE_KEY = "__subtree_cache__"
 SUBTREE_CACHE_LOCK_KEY = "__subtree_cache_lock__"
 TARGET_NEUTRALIZED_CACHE_KEY = "__target_neutralized_cache__"
 FEATURE_BANK_KEY = "__feature_bank__"
+BATCH_FOLD_IR_CACHE_KEY = "__batch_fold_ir_cache__"
+EARLY_REJECT_PENALTY = -2.0
+EARLY_REJECT_FOLD_IC_THRESHOLD = -0.02
+EARLY_REJECT_CUMAVG_THRESHOLD = 0.0
+AUDIT_SAMPLE_RATE = 0.05
+BATCH_FITNESS_SIZE = 32
+ISLAND_COUNT = 3
+ISLAND_MIGRATION_INTERVAL = 5
+ISLAND_MIGRATION_RATE = 0.05
+
+
+@dataclass
+class GPConfigV4(ORIGINAL_GPCONFIG):
+    batch_fitness_size: int = BATCH_FITNESS_SIZE
+    island_count: int = ISLAND_COUNT
+    island_migration_interval: int = ISLAND_MIGRATION_INTERVAL
+    island_migration_rate: float = ISLAND_MIGRATION_RATE
+    early_reject_penalty: float = EARLY_REJECT_PENALTY
+    early_reject_fold_ic_threshold: float = EARLY_REJECT_FOLD_IC_THRESHOLD
+    early_reject_cumavg_threshold: float = EARLY_REJECT_CUMAVG_THRESHOLD
+    early_reject_audit_rate: float = AUDIT_SAMPLE_RATE
 
 
 def _thread_safe_feature_cache(features: dict[str, Any], key: str, factory: Any) -> Any:
@@ -42,6 +69,197 @@ def _thread_safe_feature_cache(features: dict[str, Any], key: str, factory: Any)
 
 def _feature_array_length(features: dict[str, np.ndarray]) -> int:
     return len(next(iter(features.values())))
+
+
+def _safe_expr_hash(text: str) -> int:
+    return int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:8], "big", signed=False)
+
+
+def _is_audit_sample(tree_text: str, config: ge.GPConfig) -> bool:
+    rate = float(getattr(config, "early_reject_audit_rate", AUDIT_SAMPLE_RATE))
+    if rate <= 0.0:
+        return False
+    if rate >= 1.0:
+        return True
+    seed = int(getattr(config, "random_seed", 0) or 0)
+    value = (_safe_expr_hash(tree_text) ^ seed) % 10_000
+    return value < int(round(rate * 10_000))
+
+
+def _fitness_sort_value(individual: ge.GPIndividual) -> float:
+    fitness = float(getattr(individual, "fitness", np.nan))
+    return fitness if np.isfinite(fitness) else -np.inf
+
+
+def _stable_rank_population(population: list[ge.GPIndividual]) -> list[ge.GPIndividual]:
+    by_expr = sorted(population, key=lambda ind: ind.tree.to_string())
+    return sorted(by_expr, key=_fitness_sort_value, reverse=True)
+
+
+def _copy_individual(individual: ge.GPIndividual) -> ge.GPIndividual:
+    clone = ge.GPIndividual(tree=individual.tree.copy())
+    clone.fitness = individual.fitness
+    clone.ic_score = individual.ic_score
+    clone.complexity_penalty = individual.complexity_penalty
+    clone.diversity_penalty = individual.diversity_penalty
+    clone.transaction_cost_penalty = individual.transaction_cost_penalty
+    clone.orthogonalization_penalty = individual.orthogonalization_penalty
+    clone.turnover_rate = individual.turnover_rate
+    return clone
+
+
+def _slice_row_aligned_features(features: dict[str, Any], mask: np.ndarray) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    row_count = _feature_array_length(features)
+    for key, value in features.items():
+        try:
+            value_arr = np.asarray(value)
+        except ValueError:
+            continue
+        if value_arr.ndim > 0 and len(value_arr) == row_count:
+            out[key] = value_arr[mask]
+    return out
+
+
+def _build_fold_views(features: dict[str, np.ndarray], fold_structure: tuple[tuple[np.ndarray, np.ndarray], ...]) -> list[dict[str, np.ndarray]]:
+    fold_views = [_slice_row_aligned_features(features, fold_mask) for fold_mask, _ in fold_structure]
+    neutralization_cache = features.get(ge.NEUTRALIZATION_CACHE_KEY)
+    if neutralization_cache is not None:
+        for fold_view in fold_views:
+            fold_view[ge.NEUTRALIZATION_CACHE_KEY] = neutralization_cache
+    return fold_views
+
+
+def _batch_post_process(alpha_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    lower = np.nanpercentile(alpha_matrix, 1, axis=0)
+    upper = np.nanpercentile(alpha_matrix, 99, axis=0)
+    clipped = np.clip(alpha_matrix, lower[None, :], upper[None, :])
+    mean = np.nanmean(clipped, axis=0)
+    std = np.nanstd(clipped, axis=0)
+    standardized = (clipped - mean[None, :]) / (std[None, :] + 1e-9)
+    standardized = np.nan_to_num(standardized, nan=0.0, posinf=0.0, neginf=0.0)
+    valid_fraction = np.mean(np.isfinite(alpha_matrix), axis=0)
+    return standardized, valid_fraction.astype(np.float64, copy=False)
+
+
+def _rankdata_average_3d(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values, axis=1, kind="mergesort")
+    sorted_values = np.take_along_axis(values, order, axis=1)
+    ordinal = np.broadcast_to(np.arange(1, values.shape[1] + 1, dtype=np.float64)[None, :, None], values.shape)
+    sorted_ordinal = np.take_along_axis(ordinal, order, axis=1)
+    sorted_ranks = np.empty_like(sorted_ordinal)
+    for row in range(values.shape[0]):
+        row_vals = sorted_values[row]
+        row_ord = sorted_ordinal[row]
+        row_ranks = sorted_ranks[row]
+        for col in range(values.shape[2]):
+            start = 0
+            while start < row_vals.shape[0]:
+                end = start + 1
+                while end < row_vals.shape[0] and row_vals[end, col] == row_vals[start, col]:
+                    end += 1
+                avg_rank = 0.5 * (row_ord[start, col] + row_ord[end - 1, col])
+                row_ranks[start:end, col] = avg_rank
+                start = end
+    inverse = np.argsort(order, axis=1, kind="mergesort")
+    return np.take_along_axis(sorted_ranks, inverse, axis=1)
+
+
+def _pearson_by_slice_3d(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    a_centered = a - np.mean(a, axis=1, keepdims=True)
+    b_centered = b - np.mean(b, axis=1, keepdims=True)
+    num = np.sum(a_centered * b_centered, axis=1)
+    denom = np.sqrt(np.sum(a_centered * a_centered, axis=1) * np.sum(b_centered * b_centered, axis=1))
+    return np.divide(num, denom, out=np.full_like(num, np.nan), where=denom > 1e-12)
+
+
+def _batch_daily_ic_matrix(alpha_matrix: np.ndarray, target_matrix: np.ndarray, date_arr: np.ndarray, eval_mask: np.ndarray) -> np.ndarray:
+    valid_dates = pd.unique(date_arr[pd.notna(date_arr)])
+    if len(valid_dates) == 0:
+        return np.empty((0, alpha_matrix.shape[1]), dtype=np.float64)
+    counts = [int(np.count_nonzero((date_arr == current_date) & eval_mask)) for current_date in valid_dates]
+    usable = [idx for idx, count in enumerate(counts) if count > 5]
+    if not usable:
+        return np.empty((0, alpha_matrix.shape[1]), dtype=np.float64)
+    max_count = max(counts[idx] for idx in usable)
+    alpha_cube = np.full((len(usable), max_count, alpha_matrix.shape[1]), np.nan, dtype=np.float64)
+    target_cube = np.full_like(alpha_cube, np.nan)
+    for out_idx, date_idx in enumerate(usable):
+        current_date = valid_dates[date_idx]
+        row_mask = (date_arr == current_date) & eval_mask
+        alpha_slice = alpha_matrix[row_mask]
+        target_slice = target_matrix[row_mask]
+        count = alpha_slice.shape[0]
+        alpha_cube[out_idx, :count, :] = alpha_slice
+        target_cube[out_idx, :count, :] = target_slice
+    alpha_ranks = _rankdata_average_3d(alpha_cube)
+    target_ranks = _rankdata_average_3d(target_cube)
+    return _pearson_by_slice_3d(alpha_ranks, target_ranks)
+
+
+def _batch_fold_ir_scores(
+    alpha_matrix: np.ndarray,
+    target: np.ndarray,
+    features: dict[str, np.ndarray],
+    config: ge.GPConfig,
+    *,
+    tree_texts: list[str],
+) -> dict[int, tuple[float, bool]]:
+    fold_structure = features.get(ge.FOLD_STRUCTURE_CACHE_KEY)
+    if fold_structure is None:
+        fold_count = 2 if getattr(config, "time_folds_fast_mode", False) else int(config.time_folds)
+        fold_structure = ge._build_time_fold_structure(np.asarray(features["__date__"]), fold_count)
+    if not fold_structure:
+        return {idx: (0.0, False) for idx in range(alpha_matrix.shape[1])}
+    fold_views = _build_fold_views(features, fold_structure)
+    target_col = np.asarray(target, dtype=np.float64)[:, None]
+    scores: dict[int, tuple[float, bool]] = {}
+    fold_means_by_candidate: list[list[float]] = [[] for _ in range(alpha_matrix.shape[1])]
+    rejected = [False] * alpha_matrix.shape[1]
+    audit_mask = [_is_audit_sample(tree_text, config) for tree_text in tree_texts]
+    for fold_idx, (fold_mask, _fold_dates) in enumerate(fold_structure):
+        fold_features = fold_views[fold_idx]
+        alpha_fold = np.asarray(alpha_matrix[fold_mask], dtype=np.float64)
+        target_fold = np.asarray(target_col[fold_mask], dtype=np.float64)
+        if config.neutralize_size_sector and fold_features.get("__sector__") is not None:
+            alpha_fold = ge._batch_neutralize_cross_section(
+                alpha_fold,
+                np.asarray(fold_features["__date__"]),
+                fold_features[ge.NEUTRALIZATION_CACHE_KEY],
+            )
+            target_fold = ge._batch_neutralize_cross_section(
+                np.repeat(target_fold, alpha_fold.shape[1], axis=1),
+                np.asarray(fold_features["__date__"]),
+                fold_features[ge.NEUTRALIZATION_CACHE_KEY],
+            )
+        else:
+            target_fold = np.repeat(target_fold, alpha_fold.shape[1], axis=1)
+        eval_mask = ge._evaluation_mask(alpha_fold[:, 0], target_fold[:, 0], fold_features)
+        daily_ic_matrix = _batch_daily_ic_matrix(alpha_fold, target_fold, np.asarray(fold_features["__date__"]), eval_mask)
+        fold_ics = np.nanmean(daily_ic_matrix, axis=0) if daily_ic_matrix.size else np.full(alpha_fold.shape[1], np.nan)
+        for candidate_idx, fold_ic in enumerate(fold_ics.tolist()):
+            if np.isfinite(fold_ic):
+                fold_means_by_candidate[candidate_idx].append(float(fold_ic))
+            if fold_idx == 0 and not audit_mask[candidate_idx]:
+                cumulative = float(np.mean(fold_means_by_candidate[candidate_idx])) if fold_means_by_candidate[candidate_idx] else np.nan
+                if (
+                    np.isfinite(fold_ic)
+                    and (
+                        fold_ic < float(getattr(config, "early_reject_fold_ic_threshold", EARLY_REJECT_FOLD_IC_THRESHOLD))
+                        or cumulative < float(getattr(config, "early_reject_cumavg_threshold", EARLY_REJECT_CUMAVG_THRESHOLD))
+                    )
+                ):
+                    rejected[candidate_idx] = True
+    for idx, fold_ics in enumerate(fold_means_by_candidate):
+        if rejected[idx]:
+            scores[idx] = (float(getattr(config, "early_reject_penalty", EARLY_REJECT_PENALTY)), True)
+            continue
+        if len(fold_ics) < 2:
+            scores[idx] = (0.0, False)
+            continue
+        raw_ir = float(np.mean(fold_ics) / max(float(np.std(fold_ics, ddof=1)), float(config.fold_ir_std_floor)))
+        scores[idx] = (float(np.clip(raw_ir, -2.0, 2.0)), False)
+    return scores
 
 
 @njit(cache=True)
@@ -191,6 +409,11 @@ def _compute_time_fold_ir_v4(
     *,
     pre_neutralized: bool = False,
 ) -> float:
+    batch_fold_cache = features.get(BATCH_FOLD_IR_CACHE_KEY)
+    if batch_fold_cache is not None and "__batch_candidate_id__" in features:
+        cached = batch_fold_cache.get(features["__batch_candidate_id__"])
+        if cached is not None:
+            return float(cached[0])
     date_arr = features.get("__date__")
     if date_arr is None:
         return 0.0
@@ -200,6 +423,7 @@ def _compute_time_fold_ir_v4(
     if fold_structure is None:
         fold_structure = ge._build_time_fold_structure(date_arr, fold_count)
     fold_ics: list[float] = []
+    audit_sample = _is_audit_sample(features.get("__candidate_tree_text__", ""), config)
     for fold_idx, (fold_mask, _fold_dates) in enumerate(fold_structure):
         fold_features: dict[str, np.ndarray] = {}
         for key, value in features.items():
@@ -224,6 +448,15 @@ def _compute_time_fold_ir_v4(
         ic_value = _compute_daily_ic_mean(alpha_fold, target_fold, fold_features)
         if np.isfinite(ic_value):
             fold_ics.append(float(ic_value))
+            if (
+                fold_idx == 0
+                and not audit_sample
+                and (
+                    ic_value < float(getattr(config, "early_reject_fold_ic_threshold", EARLY_REJECT_FOLD_IC_THRESHOLD))
+                    or float(np.mean(fold_ics)) < float(getattr(config, "early_reject_cumavg_threshold", EARLY_REJECT_CUMAVG_THRESHOLD))
+                )
+            ):
+                return float(getattr(config, "early_reject_penalty", EARLY_REJECT_PENALTY))
     if len(fold_ics) < 2:
         return 0.0
     raw_ir = float(np.mean(fold_ics) / max(float(np.std(fold_ics, ddof=1)), float(config.fold_ir_std_floor)))
@@ -328,10 +561,276 @@ class GPIndividualV4(ORIGINAL_GPINDIVIDUAL):
             cache[cache_key] = np.asarray(result, dtype=np.float64).copy()
         return result
 
+    def _score_alpha_series(
+        self,
+        alpha_series: np.ndarray,
+        valid_fraction: float,
+        features: dict[str, np.ndarray],
+        target: np.ndarray,
+        hall_of_fame: list[ge.GPIndividual],
+        config: ge.GPConfig,
+        *,
+        neutralized_alpha_series: np.ndarray | None = None,
+    ) -> None:
+        batch_fold_cache = features.get(BATCH_FOLD_IR_CACHE_KEY)
+        batch_candidate_id = features.get("__batch_candidate_id__")
+        cached = None if batch_fold_cache is None or batch_candidate_id is None else batch_fold_cache.get(batch_candidate_id)
+        if cached is None:
+            features = dict(features)
+            features["__candidate_tree_text__"] = self.tree.to_string()
+            return super()._score_alpha_series(
+                alpha_series,
+                valid_fraction,
+                features,
+                target,
+                hall_of_fame,
+                config,
+                neutralized_alpha_series=neutralized_alpha_series,
+            )
+        ic_value, early_rejected = cached
+        if early_rejected:
+            self.ic_score = float(ic_value)
+            self.complexity_penalty = 0.0
+            self.diversity_penalty = 0.0
+            self.transaction_cost_penalty = 0.0
+            self.orthogonalization_penalty = 0.0
+            self.turnover_rate = 0.0
+            self.fitness = float(ic_value)
+            return
+        features = dict(features)
+        features["__candidate_tree_text__"] = self.tree.to_string()
+        super()._score_alpha_series(
+            alpha_series,
+            valid_fraction,
+            features,
+            target,
+            hall_of_fame,
+            config,
+            neutralized_alpha_series=neutralized_alpha_series,
+        )
+
+
+class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
+    def _prepare_generation_features(self, features: dict[str, np.ndarray], target: np.ndarray, generation: int) -> tuple[dict[str, np.ndarray], np.ndarray]:
+        if len(target) > 100000 and not self.config.use_time_fold_ir:
+            if self.config.random_seed is not None:
+                rng = np.random.RandomState(self.config.random_seed + generation)
+                sample_idx = rng.choice(len(target), size=100000, replace=False)
+            else:
+                sample_idx = np.random.choice(len(target), size=100000, replace=False)
+            gen_features = {k: v[sample_idx] for k, v in features.items()}
+            gen_target = target[sample_idx]
+        else:
+            gen_features = features
+            gen_target = target
+        if self.config.use_fast_penalties and "__date__" in gen_features:
+            if gen_features is features:
+                gen_features = dict(gen_features)
+            fold_count = 2 if getattr(self.config, "time_folds_fast_mode", False) else int(self.config.time_folds)
+            gen_features[ge.FOLD_STRUCTURE_CACHE_KEY] = ge._build_time_fold_structure(np.asarray(gen_features["__date__"]), fold_count)
+        if self.config.use_fast_penalties and self.hall_of_fame:
+            if gen_features is features:
+                gen_features = dict(gen_features)
+            gen_features[ge.HOF_ALPHA_CACHE_KEY] = self._build_hof_alpha_cache(self.hall_of_fame, gen_features)
+            gen_features[ge.ALPHA_CACHE_KEY] = {}
+        if self.config.use_fast_penalties and self._ortho_ranks:
+            if gen_features is features:
+                gen_features = dict(gen_features)
+            gen_features[ge.ORTHO_RANKS_CACHE_KEY] = self._ortho_ranks
+        if self.config.use_icir and "__date__" in gen_features:
+            gen_features = dict(gen_features)
+            gen_features[ge.DATE_CHUNK_CACHE_KEY] = self._precompute_date_chunks(gen_features, gen_target)
+        if (
+            self.config.neutralize_size_sector
+            and "__date__" in gen_features
+            and "__log_market_cap__" in gen_features
+            and "__sector__" in gen_features
+        ):
+            if gen_features is features:
+                gen_features = dict(gen_features)
+            gen_features[ge.NEUTRALIZATION_CACHE_KEY] = ge._build_neutralization_cache(
+                np.asarray(gen_features.get("__log_market_cap__"), dtype=np.float64),
+                np.asarray(gen_features.get("__sector__")),
+                np.asarray(gen_features.get("__date__")),
+            )
+        return gen_features, gen_target
+
+    def _evaluate_population_with_batch_neutralization(self, features: dict[str, np.ndarray], target: np.ndarray) -> None:
+        batch_size = max(1, int(getattr(self.config, "batch_fitness_size", BATCH_FITNESS_SIZE)))
+        for start in range(0, len(self.population), batch_size):
+            batch = self.population[start:start + batch_size]
+            try:
+                raw_alpha = np.column_stack([ind._execute_tree(ind.tree, features) for ind in batch])
+                std = np.nanstd(raw_alpha, axis=0)
+                keep_mask = np.isfinite(std) & (std >= 1e-6)
+                prepared_rows: list[tuple[ge.GPIndividual, np.ndarray | None, float]] = []
+                if np.any(keep_mask):
+                    processed_alpha, valid_fraction = _batch_post_process(raw_alpha[:, keep_mask])
+                    neutralized_alpha = ge._batch_neutralize_cross_section(
+                        processed_alpha,
+                        np.asarray(features["__date__"]),
+                        features[ge.NEUTRALIZATION_CACHE_KEY],
+                    )
+                    active_indices = np.flatnonzero(keep_mask)
+                    tree_texts = [batch[idx].tree.to_string() for idx in active_indices]
+                    batch_scores = _batch_fold_ir_scores(neutralized_alpha, target, features, self.config, tree_texts=tree_texts)
+                    score_cache = {
+                        int(active_indices[idx]): batch_scores[idx]
+                        for idx in range(len(active_indices))
+                    }
+                else:
+                    processed_alpha = np.empty((len(target), 0), dtype=np.float64)
+                    valid_fraction = np.empty(0, dtype=np.float64)
+                    neutralized_alpha = processed_alpha
+                    active_indices = np.empty(0, dtype=np.int64)
+                    score_cache = {}
+                active_pos = 0
+                for local_idx, individual in enumerate(batch):
+                    if local_idx not in score_cache:
+                        prepared_rows.append((individual, None, 0.0))
+                        continue
+                    prepared_rows.append((individual, processed_alpha[:, active_pos], float(valid_fraction[active_pos])))
+                    active_pos += 1
+                for local_idx, (individual, alpha_series, valid_fraction_value) in enumerate(prepared_rows):
+                    if alpha_series is None:
+                        ge._set_rejected_fitness(individual)
+                        continue
+                    candidate_features = dict(features)
+                    candidate_features[BATCH_FOLD_IR_CACHE_KEY] = score_cache
+                    candidate_features["__batch_candidate_id__"] = local_idx
+                    candidate_features["__candidate_tree_text__"] = individual.tree.to_string()
+                    neutralized_idx = int(np.where(active_indices == local_idx)[0][0])
+                    individual._score_alpha_series(
+                        alpha_series,
+                        valid_fraction_value,
+                        candidate_features,
+                        target,
+                        self.hall_of_fame,
+                        self.config,
+                        neutralized_alpha_series=neutralized_alpha[:, neutralized_idx],
+                    )
+            except Exception:
+                for individual in batch:
+                    individual.evaluate(features, target, self.hall_of_fame, self.config)
+
+    def _evaluate_population_group(self, population: list[ge.GPIndividual], features: dict[str, np.ndarray], target: np.ndarray) -> list[ge.GPIndividual]:
+        original_population = self.population
+        self.population = population
+        if self._should_use_batch_neutralization(features):
+            self._evaluate_population_with_batch_neutralization(features, target)
+        elif self.config.n_jobs == 1:
+            for individual in self.population:
+                individual.evaluate(features, target, self.hall_of_fame, self.config)
+        else:
+            self.population = list(ge.Parallel(n_jobs=self.config.n_jobs, batch_size="auto")(
+                ge.delayed(ge._evaluate_individual)(ind, features, target, self.hall_of_fame, self.config)
+                for ind in self.population
+            ))
+        result = self.population
+        self.population = original_population
+        return result
+
+    def _breed_island(self, population: list[ge.GPIndividual], rng_seed: int) -> list[ge.GPIndividual]:
+        if not population:
+            return []
+        state_np = np.random.get_state()
+        state_py = random.getstate()
+        np.random.seed(rng_seed)
+        random.seed(rng_seed)
+        original_population = self.population
+        self.population = population
+        self._next_generation()
+        next_population = self.population
+        self.population = original_population
+        np.random.set_state(state_np)
+        random.setstate(state_py)
+        return next_population
+
+    def _migrate_islands(self, islands: list[list[ge.GPIndividual]]) -> list[list[ge.GPIndividual]]:
+        if len(islands) < 2:
+            return islands
+        migrate_count = max(1, int(round(self.config.population_size * float(getattr(self.config, "island_migration_rate", ISLAND_MIGRATION_RATE)))))
+        ranked = [_stable_rank_population(island) for island in islands]
+        for island_idx, island in enumerate(ranked):
+            migrants = [_copy_individual(ind) for ind in island[:migrate_count]]
+            next_idx = (island_idx + 1) % len(ranked)
+            recipient = ranked[next_idx]
+            recipient[-migrate_count:] = migrants
+        return ranked
+
+    def evolve(self, features: dict[str, np.ndarray], target: np.ndarray) -> list[ge.GPIndividual]:
+        if self.config.random_seed is not None:
+            np.random.seed(self.config.random_seed)
+            random.seed(self.config.random_seed)
+        self.feature_names = [k for k in features.keys() if not k.startswith("target") and not k.startswith("__")]
+        logger = ge.logger
+        logger.info(f"Starting GP evolution V4 advanced: pop={self.config.population_size}, gen={self.config.generations}")
+        self.initialize_population()
+        island_count = max(1, int(getattr(self.config, "island_count", ISLAND_COUNT)))
+        islands = [list(chunk.tolist()) for chunk in np.array_split(np.asarray(self.population, dtype=object), island_count) if len(chunk) > 0]
+        t_start = pytime.monotonic()
+        best_fitness_seen = -np.inf
+        stagnant_generations = 0
+        for generation in range(self.config.generations):
+            gen_features, gen_target = self._prepare_generation_features(features, target, generation)
+            evaluated_islands: list[list[ge.GPIndividual]] = []
+            base_seed = int(self.config.random_seed or 0) + generation * 10_000
+            for island_idx, island in enumerate(islands):
+                island_features = dict(gen_features)
+                island_features.pop(SUBTREE_CACHE_KEY, None)
+                island_features.pop(TARGET_NEUTRALIZED_CACHE_KEY, None)
+                island_features.pop(BATCH_FOLD_IR_CACHE_KEY, None)
+                island_seed = base_seed + island_idx * 1000
+                np.random.seed(island_seed)
+                random.seed(island_seed)
+                evaluated_islands.append(self._evaluate_population_group(island, island_features, gen_target))
+            if (generation + 1) % max(1, int(getattr(self.config, "island_migration_interval", ISLAND_MIGRATION_INTERVAL))) == 0:
+                evaluated_islands = self._migrate_islands(evaluated_islands)
+            self.population = [ind for island in evaluated_islands for ind in island]
+            self.population = _stable_rank_population(self.population)
+            self.update_hall_of_fame()
+            best = self.population[0]
+            self.history.append({
+                "generation": generation,
+                "best_fitness": best.fitness,
+                "best_ic": best.ic_score,
+                "best_tree_size": best.tree.size(),
+            })
+            logger.info(f"Gen {generation + 1}: Fold_IR={best.ic_score:.4f}, Fitness={best.fitness:.4f}")
+            elapsed = pytime.monotonic() - t_start
+            gen_time = elapsed / (generation + 1)
+            remaining = gen_time * (self.config.generations - generation - 1)
+            self.history[-1]["elapsed_sec"] = round(elapsed, 2)
+            self.history[-1]["gen_time_sec"] = round(gen_time, 3)
+            self.history[-1]["eta_sec"] = round(remaining, 1)
+            if best.fitness > best_fitness_seen + 1e-6:
+                best_fitness_seen = best.fitness
+                stagnant_generations = 0
+            else:
+                stagnant_generations += 1
+            if self.config.early_stopping_rounds > 0 and stagnant_generations >= self.config.early_stopping_rounds:
+                logger.info(
+                    f"Early stopping: no best-fitness improvement for {self.config.early_stopping_rounds} generations"
+                )
+                break
+            if generation + 1 < self.config.generations:
+                islands = [
+                    self._breed_island(
+                        island,
+                        base_seed + island_idx * 1000 + 1,
+                    )
+                    for island_idx, island in enumerate(evaluated_islands)
+                ]
+        return self.hall_of_fame
+
 
 def install_v4_optimizations() -> None:
+    ge.GPConfig = GPConfigV4
     ge.GPIndividual = GPIndividualV4
+    ge.GeneticEngine = GeneticEngineV4
     ge._compute_time_fold_ir = _compute_time_fold_ir_v4
+    v3.GPConfig = GPConfigV4
+    v3.GeneticEngine = GeneticEngineV4
 
 
 def write_l2_report(report_path: Path, gate6_metrics: dict[str, Any] | None, verification: list[str]) -> None:
@@ -345,25 +844,26 @@ def write_l2_report(report_path: Path, gate6_metrics: dict[str, Any] | None, ver
         ".agents/skills/ml-dl-rl/SKILL.md",
         ".agents/skills/backtesting-pit-safety/SKILL.md",
         ".agents/skills/vietnam-market-data/SKILL.md",
-        "scripts/genetic_alpha_evolution_v3.py",
-        "src/omega/quant/evolution/genetic_engine.py",
+        "scripts/genetic_alpha_evolution_v4.py",
+        "tests/test_genetic_alpha_evolution_v4.py",
+        "scripts/benchmark_v4_advanced.py",
     ]
     lines = [
-        "# L2 Report - GP V4 Implementation",
+        "# L2 Report - GP V4 Advanced Implementation",
         "",
-        "- Session: `l2_role16_gp_v4_impl_20260704`",
-        "- Gate: `GP_V4_IMPLEMENTATION`",
+        "- Session: `l2_role16_gp_v4_advanced_impl_20260705`",
+        "- Gate: `GP_V4_ADVANCED_IMPLEMENTATION`",
         "- Role: `16 machine-learning-engineer`",
-        "- Scope: `scripts/genetic_alpha_evolution_v4.py`, `tests/test_genetic_alpha_evolution_v4.py`",
+        "- Scope: `scripts/genetic_alpha_evolution_v4.py`, `tests/test_genetic_alpha_evolution_v4.py`, `scripts/benchmark_v4_advanced.py`",
         "",
         "## Repo-Local Files Read",
         *[f"- `{path}`" for path in role_and_skill_files],
         "",
         "## Forbidden Path Scan",
-        "- `.gemini\\antigravity-ide\\scratch\\ag-kit`: scanned, non-authoritative, not used.",
-        "- `.openclaw\\skills`: scanned, non-authoritative, not used.",
-        "- `C:\\Users\\GHC\\.agents`: scanned, non-authoritative, not used.",
-        "- `.codex\\memories`: scanned, non-authoritative, not used.",
+        "- `.gemini\\antigravity-ide\\scratch\\ag-kit` is not present and non-authoritative.",
+        "- `.openclaw\\skills` is not present and non-authoritative.",
+        "- `C:\\Users\\GHC\\.agents` is not present and non-authoritative.",
+        "- `.codex\\memories` is not present and non-authoritative.",
         "",
         "## Verification",
         *[f"- {item}" for item in verification],
