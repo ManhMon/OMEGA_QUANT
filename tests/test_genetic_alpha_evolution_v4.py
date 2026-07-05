@@ -112,6 +112,44 @@ def test_v4_target_neutralized_cache_persists_on_main_features(monkeypatch):
     }
 
 
+def test_optimized_neutralize_cross_section_matches_original():
+    features = _make_features()
+    alpha = np.array([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 6.0, 5.0, np.nan, 3.0, 2.0, 1.0])
+    expected = v4.ORIGINAL_NEUTRALIZE_CROSS_SECTION(
+        alpha,
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+    )
+    actual = v4._optimized_neutralize_cross_section(
+        alpha,
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+    )
+
+    np.testing.assert_allclose(actual, expected, equal_nan=True)
+
+
+def test_optimized_batch_neutralize_cross_section_matches_original():
+    features = _make_features()
+    cache = ge._build_neutralization_cache(
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+    )
+    alpha_matrix = np.column_stack(
+        [
+            np.array([1.0, np.nan, 3.0, 4.0, 5.0, 6.0, 6.0, 5.0, np.nan, 3.0, 2.0, 1.0]),
+            np.array([6.0, 5.0, 4.0, np.nan, 2.0, 1.0, 1.0, 2.0, 3.0, 4.0, np.nan, 6.0]),
+        ]
+    )
+    expected = v4.ORIGINAL_BATCH_NEUTRALIZE_CROSS_SECTION(alpha_matrix, features["__date__"], cache)
+    actual = v4._optimized_batch_neutralize_cross_section(alpha_matrix, features["__date__"], cache)
+
+    np.testing.assert_allclose(actual, expected, equal_nan=True)
+
+
 def test_build_feature_bank_matches_v3_feature_logic():
     frame = pd.DataFrame(
         {

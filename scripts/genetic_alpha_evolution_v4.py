@@ -17,6 +17,8 @@ import genetic_alpha_evolution_v3 as v3
 from genetic_alpha_evolution_v3 import *  # noqa: F401,F403
 from omega.quant.evolution import genetic_engine as ge
 
+logger = ge.logger
+
 try:
     from numba import njit
 except ModuleNotFoundError:  # ponytail: perf ceiling until numba installed.
@@ -31,6 +33,8 @@ ORIGINAL_GPINDIVIDUAL = ge.GPIndividual
 ORIGINAL_GENETIC_ENGINE = ge.GeneticEngine
 ORIGINAL_GPCONFIG = ge.GPConfig
 ORIGINAL_COMPUTE_TIME_FOLD_IR = ge._compute_time_fold_ir
+ORIGINAL_NEUTRALIZE_CROSS_SECTION = ge._neutralize_cross_section
+ORIGINAL_BATCH_NEUTRALIZE_CROSS_SECTION = ge._batch_neutralize_cross_section
 SESSION_REPORT_NAME = "l2_role16_gp_v4_advanced_impl_20260705.md"
 SUBTREE_CACHE_KEY = "__subtree_cache__"
 SUBTREE_CACHE_LOCK_KEY = "__subtree_cache_lock__"
@@ -140,6 +144,102 @@ def _batch_post_process(alpha_matrix: np.ndarray) -> tuple[np.ndarray, np.ndarra
     standardized = np.nan_to_num(standardized, nan=0.0, posinf=0.0, neginf=0.0)
     valid_fraction = np.mean(np.isfinite(alpha_matrix), axis=0)
     return standardized, valid_fraction.astype(np.float64, copy=False)
+
+
+def _group_row_indices_by_date(date_arr: np.ndarray) -> dict[Any, np.ndarray]:
+    date_series = pd.Series(np.asarray(date_arr))
+    return {current_date: indices.to_numpy(dtype=np.int64, copy=False) for current_date, indices in date_series.groupby(date_series, sort=False).groups.items()}
+
+
+def _optimized_neutralize_cross_section(
+    alpha_arr: np.ndarray,
+    log_mcap_arr: np.ndarray,
+    sector_arr: np.ndarray,
+    date_arr: np.ndarray,
+    neutralization_cache: dict[Any, tuple[np.ndarray, np.ndarray]] | None = None,
+) -> np.ndarray:
+    t0 = pytime.perf_counter()
+    residuals = np.asarray(alpha_arr, dtype=np.float64).copy()
+    if log_mcap_arr is None or sector_arr is None or date_arr is None:
+        return residuals
+
+    log_mcap_arr = np.asarray(log_mcap_arr, dtype=np.float64)
+    sector_arr = np.asarray(sector_arr)
+    date_arr = np.asarray(date_arr)
+    date_cache = neutralization_cache
+    if date_cache is None:
+        date_cache = ge._build_neutralization_cache(log_mcap_arr, sector_arr, date_arr)
+    date_groups = _group_row_indices_by_date(date_arr)
+    for current_date in pd.unique(date_arr[pd.notna(date_arr)]):
+        row_idx = date_groups.get(current_date)
+        if row_idx is None or row_idx.size < 2:
+            continue
+        alpha_slice = residuals[row_idx]
+        cached = date_cache.get(current_date)
+        if cached is None:
+            continue
+        cached_valid, design = cached
+        valid_rows = cached_valid & np.isfinite(alpha_slice)
+        if np.count_nonzero(valid_rows) < 2:
+            continue
+        alpha_valid = alpha_slice[valid_rows]
+        design_valid = design[valid_rows[cached_valid]]
+        try:
+            beta, _, rank, _ = np.linalg.lstsq(design_valid, alpha_valid, rcond=None)
+        except np.linalg.LinAlgError:
+            continue
+        if rank < design_valid.shape[1]:
+            continue
+        alpha_slice[valid_rows] = alpha_valid - design_valid @ beta
+        alpha_slice[valid_rows & (np.abs(alpha_slice) < 1e-12)] = 0.0
+        residuals[row_idx] = alpha_slice
+    logger.debug(
+        "_optimized_neutralize_cross_section dt=%.4fs rows=%d dates=%d cache=%s",
+        pytime.perf_counter() - t0,
+        residuals.size,
+        len(date_cache),
+        neutralization_cache is not None,
+    )
+    return residuals
+
+
+def _optimized_batch_neutralize_cross_section(
+    alpha_matrix: np.ndarray,
+    date_arr: np.ndarray,
+    neutralization_cache: dict[Any, tuple[np.ndarray, np.ndarray]],
+) -> np.ndarray:
+    residuals = np.asarray(alpha_matrix, dtype=np.float64).copy()
+    if residuals.ndim != 2 or residuals.size == 0:
+        return residuals
+
+    date_arr = np.asarray(date_arr)
+    date_groups = _group_row_indices_by_date(date_arr)
+    for current_date in pd.unique(date_arr[pd.notna(date_arr)]):
+        cached = neutralization_cache.get(current_date)
+        if cached is None:
+            continue
+        row_idx = date_groups.get(current_date)
+        if row_idx is None or row_idx.size < 2:
+            continue
+        cached_valid, design = cached
+        if np.count_nonzero(cached_valid) < 2:
+            continue
+        alpha_slice = residuals[row_idx]
+        alpha_valid = alpha_slice[cached_valid]
+        try:
+            beta, _, rank, _ = np.linalg.lstsq(design, alpha_valid, rcond=None)
+        except np.linalg.LinAlgError:
+            continue
+        if rank < design.shape[1]:
+            continue
+        alpha_slice[cached_valid] = alpha_valid - design @ beta
+        alpha_slice[cached_valid] = np.where(
+            np.abs(alpha_slice[cached_valid]) < 1e-12,
+            0.0,
+            alpha_slice[cached_valid],
+        )
+        residuals[row_idx] = alpha_slice
+    return residuals
 
 
 @njit(cache=True)
@@ -823,6 +923,8 @@ def install_v4_optimizations() -> None:
     ge.GPIndividual = GPIndividualV4
     ge.GeneticEngine = GeneticEngineV4
     ge._compute_time_fold_ir = _compute_time_fold_ir_v4
+    ge._neutralize_cross_section = _optimized_neutralize_cross_section
+    ge._batch_neutralize_cross_section = _optimized_batch_neutralize_cross_section
     v3.GPConfig = GPConfigV4
     v3.GeneticEngine = GeneticEngineV4
 
@@ -840,7 +942,6 @@ def write_l2_report(report_path: Path, gate6_metrics: dict[str, Any] | None, ver
         ".agents/skills/vietnam-market-data/SKILL.md",
         "scripts/genetic_alpha_evolution_v4.py",
         "tests/test_genetic_alpha_evolution_v4.py",
-        "scripts/benchmark_v4_advanced.py",
     ]
     lines = [
         "# L2 Report - GP V4 Advanced Implementation",
@@ -848,7 +949,7 @@ def write_l2_report(report_path: Path, gate6_metrics: dict[str, Any] | None, ver
         "- Session: `l2_role16_gp_v4_advanced_impl_20260705`",
         "- Gate: `GP_V4_ADVANCED_IMPLEMENTATION`",
         "- Role: `16 machine-learning-engineer`",
-        "- Scope: `scripts/genetic_alpha_evolution_v4.py`, `tests/test_genetic_alpha_evolution_v4.py`, `scripts/benchmark_v4_advanced.py`",
+        "- Scope: `scripts/genetic_alpha_evolution_v4.py`, `tests/test_genetic_alpha_evolution_v4.py`",
         "",
         "## Repo-Local Files Read",
         *[f"- `{path}`" for path in role_and_skill_files],
