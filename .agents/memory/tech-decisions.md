@@ -136,3 +136,10 @@ updated: 2026-07-02
   - **Batch Fitness**: Gộp lô 32 ứng viên sau khi tính xong tín hiệu 1D, xử lý song song OLS neutralization và Spearman IC bằng mảng NumPy 3D để tối ưu hóa CPU.
   - **Performance Acceptance**: Wall-clock speedup $\ge 3.0x$ compared to V4 basic, peak RSS memory $\le 4GB$. Measured via `scripts/benchmark_v4_advanced.py`.
 
+## 12. GP V4 Advanced Optimization - Implementation & Parity Resolution (2026-07-05)
+- **Decision Date**: 2026-07-05
+- **Approved Implementation Gate**: `GP_V4_ADVANCED_IMPLEMENTATION`
+- **CPython Address Reuse Cache Trap**: Discovered that Python's `id(arr)` can return duplicate memory address keys if temporary numpy arrays are garbage collected and new arrays allocate the same memory block. Resolved by keying the date-groups cache using a composite tuple: `(id(date_arr), len(date_arr), date_arr[0], date_arr[-1])` to guarantee 100% numerical correctness.
+- **Multiprocessing Serialization Bug (Lock Pickling)**: Identified that storing a `threading.Lock` under `SUBTREE_CACHE_LOCK_KEY` in the `features` dictionary prevents standard Python serialization (pickling) required for joblib `loky` and `multiprocessing` backends on Windows. Resolved by removing the lock object from `features` and storing thread locks in a static, module-level weakref/dictionary cache mapping `id(features)` to `threading.Lock` instances. This restores full capability to scale evaluations horizontally across up to 10+ CPU processes.
+
+
