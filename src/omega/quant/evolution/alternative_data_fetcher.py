@@ -6,12 +6,13 @@ Fallback: derives proxy signals from OHLCV when API unavailable.
 Author: Backend Engineer (Role 09)
 Date: 2026-05-31
 PIT Safety: PASS - All data fetched with as_of constraint.
+Memory Optimization: 2026-07-07 - Narrow copy calculation, vectorized date mapping.
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -114,10 +115,23 @@ class AlternativeDataFetcher:
         """
         Derives VSI and Focal Stress Score (FSS) in a PIT-safe manner.
         For each date T, uses market data from date T-1 to generate VSI and FSS.
+        
+        Memory optimization: Uses vectorized date mapping instead of boolean masking loop.
+        Memory optimization 2 (GP_ALT_DATA_FETCHER_OPTIMIZATION): Pre-group by date once 
+        before loop to replace 12,782 slow .xs() MultiIndex slicing operations with fast 
+        dict lookups.
         """
         dates = sorted(panel.index.get_level_values('date').unique())
-        vsi_series = pd.Series(50.0, index=panel.index)
-        fss_series = pd.Series(20.0, index=panel.index)
+        
+        # Memory optimization: Pre-group panel by date once (replaces expensive .xs() calls in loop)
+        market_by_date = {}
+        for date_str, group in panel.groupby(level='date'):
+            # Store as single-index DataFrame (symbol index only)
+            market_by_date[date_str] = group.droplevel('date')
+        
+        # Build date -> score mappings (vectorized assignment at the end)
+        vsi_map = {dates[0]: 50.0}  # Default for first date
+        fss_map = {dates[0]: 20.0}
         
         # Calculate daily market returns and foreign flows
         daily_returns = panel.groupby(level='symbol')['close'].pct_change().groupby(level='date').mean()
@@ -156,21 +170,32 @@ class AlternativeDataFetcher:
             vsi_val = vsi_score_obj.score
             
             # 3. Compute Focal Point Stress
-            # Get historical panel up to T-1 to feed to focal detector
-            historical_panel = panel[panel.index.get_level_values('date') <= prev_date_str]
-            fss_summary = self.fp_detector.analyze(sentiment_scores, historical_panel, prev_datetime)
+            # Use pre-grouped single-index slice (memory optimization - avoids expensive .xs() call)
+            prev_slice = market_by_date.get(prev_date_str, pd.DataFrame())
+            fss_summary = self.fp_detector.analyze(sentiment_scores, prev_slice, prev_datetime)
             fss_val = fss_summary.aggregate_stress_score
             
-            # Broadcast to all symbols on current date T
-            mask = panel.index.get_level_values('date') == curr_date_str
-            vsi_series[mask] = vsi_val
-            fss_series[mask] = fss_val
+            # Store in mapping for vectorized assignment later
+            vsi_map[curr_date_str] = vsi_val
+            fss_map[curr_date_str] = fss_val
+            
+        # Vectorized date mapping (eliminates O(T*N) boolean masking overhead)
+        date_index = panel.index.get_level_values('date')
+        vsi_series = pd.Series(date_index.map(vsi_map), index=panel.index).fillna(50.0)
+        fss_series = pd.Series(date_index.map(fss_map), index=panel.index).fillna(20.0)
             
         return vsi_series, fss_series
 
     def generate_all(self, panel: pd.DataFrame) -> pd.DataFrame:
         """
         Generate all alternative data signals.
+        
+        Memory optimization: Calculate proxy signals on a narrow copy containing only
+        essential OHLCV columns, then join back to original panel.
+        
+        Memory optimization 2 (GP_ALT_DATA_FETCHER_OPTIMIZATION): Reorder MultiIndex to 
+        [symbol, date] and sort once to make groupby(level='symbol') operations contiguous.
+        This prevents pandas from allocating expensive (n_groups, n_rows) alignment matrices.
 
         Args:
             panel: MultiIndex [date, symbol] with OHLCV
@@ -178,23 +203,42 @@ class AlternativeDataFetcher:
         Returns:
             Panel with additional alt data columns.
         """
-        result = panel.copy()
+        # Memory optimization: reorder MultiIndex to [symbol, date] and sort
+        # This makes all subsequent groupby(level='symbol') operations contiguous
+        panel = panel.reorder_levels(['symbol', 'date']).sort_index()
+        
+        # Memory optimization: work on narrow copy with only OHLCV columns
+        essential_cols = ['open', 'high', 'low', 'close', 'volume']
+        narrow = panel[essential_cols].copy()
+        
+        # Create a new DataFrame for features only
+        features = pd.DataFrame(index=narrow.index)
 
-        result['foreign_flow'] = self.get_foreign_flow_proxy(panel)
-        result['margin_proxy'] = self.get_margin_proxy(panel)
-        result['sector_rotation'] = self.get_sector_rotation_proxy(panel)
-        result['order_imbalance'] = self.get_order_imbalance_proxy(panel)
-        result['liquidity_shock'] = self.get_liquidity_shock_proxy(panel)
+        features['foreign_flow'] = self.get_foreign_flow_proxy(narrow)
+        features['margin_proxy'] = self.get_margin_proxy(narrow)
+        features['sector_rotation'] = self.get_sector_rotation_proxy(narrow)
+        features['order_imbalance'] = self.get_order_imbalance_proxy(narrow)
+        features['liquidity_shock'] = self.get_liquidity_shock_proxy(narrow)
 
         # Rolling aggregates for signal smoothing
-        result['foreign_flow_ma5'] = result.groupby(level='symbol')['foreign_flow'].transform(lambda x: x.rolling(5, min_periods=2).mean())
-        result['margin_trend'] = result.groupby(level='symbol')['margin_proxy'].transform(lambda x: x.rolling(5).mean() / x.rolling(20).mean().replace(0, 1))
-        result['rotation_momentum'] = result.groupby(level='symbol')['sector_rotation'].transform(lambda x: x.rolling(5, min_periods=2).mean())
+        features['foreign_flow_ma5'] = features.groupby(level='symbol')['foreign_flow'].transform(lambda x: x.rolling(5, min_periods=2).mean())
+        features['margin_trend'] = features.groupby(level='symbol')['margin_proxy'].transform(lambda x: x.rolling(5).mean() / x.rolling(20).mean().replace(0, 1))
+        features['rotation_momentum'] = features.groupby(level='symbol')['sector_rotation'].transform(lambda x: x.rolling(5, min_periods=2).mean())
 
+        # Combine narrow panel with calculated features for sentiment indicators
+        # (margin_proxy is required by _derive_sentiment_indicators)
+        narrow_with_features = narrow.join(features)
+        
         # Generate sentiment and focal point stress features
-        vsi_s, fss_s = self._derive_sentiment_indicators(result)
-        result['vsi_score'] = vsi_s
-        result['focal_stress_score'] = fss_s
+        vsi_s, fss_s = self._derive_sentiment_indicators(narrow_with_features)
+        features['vsi_score'] = vsi_s
+        features['focal_stress_score'] = fss_s
+
+        # Join all features back to original panel
+        result = panel.join(features)
+
+        # Restore index levels order to prevent silent column swap in unified_feature_adapter.py
+        result = result.reorder_levels(['date', 'symbol']).sort_index()
 
         logger.info("Generated 10 alternative data signals")
         return result

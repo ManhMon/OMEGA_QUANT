@@ -110,7 +110,8 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 ```text
 L2 OpenCode: implement + tests + L2 report
   -> L3 Codex: independent audit -> [APPROVED] / [NEEDS_FIX]
-  -> L1 Ly: update phase_gates.json + run sod_gate_enforcer.py
+  -> L1 Ly: update phase_gates.json + dispatch Claude Code final deep audit
+  -> L1 Ly: run sod_gate_enforcer.py
   -> exit 0: safe to push
 ```
 
@@ -118,7 +119,7 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 
 ### Verdict Handling
 
-- **[APPROVED]**: L1 records gate metadata, runs enforcer, proceeds if exit 0
+- **[APPROVED]**: L1 records gate metadata, dispatches a final deep audit to Claude Code to run in the background, runs enforcer, and proceeds if exit 0.
 - **[NEEDS_FIX]**: L1 creates new L2 session with fix scope, L3 re-audits after fix, cycle repeats until [APPROVED]
 - **No verdict or partial verdict**: Gate remains `PENDING_L3_AUDIT`, no progression
 - **Manual override**: Forbidden. All approvals require valid L3 audit + enforcer exit 0
@@ -137,7 +138,7 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 5. Use extracted `role_id` and `name` in prompt (never hand-type role names)
 
 ```powershell
-echo "" | opencode run --pure --dangerously-skip-permissions --dir "C:\Users\GHC\repos\OMEGA_QUANT" -m "9router/cx/gpt-5.4-high" "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. TASK: [TASK]. GATE: [GATE_NAME]. LESSONS: [APPENDED_LESSONS_LEARNED]. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result. SCOPE: [FILES]. REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; write L2 report to .ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md. Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing."
+echo "" | opencode run --pure --dangerously-skip-permissions --dir "C:\Users\GHC\repos\OMEGA_QUANT" "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. TASK: [TASK]. GATE: [GATE_NAME]. LESSONS: [APPENDED_LESSONS_LEARNED]. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result. SCOPE: [FILES]. REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; write L2 report to .ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md. Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing."
 ```
 
 **Platform lock protocol:** OpenCode L2 sessions MUST NOT call Codex or any L3 platform directly. L1 controls all cross-platform delegation.
@@ -235,5 +236,6 @@ Missing/invalid fields -> `PENDING_L3_AUDIT`.
    ```powershell
    claude --permission-mode bypassPermissions -p "<TASK_PROMPT>"
    ```
+6. **Plan Approval Rule**: Mọi kế hoạch triển khai (implementation_plan.md hoặc tệp kế hoạch tùy chỉnh) bắt buộc phải được gửi cho Codex và Claude Code duyệt trước khi L1 ủy quyền cho L2 triển khai thực tế. Tuyệt đối không tự động bỏ qua bước này ngay cả khi hệ thống tự động cho phép (auto-approved).
 
 

@@ -20,13 +20,16 @@ from omega.quant.evolution import genetic_engine as ge
 logger = ge.logger
 
 try:
-    from numba import njit
+    from numba import njit, prange
 except ModuleNotFoundError:  # ponytail: perf ceiling until numba installed.
     def njit(*_args, **_kwargs):
         def _decorator(fn):
             return fn
 
         return _decorator
+
+    def prange(*args):
+        return range(*args)
 
 
 ORIGINAL_GPINDIVIDUAL = ge.GPIndividual
@@ -49,12 +52,38 @@ ISLAND_COUNT = 3
 ISLAND_MIGRATION_INTERVAL = 5
 ISLAND_MIGRATION_RATE = 0.05
 MAX_VM_STACK_DEPTH = 12
+RIDGE_ALPHA = 1e-6
 _DATE_GROUPS_CACHE: dict[tuple[int, int, Any, Any], dict[Any, np.ndarray]] = {}
 _DATE_GROUPS_CACHE_LOCK = threading.Lock()
 _FEATURE_LOCK_CACHE: dict[int, threading.Lock] = {}
 _FEATURE_LOCK_CACHE_GUARD = threading.Lock()
 VM_CONTEXT_KEY = "__gp_vm_context__"
 VM_PROGRAM_CACHE_KEY = "__gp_vm_program_cache__"
+JIT_DESIGN_MATRIX_KEY = "__jit_design_matrix__"
+JIT_VALID_MASK_KEY = "__jit_valid_mask__"
+JIT_DATE_FLAT_INDICES_KEY = "__jit_date_flat_indices__"
+JIT_DATE_GROUP_OFFSETS_KEY = "__jit_date_group_offsets__"
+JIT_MAX_GROUP_SIZE_KEY = "__jit_max_group_size__"
+
+_THREAD_LOCAL_STACK = threading.local()
+_GLOBAL_VM_PROGRAM_CACHE: dict[tuple[tuple[str, ...], str], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+_GLOBAL_VM_PROGRAM_CACHE_LOCK = threading.Lock()
+
+
+def _get_thread_local_stack(row_count: int) -> np.ndarray:
+    """Get or create a thread-local stack for VM execution.
+    
+    Prevents race conditions when multiple threads execute trees in parallel.
+    Each thread gets its own stack buffer.
+    """
+    if not hasattr(_THREAD_LOCAL_STACK, 'stacks'):
+        _THREAD_LOCAL_STACK.stacks = {}
+    
+    stacks = _THREAD_LOCAL_STACK.stacks
+    if row_count not in stacks:
+        stacks[row_count] = np.empty((MAX_VM_STACK_DEPTH, row_count), dtype=np.float64)
+    
+    return stacks[row_count]
 
 OP_ADD = 1
 OP_SUB = 2
@@ -111,6 +140,46 @@ def _safe_float_terminal(value: str | None) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _compute_feature_fingerprint(features: dict[str, np.ndarray]) -> int:
+    """Compute content-based fingerprint for feature dictionary to avoid cache aliasing.
+    
+    Uses feature names, array shapes, and boundary values (first/last elements) to create
+    a stable hash that won't alias when feature dictionaries are recreated with same data.
+    
+    This prevents stale cache entries when features are resampled or sliced across
+    generations, as the fingerprint changes when actual data changes rather than just
+    when the dict object ID changes.
+    """
+    feature_names = sorted(k for k in features.keys() if not k.startswith("__") and not k.startswith("target"))
+    if not feature_names:
+        return 0
+    
+    # Build fingerprint from: feature names, shapes, and boundary values
+    fingerprint_parts = [",".join(feature_names)]
+    
+    for name in feature_names[:10]:  # Sample first 10 features to keep fingerprint fast
+        arr = np.asarray(features[name], dtype=np.float64)
+        if arr.size == 0:
+            fingerprint_parts.append(f"{name}:empty")
+            continue
+        
+        # Include shape and boundary values (first, last, min, max)
+        fingerprint_parts.append(f"{name}:{arr.shape}")
+        if np.all(np.isfinite(arr)):
+            # Use boundary statistics for finite arrays
+            fingerprint_parts.append(f"{arr.flat[0]:.6e}")
+            fingerprint_parts.append(f"{arr.flat[-1]:.6e}")
+            fingerprint_parts.append(f"{np.min(arr):.6e}")
+            fingerprint_parts.append(f"{np.max(arr):.6e}")
+        else:
+            # Count finite values for arrays with NaN/inf
+            finite_count = int(np.sum(np.isfinite(arr)))
+            fingerprint_parts.append(f"finite:{finite_count}")
+    
+    fingerprint_str = "|".join(fingerprint_parts)
+    return _safe_expr_hash(fingerprint_str)
 
 
 def _max_stack_depth(node: ge.GPNode) -> int:
@@ -260,37 +329,93 @@ def _build_vm_context(features: dict[str, np.ndarray]) -> dict[str, Any] | None:
         date_group_offsets = np.array([0, row_count], dtype=np.int32)
     else:
         date_flat_indices, date_group_offsets = _build_date_group_index(np.asarray(dates))
+    design_matrix = None
+    valid_mask = None
+    log_mcap_arr = features.get("__log_market_cap__")
+    sector_arr = features.get("__sector__")
+    if log_mcap_arr is not None and sector_arr is not None:
+        log_mcap_arr = np.asarray(log_mcap_arr, dtype=np.float64)
+        sector_arr = np.asarray(sector_arr)
+        valid_mask = np.isfinite(log_mcap_arr) & pd.notna(sector_arr)
+        sector_col_count = 0
+        design_matrix = np.empty((row_count, 2), dtype=np.float64)
+        design_matrix[:, 0] = 1.0
+        design_matrix[:, 1] = np.where(np.isfinite(log_mcap_arr), log_mcap_arr, 0.0)
+        if np.any(valid_mask):
+            sector_codes = np.full(row_count, -1, dtype=np.int32)
+            factorized, uniques = pd.factorize(sector_arr[valid_mask], sort=True)
+            sector_codes[valid_mask] = factorized.astype(np.int32, copy=False)
+            sector_col_count = max(int(len(uniques)) - 1, 0)
+            if sector_col_count > 0:
+                expanded = np.zeros((row_count, 2 + sector_col_count), dtype=np.float64)
+                expanded[:, :2] = design_matrix
+                valid_rows = np.flatnonzero(valid_mask)
+                for row_idx in valid_rows:
+                    code = sector_codes[row_idx]
+                    if code > 0:
+                        expanded[row_idx, code + 1] = 1.0
+                design_matrix = expanded
     return {
-        "cache_token": id(features),
+        "cache_token": _compute_feature_fingerprint(features),
         "feature_names": feature_names,
         "feature_matrix": feature_matrix,
         "ticker_group_offsets": ticker_group_offsets,
         "date_flat_indices": date_flat_indices,
         "date_group_offsets": date_group_offsets,
-        "stack": np.empty((MAX_VM_STACK_DEPTH, row_count), dtype=np.float64),
+        "design_matrix": design_matrix,
+        "valid_mask": valid_mask,
+        "row_count": row_count,
     }
+
+
+def _attach_neutralization_jit_context(features: dict[str, Any], context: dict[str, Any]) -> None:
+    neutralization_cache = features.get(ge.NEUTRALIZATION_CACHE_KEY)
+    design_matrix = context.get("design_matrix")
+    valid_mask = context.get("valid_mask")
+    if not isinstance(neutralization_cache, dict) or design_matrix is None or valid_mask is None:
+        return
+    date_group_offsets = context["date_group_offsets"]
+    neutralization_cache[JIT_DESIGN_MATRIX_KEY] = design_matrix
+    neutralization_cache[JIT_VALID_MASK_KEY] = valid_mask
+    neutralization_cache[JIT_DATE_FLAT_INDICES_KEY] = context["date_flat_indices"]
+    neutralization_cache[JIT_DATE_GROUP_OFFSETS_KEY] = date_group_offsets
+    neutralization_cache[JIT_MAX_GROUP_SIZE_KEY] = int(np.max(np.diff(date_group_offsets))) if date_group_offsets.size > 1 else 0
 
 
 def _get_vm_context(features: dict[str, np.ndarray]) -> dict[str, Any] | None:
     cached = features.get(VM_CONTEXT_KEY)
     if cached is not None:
+        _attach_neutralization_jit_context(features, cached)
         return cached
     context = _build_vm_context(features)
     if context is not None:
         features[VM_CONTEXT_KEY] = context
         features.setdefault(FEATURE_BANK_KEY, context["feature_matrix"])
+        _attach_neutralization_jit_context(features, context)
     return context
 
 
+def _ensure_neutralization_jit_context(features: dict[str, Any]) -> None:
+    if ge.NEUTRALIZATION_CACHE_KEY not in features:
+        return
+    _get_vm_context(features)
+
+
 def _get_vm_program(node: ge.GPNode, feature_names: list[str], features: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray, np.ndarray] | None:
-    cache = _thread_safe_feature_cache(features, VM_PROGRAM_CACHE_KEY, dict)
     cache_key = (tuple(feature_names), node.to_string())
-    program = cache.get(cache_key)
+    
+    # Try to get from global cache without lock first (fast path)
+    program = _GLOBAL_VM_PROGRAM_CACHE.get(cache_key)
     if program is not None:
         return program
+    
+    # Compile the program
     program = _compile_tree_to_rpn(node, feature_names)
     if program is not None:
-        cache[cache_key] = program
+        # Store in global cache with lock
+        with _GLOBAL_VM_PROGRAM_CACHE_LOCK:
+            _GLOBAL_VM_PROGRAM_CACHE[cache_key] = program
+    
     return program
 
 
@@ -502,6 +627,185 @@ def _numba_cs_zscore(x: np.ndarray, date_flat_indices: np.ndarray, date_group_of
 
 
 @njit(cache=True, nogil=True, error_model="numpy")
+def _numba_ridge_neutralize(
+    alpha_arr: np.ndarray,
+    design_matrix: np.ndarray,
+    valid_mask: np.ndarray,
+    date_flat_indices: np.ndarray,
+    date_group_offsets: np.ndarray,
+    max_group_size: int,
+    ridge_alpha: float,
+) -> np.ndarray:
+    residuals = np.empty(alpha_arr.size, dtype=np.float64)
+    residuals[:] = alpha_arr
+    if residuals.size == 0:
+        return residuals
+    col_count = design_matrix.shape[1]
+    row_buffer = np.empty(max(max_group_size, 1), dtype=np.int32)
+    gram = np.empty((col_count, col_count), dtype=np.float64)
+    rhs = np.empty(col_count, dtype=np.float64)
+    beta = np.empty(col_count, dtype=np.float64)
+    for group_idx in range(date_group_offsets.size - 1):
+        start = date_group_offsets[group_idx]
+        stop = date_group_offsets[group_idx + 1]
+        valid_count = 0
+        for pos in range(start, stop):
+            row_idx = date_flat_indices[pos]
+            y_val = residuals[row_idx]
+            if valid_mask[row_idx] and np.isfinite(y_val):
+                row_buffer[valid_count] = row_idx
+                valid_count += 1
+        if valid_count < 2:
+            continue
+        for row in range(col_count):
+            rhs[row] = 0.0
+            for col in range(col_count):
+                gram[row, col] = 0.0
+        for local_idx in range(valid_count):
+            row_idx = row_buffer[local_idx]
+            y_val = residuals[row_idx]
+            for left_col in range(col_count):
+                left_val = design_matrix[row_idx, left_col]
+                rhs[left_col] += left_val * y_val
+                for right_col in range(col_count):
+                    gram[left_col, right_col] += left_val * design_matrix[row_idx, right_col]
+        for diag_idx in range(col_count):
+            gram[diag_idx, diag_idx] += ridge_alpha
+        beta[:] = np.linalg.solve(gram, rhs)
+        for local_idx in range(valid_count):
+            row_idx = row_buffer[local_idx]
+            fitted = 0.0
+            for col_idx in range(col_count):
+                fitted += design_matrix[row_idx, col_idx] * beta[col_idx]
+            residual = residuals[row_idx] - fitted
+            residuals[row_idx] = 0.0 if abs(residual) < 1e-12 else residual
+    return residuals
+
+
+@njit(cache=True, nogil=True, error_model="numpy", parallel=True)
+def _numba_batch_ridge_neutralize(
+    alpha_matrix: np.ndarray,
+    design_matrix: np.ndarray,
+    valid_mask: np.ndarray,
+    date_flat_indices: np.ndarray,
+    date_group_offsets: np.ndarray,
+    max_group_size: int,
+    ridge_alpha: float,
+) -> np.ndarray:
+    residuals = np.empty(alpha_matrix.shape, dtype=np.float64)
+    residuals[:, :] = alpha_matrix
+    if residuals.size == 0:
+        return residuals
+    candidate_count = residuals.shape[1]
+    col_count = design_matrix.shape[1]
+    base_row_buffer = np.empty(max(max_group_size, 1), dtype=np.int32)
+    shared_gram = np.empty((col_count, col_count), dtype=np.float64)
+    for group_idx in range(date_group_offsets.size - 1):
+        start = date_group_offsets[group_idx]
+        stop = date_group_offsets[group_idx + 1]
+        base_valid_count = 0
+        for pos in range(start, stop):
+            row_idx = date_flat_indices[pos]
+            if valid_mask[row_idx]:
+                base_row_buffer[base_valid_count] = row_idx
+                base_valid_count += 1
+        if base_valid_count < 2:
+            continue
+        for row in range(col_count):
+            for col in range(col_count):
+                shared_gram[row, col] = 0.0
+        for local_idx in range(base_valid_count):
+            row_idx = base_row_buffer[local_idx]
+            for left_col in range(col_count):
+                left_val = design_matrix[row_idx, left_col]
+                for right_col in range(col_count):
+                    shared_gram[left_col, right_col] += left_val * design_matrix[row_idx, right_col]
+        for diag_idx in range(col_count):
+            shared_gram[diag_idx, diag_idx] += ridge_alpha
+        
+        # Pre-allocate workspaces per date group for parallel execution (zero-allocation optimization)
+        workspace_row_buffer = np.empty((candidate_count, max(max_group_size, 1)), dtype=np.int32)
+        workspace_gram = np.empty((candidate_count, col_count, col_count), dtype=np.float64)
+        workspace_rhs = np.empty((candidate_count, col_count), dtype=np.float64)
+        workspace_beta = np.empty((candidate_count, col_count), dtype=np.float64)
+        
+        for candidate_idx in prange(candidate_count):
+            row_buffer = workspace_row_buffer[candidate_idx]
+            gram = workspace_gram[candidate_idx]
+            rhs = workspace_rhs[candidate_idx]
+            beta = workspace_beta[candidate_idx]
+            use_shared_gram = True
+            for local_idx in range(base_valid_count):
+                row_idx = base_row_buffer[local_idx]
+                if not np.isfinite(residuals[row_idx, candidate_idx]):
+                    use_shared_gram = False
+                    break
+            valid_count = base_valid_count
+            for row in range(col_count):
+                rhs[row] = 0.0
+                for col in range(col_count):
+                    gram[row, col] = shared_gram[row, col]
+            if use_shared_gram:
+                for local_idx in range(base_valid_count):
+                    row_idx = base_row_buffer[local_idx]
+                    y_val = residuals[row_idx, candidate_idx]
+                    row_buffer[local_idx] = row_idx
+                    for left_col in range(col_count):
+                        rhs[left_col] += design_matrix[row_idx, left_col] * y_val
+            else:
+                valid_count = 0
+                for row in range(col_count):
+                    for col in range(col_count):
+                        gram[row, col] = 0.0
+                for local_idx in range(base_valid_count):
+                    row_idx = base_row_buffer[local_idx]
+                    y_val = residuals[row_idx, candidate_idx]
+                    if not np.isfinite(y_val):
+                        continue
+                    row_buffer[valid_count] = row_idx
+                    valid_count += 1
+                    for left_col in range(col_count):
+                        left_val = design_matrix[row_idx, left_col]
+                        rhs[left_col] += left_val * y_val
+                        for right_col in range(col_count):
+                            gram[left_col, right_col] += left_val * design_matrix[row_idx, right_col]
+                if valid_count < 2:
+                    continue
+                for diag_idx in range(col_count):
+                    gram[diag_idx, diag_idx] += ridge_alpha
+            beta[:] = np.linalg.solve(gram, rhs)
+            for local_idx in range(valid_count):
+                row_idx = row_buffer[local_idx]
+                fitted = 0.0
+                for col_idx in range(col_count):
+                    fitted += design_matrix[row_idx, col_idx] * beta[col_idx]
+                residual = residuals[row_idx, candidate_idx] - fitted
+                residuals[row_idx, candidate_idx] = 0.0 if abs(residual) < 1e-12 else residual
+    return residuals
+
+
+def _get_jit_neutralization_payload(
+    neutralization_cache: dict[Any, Any] | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, int] | None:
+    if not isinstance(neutralization_cache, dict):
+        return None
+    design_matrix = neutralization_cache.get(JIT_DESIGN_MATRIX_KEY)
+    valid_mask = neutralization_cache.get(JIT_VALID_MASK_KEY)
+    date_flat_indices = neutralization_cache.get(JIT_DATE_FLAT_INDICES_KEY)
+    date_group_offsets = neutralization_cache.get(JIT_DATE_GROUP_OFFSETS_KEY)
+    max_group_size = neutralization_cache.get(JIT_MAX_GROUP_SIZE_KEY)
+    if any(item is None for item in (design_matrix, valid_mask, date_flat_indices, date_group_offsets, max_group_size)):
+        return None
+    return (
+        np.asarray(design_matrix, dtype=np.float64),
+        np.asarray(valid_mask, dtype=np.bool_),
+        np.asarray(date_flat_indices, dtype=np.int32),
+        np.asarray(date_group_offsets, dtype=np.int32),
+        int(max_group_size),
+    )
+
+
+@njit(cache=True, nogil=True, error_model="numpy")
 def _numba_execute_rpn(
     opcodes: np.ndarray,
     operands: np.ndarray,
@@ -593,17 +897,13 @@ def _thread_safe_feature_cache(features: dict[str, Any], key: str, factory: Any)
 
 
 def _feature_cache_get(features: dict[str, Any], cache_key: str, key: Any) -> Any:
-    lock = _get_feature_lock(features)
-    with lock:
-        cache = features.get(cache_key)
-        return None if cache is None else cache.get(key)
+    cache = features.get(cache_key)
+    return None if cache is None else cache.get(key)
 
 
 def _feature_cache_set(features: dict[str, Any], cache_key: str, key: Any, value: Any) -> None:
     cache = _thread_safe_feature_cache(features, cache_key, dict)
-    lock = _get_feature_lock(features)
-    with lock:
-        cache[key] = value
+    cache[key] = value
 
 
 def _get_feature_lock(features: dict[str, Any]) -> threading.Lock:
@@ -679,6 +979,7 @@ def _build_fold_views(features: dict[str, np.ndarray], fold_structure: tuple[tup
                 }
             else:
                 fold_view[ge.NEUTRALIZATION_CACHE_KEY] = neutralization_cache
+            _ensure_neutralization_jit_context(fold_view)
     return fold_views
 
 
@@ -741,8 +1042,21 @@ def _optimized_neutralize_cross_section(
     neutralization_cache: dict[Any, tuple[np.ndarray, np.ndarray]] | None = None,
 ) -> np.ndarray:
     t0 = pytime.perf_counter()
-    residuals = np.asarray(alpha_arr, dtype=np.float64).copy()
+    alpha_arr = np.asarray(alpha_arr, dtype=np.float64)
+    residuals = alpha_arr.copy()
     if log_mcap_arr is None or sector_arr is None or date_arr is None:
+        return residuals
+
+    jit_payload = _get_jit_neutralization_payload(neutralization_cache)
+    if jit_payload is not None:
+        residuals = _numba_ridge_neutralize(alpha_arr, *jit_payload, RIDGE_ALPHA)
+        logger.debug(
+            "_optimized_neutralize_cross_section dt=%.4fs rows=%d dates=%d cache=%s",
+            pytime.perf_counter() - t0,
+            residuals.size,
+            len(neutralization_cache),
+            neutralization_cache is not None,
+        )
         return residuals
 
     log_mcap_arr = np.asarray(log_mcap_arr, dtype=np.float64)
@@ -767,10 +1081,8 @@ def _optimized_neutralize_cross_section(
         alpha_valid = alpha_slice[valid_rows]
         design_valid = design[valid_rows[cached_valid]]
         try:
-            beta, _, rank, _ = np.linalg.lstsq(design_valid, alpha_valid, rcond=None)
+            beta = np.linalg.solve(design_valid.T @ design_valid + RIDGE_ALPHA * np.eye(design_valid.shape[1]), design_valid.T @ alpha_valid)
         except np.linalg.LinAlgError:
-            continue
-        if rank < design_valid.shape[1]:
             continue
         alpha_slice[valid_rows] = alpha_valid - design_valid @ beta
         alpha_slice[valid_rows & (np.abs(alpha_slice) < 1e-12)] = 0.0
@@ -790,9 +1102,14 @@ def _optimized_batch_neutralize_cross_section(
     date_arr: np.ndarray,
     neutralization_cache: dict[Any, tuple[np.ndarray, np.ndarray]],
 ) -> np.ndarray:
-    residuals = np.asarray(alpha_matrix, dtype=np.float64).copy()
+    alpha_matrix = np.asarray(alpha_matrix, dtype=np.float64)
+    residuals = alpha_matrix.copy()
     if residuals.ndim != 2 or residuals.size == 0:
         return residuals
+
+    jit_payload = _get_jit_neutralization_payload(neutralization_cache)
+    if jit_payload is not None:
+        return _numba_batch_ridge_neutralize(alpha_matrix, *jit_payload, RIDGE_ALPHA)
 
     date_arr = np.asarray(date_arr)
     date_groups = _get_date_groups(date_arr, neutralization_cache)
@@ -809,10 +1126,8 @@ def _optimized_batch_neutralize_cross_section(
         alpha_slice = residuals[row_idx]
         alpha_valid = alpha_slice[cached_valid]
         try:
-            beta, _, rank, _ = np.linalg.lstsq(design, alpha_valid, rcond=None)
+            beta = np.linalg.solve(design.T @ design + RIDGE_ALPHA * np.eye(design.shape[1]), design.T @ alpha_valid)
         except np.linalg.LinAlgError:
-            continue
-        if rank < design.shape[1]:
             continue
         alpha_slice[cached_valid] = alpha_valid - design @ beta
         alpha_slice[cached_valid] = np.where(
@@ -824,25 +1139,24 @@ def _optimized_batch_neutralize_cross_section(
     return residuals
 
 
-@njit(cache=True)
+@njit(cache=True, parallel=True)
 def _numba_batch_daily_ics(
     alpha_matrix: np.ndarray,
     target: np.ndarray,
-    date_ids: np.ndarray,
+    date_flat_indices: np.ndarray,
+    date_group_offsets: np.ndarray,
     eval_mask_matrix: np.ndarray,
 ) -> np.ndarray:
     candidate_count = alpha_matrix.shape[1]
-    n_dates = 0
-    for i in range(date_ids.size):
-        if date_ids[i] >= n_dates:
-            n_dates = date_ids[i] + 1
+    n_dates = date_group_offsets.size - 1
     out = np.empty((n_dates, candidate_count), dtype=np.float64)
     out[:] = np.nan
-    for candidate_idx in range(candidate_count):
+    for candidate_idx in prange(candidate_count):
         daily_ics = _numba_daily_ics(
             alpha_matrix[:, candidate_idx],
             target,
-            date_ids,
+            date_flat_indices,
+            date_group_offsets,
             eval_mask_matrix[:, candidate_idx],
         )
         limit = min(n_dates, daily_ics.size)
@@ -889,13 +1203,28 @@ def _batch_fold_ir_scores(
                 fold_features,
                 (id(target), fold_idx),
             )
-        eval_mask_matrix = np.column_stack(
-            [ge._evaluation_mask(alpha_fold[:, idx], target_fold, fold_features) for idx in range(alpha_fold.shape[1])]
-        )
+        # Vectorized eval_mask_matrix computation using numpy broadcasting
+        alpha_finite_mask = np.isfinite(alpha_fold)
+        target_finite_mask = np.isfinite(target_fold)
+        eval_mask_matrix = alpha_finite_mask & target_finite_mask[:, np.newaxis]
+        liquidity_mask = fold_features.get('__liquidity_mask__')
+        if liquidity_mask is not None:
+            eval_mask_matrix &= np.asarray(liquidity_mask, dtype=bool)[:, np.newaxis]
+        
+        # Cache date group indices to avoid recalculation
+        if '__date_group_index__' not in fold_features:
+            date_flat_indices, date_group_offsets = _build_date_group_index_from_ids(
+                _factorize_dates(np.asarray(fold_features["__date__"]))
+            )
+            fold_features['__date_group_index__'] = (date_flat_indices, date_group_offsets)
+        else:
+            date_flat_indices, date_group_offsets = fold_features['__date_group_index__']
+        
         daily_ic_matrix = _numba_batch_daily_ics(
             alpha_fold,
             target_fold,
-            _factorize_dates(np.asarray(fold_features["__date__"])),
+            date_flat_indices,
+            date_group_offsets,
             np.asarray(eval_mask_matrix, dtype=np.bool_),
         )
         fold_ics = np.nanmean(daily_ic_matrix, axis=0) if daily_ic_matrix.size else np.full(alpha_fold.shape[1], np.nan)
@@ -963,32 +1292,64 @@ def _numba_pearson_corr(a: np.ndarray, b: np.ndarray) -> float:
 
 
 @njit(cache=True)
-def _numba_daily_ics(
-    alpha: np.ndarray,
-    target: np.ndarray,
-    date_ids: np.ndarray,
-    eval_mask: np.ndarray,
-) -> np.ndarray:
+def _numba_build_date_group_index_from_ids(date_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     n_dates = 0
     for i in range(date_ids.size):
         if date_ids[i] >= n_dates:
             n_dates = date_ids[i] + 1
-    out = np.empty(n_dates, dtype=np.float64)
-    out[:] = np.nan
     counts = np.zeros(n_dates, dtype=np.int64)
     for i in range(date_ids.size):
-        if eval_mask[i]:
-            counts[date_ids[i]] += 1
+        date_id = date_ids[i]
+        if date_id >= 0:
+            counts[date_id] += 1
+    offsets = np.empty(n_dates + 1, dtype=np.int64)
+    offsets[0] = 0
     for date_id in range(n_dates):
-        if counts[date_id] <= 5:
+        offsets[date_id + 1] = offsets[date_id] + counts[date_id]
+    flat_indices = np.empty(offsets[-1], dtype=np.int64)
+    next_positions = offsets[:-1].copy()
+    for row_idx in range(date_ids.size):
+        date_id = date_ids[row_idx]
+        if date_id < 0:
             continue
-        alpha_day = np.empty(counts[date_id], dtype=np.float64)
-        target_day = np.empty(counts[date_id], dtype=np.float64)
+        write_pos = next_positions[date_id]
+        flat_indices[write_pos] = row_idx
+        next_positions[date_id] = write_pos + 1
+    return flat_indices, offsets
+
+
+def _build_date_group_index_from_ids(date_ids: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    return _numba_build_date_group_index_from_ids(np.asarray(date_ids, dtype=np.int64))
+
+
+@njit(cache=True)
+def _numba_daily_ics(
+    alpha: np.ndarray,
+    target: np.ndarray,
+    date_flat_indices: np.ndarray,
+    date_group_offsets: np.ndarray,
+    eval_mask: np.ndarray,
+) -> np.ndarray:
+    n_dates = date_group_offsets.size - 1
+    out = np.empty(n_dates, dtype=np.float64)
+    out[:] = np.nan
+    for date_id in range(n_dates):
+        start = date_group_offsets[date_id]
+        stop = date_group_offsets[date_id + 1]
+        valid_count = 0
+        for group_pos in range(start, stop):
+            if eval_mask[date_flat_indices[group_pos]]:
+                valid_count += 1
+        if valid_count <= 5:
+            continue
+        alpha_day = np.empty(valid_count, dtype=np.float64)
+        target_day = np.empty(valid_count, dtype=np.float64)
         pos = 0
-        for i in range(date_ids.size):
-            if eval_mask[i] and date_ids[i] == date_id:
-                alpha_day[pos] = alpha[i]
-                target_day[pos] = target[i]
+        for group_pos in range(start, stop):
+            row_idx = date_flat_indices[group_pos]
+            if eval_mask[row_idx]:
+                alpha_day[pos] = alpha[row_idx]
+                target_day[pos] = target[row_idx]
                 pos += 1
         alpha_rank = _numba_rank_average_ties(alpha_day)
         target_rank = _numba_rank_average_ties(target_day)
@@ -1004,11 +1365,14 @@ def _compute_daily_ic_mean(alpha: np.ndarray, target: np.ndarray, features: dict
     valid = ge._evaluation_mask(alpha, target, features)
     if not np.any(valid):
         return 0.0
-    date_ids = _factorize_dates(np.asarray(features["__date__"]))
+    date_flat_indices, date_group_offsets = _build_date_group_index_from_ids(
+        _factorize_dates(np.asarray(features["__date__"]))
+    )
     daily_ics = _numba_daily_ics(
         np.asarray(alpha, dtype=np.float64),
         np.asarray(target, dtype=np.float64),
-        date_ids,
+        date_flat_indices,
+        date_group_offsets,
         np.asarray(valid, dtype=np.bool_),
     )
     finite = daily_ics[np.isfinite(daily_ics)]
@@ -1049,6 +1413,7 @@ def compute_engine_consistent_daily_ic(
     target_arr = np.asarray(target, dtype=np.float64)
     eval_features = dict(features)
     if config.neutralize_size_sector and "__sector__" in eval_features:
+        _ensure_neutralization_jit_context(eval_features)
         alpha = ge._neutralize_cross_section(
             alpha,
             eval_features.get("__log_market_cap__"),
@@ -1215,9 +1580,11 @@ def load_dataset(args: Any) -> pd.DataFrame:
 class GPIndividualV4(ORIGINAL_GPINDIVIDUAL):
     def _execute_tree(self, node: ge.GPNode, features: dict[str, np.ndarray]) -> np.ndarray:
         context = _get_vm_context(features)
-        cache_token = id(features.get(FEATURE_BANK_KEY, features.get("__date__")))
+        # Use content-based fingerprint instead of object ID to prevent cache aliasing
         if context is not None:
             cache_token = int(context["cache_token"])
+        else:
+            cache_token = _compute_feature_fingerprint(features)
         cache_key = (cache_token, node.to_string())
         cached = _feature_cache_get(features, SUBTREE_CACHE_KEY, cache_key)
         if cached is not None:
@@ -1227,6 +1594,7 @@ class GPIndividualV4(ORIGINAL_GPINDIVIDUAL):
             program = _get_vm_program(node, context["feature_names"], features)
             if program is not None:
                 opcodes, operands, const_values = program
+                stack = _get_thread_local_stack(context["row_count"])
                 result = _numba_execute_rpn(
                     opcodes,
                     operands,
@@ -1235,7 +1603,7 @@ class GPIndividualV4(ORIGINAL_GPINDIVIDUAL):
                     context["ticker_group_offsets"],
                     context["date_flat_indices"],
                     context["date_group_offsets"],
-                    context["stack"],
+                    stack,
                 )
         if result is None:
             result = super()._execute_tree(node, features)
@@ -1334,6 +1702,7 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
                 np.asarray(gen_features.get("__sector__")),
                 np.asarray(gen_features.get("__date__")),
             )
+            _ensure_neutralization_jit_context(gen_features)
         return gen_features, gen_target
 
     def _evaluate_population_with_batch_neutralization(self, features: dict[str, np.ndarray], target: np.ndarray) -> None:

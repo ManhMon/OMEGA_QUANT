@@ -251,7 +251,8 @@ def compute_all_vn_alphas(df: pd.DataFrame) -> pd.DataFrame:
         processed_groups.append(group)
 
     # Reconstruct the full DataFrame
-    res = pd.concat(processed_groups).sort_values(["ticker", "date"]).reset_index(drop=True)
+    # Ponytail: Avoid redundant sort on wide frame - groups already sorted (ticker groupby + date sort L44)
+    res = pd.concat(processed_groups, ignore_index=True)
     
     # Fill in cross-sectional rankings now that everything is merged back
     res["vn_sector_rel_momentum_20"] = res.groupby("date")["_raw_ret20"].transform(lambda x: x.rank(pct=True)).fillna(0.5)

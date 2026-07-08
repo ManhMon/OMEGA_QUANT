@@ -109,6 +109,7 @@ class GPNode:
     operator: str
     children: List[GPNode] = field(default_factory=list)
     value: Optional[str] = None  # Terminal node (feature name)
+    _string_cached: Optional[str] = field(default=None, init=False, repr=False)
     
     def depth(self) -> int:
         """Calculate tree depth."""
@@ -124,16 +125,21 @@ class GPNode:
     
     def to_string(self) -> str:
         """Convert tree to readable expression string."""
-        if not self.children:
-            return self.value or "0"
+        if self._string_cached is not None:
+            return self._string_cached
         
-        if len(self.children) == 1:
-            return f"{self.operator}({self.children[0].to_string()})"
+        if not self.children:
+            result = self.value or "0"
+        elif len(self.children) == 1:
+            result = f"{self.operator}({self.children[0].to_string()})"
         elif len(self.children) == 2:
-            return f"({self.children[0].to_string()} {self.operator} {self.children[1].to_string()})"
+            result = f"({self.children[0].to_string()} {self.operator} {self.children[1].to_string()})"
         else:
             args = ", ".join(child.to_string() for child in self.children)
-            return f"{self.operator}({args})"
+            result = f"{self.operator}({args})"
+        
+        self._string_cached = result
+        return result
     
     def copy(self) -> GPNode:
         """Deep copy of tree."""
@@ -157,6 +163,7 @@ class GPNode:
     
     def replace_subtree(self, old: GPNode, new: GPNode) -> None:
         """Replace subtree (for crossover)."""
+        self._string_cached = None  # Invalidate cache when tree structure changes
         for i, child in enumerate(self.children):
             if child is old:
                 self.children[i] = new.copy()

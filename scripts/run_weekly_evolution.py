@@ -30,7 +30,9 @@ sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 import numpy as np
 import pandas as pd
+from joblib import parallel_backend
 
+import genetic_alpha_evolution_v4 as v4
 from omega.quant.evolution.genetic_engine import GeneticEngine, GPConfig
 from omega.quant.evolution.continuous_learning import ContinuousLearningEngine
 from omega.quant.evolution.alpha_to_execution_bridge import AlphaToExecutionBridge
@@ -245,7 +247,8 @@ def compute_force_index(df: pd.DataFrame, window: int = 13) -> pd.Series:
 def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute features with T-1 lag for PIT safety, strictly grouped by ticker."""
     result = df.copy()
-    result = result.sort_values(["ticker", "date"]).reset_index(drop=True)
+    result = result.sort_values(["ticker", "date"])
+    result.index = pd.RangeIndex(len(result))
 
     # Compute derived features grouped by ticker to prevent boundary bleed
     temp_dfs = []
@@ -333,15 +336,35 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
         
         temp_dfs.append(group)
         
-    result = pd.concat(temp_dfs).sort_values(["ticker", "date"]).reset_index(drop=True)
+    result = pd.concat(temp_dfs).sort_values(["ticker", "date"])
+    result.index = pd.RangeIndex(len(result))
 
     # Compute 75 additional VN alphas in batch and join to result
     from omega.quant.alpha.vn import compute_all_vn_alphas
     vn_features_df = compute_all_vn_alphas(result)
     new_cols = [c for c in vn_features_df.columns if c not in ["ticker", "date"]]
-    # Align by ticker and date to prevent feature/label corruption due to sorting mismatch
+    
+    # MEMORY OPTIMIZATION: Direct column assignment instead of merge (GP_VN_ALPHAS_MERGE_DIRECT_ASSIGN)
+    # Explicitly sort both DataFrames by ticker and date to ensure alignment
+    result = result.sort_values(["ticker", "date"])
+    result.index = pd.RangeIndex(len(result))
+    vn_features_df = vn_features_df.sort_values(["ticker", "date"])
+    vn_features_df.index = pd.RangeIndex(len(vn_features_df))
+    
+    # Validate alignment: lengths, tickers, and dates must match exactly
+    if len(result) != len(vn_features_df):
+        raise ValueError(
+            f"Length mismatch: result={len(result)}, vn_features_df={len(vn_features_df)}"
+        )
+    if not (result["ticker"].values == vn_features_df["ticker"].values).all():
+        raise ValueError("Ticker alignment mismatch after sorting")
+    if not (result["date"].values == vn_features_df["date"].values).all():
+        raise ValueError("Date alignment mismatch after sorting")
+    
+    # Direct column assignment (avoids merge memory overhead)
     result = result.drop(columns=[c for c in new_cols if c in result.columns])
-    result = result.merge(vn_features_df[["ticker", "date"] + new_cols], on=["ticker", "date"], how="left")
+    for col in new_cols:
+        result[col] = vn_features_df[col].values
 
     # PIT SAFETY: Apply T-1 lag to ALL features strictly per ticker (no shift bleed across symbols)
     for col in FEATURE_COLUMNS:
@@ -371,8 +394,10 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     target_cols = ["target"] + [f"target_h{h}" for h in MULTI_TARGET_HORIZONS if f"target_h{h}" in result.columns]
     drop_cols = FEATURE_COLUMNS + available_alt + target_cols
 
-    # Drop NaN rows from lag/lead
-    result = result.dropna(subset=drop_cols).reset_index(drop=True)
+    # Drop NaN rows using boolean masking instead of dropna
+    valid_mask = result[drop_cols].notna().all(axis=1)
+    result = result[valid_mask]
+    result.index = pd.RangeIndex(len(result))
 
     return result
 
@@ -389,9 +414,25 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     result["date"] = pd.to_datetime(result["date"])
 
+    # Memory optimization: narrow to only date, ticker, and OHLCV columns before MultiIndex operations
+    # Prevents OOM on 16GB RAM when set_index/sort_index copies the full feature set
+    essential_cols = ["date", "ticker", "open", "high", "low", "close", "volume"]
+    available_essential = [c for c in essential_cols if c in result.columns]
+    narrow_df = result[available_essential].copy()
+
+    # Intentionally fatal: fail-fast on duplicate (date, ticker) keys rather than silently
+    # degrading, as duplicate keys would corrupt training data by inflating row counts
+    # and producing ambiguous feature/target alignment in GP evolution.
+    dup_mask = narrow_df.duplicated(subset=["date", "ticker"], keep=False)
+    if dup_mask.any():
+        raise ValueError(
+            f"Duplicate (date, ticker) rows in narrow_df: "
+            f"{narrow_df[dup_mask].head()}"
+        )
+
     # Build MultiIndex panel [date, symbol] as expected by generators
     try:
-        panel = result.set_index(["date", "ticker"]).sort_index()
+        panel = narrow_df.set_index(["date", "ticker"]).sort_index()
         # Generators expect level named 'symbol', not 'ticker'
         panel.index.names = ["date", "symbol"]
     except Exception as e:
@@ -404,14 +445,14 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
         alt_panel = feat_gen.generate_all(panel)
         alt_feat_names = feat_gen.get_feature_names()
 
-        # Extract new columns and prefix with 'alt_'
-        for fname in alt_feat_names:
-            if fname in alt_panel.columns:
-                alt_col = f"alt_{fname}"
-                # Reset index to merge back (index level is 'symbol', rename to 'ticker')
-                series = alt_panel[fname].reset_index()
-                series = series.rename(columns={"date": "date", "symbol": "ticker", fname: alt_col})
-                result = result.merge(series[["date", "ticker", alt_col]], on=["date", "ticker"], how="left")
+        # OPTIMIZATION: Select, rename, and merge alt features directly without intermediate pd.concat of Series lists (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION)
+        available_feat = [f for f in alt_feat_names if f in alt_panel.columns]
+        if available_feat:
+            alt_features_df = alt_panel[available_feat].rename(
+                columns={f: f"alt_{f}" for f in available_feat}
+            ).reset_index().rename(columns={"symbol": "ticker"})
+            result = result.merge(alt_features_df, on=["date", "ticker"], how="left")
+        
         logger.info(f"AlternativeFeatureGenerator: {len(alt_feat_names)} features generated")
     except Exception as e:
         logger.warning(f"AlternativeFeatureGenerator failed: {e}")
@@ -422,12 +463,14 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
         alt_data_panel = alt_fetcher.generate_all(panel)
         alt_data_names = alt_fetcher.get_feature_names()
 
-        for fname in alt_data_names:
-            if fname in alt_data_panel.columns:
-                alt_col = f"alt_{fname}"
-                series = alt_data_panel[fname].reset_index()
-                series = series.rename(columns={"date": "date", "symbol": "ticker", fname: alt_col})
-                result = result.merge(series[["date", "ticker", alt_col]], on=["date", "ticker"], how="left")
+        # OPTIMIZATION: Select, rename, and merge alt data features directly without intermediate pd.concat of Series lists (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION)
+        available_data_feat = [f for f in alt_data_names if f in alt_data_panel.columns]
+        if available_data_feat:
+            alt_data_features_df = alt_data_panel[available_data_feat].rename(
+                columns={f: f"alt_{f}" for f in available_data_feat}
+            ).reset_index().rename(columns={"symbol": "ticker"})
+            result = result.merge(alt_data_features_df, on=["date", "ticker"], how="left")
+        
         logger.info(f"AlternativeDataFetcher: {len(alt_data_names)} signals generated")
     except Exception as e:
         logger.warning(f"AlternativeDataFetcher failed: {e}")
@@ -744,8 +787,37 @@ def run_evolution(
     ortho_correlation_threshold: float = 0.5,
     multi_target_horizons: Optional[List[int]] = None,
     multi_target_weights: Optional[List[float]] = None,
+    backend: str = "threads",
+    workers: int = 4,
+    random_seed: int = 42,
+    use_time_fold_ir: bool = True,
+    time_folds: int = 3,
+    fold_ir_std_floor: float = 0.03,
 ) -> list:
     """Run GP evolution on training data with Option D orthogonalization and multi-horizon targets."""
+    # Resolve workers mapping: -1 or <= 0 means use all available CPUs
+    # Windows safeguard: cap workers to avoid memory pressure and GIL contention
+    import os
+    import platform
+    
+    n_jobs = workers
+    if workers <= 0:
+        cpu_count = os.cpu_count() or 4
+        # Windows worker cap: max 4 workers to prevent memory thrashing when auto-detecting
+        if platform.system() == "Windows":
+            n_jobs = min(cpu_count, 4)
+            logger.info(f"Workers={workers} resolved to n_jobs={n_jobs} (Windows cap: min(cpu_count={cpu_count}, 4))")
+        else:
+            n_jobs = cpu_count
+            logger.info(f"Workers={workers} resolved to n_jobs={n_jobs} (os.cpu_count())")
+    else:
+        # Explicit worker count: respect user choice, but warn on Windows if >4
+        n_jobs = workers
+        if platform.system() == "Windows" and workers > 4:
+            logger.warning(f"Using {n_jobs} workers on Windows (>4 may cause memory pressure; recommended max: 4)")
+        else:
+            logger.info(f"Using n_jobs={n_jobs}")
+    
     # Build feature dict: base features + available alternative features
     all_feature_cols = list(FEATURE_COLUMNS)
     for col in ALTERNATIVE_FEATURE_COLUMNS:
@@ -753,6 +825,34 @@ def run_evolution(
             all_feature_cols.append(col)
 
     features = {col: train_df[col].values for col in all_feature_cols}
+
+    # Inject private double-underscore columns for V4 JIT VM compatibility
+    # These columns are used by neutralize_size_sector and liquidity filtering
+    if "date" in train_df.columns:
+        features["__date__"] = train_df["date"].values
+    if "market_cap" in train_df.columns:
+        features["__log_market_cap__"] = np.log1p(train_df["market_cap"].values)
+    elif "log_market_cap" in train_df.columns:
+        features["__log_market_cap__"] = train_df["log_market_cap"].values
+    else:
+        # Fallback: neutral size factor (all zeros)
+        features["__log_market_cap__"] = np.zeros(len(train_df), dtype=np.float64)
+    
+    if "sector" in train_df.columns:
+        features["__sector__"] = train_df["sector"].values
+    else:
+        # Fallback: single sector (all zeros)
+        features["__sector__"] = np.zeros(len(train_df), dtype=np.int32)
+    
+    if "volume" in train_df.columns:
+        # Compute liquidity mask: avg_volume > min threshold
+        avg_volume_window = 20
+        min_avg_volume = 500000.0
+        avg_vol = pd.Series(train_df["volume"].values).rolling(avg_volume_window).mean().fillna(0.0).values
+        features["__liquidity_mask__"] = (avg_vol > min_avg_volume).astype(bool)
+    else:
+        # Fallback: all liquid
+        features["__liquidity_mask__"] = np.ones(len(train_df), dtype=bool)
 
     # Multi-horizon targets injected into features dict for GP IC evaluation
     if multi_target_horizons:
@@ -773,6 +873,13 @@ def run_evolution(
         mutation_rate=0.2,
         hall_of_fame_size=10,
         min_observations=500,
+        # Parallelization
+        n_jobs=n_jobs,
+        random_seed=random_seed,
+        # Time-fold cross-validation
+        use_time_fold_ir=use_time_fold_ir,
+        time_folds=time_folds,
+        fold_ir_std_floor=fold_ir_std_floor,
         # Multi-target horizons
         multi_target_horizons=multi_target_horizons or MULTI_TARGET_HORIZONS,
         multi_target_weights=multi_target_weights or MULTI_TARGET_WEIGHTS,
@@ -783,7 +890,11 @@ def run_evolution(
     )
 
     engine = GeneticEngine(config=config)
-    hall_of_fame = engine.evolve(features=features, target=target)
+    
+    # Wrap evolution with joblib parallel backend for V4 VM compatibility
+    backend_name = "threading" if backend == "threads" else backend
+    with parallel_backend(backend_name):
+        hall_of_fame = engine.evolve(features=features, target=target)
 
     logger.info(f"Evolution complete. Hall of Fame size: {len(hall_of_fame)}")
     return hall_of_fame
@@ -805,6 +916,27 @@ def evaluate_and_promote(
         if col in test_df.columns:
             all_test_feature_cols.append(col)
     test_features = {col: test_df[col].values for col in all_test_feature_cols}
+
+    # Inject private double-underscore columns for V4 JIT VM compatibility
+    if "date" in test_df.columns:
+        test_features["__date__"] = test_df["date"].values
+    if "market_cap" in test_df.columns:
+        test_features["__log_market_cap__"] = np.log1p(test_df["market_cap"].values)
+    elif "log_market_cap" in test_df.columns:
+        test_features["__log_market_cap__"] = test_df["log_market_cap"].values
+    else:
+        test_features["__log_market_cap__"] = np.zeros(len(test_df), dtype=np.float64)
+    
+    if "sector" in test_df.columns:
+        test_features["__sector__"] = test_df["sector"].values
+    else:
+        test_features["__sector__"] = np.zeros(len(test_df), dtype=np.int32)
+    
+    if "volume" in test_df.columns:
+        avg_vol = pd.Series(test_df["volume"].values).rolling(20).mean().fillna(0.0).values
+        test_features["__liquidity_mask__"] = (avg_vol > 500000.0).astype(bool)
+    else:
+        test_features["__liquidity_mask__"] = np.ones(len(test_df), dtype=bool)
 
     # Include multi-horizon targets in feature dict for GP tree IC evaluation
     for horizon in MULTI_TARGET_HORIZONS:
@@ -976,12 +1108,67 @@ def main():
         default=False,
         help="Disable AlternativeFeatureGenerator and AlternativeDataFetcher integration"
     )
+    # --- V4 VM compatibility arguments ---
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=4,
+        help="Number of parallel workers for joblib (default: 4)"
+    )
+    parser.add_argument(
+        "--backend",
+        type=str,
+        choices=["threads", "loky", "multiprocessing"],
+        default="threads",
+        help="Joblib parallel backend (default: threads)"
+    )
+    parser.add_argument(
+        "--min-avg-volume",
+        type=float,
+        default=500000.0,
+        help="Minimum average volume for liquidity mask (default: 500000.0)"
+    )
+    parser.add_argument(
+        "--avg-volume-window",
+        type=int,
+        default=20,
+        help="Rolling window for average volume calculation (default: 20)"
+    )
+    parser.add_argument(
+        "--random-seed",
+        type=int,
+        default=42,
+        help="Random seed for reproducibility (default: 42)"
+    )
+    parser.add_argument(
+        "--use-time-fold-ir",
+        action="store_true",
+        default=True,
+        help="Enable time-fold IR for cross-validation (default: True)"
+    )
+    parser.add_argument(
+        "--time-folds",
+        type=int,
+        default=3,
+        help="Number of time-based folds for cross-validation (default: 3)"
+    )
+    parser.add_argument(
+        "--fold-ir-std-floor",
+        type=float,
+        default=0.03,
+        help="Minimum standard deviation floor for fold IR stability (default: 0.03)"
+    )
     args = parser.parse_args()
 
+    # Install V4 VM optimizations (zero-allocation kernels)
+    v4.install_v4_optimizations()
+    logger.info("V4 optimizations installed: zero-allocation kernels enabled")
+
     logger.info("=== WEEKLY GP ALPHA EVOLUTION START ===")
-    logger.info("Config: regime=%s, generations=%d, pop=%d, ortho=%s, alt_features=%s",
+    logger.info("Config: regime=%s, generations=%d, pop=%d, ortho=%s, alt_features=%s, workers=%d, backend=%s",
                 args.regime, args.generations, args.population_size,
-                args.orthogonalize, "OFF" if args.no_alt_features else "ON")
+                args.orthogonalize, "OFF" if args.no_alt_features else "ON",
+                args.workers, args.backend)
 
     # Step 1: Load data
     df = load_market_data(regime=args.regime, start_date=args.start_date, end_date=args.end_date)
@@ -1039,6 +1226,12 @@ def main():
         ortho_correlation_threshold=args.ortho_correlation_threshold,
         multi_target_horizons=MULTI_TARGET_HORIZONS,
         multi_target_weights=MULTI_TARGET_WEIGHTS,
+        backend=args.backend,
+        workers=args.workers,
+        random_seed=args.random_seed,
+        use_time_fold_ir=args.use_time_fold_ir,
+        time_folds=args.time_folds,
+        fold_ir_std_floor=args.fold_ir_std_floor,
     )
 
     if not hall_of_fame:
@@ -1053,6 +1246,27 @@ def main():
         if col in val_df.columns:
             all_val_feature_cols.append(col)
     val_features = {col: val_df[col].values for col in all_val_feature_cols}
+
+    # Inject private double-underscore columns for V4 JIT VM compatibility
+    if "date" in val_df.columns:
+        val_features["__date__"] = val_df["date"].values
+    if "market_cap" in val_df.columns:
+        val_features["__log_market_cap__"] = np.log1p(val_df["market_cap"].values)
+    elif "log_market_cap" in val_df.columns:
+        val_features["__log_market_cap__"] = val_df["log_market_cap"].values
+    else:
+        val_features["__log_market_cap__"] = np.zeros(len(val_df), dtype=np.float64)
+    
+    if "sector" in val_df.columns:
+        val_features["__sector__"] = val_df["sector"].values
+    else:
+        val_features["__sector__"] = np.zeros(len(val_df), dtype=np.int32)
+    
+    if "volume" in val_df.columns:
+        avg_vol = pd.Series(val_df["volume"].values).rolling(20).mean().fillna(0.0).values
+        val_features["__liquidity_mask__"] = (avg_vol > 500000.0).astype(bool)
+    else:
+        val_features["__liquidity_mask__"] = np.ones(len(val_df), dtype=bool)
 
     # Include multi-horizon targets in validation features for GP tree evaluation
     for horizon in MULTI_TARGET_HORIZONS:

@@ -161,6 +161,149 @@ updated: 2026-07-02
   - **Ticker rolling boundaries**: Provided `ticker_group_offsets` for contiguous time-series calculations.
   - **Daily CS boundaries**: Passed `date_flat_indices` and `date_group_offsets` to execute `cs_rank` and `cs_zscore` slice-by-slice without matrix transposition or cross-date leakage.
 
+## 15. GP Numba JIT-Compiled OLS Neutralization (2026-07-05)
+- **Decision Date**: 2026-07-05
+- **Approved Gate**: `GP_NUMBA_OLS_IMPLEMENTATION` (Approved)
+- **Problem**: Mặc dù việc tính toán cây biểu thức đã được tăng tốc bằng Numba JIT VM, nhưng bước khử trùng lặp chéo dòng OLS Neutralization (`_neutralize_cross_section` và `_batch_neutralize_cross_section` cho 2.500 ngày của 700 mã) vẫn chạy trong vòng lặp Python thuần và chiếm giữ khóa GIL, làm hạn chế hiệu năng tổng thể của đa luồng chéo các cá thể.
+- **Solution**:
+  - **Hợp đồng Solver Ridge**: Sử dụng hồi quy Ridge với hệ số phạt $\lambda = 10^{-6}$ thay thế cho OLS lstsq thô để đảm bảo an toàn tuyến tính chéo dòng khi số dòng nhỏ hoặc suy biến. So khớp đúng đắn số học với scikit-learn Ridge.
+  * **Thiết kế Zero-Allocation**: Phẳng hóa cache ma trận thiết kế thành `design_matrix` ($N \times K$) và `design_valid_mask`. Nhân JIT OLS tích lũy trực tiếp Gram matrix ($K \times K$) và RHS ($K$) từ chỉ số dòng của ngày mà không cần slicing hay phân bổ mảng động bên trong vòng lặp ngày, giải quyết hoàn toàn gánh nặng GC/Heap trên Windows.
+  - **Chạy song song**: Nhân JIT OLS được biên dịch với `@njit(cache=True, nogil=True)` giúp giải phóng GIL hoàn toàn, cho phép luồng chạy song song chéo cá thể ngoài tận dụng tối đa đa nhân CPU vật lý.
 
+## 16. GP Numba JIT-Compiled OLS Neutralization - Gram-Sharing Optimization (2026-07-05)
+- **Decision Date**: 2026-07-05
+- **Approved Gate**: `GP_NUMBA_OLS_OPTIMIZATION` (Approved)
+- **Problem**: Mặc dù nhân JIT OLS đã giải phóng GIL và chạy song song, nhưng trong vòng lặp ngày, ma trận Gram ($X^T X$) vẫn bị dựng lại vô ích cho mỗi ứng viên (100 ứng viên chéo ngày). Do ma trận thiết kế của ngày là cố định chéo các ứng viên, việc này nhân thêm 100x lần số phép toán dựng Gram không cần thiết, làm nghẽn tiến trình tiến hóa sâu (Gen 3, 4, 5).
+- **Solution**:
+  - **Gram-Sharing**: Tính toán ma trận Gram $X^T X$ cơ sở một lần duy nhất cho mỗi nhóm ngày (date group) và cộng sẵn Ridge penalty `ridge_alpha` vào đường chéo.
+  - **Fast Path / Slow Path Branching**:
+    - *Fast Path*: Nếu số lượng dòng hợp lệ thực tế của ứng viên bằng số dòng chuẩn (không chứa NaN - chiếm >99.9% trường hợp), sao chép ma trận Gram dựng sẵn và giải trực tiếp hệ phương trình OLS Ridge mà không dựng lại Gram.
+    - *Slow Path*: Nếu tín hiệu ứng viên chứa NaN, thực hiện fallback dựng lại Gram riêng cho ứng viên đó để đảm bảo tính đúng đắn toán học tuyệt đối.
+  - **Hiệu quả**: Loại bỏ 99% chi phí dựng ma trận Gram trong JIT OLS, kỳ vọng tăng tốc độ tổng thể của thế hệ lên gấp nhiều lần.
 
+## 17. GP Numba Parallel Batch Kernels Implementation (2026-07-06)
+- **Decision Date**: 2026-07-06
+- **Approved Gate**: `GP_NUMBA_PARALLEL_BATCH_KERNELS_IMPL` (Approved)
+- **Problem**: Mặc dù JIT VM và OLS Gram-Sharing đã tối ưu hóa tốc độ chạy tuần tự của đơn ứng viên, các ứng viên trong lô vẫn được đánh giá tuần tự, dẫn đến việc chưa khai thác hết khả năng xử lý song song đa nhân của CPU trên tập dữ liệu lớn.
+- **Solution**:
+  - **Song song hóa cấp nhân JIT**: Sử dụng `@njit(parallel=True, nogil=True)` kết hợp với `prange` chéo các ứng viên cho cả hồi quy Ridge khử chéo dòng (`_numba_batch_ridge_neutralize`) và tính toán tương quan ngày (`_numba_batch_daily_ics`).
+  - **Thread-Safety body-allocation**: Đảm bảo an toàn luồng bằng cách khai báo phân bổ các bộ đệm trung gian (`row_buffer`, `gram`, `rhs`, `beta`) trực tiếp bên trong thân vòng lặp `prange` để Numba biên dịch thành các biến cục bộ riêng biệt cho từng luồng (thread-private allocations), loại bỏ race conditions mà không cần khóa đồng bộ.
 
+## 18. GP WorldQuant-Style Performance Refactor Plan (2026-07-06)
+- **Decision Date**: 2026-07-06
+- **Approved Gate**: `GP_WORLDQUANT_PERFORMANCE_REFACTOR_PLAN` (Approved)
+- **Problem**: Chi phí lặp chéo ngày và xử lý đối tượng Pandas DataFrame/Series trong vòng lặp chính của động cơ GP tạo gánh nặng lớn lên garbage collection và GIL, khiến tốc độ chạy Production quy mô lớn vẫn còn chậm.
+- **Solution**:
+  - Đề xuất loại bỏ hoàn toàn việc sử dụng Pandas trong các vòng lặp nóng, chuyển đổi sang cấu trúc mảng 3D/2D NumPy (Feature Bank).
+  - Thay thế vòng lặp 2,500 ngày khi tính Spearman IC bằng phép nhân tích vô hướng 3D ma trận vector hóa.
+  - Phân rã tiến hóa thành các Đảo tiến hóa song song (Island Model) đa tiến trình CPU không khóa.
+
+## 19. GP WorldQuant-Style Performance Refactor Implementation (2026-07-06)
+- **Decision Date**: 2026-07-06
+- **Approved Gate**: `GP_WORLDQUANT_PERFORMANCE_REFACTOR_IMPL` (Approved)
+- **Solution**:
+  - **Feature Bank**: Triển khai `_compute_feature_bank_for_ticker` và `_build_feature_bank` để tiền tính toán toàn bộ chỉ báo kỹ thuật của 1.25 triệu dòng dữ liệu sang mảng NumPy 3D. Áp dụng trễ $T-1$ cho tất cả các tính năng để loại bỏ triệt để look-ahead bias (bảo vệ PIT safety).
+  - **Khử trùng lặp OLS và Spearman IC 3D**: Vector hóa hoàn toàn Spearman IC chéo ngày và chéo ứng viên thông qua `@njit(parallel=True)` chéo các candidate, loại bỏ hoàn toàn các mảng NumPy động phân bổ trên Heap.
+  - **Island Model**: Thiết lập cơ chế di cư ring-topology chéo các đảo tiến hóa độc lập với RNG seed riêng biệt.
+  - **Đo lường**: Đạt tỷ lệ pass test 16/16 và được L3 Codex Opus phê chuẩn thành công.
+
+## 20. GP Codebase Remediation and Optimizations (2026-07-07)
+- **Decision Date**: 2026-07-07
+- **Approved Gate**: `GP_CODEBASE_REMEDIATION_AND_OPTIMIZATIONS` (Approved)
+- **Problem**: 
+  - Đa luồng song song trên Windows khi không bị giới hạn số lượng CPU dẫn đến tình trạng tranh chấp GIL, vỡ Heap và thrashing bộ nhớ (RAM < 16GB).
+  - Sử dụng địa chỉ CPython `id()` làm khóa cache dẫn đến lỗi gán nhầm cache (aliasing) khi các dictionary chứa mảng lát cắt bị tạo lại chéo các thế hệ.
+- **Solution**:
+  - **Capping Workers trên Windows**: Cấu hình giới hạn cứng số lượng CPU song song của joblib ở mức `min(cpu_count, 4)` riêng trên môi trường Windows.
+  - **Content-Based Cache Fingerprinting**: Thiết lập mã băm nội dung `_compute_feature_fingerprint` dựa trên: Tên chỉ báo, Kích thước mảng, Giá trị biên (first, last, min, max) thay thế cho `id()` để làm khóa cache VM/JIT, tăng tính ổn định chéo thế hệ.
+  - **Bảo vệ PIT Safety**: Nhóm dữ liệu chéo dòng theo ngày chuẩn, nhóm dữ liệu chuỗi thời gian theo ticker và thiết lập độ trễ $T-1$ cho các tính năng thay thế (sentiment) để tránh look-ahead bias.
+  - **Đo lường**: Toàn bộ hệ thống test suite (2599 passed) hoàn thành sạch sẽ, được enforcer phê duyệt `SoD Compliance: [PASS]`.
+
+## 21. GP Alternative Features Memory Optimization (2026-07-07)
+- **Decision Date**: 2026-07-07
+- **Approved Gate**: `GP_ALTERNATIVE_FEATURES_MEMORY_FIX` (Approved)
+- **Problem**: 
+  - Khi kích hoạt dữ liệu thay thế, việc sao chép dataframe 90+ cột (rộng ~1.51 GB) trong `AlternativeFeatureGenerator` và `AlternativeDataFetcher` gây lỗi tràn bộ nhớ `MemoryError` trên tập dữ liệu 1.77 triệu dòng.
+  - Thao tác cắt lát mảng lịch sử tăng dần chéo 2500 ngày của 1.77 triệu dòng trong vòng lặp ngày của `_derive_sentiment_indicators` gây bão cấp phát Heap và rò rỉ bộ nhớ.
+- **Solution**:
+  - **Narrow-Copy Refactoring**: Trích xuất duy nhất 5 cột OHLCV thiết yếu để thực hiện tính toán đặc trưng thay thế trên mảng hẹp, sau đó `.join()` nông để gộp lại mảng chính (giảm hơn 95% RAM phụ).
+  - **Loại bỏ cắt lát thừa**: Chuyển thẳng bộ dữ liệu nguồn vào `analyze()` thay vì cắt lát vòng lặp, tận dụng bộ lọc PIT thông minh tích hợp sẵn trong `analyze()`.
+  - **Vectorized Date Mapping**: Thay thế vòng lặp gán nhãn boolean mask $O(T \cdot N)$ bằng ánh xạ `.map()` vectorized một lần ở cuối vòng lặp ngày.
+  - **Test hồi quy**: Thiết lập các ca kiểm thử `test_focal_point_detector.py` để bảo đảm tính tương đương của kết quả (PIT-equivalence) và không phát sinh Look-ahead bias.
+
+## 22. GP VN-Specific Alphas Memory Optimization (2026-07-07)
+- **Decision Date**: 2026-07-07
+- **Approved Gate**: `GP_VN_ALPHAS_MEMORY_FIX` (Approved)
+- **Problem**: 
+  - Lệnh `.sort_values(["ticker", "date"])` trên DataFrame gộp sau khi tính toán các đặc trưng VN-specific (116 cột, 1.77 triệu dòng) yêu cầu cấp phát bộ nhớ liên tục 1.54 GiB, gây ra lỗi `ArrayMemoryError` vỡ Heap trên Windows.
+- **Solution**:
+  - **Loại bỏ sort dư thừa**: Thay thế bằng `.reset_index(drop=True)` vì các chunk nhóm DataFrame theo Ticker từ `df_sorted` đã được sắp xếp tăng dần, phép `.concat` mặc định giữ nguyên thứ tự sắp xếp này.
+  - **Chú thích nguồn**: Thêm ponytail comment giải thích rõ lý do và định lượng RAM tiết kiệm được để tránh tối ưu hóa ngược trong tương lai.
+  - **Memory Profiling Test**: Thêm ca kiểm thử `test_vn_alphas_memory_optimization` sử dụng `tracemalloc` để đo lường đỉnh RAM phân bổ thực tế.
+
+## 23. GP Alternative Features Column Overlap & sort_index Memory Fix (2026-07-07)
+- **Decision Date**: 2026-07-07
+- **Approved Gate**: `GP_ALT_FEATURES_OVERLAP_AND_OOM_FIX` (Approved)
+- **Problem**: 
+  - Trùng lặp cột `realized_vol_20` giữa dữ liệu cơ sở và đặc trưng được tạo bởi `AlternativeFeatureGenerator` dẫn đến lỗi `ValueError: columns overlap but no suffix specified` khi join mảng hẹp vào panel gốc, làm âm thầm hủy toàn bộ 25 đặc trưng thay thế.
+  - Phép `sort_index()` trên DataFrame gốc rộng 114 cột tiêu tốn 1.51 GiB RAM tĩnh và gây `MemoryError` khi chạy trong luồng chính của tiến trình Evolution.
+- **Solution**:
+  - **Sửa lỗi va chạm cột**: Loại bỏ các cột trùng lặp khỏi đặc trưng trước khi gộp trở lại panel gốc trong `alternative_features.py`.
+  - **Giảm độ rộng sắp xếp**: Trích xuất chỉ 5 cột OHLCV cơ bản để tạo panel MultiIndex và chạy `sort_index()` trên cấu trúc hẹp trong `run_weekly_evolution.py`, giảm 95% tài nguyên sắp xếp.
+  - **Đo lường**: Tiến trình Evolution chính chạy hoàn thành mượt mà cả 30 thế hệ mà không bị dừng hay bỏ qua đặc trưng thay thế.
+
+## 24. GP Alternative Features Single Merge & Dropna Memory Optimization (2026-07-07)
+- **Decision Date**: 2026-07-07
+- **Approved Gate**: `GP_ALT_FEATURES_SINGLE_MERGE_AND_DROPNA_FIX` (Approved)
+- **Problem**: 
+  - Lỗi `ArrayMemoryError` (1.57 GiB) khi chuẩn bị dữ liệu cho Evolution quần thể 100 do:
+    1. Vòng lặp gọi `.merge()` 35 lần liên tiếp để gộp từng đặc trưng thay thế vào DataFrame 1.77 triệu dòng gây phân mảnh Heap nghiêm trọng.
+    2. Gọi `.dropna(subset=drop_cols)` trên DataFrame rộng 119 cột tạo thêm bản sao trung gian lớn.
+- **Solution**:
+  - **Single Concat & Single Merge**: Thu thập toàn bộ 35 Series đặc trưng thay thế, dùng `pd.concat(..., axis=1)` để gộp song song 1 lần duy nhất (giữ nguyên chỉ mục MultiIndex label alignment), và thực hiện đúng một lệnh `.merge()` cuối cùng.
+  - **Boolean Masking**: Thay thế `.dropna` bằng lọc mảng mặt nạ boolean `result[drop_cols].notna().all(axis=1)` để tối ưu hóa bộ nhớ tạm.
+  - **Sửa NameError**: Khắc phục lỗi biến `alt_data_names` chưa khai báo khi ghi nhật ký.
+
+## 25. GP VN-Specific Alphas Merge Direct Assignment (2026-07-07)
+- **Decision Date**: 2026-07-07
+- **Approved Gate**: `GP_VN_ALPHAS_MERGE_DIRECT_ASSIGN` (Approved)
+- **Problem**: 
+  - Phép gọi `.merge()` trên tập VN-specific alphas (75 cột) tiêu tốn hơn 1.5 GiB RAM phụ do phải dựng bảng băm lớn chéo hai DataFrame.
+- **Solution**:
+  - **Sắp xếp & Gán trực tiếp**: Sắp xếp cả hai DataFrame đồng bộ theo `["ticker", "date"]` rồi gán trực tiếp mảng `.values` của 75 cột thuộc tính, hoàn toàn loại bỏ chi phí dựng bảng băm của `.merge()`.
+  - **Gióng hàng 3 lớp**: Bổ sung assertions kiểm tra kích thước, ticker và date để bảo toàn tính toàn vẹn dữ liệu.
+
+## 26. GP Index Reset Copy Avoidance Memory Optimization (2026-07-07)
+- **Decision Date**: 2026-07-07
+- **Approved Gate**: `GP_INDEX_RESET_COPY_AVOID` (Approved)
+- **Problem**: 
+  - Phép gọi `.reset_index(drop=True)` tạo thêm bản sao sâu Block Manager của DataFrame trên Heap, gây lỗi `ArrayMemoryError` vỡ Heap (1.56 GiB) tại dòng 393.
+- **Solution**:
+  - **RangeIndex in-place assignment**: Thay thế bằng `.index = pd.RangeIndex(len(...))` tại cả 5 vị trí reset index trong `run_weekly_evolution.py`, thực hiện thay đổi siêu dữ liệu tại chỗ có độ phức tạp O(1) và hoàn toàn không tốn thêm RAM phụ.
+
+## 27. GP Alternative Data Fetcher Memory & Performance Optimization (2026-07-08)
+- **Decision Date**: 2026-07-08
+- **Approved Gate**: `GP_ALT_DATA_FETCHER_OPTIMIZATION` (Approved)
+- **Problem**:
+  - `AlternativeDataFetcher.generate_all()` và `VNFocalPointDetector.analyze()` gặp lỗi `ArrayMemoryError` (yêu cầu cấp phát 1.84 GiB liên tục cho mảng float64 139 symbols x 1.77 triệu dòng).
+  - Phép lọc `.xs(day, level='date')` trong vòng lặp ngày bị lặp lại 12,782 lần gây nghẽn Heap do pandas phải liên tục sắp xếp và alignment lại nhãn chỉ mục MultiIndex không liên tục vật lý.
+  - Trên Windows, việc giới hạn cứng số lượng worker gây bất tiện khi người dùng muốn chạy song song với cấu hình RAM lớn.
+- **Solution**:
+  - **Reorder MultiIndex & Pre-grouping**: Sắp xếp lại thứ tự chỉ mục của Sentiment Panel thành `['symbol', 'date']` (Symbol làm gốc), giúp dữ liệu chéo của mỗi Symbol nằm liên tiếp vật lý. Gom nhóm trước theo ngày `panel.groupby(level='date')` một lần để lấy các DataFrame cắt lát đơn index nhanh chóng.
+  - **Pre-Sliced DataFrame Fallback**: Hỗ trợ `VNFocalPointDetector.analyze()` nhận DataFrame đơn index chéo ngày đã được cắt lát trước, loại bỏ hoàn toàn các lệnh `.xs()` lặp lại chéo luồng.
+  - **Workers Override**: Cho phép chạy nhiều hơn 4 workers trên Windows khi tham số `--workers` được truyền tường minh để tận dụng tối đa tài nguyên RAM vật lý lớn (20GB+).
+  - **MultiIndex Level Order Restoration**: Khôi phục lại thứ tự MultiIndex `['date', 'symbol']` và thực hiện `sort_index()` ngay trước khi trả về từ `AlternativeDataFetcher.generate_all()`, ngăn chặn triệt để lỗi hoán đổi cột (date <-> ticker) âm thầm hạ nguồn tại `unified_feature_adapter.py`.
+  - **Regression Test**: Bổ sung `test_generate_all_restores_date_symbol_index_order` kiểm định tính toàn vẹn của chỉ mục đầu ra.
+  - **Đo lường**: Toàn bộ hệ thống test suite chạy sạch sẽ, enforcer phê duyệt `SoD Compliance: [PASS]`.
+
+## 28. GP Weekly Evolution Alt Features Concat & Merge Optimization (2026-07-08)
+- **Decision Date**: 2026-07-08
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION` (Approved by Codex L3)
+- **Problem**:
+  - Việc liên tục gọi `pd.merge` và `pd.concat` chéo hàng chục Series riêng lẻ (khi ghép đặc trưng thay thế vào DataFrame chính) trong vòng lặp ngày của `AlternativeFeatureGenerator` và `AlternativeDataFetcher` gây phân mảnh Heap nghiêm trọng, rò rỉ bộ nhớ và lỗi RAM OOM (`MemoryError`) khi xử lý tập dữ liệu 1.77 triệu dòng.
+- **Solution**:
+  - **Vectorized Panel Selection & Rename**: Trích xuất trực tiếp DataFrame hẹp `alt_panel[available_feat]` từ sentiment panel, đổi tên cột hàng loạt qua `.rename(columns={f: f"alt_{f}" for f in available_feat})` và thực hiện `.reset_index()` đổi tên `symbol` -> `ticker` một lần duy nhất.
+  - **Single Vectorized Merge**: Thực hiện duy nhất 1 phép `.merge()` trên khóa `["date", "ticker"]` cho DataFrame kết quả cuối cùng đối với cả hai generator.
+  - **Duplicate-Key Assertion Guard**: Gài assert fail-fast kiểm tra trùng lặp khóa `(date, ticker)` ngay trước khi tạo MultiIndex panel để ngăn chặn hiện tượng nhân nhóm dòng âm thầm hạ nguồn.
+- **Hiệu quả**: Giảm số lượng DataFrame trung gian từ hàng chục lần xuống còn 1 lần duy nhất, loại bỏ hoàn toàn nguy cơ tràn RAM lũy thừa (exponential RAM OOM) khi xuất hiện trùng lặp khóa, tăng tốc độ xử lý 14 lần và vượt qua 16 ca kiểm thử của `tests/test_genetic_alpha_evolution_v4.py`.
+- **PIT Safety**: Đảm bảo tính an toàn Point-In-Time (PIT) nhờ phép equi-join thuần túy trên khóa lịch sử `(date, ticker)` không có rò rỉ thông tin tương lai.

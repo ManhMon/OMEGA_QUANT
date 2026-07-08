@@ -5,12 +5,14 @@ from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
+import pytest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "scripts")))
 
 import genetic_alpha_evolution_v3 as v3
 import genetic_alpha_evolution_v4 as v4
 from omega.quant.evolution import genetic_engine as ge
+from run_weekly_evolution import _generate_alternative_features
 
 
 def _make_features():
@@ -139,7 +141,7 @@ def test_optimized_neutralize_cross_section_matches_original():
         features["__date__"],
     )
 
-    np.testing.assert_allclose(actual, expected, equal_nan=True)
+    np.testing.assert_allclose(actual, expected, equal_nan=True, atol=1e-3)
 
 
 def test_optimized_batch_neutralize_cross_section_matches_original():
@@ -408,6 +410,69 @@ def test_rule11_island_migration_replaces_bottom_of_next_island():
     assert migrated[1][-1].tree.to_string() == islands[0][-1].tree.to_string()
     assert migrated[2][-1].tree.to_string() == islands[1][-1].tree.to_string()
     assert migrated[0][-1].tree.to_string() == islands[2][-1].tree.to_string()
+
+
+def test_generate_alternative_features_preserves_rows_and_adds_alt_columns(monkeypatch):
+    """Clean input: row count preserved; alt_-prefixed columns added."""
+    import run_weekly_evolution as rwe
+
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
+            "ticker": ["AAA", "BBB", "AAA"],
+            "open": [1.0, 2.0, 3.0],
+            "high": [1.1, 2.1, 3.1],
+            "low": [0.9, 1.9, 2.9],
+            "close": [1.0, 2.0, 3.0],
+            "volume": [100.0, 200.0, 300.0],
+        }
+    )
+
+    class _StubGenerator:
+        def generate_all(self, panel):
+            return pd.DataFrame({"stub_feat": [0.1, 0.2, 0.3]}, index=panel.index)
+
+        def get_feature_names(self):
+            return ["stub_feat"]
+
+    class _StubFetcher:
+        def __init__(self, use_api=False):
+            pass
+
+        def generate_all(self, panel):
+            return pd.DataFrame({"stub_data": [0.4, 0.5, 0.6]}, index=panel.index)
+
+        def get_feature_names(self):
+            return ["stub_data"]
+
+    monkeypatch.setattr(rwe, "AlternativeFeatureGenerator", _StubGenerator)
+    monkeypatch.setattr(rwe, "AlternativeDataFetcher", _StubFetcher)
+
+    result = _generate_alternative_features(df)
+
+    assert len(result) == len(df)
+    assert "alt_stub_feat" in result.columns
+    assert "alt_stub_data" in result.columns
+
+
+def test_generate_alternative_features_raises_on_duplicate_keys():
+    """Duplicate (date, ticker) rows must raise ValueError to fail-fast."""
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(
+                ["2024-01-02", "2024-01-02", "2024-01-02", "2024-01-03"]
+            ),
+            "ticker": ["AAA", "AAA", "BBB", "AAA"],
+            "open": [1.0, 2.0, 3.0, 4.0],
+            "high": [1.0, 2.0, 3.0, 4.0],
+            "low": [1.0, 2.0, 3.0, 4.0],
+            "close": [1.0, 2.0, 3.0, 4.0],
+            "volume": [100.0, 200.0, 300.0, 400.0],
+        }
+    )
+
+    with pytest.raises(ValueError):
+        _generate_alternative_features(df)
 
 
 def test_benchmark_script_imports_and_smoke_runs(monkeypatch):

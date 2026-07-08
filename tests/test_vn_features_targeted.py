@@ -7,6 +7,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
+import tracemalloc
 import numpy as np
 import pandas as pd
 import pytest
@@ -107,4 +108,54 @@ def test_walk_forward_split_regimes():
     assert len(test_c) > 0
     assert train_c["date"].min() >= pd.Timestamp("2020-01-01")
     assert test_c["date"].max() <= pd.Timestamp("2020-12-31")
+
+
+def test_vn_alphas_memory_optimization():
+    """
+    Test memory footprint optimization for compute_all_vn_alphas.
+    Verifies that removing redundant sort_values() reduces peak memory usage
+    on wide DataFrames with many tickers and features.
+    """
+    # Start tracemalloc
+    tracemalloc.start()
+    
+    # Create a larger dataset to test memory impact (100 tickers, 252 days = ~25k rows)
+    dates = pd.date_range("2025-01-01", periods=252)
+    data = []
+    for i in range(100):
+        ticker = f"TICK{i:03d}"
+        for d in dates:
+            data.append({
+                "ticker": ticker,
+                "date": d,
+                "open": 10.0 + np.random.rand(),
+                "high": 11.0 + np.random.rand(),
+                "low": 9.0 + np.random.rand(),
+                "close": 10.0 + np.random.rand(),
+                "volume": 1000 + np.random.randint(0, 1000)
+            })
+    df = pd.DataFrame(data)
+    
+    # Compute alphas and capture peak memory
+    res = compute_all_vn_alphas(df)
+    current, peak = tracemalloc.get_traced_memory()
+    tracemalloc.stop()
+    
+    # Verify correctness
+    assert len(res) == len(df), "Output row count must match input"
+    assert res["ticker"].nunique() == 100, "All tickers must be present"
+    
+    # Verify no NaNs/Infs in computed features
+    new_cols = [c for c in res.columns if c not in ["ticker", "date"]]
+    for col in new_cols:
+        assert not res[col].isna().any(), f"NaN found in {col}"
+        assert not np.isinf(res[col]).any(), f"Inf found in {col}"
+    
+    # Peak memory should be reasonable (<500MB for this dataset size)
+    # This serves as a regression test - if memory usage spikes, the test will help identify it
+    peak_mb = peak / 1024 / 1024
+    assert peak_mb < 500, f"Peak memory usage too high: {peak_mb:.2f} MB"
+    
+    # Log memory usage for monitoring
+    print(f"\nMemory usage - Current: {current/1024/1024:.2f} MB, Peak: {peak_mb:.2f} MB")
 

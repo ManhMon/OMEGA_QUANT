@@ -46,6 +46,20 @@ def _build_features(df):
 
 
 def build_engine(args: argparse.Namespace, features: dict[str, np.ndarray]) -> GeneticEngine:
+    # Resolve workers with Windows safeguard
+    import platform
+    n_jobs = args.workers
+    if args.workers <= 0:
+        cpu_count = os.cpu_count() or 4
+        # Windows worker cap: max 4 workers to prevent memory thrashing
+        if platform.system() == "Windows":
+            n_jobs = min(cpu_count, 4)
+        else:
+            n_jobs = cpu_count
+    elif platform.system() == "Windows" and args.workers > 4:
+        # Explicit worker count: apply Windows cap if needed
+        n_jobs = 4
+    
     config = GPConfig(
         population_size=args.population_size,
         generations=1,
@@ -71,7 +85,7 @@ def build_engine(args: argparse.Namespace, features: dict[str, np.ndarray]) -> G
         tree_size_penalty_weight=0.0005,
         early_stopping_rounds=0,
         tournament_diversity_weight=0.02,
-        n_jobs=args.workers,
+        n_jobs=n_jobs,
         use_fast_penalties=True,
         unary_ops=[op for op in GPConfig().unary_ops if op not in ["rank", "cs_rank", "cs_zscore"]],
         ts_ops=[],

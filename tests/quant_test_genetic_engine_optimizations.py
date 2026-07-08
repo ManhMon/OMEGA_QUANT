@@ -1,6 +1,9 @@
 import numpy as np
 import pytest
 from scipy.stats import rankdata, spearmanr
+import importlib.util
+import sys
+from pathlib import Path
 
 from omega.quant.evolution.genetic_engine import (
     ALPHA_CACHE_KEY,
@@ -18,6 +21,71 @@ from omega.quant.evolution.genetic_engine import (
     _neutralize_cross_section,
     _pearson_corr,
 )
+
+import omega.quant.evolution.genetic_engine as ge
+
+
+@pytest.fixture(scope="module", autouse=True)
+def restore_originals():
+    """Module-scoped fixture to isolate monkeypatches from other test modules."""
+    import omega.quant.evolution.genetic_engine as ge
+    
+    # Save current state
+    saved_state = {
+        'GeneticEngine': ge.GeneticEngine,
+        'GPConfig': ge.GPConfig,
+        'GPIndividual': ge.GPIndividual,
+        '_neutralize_cross_section': ge._neutralize_cross_section,
+        '_batch_neutralize_cross_section': ge._batch_neutralize_cross_section,
+        '_compute_time_fold_ir': ge._compute_time_fold_ir,
+    }
+    
+    # Restore to originals if monkeypatched
+    if ge.GeneticEngine.__name__ == "GeneticEngineV4":
+        import genetic_alpha_evolution_v4 as v4
+        ge.GeneticEngine = v4.ORIGINAL_GENETIC_ENGINE
+        ge.GPConfig = v4.ORIGINAL_GPCONFIG
+        ge.GPIndividual = v4.ORIGINAL_GPINDIVIDUAL
+        ge._neutralize_cross_section = v4.ORIGINAL_NEUTRALIZE_CROSS_SECTION
+        ge._batch_neutralize_cross_section = v4.ORIGINAL_BATCH_NEUTRALIZE_CROSS_SECTION
+        ge._compute_time_fold_ir = v4.ORIGINAL_COMPUTE_TIME_FOLD_IR
+        
+        # Re-bind local names in test module's namespace
+        import sys
+        current_module = sys.modules[__name__]
+        current_module.GeneticEngine = ge.GeneticEngine
+        current_module.GPConfig = ge.GPConfig
+        current_module.GPIndividual = ge.GPIndividual
+        current_module._neutralize_cross_section = ge._neutralize_cross_section
+        current_module._batch_neutralize_cross_section = ge._batch_neutralize_cross_section
+        current_module._compute_time_fold_ir = ge._compute_time_fold_ir
+    
+    yield
+    
+    # Restore saved state
+    ge.GeneticEngine = saved_state['GeneticEngine']
+    ge.GPConfig = saved_state['GPConfig']
+    ge.GPIndividual = saved_state['GPIndividual']
+    ge._neutralize_cross_section = saved_state['_neutralize_cross_section']
+    ge._batch_neutralize_cross_section = saved_state['_batch_neutralize_cross_section']
+    ge._compute_time_fold_ir = saved_state['_compute_time_fold_ir']
+
+
+def _load_v4_module():
+    module = sys.modules.get("genetic_alpha_evolution_v4")
+    if module is not None:
+        return module
+    module_path = Path(__file__).resolve().parents[1] / "scripts" / "genetic_alpha_evolution_v4.py"
+    scripts_dir = str(module_path.parent)
+    if scripts_dir not in sys.path:
+        sys.path.insert(0, scripts_dir)
+    spec = importlib.util.spec_from_file_location("genetic_alpha_evolution_v4", module_path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f"cannot load genetic_alpha_evolution_v4 from {module_path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
 
 
 def _make_features(alpha, target=None):
@@ -270,3 +338,238 @@ def test_gate3_batch_neutralization_flag_preserves_legacy_scores():
             assert batch_row[key] == pytest.approx(legacy_row[key], abs=1e-10)
     assert [ind.tree.to_string() for ind in batch_hof] == [ind.tree.to_string() for ind in legacy_hof]
     assert [ind.fitness for ind in batch_hof] == pytest.approx([ind.fitness for ind in legacy_hof], abs=1e-10)
+
+
+def test_gp_numba_ic_date_index_builder_groups_rows_in_stable_order():
+    v4 = _load_v4_module()
+
+    date_ids = np.array([2, 0, 2, 1, 0, 1, 2], dtype=np.int64)
+
+    flat_indices, offsets = v4._build_date_group_index_from_ids(date_ids)
+
+    assert flat_indices.tolist() == [1, 4, 3, 5, 0, 2, 6]
+    assert offsets.tolist() == [0, 2, 4, 7]
+
+
+def test_gp_numba_daily_ics_pregroup_matches_legacy_scan():
+    v4 = _load_v4_module()
+
+    def legacy_daily_ics(alpha, target, date_ids, eval_mask):
+        n_dates = int(date_ids.max()) + 1
+        out = np.full(n_dates, np.nan, dtype=np.float64)
+        counts = np.zeros(n_dates, dtype=np.int64)
+        for i in range(date_ids.size):
+            if eval_mask[i]:
+                counts[date_ids[i]] += 1
+        for date_id in range(n_dates):
+            if counts[date_id] <= 5:
+                continue
+            alpha_day = np.empty(counts[date_id], dtype=np.float64)
+            target_day = np.empty(counts[date_id], dtype=np.float64)
+            pos = 0
+            for i in range(date_ids.size):
+                if eval_mask[i] and date_ids[i] == date_id:
+                    alpha_day[pos] = alpha[i]
+                    target_day[pos] = target[i]
+                    pos += 1
+            out[date_id] = v4._numba_pearson_corr(
+                v4._numba_rank_average_ties(alpha_day),
+                v4._numba_rank_average_ties(target_day),
+            )
+        return out
+
+    rows_per_date = 7
+    date_ids = np.repeat(np.array([2, 0, 3, 1], dtype=np.int64), rows_per_date)
+    alpha = np.linspace(-3.0, 4.0, date_ids.size)
+    target = alpha[::-1] + 0.25
+    eval_mask = np.ones(date_ids.size, dtype=np.bool_)
+    eval_mask[[1, 9, 20]] = False
+    flat_indices, offsets = v4._build_date_group_index_from_ids(date_ids)
+
+    actual = v4._numba_daily_ics(alpha, target, flat_indices, offsets, eval_mask)
+    expected = legacy_daily_ics(alpha, target, date_ids, eval_mask)
+
+    assert actual == pytest.approx(expected, nan_ok=True, abs=1e-12)
+
+
+def test_gp_numba_batch_daily_ics_pregroup_matches_daily_path():
+    v4 = _load_v4_module()
+
+    date_ids = np.repeat(np.array([1, 0, 2], dtype=np.int64), 8)
+    alpha_matrix = np.column_stack([
+        np.linspace(-1.0, 1.0, date_ids.size),
+        np.sin(np.linspace(0.0, 3.0, date_ids.size)),
+    ])
+    target = np.cos(np.linspace(0.0, 2.0, date_ids.size))
+    eval_mask_matrix = np.ones_like(alpha_matrix, dtype=np.bool_)
+    eval_mask_matrix[0, 0] = False
+    eval_mask_matrix[5, 1] = False
+    flat_indices, offsets = v4._build_date_group_index_from_ids(date_ids)
+
+    batch = v4._numba_batch_daily_ics(alpha_matrix, target, flat_indices, offsets, eval_mask_matrix)
+    sequential = np.column_stack([
+        v4._numba_daily_ics(alpha_matrix[:, idx], target, flat_indices, offsets, eval_mask_matrix[:, idx])
+        for idx in range(alpha_matrix.shape[1])
+    ])
+
+    assert np.allclose(batch, sequential, equal_nan=True, atol=1e-12, rtol=1e-12)
+
+
+def test_gp_numba_parallel_batch_daily_ics_matches_daily_path_with_sparse_masks():
+    v4 = _load_v4_module()
+
+    date_ids = np.repeat(np.array([3, 1, 0, 2], dtype=np.int64), 7)
+    alpha_matrix = np.column_stack([
+        np.linspace(-2.0, 2.0, date_ids.size),
+        np.cos(np.linspace(0.0, 4.0, date_ids.size)),
+        np.sin(np.linspace(0.0, 5.0, date_ids.size)),
+    ])
+    target = 0.3 * alpha_matrix[:, 0] - 0.2 * alpha_matrix[:, 1] + 0.1
+    eval_mask_matrix = np.ones_like(alpha_matrix, dtype=np.bool_)
+    eval_mask_matrix[[0, 8, 16], 0] = False
+    eval_mask_matrix[[2, 9, 18], 1] = False
+    eval_mask_matrix[[4, 11, 20], 2] = False
+    flat_indices, offsets = v4._build_date_group_index_from_ids(date_ids)
+
+    batch = v4._numba_batch_daily_ics(alpha_matrix, target, flat_indices, offsets, eval_mask_matrix)
+    sequential = np.column_stack([
+        v4._numba_daily_ics(alpha_matrix[:, idx], target, flat_indices, offsets, eval_mask_matrix[:, idx])
+        for idx in range(alpha_matrix.shape[1])
+    ])
+
+    assert np.allclose(batch, sequential, equal_nan=True, atol=1e-12, rtol=1e-12)
+
+
+def test_gp_numba_parallel_batch_ridge_neutralize_matches_single_path_with_nans():
+    v4 = _load_v4_module()
+
+    n_dates = 5
+    per_date = 6
+    n = n_dates * per_date
+    dates = np.repeat(np.arange(n_dates), per_date)
+    log_mcap = np.tile(np.linspace(1.0, 2.5, per_date), n_dates)
+    sector = np.tile(np.array([0, 1, 2, 0, 1, 2]), n_dates)
+    features = {
+        'f1': np.linspace(-1.0, 1.0, n),
+        '__date__': dates,
+        '__log_market_cap__': log_mcap,
+        '__sector__': sector,
+        ge.NEUTRALIZATION_CACHE_KEY: _build_neutralization_cache(log_mcap, sector, dates),
+    }
+    v4._ensure_neutralization_jit_context(features)
+    cache = features[ge.NEUTRALIZATION_CACHE_KEY]
+    payload = v4._get_jit_neutralization_payload(cache)
+    assert payload is not None
+    design_matrix, valid_mask, date_flat_indices, date_group_offsets, max_group_size = payload
+
+    alpha_matrix = np.column_stack([
+        np.linspace(-1.0, 1.0, n),
+        np.sin(np.linspace(0.0, 3.0, n)),
+        np.cos(np.linspace(0.0, 4.0, n)),
+    ])
+    alpha_matrix[1, 0] = np.nan
+    alpha_matrix[8, 1] = np.nan
+    alpha_matrix[17, 2] = np.nan
+
+    batch = v4._numba_batch_ridge_neutralize(
+        alpha_matrix,
+        design_matrix,
+        valid_mask,
+        date_flat_indices,
+        date_group_offsets,
+        max_group_size,
+        v4.RIDGE_ALPHA,
+    )
+    sequential = np.column_stack([
+        v4._numba_ridge_neutralize(
+            alpha_matrix[:, idx],
+            design_matrix,
+            valid_mask,
+            date_flat_indices,
+            date_group_offsets,
+            max_group_size,
+            v4.RIDGE_ALPHA,
+        )
+        for idx in range(alpha_matrix.shape[1])
+    ])
+
+    assert np.allclose(batch, sequential, equal_nan=True, atol=1e-10, rtol=1e-10)
+
+
+def test_gp_numba_parallel_eval_thread_safety():
+    """Test that parallel tree evaluation produces same results as sequential.
+    
+    Verifies thread-local stack allocation prevents race conditions and state corruption
+    when multiple threads evaluate trees concurrently.
+    """
+    v4 = _load_v4_module()
+    
+    # Create test dataset with sufficient complexity
+    n_rows = 240
+    n_dates = 12
+    per_date = n_rows // n_dates
+    dates = np.repeat(np.arange(n_dates), per_date)
+    
+    features = {
+        'f1': np.linspace(-2.0, 3.0, n_rows),
+        'f2': np.sin(np.linspace(0.0, 4.0, n_rows)),
+        'f3': np.cos(np.linspace(0.0, 3.0, n_rows)),
+        '__date__': dates,
+        '__ticker__': np.tile(np.arange(per_date), n_dates),
+        '__log_market_cap__': np.tile(np.linspace(1.0, 2.5, per_date), n_dates),
+        '__sector__': np.tile(np.array([0, 1, 2, 0, 1] * (per_date // 5 + 1))[:per_date], n_dates),
+    }
+    target = 0.7 * features['f1'] - 0.3 * features['f2'] + 0.1 * features['f3']
+    
+    # Build VM context to trigger thread-local stack allocation
+    v4._get_vm_context(features)
+    
+    # Create multiple individuals with different tree structures
+    trees = [
+        GPNode(operator='terminal', value='f1'),
+        GPNode(operator='terminal', value='f2'),
+        GPNode(operator='+', children=[
+            GPNode(operator='terminal', value='f1'),
+            GPNode(operator='terminal', value='f2'),
+        ]),
+        GPNode(operator='*', children=[
+            GPNode(operator='terminal', value='f1'),
+            GPNode(operator='terminal', value='2.0'),
+        ]),
+        GPNode(operator='cs_rank', children=[
+            GPNode(operator='terminal', value='f3'),
+        ]),
+    ]
+    
+    individuals = [v4.GPIndividualV4(tree=tree) for tree in trees]
+    
+    # Sequential evaluation
+    sequential_results = []
+    for ind in individuals:
+        result = ind._execute_tree(ind.tree, features)
+        sequential_results.append(result.copy())
+    
+    # Parallel evaluation using threads
+    import concurrent.futures
+    
+    def eval_individual(ind):
+        return ind._execute_tree(ind.tree, features).copy()
+    
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        parallel_results = list(executor.map(eval_individual, individuals))
+    
+    # Verify results match
+    assert len(parallel_results) == len(sequential_results)
+    for idx, (parallel, sequential) in enumerate(zip(parallel_results, sequential_results)):
+        assert parallel.shape == sequential.shape, f"Individual {idx}: shape mismatch"
+        assert np.allclose(parallel, sequential, equal_nan=True, atol=1e-12, rtol=1e-12), \
+            f"Individual {idx}: results differ between parallel and sequential execution"
+    
+    # Run multiple parallel iterations to stress-test thread safety
+    for iteration in range(3):
+        with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+            iteration_results = list(executor.map(eval_individual, individuals))
+        
+        for idx, (iteration_result, expected) in enumerate(zip(iteration_results, sequential_results)):
+            assert np.allclose(iteration_result, expected, equal_nan=True, atol=1e-12, rtol=1e-12), \
+                f"Iteration {iteration}, Individual {idx}: state corruption detected"

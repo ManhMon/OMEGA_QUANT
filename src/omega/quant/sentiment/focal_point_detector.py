@@ -104,18 +104,24 @@ class VNFocalPointDetector:
         ]
         
         # Get market indicators exactly at as_of_time
-        date_str = as_of_time.strftime('%Y-%m-%d')
-        try:
-            market_slice = market_panel.xs(date_str, level='date')
-        except KeyError:
-            # Fallback if specific date is not found in historical panel
-            dates = market_panel.index.get_level_values('date').unique()
-            past_dates = [d for d in dates if pd.to_datetime(d) <= as_of_time]
-            if past_dates:
-                latest_past = max(past_dates)
-                market_slice = market_panel.xs(latest_past, level='date')
-            else:
-                market_slice = pd.DataFrame()
+        # Support pre-sliced single-index DataFrames (memory optimization for AlternativeDataFetcher)
+        if market_panel.index.nlevels == 1:
+            # Already sliced to single date - use directly
+            market_slice = market_panel
+        else:
+            # MultiIndex [date, symbol] - extract date slice
+            date_str = as_of_time.strftime('%Y-%m-%d')
+            try:
+                market_slice = market_panel.xs(date_str, level='date')
+            except KeyError:
+                # Fallback if specific date is not found in historical panel
+                dates = market_panel.index.get_level_values('date').unique()
+                past_dates = [d for d in dates if pd.to_datetime(d) <= as_of_time]
+                if past_dates:
+                    latest_past = max(past_dates)
+                    market_slice = market_panel.xs(latest_past, level='date')
+                else:
+                    market_slice = pd.DataFrame()
 
         focal_points = []
         for kw, config in self.KEYWORD_MAPPINGS.items():
