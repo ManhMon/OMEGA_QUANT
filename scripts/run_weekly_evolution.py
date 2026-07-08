@@ -440,6 +440,7 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
         return result
 
     # --- AlternativeFeatureGenerator ---
+    alt_features_df = pd.DataFrame(columns=["date", "ticker"])
     try:
         feat_gen = AlternativeFeatureGenerator()
         alt_panel = feat_gen.generate_all(panel)
@@ -451,13 +452,13 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
             alt_features_df = alt_panel[available_feat].rename(
                 columns={f: f"alt_{f}" for f in available_feat}
             ).reset_index().rename(columns={"symbol": "ticker"})
-            result = result.merge(alt_features_df, on=["date", "ticker"], how="left")
-        
+
         logger.info(f"AlternativeFeatureGenerator: {len(alt_feat_names)} features generated")
     except Exception as e:
         logger.warning(f"AlternativeFeatureGenerator failed: {e}")
 
     # --- AlternativeDataFetcher ---
+    alt_data_features_df = pd.DataFrame(columns=["date", "ticker"])
     try:
         alt_fetcher = AlternativeDataFetcher(use_api=False)
         alt_data_panel = alt_fetcher.generate_all(panel)
@@ -469,11 +470,17 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
             alt_data_features_df = alt_data_panel[available_data_feat].rename(
                 columns={f: f"alt_{f}" for f in available_data_feat}
             ).reset_index().rename(columns={"symbol": "ticker"})
-            result = result.merge(alt_data_features_df, on=["date", "ticker"], how="left")
-        
+
         logger.info(f"AlternativeDataFetcher: {len(alt_data_names)} signals generated")
     except Exception as e:
         logger.warning(f"AlternativeDataFetcher failed: {e}")
+
+    # MEMORY OPTIMIZATION: Merge the two alt feature frames together first (outer on date+ticker),
+    # then perform a SINGLE left merge onto the main result. Halves merge overhead vs two sequential merges.
+    # (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION)
+    if not alt_features_df.empty or not alt_data_features_df.empty:
+        combined_alt = alt_features_df.merge(alt_data_features_df, on=["date", "ticker"], how="outer")
+        result = result.merge(combined_alt, on=["date", "ticker"], how="left")
 
     return result
 
