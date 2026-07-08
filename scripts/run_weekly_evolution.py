@@ -475,12 +475,38 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         logger.warning(f"AlternativeDataFetcher failed: {e}")
 
-    # MEMORY OPTIMIZATION: Merge the two alt feature frames together first (outer on date+ticker),
-    # then perform a SINGLE left merge onto the main result. Halves merge overhead vs two sequential merges.
-    # (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION)
+    # ZERO-COPY DIRECT POSITIONAL COLUMN ASSIGNMENT (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION)
+    # Merge the two alt feature frames together (outer on date+ticker), then align combined_alt
+    # to result's exact row order via MultiIndex reindex and assign columns positionally.
+    # Result row order is preserved. Falls back to a single left merge on alignment mismatch or
+    # any exception.
     if not alt_features_df.empty or not alt_data_features_df.empty:
         combined_alt = alt_features_df.merge(alt_data_features_df, on=["date", "ticker"], how="outer")
-        result = result.merge(combined_alt, on=["date", "ticker"], how="left")
+        assert not combined_alt.duplicated(subset=["date", "ticker"]).any()
+
+        key_cols = ["date", "ticker"]
+        alt_value_cols = [c for c in combined_alt.columns if c not in key_cols]
+        overlap_cols = [c for c in alt_value_cols if c in result.columns]
+
+        try:
+            combined_alt_aligned = (
+                combined_alt
+                .set_index(key_cols)
+                .reindex(pd.MultiIndex.from_frame(result[key_cols]))
+                .reset_index()
+            )
+            if result[key_cols].reset_index(drop=True).equals(
+                combined_alt_aligned[key_cols].reset_index(drop=True)
+            ):
+                if overlap_cols:
+                    result = result.drop(columns=overlap_cols)
+                for col in alt_value_cols:
+                    result[col] = combined_alt_aligned[col].values
+            else:
+                result = result.merge(combined_alt, on=key_cols, how="left")
+        except Exception as e:
+            logger.warning(f"Direct alt alignment failed, falling back to left merge: {e}")
+            result = result.merge(combined_alt, on=key_cols, how="left")
 
     return result
 

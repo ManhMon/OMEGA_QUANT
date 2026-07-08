@@ -115,18 +115,29 @@ class AlternativeDataFetcher:
         """
         Derives VSI and Focal Stress Score (FSS) in a PIT-safe manner.
         For each date T, uses market data from date T-1 to generate VSI and FSS.
-        
+
         Memory optimization: Uses vectorized date mapping instead of boolean masking loop.
-        Memory optimization 2 (GP_ALT_DATA_FETCHER_OPTIMIZATION): Pre-group by date once 
-        before loop to replace 12,782 slow .xs() MultiIndex slicing operations with fast 
+        Memory optimization 2 (GP_ALT_DATA_FETCHER_OPTIMIZATION): Pre-group by date once
+        before loop to replace 12,782 slow .xs() MultiIndex slicing operations with fast
         dict lookups.
+
+        Memory optimization 3 (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION): Build a narrow
+        copy panel_fp containing only ['foreign_flow', 'liquidity_shock', 'sector_rotation']
+        (the columns actually consumed by focal_point_detector.analyze) and pre-group by date
+        on that narrow copy. The original `panel` is left intact for daily_returns and
+        daily_foreign computations downstream.
         """
         dates = sorted(panel.index.get_level_values('date').unique())
-        
-        # Memory optimization: Pre-group panel by date once (replaces expensive .xs() calls in loop)
+
+        # MEMORY OPTIMIZATION (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION): narrow copy with
+        # only the columns the focal-point detector actually needs. Original panel is kept
+        # untouched for downstream daily_returns / daily_foreign calculations.
+        fp_cols = ['foreign_flow', 'liquidity_shock', 'sector_rotation']
+        panel_fp = panel[[c for c in fp_cols if c in panel.columns]].copy()
+
+        # Memory optimization: Pre-group narrow panel by date once (replaces expensive .xs() calls in loop)
         market_by_date = {}
-        for date_str, group in panel.groupby(level='date'):
-            # Store as single-index DataFrame (symbol index only)
+        for date_str, group in panel_fp.groupby(level='date'):
             market_by_date[date_str] = group.droplevel('date')
         
         # Build date -> score mappings (vectorized assignment at the end)
