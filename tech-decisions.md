@@ -307,3 +307,14 @@ updated: 2026-07-02
   - **Duplicate-Key Assertion Guard**: Gài assert fail-fast kiểm tra trùng lặp khóa `(date, ticker)` ngay trước khi tạo MultiIndex panel để ngăn chặn hiện tượng nhân nhóm dòng âm thầm hạ nguồn.
 - **Hiệu quả**: Giảm số lượng DataFrame trung gian từ hàng chục lần xuống còn 1 lần duy nhất, loại bỏ hoàn toàn nguy cơ tràn RAM lũy thừa (exponential RAM OOM) khi xuất hiện trùng lặp khóa, tăng tốc độ xử lý 14 lần và vượt qua 16 ca kiểm thử của `tests/test_genetic_alpha_evolution_v4.py`.
 - **PIT Safety**: Đảm bảo tính an toàn Point-In-Time (PIT) nhờ phép equi-join thuần túy trên khóa lịch sử `(date, ticker)` không có rò rỉ thông tin tương lai.
+
+## 29. GP Weekly Evolution Alt Concat Zero-Copy & JIT Import Order Fix (2026-07-08)
+- **Decision Date**: 2026-07-08
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION` (Revised & Hardened)
+- **Problem**:
+  - Gặp lỗi `numpy._core._exceptions._ArrayMemoryError: Unable to allocate ...` tại phép merge kết quả cuối của `combined_alt` vào DataFrame `result` rộng 90 cột x 1.77 triệu dòng, do Pandas phải nhân bản sâu Block Manager để định chỉ mục chéo (reindex alignment).
+  - Tốc độ chạy GP bị nghẽn rất chậm do lệnh gọi `v4.install_v4_optimizations()` đặt quá muộn trong `main()`, khiến các import tĩnh `from ... import GeneticEngine` ở module load-time đã liên kết vĩnh viễn với phiên bản nguyên bản không có JIT Numba.
+- **Solution**:
+  - **Zero-Copy Direct Positional Column Assignment**: Gióng chỉ mục `combined_alt` theo chỉ mục gốc của `result` bằng `.reindex(pd.MultiIndex.from_frame(result[["date", "ticker"]]))`, kiểm tra khớp khóa tuyệt đối qua `.equals()`, rồi gán thẳng mảng NumPy `.values` trực tiếp để giải phóng peak RAM. Bọc try/except với fallback chuẩn về `.merge()` nếu khớp lệch.
+  - **Early JIT Compiler Activation**: Di chuyển lệnh gọi `v4.install_v4_optimizations()` lên ngay dòng import đầu file trước khi load `GeneticEngine`, giúp Numba zero-allocation kernels kích hoạt thành công trên không gian tên toàn cục.
+  - **Đo lường**: Tốc độ GP tăng lên đáng kể, giải phóng toàn bộ nghẽn OOM và JIT, SoD enforcer thông qua `SoD Compliance: [PASS]`.
