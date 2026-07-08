@@ -1,10 +1,12 @@
-# Code Review Audit Report
+﻿# Code Review Audit Report
 **Role**: Code Reviewer (Role 21)
+**Platform**: Codex
 **Date**: 2026-07-08
-**Submission**: scripts/run_weekly_evolution.py
-**Tier 2 Engineer**: data-engineer (Role 15)
-**L2 Session**: l2_role15_gp_weekly_evolution_alt_concat_optimization_20260708
 **Gate**: GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION
+**Submission**: scripts/run_weekly_evolution.py
+**Tier 2 Engineer**: machine-learning-engineer (Role 16)
+**L2 Session**: l2_role16_gp_weekly_evolution_alt_concat_optimization_20260708
+**L3 Session**: l3_role21_gp_weekly_evolution_alt_concat_optimization_20260708
 
 ## Repo-Local Files Read
 - .agents/agent/code-reviewer.md
@@ -15,38 +17,42 @@
 - .agents/skills/testing-patterns/SKILL.md
 
 ## Audit Scope
-Target submission: scripts/run_weekly_evolution.py (L2 Role 15). All repo-local skill/role sources were loaded from `.agents/` only. Forbidden-path scan: the paths `.gemini/antigravity-ide/scratch/ag-kit`, `.openclaw/skills`, `C:\Users\GHC\.agents`, and `.codex/memories` were checked and are non-authoritative and not used as source for this audit.
+Audit of L2 (role16, machine-learning-engineer) working-tree submission for scripts/run_weekly_evolution.py against the JIT import order fix. All role/skill sources were loaded exclusively from `.agents/` (repo-local). Forbidden-path scan: the paths `.gemini/antigravity-ide/scratch/ag-kit`, `.openclaw/skills`, `C:\Users\GHC\.agents`, and `.codex/memories` were checked and are non-authoritative and not used as source for this audit.
+
+## Verification Method
+- `git diff -- scripts/run_weekly_evolution.py` (working tree vs HEAD) to isolate the L2 change set.
+- `Select-String -Pattern install_v4_optimizations` to confirm single occurrence after the change.
+- `python -m py_compile scripts/run_weekly_evolution.py` for import/syntax validity (exit 0).
+- Git history review of prior alt-concat commits (ac4b4115, fcebc7ba) for context on V4 kernel usage.
+
+## Focus: JIT Import Order Fix
+The submission moves `v4.install_v4_optimizations()` from inside `main()` (a late, runtime call) to module top-level import time, immediately after `import genetic_alpha_evolution_v4 as v4` (line 35 -> call at line 36), and BEFORE the downstream `from omega.quant.evolution...` imports (lines 37-41). The redundant in-`main()` call and its log line were removed.
+
+### Evidence
+- Before (HEAD): `install_v4_optimizations()` existed only inside `main()`; module-level `from omega.quant.evolution.*` imports (lines 37-41) had already bound at interpreter load, i.e. before V4 JIT kernels were patched in.
+- After (working tree): call now at line 36, one occurrence only (verified). `from joblib import parallel_backend` (line 33) ordering unchanged and correct. `main()` no longer re-installs.
+- `git diff` net delta: +1 -4 (import reorder + removal of duplicate in-main call/log).
+- `py_compile` exit 0: import order change is syntactically valid.
+
+### Correctness Rationale
+`v4.install_v4_optimizations()` installs the numba JIT-compiled / zero-allocation kernel monkey-patches onto `genetic_alpha_evolution_v4`. For these patches to take effect for downstream `omega.quant.evolution.*` modules that import symbols from `v4`, the patch MUST be applied before those modules are imported at module load. Calling it late inside `main()` ran after the submodules were already imported, so it was effectively redundant for already-bound names. Moving it to import time guarantees the V4 JIT kernels are installed before any dependent module binds them - the canonical "install patch before importing dependents" ordering. Removing the duplicate in-`main()` call eliminates a redundant double-install with no behavioral downside.
 
 ## Code Quality Checks
-- [x] Code follows style guide
+- [x] Code follows style guide (consistent with existing import block)
 - [x] No blocking code smells or anti-patterns
-- [x] Clear, self-documenting code
-- [x] Proper error handling (try/except with left-merge fallback)
-- [x] Alignment-safe column assignment verified
-- [x] No linter errors (static scan)
-- [x] SOD boundary respected (read-only audit, no source modifications)
+- [x] Change is minimal and surgical (+1 -4), no scope creep
+- [x] Proper ordering: JIT patch before dependent imports
+- [x] No duplicate install call (removed)
+- [x] Syntax valid (py_compile exit 0)
+- [x] SOD boundary respected (read-only audit; L2 source unmodified by auditor)
 
-## Focus: Zero-Copy Alignment-Safe Column Assignment
-The optimization under review lives in `_generate_alternative_features` (scripts/run_weekly_evolution.py:478-508) and is consistent with the established VN-alpha direct-assignment pattern (scripts/run_weekly_evolution.py:338-362). It replaces an intermediate `pd.concat` of Series lists with:
-1. Direct selection + `alt_` rename of each generator panel (scripts/run_weekly_evolution.py:449-452, 467-471).
-2. An outer merge of the two alt frames on `[date, ticker]`.
-3. A positional, alignment-safe assignment: `combined_alt.set_index(["date","ticker"]).reindex(pd.MultiIndex.from_frame(result[["date","ticker"]])).reset_index()`, followed by an explicit row-order equality check, then `result[col] = combined_alt_aligned[col].values` for each value column; overlap columns are dropped before reassign and a left-merge fallback runs on any mismatch/exception.
+## PIT Safety
+Unchanged. The reorder only affects module import sequence; no feature/target computation, T-1 lag (`shift(1)`), or chronological split logic is touched.
 
-### Verification (standalone reproduction, pandas 2.3.3)
-- Scrambled row order + partial key coverage + overlapping column: output matches a trusted `left merge` reference exactly (positional assignment does not leak/misalign rows).
-- Result rows absent from the alt frames become NaN (correct left-aligned behavior), not shifted.
-- Empty alt frames: no-op, row count preserved.
-- Duplicate (date, ticker) guarded by `narrow_df.duplicated` assertion earlier in the function, keeping `reindex` 1:1 and unambiguous.
-
-The logic is correct and alignment-safe: assignment is positional over a `.values` array of equal length after a verified row-order reindex, so no label/positional mismatch can occur.
-
-## Findings (advisory, non-blocking)
-1. **Comment imprecision (scripts/run_weekly_evolution.py:478)**: "ZERO-COPY" overstates the mechanism — `.reindex()` and `.values` assignment still allocate. The real win is avoiding `pd.concat` of Series lists and the merge overhead. Cosmetic; suggest renaming to "DIRECT POSITIONAL" for accuracy.
-2. **Assert robustness (scripts/run_weekly_evolution.py:484)**: `assert not combined_alt.duplicated(...)` is stripped under `python -O`. The outer merge already guarantees key uniqueness and the reindex + `equals` check is the real safety net, so impact is negligible; an explicit `raise ValueError` would be more defensive.
-
-Neither finding affects correctness, PIT safety, or memory behavior. No [NEEDS_FIX] action required.
+## Findings
+None that block approval. The JIT import order fix is correct, minimal, behavior-preserving, and SOD-compliant.
 
 ## Verdict
-[APPROVED] - Zero-copy alignment-safe column assignment logic is correct, alignment-safe, and PIT-compliant; verified empirically. Advisory comments only.
+[APPROVED] - JIT import order fix verified: `v4.install_v4_optimizations()` correctly relocated to module import time before downstream `omega.quant.evolution.*` imports, duplicate in-`main()` call removed, syntax valid, PIT safety and SOD boundary preserved.
 
 **Signature**: Codex L3 Auditor (Role 21)

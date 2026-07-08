@@ -33,6 +33,7 @@ import pandas as pd
 from joblib import parallel_backend
 
 import genetic_alpha_evolution_v4 as v4
+v4.install_v4_optimizations()
 from omega.quant.evolution.genetic_engine import GeneticEngine, GPConfig
 from omega.quant.evolution.continuous_learning import ContinuousLearningEngine
 from omega.quant.evolution.alpha_to_execution_bridge import AlphaToExecutionBridge
@@ -1192,10 +1193,6 @@ def main():
         help="Minimum standard deviation floor for fold IR stability (default: 0.03)"
     )
     args = parser.parse_args()
-
-    # Install V4 VM optimizations (zero-allocation kernels)
-    v4.install_v4_optimizations()
-    logger.info("V4 optimizations installed: zero-allocation kernels enabled")
 
     logger.info("=== WEEKLY GP ALPHA EVOLUTION START ===")
     logger.info("Config: regime=%s, generations=%d, pop=%d, ortho=%s, alt_features=%s, workers=%d, backend=%s",
