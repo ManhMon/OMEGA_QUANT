@@ -396,11 +396,15 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     alt_features_df = _generate_alternative_features(result[alt_input_cols])
     alt_value_cols = [c for c in alt_features_df.columns if c not in {"date", "ticker"}]
     if alt_value_cols:
-        result = result.set_index(["date", "ticker"])
         alt_features_indexed = alt_features_df.set_index(["date", "ticker"])
+        alt_result_index = pd.MultiIndex.from_arrays(
+            [
+                result["date"].to_numpy(copy=False),
+                result["ticker"].to_numpy(copy=False),
+            ]
+        )
         for col in alt_value_cols:
-            result[col] = alt_features_indexed[col].reindex(result.index)
-        result = result.reset_index()
+            result[col] = alt_features_indexed[col].reindex(alt_result_index).to_numpy(copy=False)
 
     # PIT SAFETY: Apply T-1 lag to ALL alternative features strictly per ticker
     for col in ALTERNATIVE_FEATURE_COLUMNS:
