@@ -413,18 +413,18 @@ def test_rule11_island_migration_replaces_bottom_of_next_island():
 
 
 def test_generate_alternative_features_preserves_rows_and_adds_alt_columns(monkeypatch):
-    """Clean input: row count preserved; alt_-prefixed columns added."""
+    """Clean input: key rows preserved; alt_-prefixed columns returned."""
     import run_weekly_evolution as rwe
 
     df = pd.DataFrame(
         {
-            "date": pd.to_datetime(["2024-01-02", "2024-01-02", "2024-01-03"]),
-            "ticker": ["AAA", "BBB", "AAA"],
-            "open": [1.0, 2.0, 3.0],
-            "high": [1.1, 2.1, 3.1],
-            "low": [0.9, 1.9, 2.9],
-            "close": [1.0, 2.0, 3.0],
-            "volume": [100.0, 200.0, 300.0],
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-02"]),
+            "ticker": ["AAA", "AAA", "BBB"],
+            "open": [1.0, 3.0, 2.0],
+            "high": [1.1, 3.1, 2.1],
+            "low": [0.9, 2.9, 1.9],
+            "close": [1.0, 3.0, 2.0],
+            "volume": [100.0, 300.0, 200.0],
         }
     )
 
@@ -451,8 +451,10 @@ def test_generate_alternative_features_preserves_rows_and_adds_alt_columns(monke
     result = _generate_alternative_features(df)
 
     assert len(result) == len(df)
+    assert result[["date", "ticker"]].equals(df[["date", "ticker"]])
     assert "alt_stub_feat" in result.columns
     assert "alt_stub_data" in result.columns
+    assert list(result.columns) == ["date", "ticker", "alt_stub_feat", "alt_stub_data"]
 
 
 def test_generate_alternative_features_raises_on_duplicate_keys():
@@ -473,6 +475,182 @@ def test_generate_alternative_features_raises_on_duplicate_keys():
 
     with pytest.raises(ValueError):
         _generate_alternative_features(df)
+
+
+def test_generate_alternative_features_handles_string_dates_without_wide_copy(monkeypatch):
+    import run_weekly_evolution as rwe
+
+    df = pd.DataFrame(
+        {
+            "date": ["2024-01-02", "2024-01-03", "2024-01-02"],
+            "ticker": ["AAA", "AAA", "BBB"],
+            "open": [1.0, 3.0, 2.0],
+            "high": [1.1, 3.1, 2.1],
+            "low": [0.9, 2.9, 1.9],
+            "close": [1.0, 3.0, 2.0],
+            "volume": [100.0, 300.0, 200.0],
+            "wide_only": [10, 30, 20],
+        }
+    )
+
+    class _StubGenerator:
+        def generate_all(self, panel):
+            assert panel.index.get_level_values("date").dtype.kind == "M"
+            return pd.DataFrame({"stub_feat": [0.1, 0.2, 0.3]}, index=panel.index)
+
+        def get_feature_names(self):
+            return ["stub_feat"]
+
+    class _StubFetcher:
+        def __init__(self, use_api=False):
+            pass
+
+        def generate_all(self, panel):
+            assert panel.index.get_level_values("date").dtype.kind == "M"
+            return pd.DataFrame({"stub_data": [0.4, 0.5, 0.6]}, index=panel.index)
+
+        def get_feature_names(self):
+            return ["stub_data"]
+
+    monkeypatch.setattr(rwe, "AlternativeFeatureGenerator", _StubGenerator)
+    monkeypatch.setattr(rwe, "AlternativeDataFetcher", _StubFetcher)
+
+    result = _generate_alternative_features(df)
+
+    assert result["date"].tolist() == df["date"].tolist()
+    assert result["date"].dtype == df["date"].dtype
+    assert "alt_stub_feat" in result.columns
+    assert "alt_stub_data" in result.columns
+    assert "wide_only" not in result.columns
+
+
+def test_generate_alternative_features_returns_alt_values_on_original_key_order(monkeypatch):
+    import run_weekly_evolution as rwe
+
+    df = pd.DataFrame(
+        {
+            "date": pd.to_datetime(["2024-01-02", "2024-01-03", "2024-01-02"]),
+            "ticker": ["AAA", "AAA", "BBB"],
+            "open": [1.0, 3.0, 2.0],
+            "high": [1.1, 3.1, 2.1],
+            "low": [0.9, 2.9, 1.9],
+            "close": [1.0, 3.0, 2.0],
+            "volume": [100.0, 300.0, 200.0],
+        }
+    )
+
+    class _StubGenerator:
+        def generate_all(self, panel):
+            reversed_index = panel.index[::-1]
+            return pd.DataFrame({"stub_feat": [2.0, 3.0, 1.0]}, index=reversed_index)
+
+        def get_feature_names(self):
+            return ["stub_feat"]
+
+    class _StubFetcher:
+        def __init__(self, use_api=False):
+            pass
+
+        def generate_all(self, panel):
+            reversed_index = panel.index[::-1]
+            return pd.DataFrame({"stub_data": [20.0, 30.0, 10.0]}, index=reversed_index)
+
+        def get_feature_names(self):
+            return ["stub_data"]
+
+    monkeypatch.setattr(rwe, "AlternativeFeatureGenerator", _StubGenerator)
+    monkeypatch.setattr(rwe, "AlternativeDataFetcher", _StubFetcher)
+
+    result = _generate_alternative_features(df)
+
+    assert result["alt_stub_feat"].tolist() == [1.0, 2.0, 3.0]
+    assert result["alt_stub_data"].tolist() == [10.0, 20.0, 30.0]
+
+
+def test_generate_alternative_features_restores_string_date_dtype_after_merge(monkeypatch):
+    import run_weekly_evolution as rwe
+
+    df = pd.DataFrame(
+        {
+            "date": ["2024-01-03", "2024-01-02", "2024-01-02"],
+            "ticker": ["AAA", "AAA", "BBB"],
+            "open": [3.0, 1.0, 2.0],
+            "high": [3.1, 1.1, 2.1],
+            "low": [2.9, 0.9, 1.9],
+            "close": [3.0, 1.0, 2.0],
+            "volume": [300.0, 100.0, 200.0],
+            "wide_only": [30, 10, 20],
+        }
+    )
+
+    class _StubGenerator:
+        def generate_all(self, panel):
+            return pd.DataFrame({"stub_feat": [0.1, 0.2, 0.3]}, index=panel.index)
+
+        def get_feature_names(self):
+            return ["stub_feat"]
+
+    class _StubFetcher:
+        def __init__(self, use_api=False):
+            pass
+
+        def generate_all(self, panel):
+            return pd.DataFrame({"stub_data": [0.4, 0.5, 0.6]}, index=panel.index)
+
+        def get_feature_names(self):
+            return ["stub_data"]
+
+    monkeypatch.setattr(rwe, "AlternativeFeatureGenerator", _StubGenerator)
+    monkeypatch.setattr(rwe, "AlternativeDataFetcher", _StubFetcher)
+
+    result = _generate_alternative_features(df)
+
+    assert result["date"].tolist() == df["date"].tolist()
+    assert result["date"].dtype == df["date"].dtype
+    assert result["alt_stub_feat"].tolist() == [0.3, 0.1, 0.2]
+    assert result["alt_stub_data"].tolist() == [0.6, 0.4, 0.5]
+
+
+def test_prepare_features_merges_alternative_features_from_narrow_input(monkeypatch):
+    import run_weekly_evolution as rwe
+
+    dates = pd.date_range("2026-01-01", periods=40)
+    rows = []
+    for ticker in ["AAA", "BBB"]:
+        for i, date in enumerate(dates, start=1):
+            rows.append(
+                {
+                    "ticker": ticker,
+                    "date": date,
+                    "open": 10.0 + i,
+                    "high": 11.0 + i,
+                    "low": 9.0 + i,
+                    "close": 10.5 + i,
+                    "volume": 1000 + i,
+                    "wide_only": 5000 + i,
+                }
+            )
+    df = pd.DataFrame(rows)
+
+    def stub_vn_features(frame):
+        vn_only_cols = [
+            col for col in rwe.FEATURE_COLUMNS
+            if col not in {"open", "high", "low", "close", "volume"}
+        ]
+        return frame[["ticker", "date"]].assign(**{col: 0.0 for col in vn_only_cols})
+
+    def stub_alt_features(frame):
+        assert list(frame.columns) == ["date", "ticker", "open", "high", "low", "close", "volume"]
+        return frame[["date", "ticker"]].assign(alt_stub_feat=np.arange(len(frame), dtype=float))
+
+    monkeypatch.setattr("omega.quant.alpha.vn.compute_all_vn_alphas", stub_vn_features)
+    monkeypatch.setattr(rwe, "_generate_alternative_features", stub_alt_features)
+
+    result = rwe.prepare_features(df)
+
+    assert not result.empty
+    assert "wide_only" in result.columns
+    assert "alt_stub_feat" in result.columns
 
 
 def test_benchmark_script_imports_and_smoke_runs(monkeypatch):

@@ -245,6 +245,18 @@ def compute_force_index(df: pd.DataFrame, window: int = 13) -> pd.Series:
     return normalized_force.fillna(0.0)
 
 
+def _are_frames_aligned(left: pd.DataFrame, right: pd.DataFrame) -> bool:
+    if len(left) != len(right):
+        return False
+    if not (left["ticker"].values == right["ticker"].values).all():
+        return False
+    left_date = pd.to_datetime(left["date"])
+    right_date = pd.to_datetime(right["date"])
+    if not (left_date.values == right_date.values).all():
+        return False
+    return True
+
+
 def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute features with T-1 lag for PIT safety, strictly grouped by ticker."""
     result = df.copy()
@@ -346,11 +358,13 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     new_cols = [c for c in vn_features_df.columns if c not in ["ticker", "date"]]
     
     # MEMORY OPTIMIZATION: Direct column assignment instead of merge (GP_VN_ALPHAS_MERGE_DIRECT_ASSIGN)
-    # Explicitly sort both DataFrames by ticker and date to ensure alignment
-    result = result.sort_values(["ticker", "date"])
-    result.index = pd.RangeIndex(len(result))
-    vn_features_df = vn_features_df.sort_values(["ticker", "date"])
-    vn_features_df.index = pd.RangeIndex(len(vn_features_df))
+    # Skip redundant full-frame sorting when compute_all_vn_alphas() preserved row order.
+    is_aligned = _are_frames_aligned(result, vn_features_df)
+    if not is_aligned:
+        result = result.sort_values(["ticker", "date"])
+        result.index = pd.RangeIndex(len(result))
+        vn_features_df = vn_features_df.sort_values(["ticker", "date"])
+        vn_features_df.index = pd.RangeIndex(len(vn_features_df))
     
     # Validate alignment: lengths, tickers, and dates must match exactly
     if len(result) != len(vn_features_df):
@@ -375,7 +389,14 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     # --- Alternative Feature Generation (GP Expansion gate) ---
     # Generate alternative features from AlternativeFeatureGenerator + AlternativeDataFetcher.
     # These use MultiIndex [date, symbol] internally; convert flat -> MultiIndex -> flat.
-    result = _generate_alternative_features(result)
+    alt_input_cols = [
+        col for col in ["date", "ticker", "open", "high", "low", "close", "volume"]
+        if col in result.columns
+    ]
+    alt_features_df = _generate_alternative_features(result[alt_input_cols])
+    alt_value_cols = [c for c in alt_features_df.columns if c not in {"date", "ticker"}]
+    if alt_value_cols:
+        result = result.merge(alt_features_df, on=["date", "ticker"], how="left")
 
     # PIT SAFETY: Apply T-1 lag to ALL alternative features strictly per ticker
     for col in ALTERNATIVE_FEATURE_COLUMNS:
@@ -408,18 +429,15 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
     Generate alternative features via AlternativeFeatureGenerator and AlternativeDataFetcher.
 
     Converts flat DataFrame (ticker, date columns) to MultiIndex [date, symbol] for
-    the generator APIs, then merges results back as 'alt_' prefixed columns.
+    the generator APIs, then returns only date/ticker keys plus 'alt_' prefixed columns.
 
     PIT Safety: Generators use only past data internally. T-1 lag applied by caller.
     """
-    result = df.copy()
-    result["date"] = pd.to_datetime(result["date"])
-
-    # Memory optimization: narrow to only date, ticker, and OHLCV columns before MultiIndex operations
-    # Prevents OOM on 16GB RAM when set_index/sort_index copies the full feature set
     essential_cols = ["date", "ticker", "open", "high", "low", "close", "volume"]
-    available_essential = [c for c in essential_cols if c in result.columns]
-    narrow_df = result[available_essential].copy()
+    available_essential = [c for c in essential_cols if c in df.columns]
+    narrow_df = df[available_essential].copy()
+    result_keys = narrow_df[["date", "ticker"]].copy()
+    narrow_df["date"] = pd.to_datetime(narrow_df["date"])
 
     # Intentionally fatal: fail-fast on duplicate (date, ticker) keys rather than silently
     # degrading, as duplicate keys would corrupt training data by inflating row counts
@@ -438,7 +456,7 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
         panel.index.names = ["date", "symbol"]
     except Exception as e:
         logger.warning(f"Failed to build MultiIndex for alternative features: {e}")
-        return result
+        return result_keys
 
     # --- AlternativeFeatureGenerator ---
     alt_features_df = pd.DataFrame(columns=["date", "ticker"])
@@ -476,40 +494,18 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
     except Exception as e:
         logger.warning(f"AlternativeDataFetcher failed: {e}")
 
-    # ZERO-COPY DIRECT POSITIONAL COLUMN ASSIGNMENT (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION)
-    # Merge the two alt feature frames together (outer on date+ticker), then align combined_alt
-    # to result's exact row order via MultiIndex reindex and assign columns positionally.
-    # Result row order is preserved. Falls back to a single left merge on alignment mismatch or
-    # any exception.
     if not alt_features_df.empty or not alt_data_features_df.empty:
         combined_alt = alt_features_df.merge(alt_data_features_df, on=["date", "ticker"], how="outer")
         assert not combined_alt.duplicated(subset=["date", "ticker"]).any()
+        original_dates = result_keys["date"].copy()
+        result_keys = result_keys.assign(date=pd.to_datetime(result_keys["date"])).merge(
+            combined_alt,
+            on=["date", "ticker"],
+            how="left",
+        )
+        result_keys["date"] = original_dates.to_numpy(copy=False)
 
-        key_cols = ["date", "ticker"]
-        alt_value_cols = [c for c in combined_alt.columns if c not in key_cols]
-        overlap_cols = [c for c in alt_value_cols if c in result.columns]
-
-        try:
-            combined_alt_aligned = (
-                combined_alt
-                .set_index(key_cols)
-                .reindex(pd.MultiIndex.from_frame(result[key_cols]))
-                .reset_index()
-            )
-            if result[key_cols].reset_index(drop=True).equals(
-                combined_alt_aligned[key_cols].reset_index(drop=True)
-            ):
-                if overlap_cols:
-                    result = result.drop(columns=overlap_cols)
-                for col in alt_value_cols:
-                    result[col] = combined_alt_aligned[col].values
-            else:
-                result = result.merge(combined_alt, on=key_cols, how="left")
-        except Exception as e:
-            logger.warning(f"Direct alt alignment failed, falling back to left merge: {e}")
-            result = result.merge(combined_alt, on=key_cols, how="left")
-
-    return result
+    return result_keys
 
 
 def _build_ortho_baseline_set(
