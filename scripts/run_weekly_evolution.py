@@ -424,6 +424,9 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     target_cols = ["target"] + [f"target_h{h}" for h in MULTI_TARGET_HORIZONS if f"target_h{h}" in result.columns]
     drop_cols = FEATURE_COLUMNS + available_alt + target_cols
 
+    # Defragment before boolean masking; repeated column assignment leaves pandas with many blocks.
+    result = pd.concat([result[col].rename(col) for col in result.columns], axis=1)
+
     # Drop NaN rows using boolean masking instead of dropna
     valid_mask = result[drop_cols].notna().all(axis=1)
     result = result[valid_mask]
