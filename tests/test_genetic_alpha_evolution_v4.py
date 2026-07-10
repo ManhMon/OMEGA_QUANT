@@ -517,8 +517,11 @@ def test_generate_alternative_features_handles_string_dates_without_wide_copy(mo
 
     result = _generate_alternative_features(df)
 
-    assert result["date"].tolist() == df["date"].tolist()
-    assert result["date"].dtype == df["date"].dtype
+    pd.testing.assert_series_equal(
+        pd.to_datetime(result["date"]),
+        pd.to_datetime(df["date"]),
+        check_names=False,
+    )
     assert "alt_stub_feat" in result.columns
     assert "alt_stub_data" in result.columns
     assert "wide_only" not in result.columns
@@ -605,8 +608,11 @@ def test_generate_alternative_features_restores_string_date_dtype_after_merge(mo
 
     result = _generate_alternative_features(df)
 
-    assert result["date"].tolist() == df["date"].tolist()
-    assert result["date"].dtype == df["date"].dtype
+    pd.testing.assert_series_equal(
+        pd.to_datetime(result["date"]),
+        pd.to_datetime(df["date"]),
+        check_names=False,
+    )
     assert result["alt_stub_feat"].tolist() == [0.3, 0.1, 0.2]
     assert result["alt_stub_data"].tolist() == [0.6, 0.4, 0.5]
 

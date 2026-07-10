@@ -503,20 +503,19 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
         logger.warning(f"AlternativeDataFetcher failed: {e}")
 
     if not alt_features_df.empty or not alt_data_features_df.empty:
-        original_dates = result_keys["date"].copy()
-        result_keys = result_keys.assign(date=pd.to_datetime(result_keys["date"])).set_index(["date", "ticker"])
+        result_keys["date"] = pd.to_datetime(result_keys["date"])
+        result_keys_mi = pd.MultiIndex.from_arrays(
+            [result_keys["date"].to_numpy(copy=False), result_keys["ticker"].to_numpy(copy=False)]
+        )
 
         for source_df in (alt_features_df, alt_data_features_df):
             if source_df.empty:
                 continue
 
             source_cols = [c for c in source_df.columns if c not in {"date", "ticker"}]
-            source_indexed = source_df.set_index(["date", "ticker"])
+            source_indexed = source_df.assign(date=pd.to_datetime(source_df["date"])).set_index(["date", "ticker"])
             for col in source_cols:
-                result_keys[col] = source_indexed[col].reindex(result_keys.index)
-
-        result_keys = result_keys.reset_index()
-        result_keys["date"] = original_dates.to_numpy(copy=False)
+                result_keys[col] = source_indexed[col].reindex(result_keys_mi).to_numpy(copy=False)
 
     return result_keys
 
