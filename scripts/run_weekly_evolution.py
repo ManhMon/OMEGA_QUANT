@@ -356,6 +356,9 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     from omega.quant.alpha.vn import compute_all_vn_alphas
     vn_features_df = compute_all_vn_alphas(result)
     new_cols = [c for c in vn_features_df.columns if c not in ["ticker", "date"]]
+    vn_float64_cols = vn_features_df[new_cols].select_dtypes(include="float64").columns
+    if len(vn_float64_cols) > 0:
+        vn_features_df[vn_float64_cols] = vn_features_df[vn_float64_cols].astype("float32")
     
     # MEMORY OPTIMIZATION: Direct column assignment instead of merge (GP_VN_ALPHAS_MERGE_DIRECT_ASSIGN)
     # Skip redundant full-frame sorting when compute_all_vn_alphas() preserved row order.
@@ -396,6 +399,9 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     alt_features_df = _generate_alternative_features(result[alt_input_cols])
     alt_value_cols = [c for c in alt_features_df.columns if c not in {"date", "ticker"}]
     if alt_value_cols:
+        alt_float64_cols = alt_features_df[alt_value_cols].select_dtypes(include="float64").columns
+        if len(alt_float64_cols) > 0:
+            alt_features_df[alt_float64_cols] = alt_features_df[alt_float64_cols].astype("float32")
         alt_features_indexed = alt_features_df.set_index(["date", "ticker"])
         alt_result_index = pd.MultiIndex.from_arrays(
             [
@@ -419,13 +425,14 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     # Primary target (T+5) strictly per ticker
     result["target"] = result.groupby("ticker")["close"].pct_change(TARGET_HORIZON).shift(-TARGET_HORIZON)
 
+    float64_cols = result.select_dtypes(include="float64").columns
+    if len(float64_cols) > 0:
+        result[float64_cols] = result[float64_cols].astype("float32")
+
     # Determine which columns to drop NaN on: base features + available alt features + all targets
     available_alt = [c for c in ALTERNATIVE_FEATURE_COLUMNS if c in result.columns]
     target_cols = ["target"] + [f"target_h{h}" for h in MULTI_TARGET_HORIZONS if f"target_h{h}" in result.columns]
     drop_cols = FEATURE_COLUMNS + available_alt + target_cols
-
-    # Defragment before boolean masking; repeated column assignment leaves pandas with many blocks.
-    result = pd.concat([result[col].rename(col) for col in result.columns], axis=1)
 
     # Drop NaN rows using boolean masking instead of dropna
     valid_mask = result[drop_cols].notna().all(axis=1)

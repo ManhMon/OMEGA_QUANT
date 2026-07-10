@@ -259,3 +259,42 @@ def test_prepare_features_sorts_when_vn_features_misaligned(monkeypatch):
     assert not res.empty
     assert sort_counter["count"] == 4
 
+
+def test_prepare_features_downcasts_numeric_features_to_float32(monkeypatch):
+    dates = pd.date_range("2026-01-01", periods=40)
+    rows = []
+    for ticker in ["AAA", "BBB"]:
+        for i, date in enumerate(dates, start=1):
+            rows.append({
+                "ticker": ticker,
+                "date": date,
+                "open": 10.0 + i,
+                "high": 11.0 + i,
+                "low": 9.0 + i,
+                "close": 10.5 + i,
+                "volume": 1000 + i,
+            })
+    df = pd.DataFrame(rows)
+
+    def stub_vn_features(frame):
+        vn_only_cols = [
+            col for col in rwe.FEATURE_COLUMNS
+            if col not in {"open", "high", "low", "close", "volume"}
+        ]
+        return frame[["ticker", "date"]].assign(**{col: 0.0 for col in vn_only_cols})
+
+    def stub_alt_features(frame):
+        return frame[["date", "ticker"]].assign(alt_stub_feat=np.arange(len(frame), dtype=float))
+
+    monkeypatch.setattr("omega.quant.alpha.vn.compute_all_vn_alphas", stub_vn_features)
+    monkeypatch.setattr(rwe, "_generate_alternative_features", stub_alt_features)
+
+    res = rwe.prepare_features(df)
+
+    assert not res.empty
+    assert res["date"].dtype == df["date"].dtype
+    assert res["ticker"].dtype == df["ticker"].dtype
+    assert res["returns_1d"].dtype == np.float32
+    assert res["alt_stub_feat"].dtype == np.float32
+    assert res["target"].dtype == np.float32
+
