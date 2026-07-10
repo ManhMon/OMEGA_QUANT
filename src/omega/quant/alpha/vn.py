@@ -33,7 +33,7 @@ def compute_all_vn_alphas(df: pd.DataFrame) -> pd.DataFrame:
     
     # 2. Market mean return per date (for correlations/regimes)
     # First compute raw returns
-    df_sorted["_raw_ret_1d"] = df_sorted.groupby("ticker")["close"].transform(lambda x: x.pct_change(1))
+    df_sorted["_raw_ret_1d"] = df_sorted.groupby("ticker")["close"].pct_change(1)
     mkt_ret = df_sorted.groupby("date")["_raw_ret_1d"].transform("mean").fillna(0)
     df_sorted["_mkt_ret"] = mkt_ret
 
@@ -248,26 +248,35 @@ def compute_all_vn_alphas(df: pd.DataFrame) -> pd.DataFrame:
         group["vn_accruals_quality"] = _safe_divide(close - open_p, close).rolling(20, min_periods=1).mean()
         group["vn_market_fundamental_drift"] = _safe_divide(ret_20d, group["vn_earnings_growth_qoq"])
 
-        processed_groups.append(group)
+        narrow_cols = ["ticker", "date", "_raw_ret20", "_raw_ret60"]
+        narrow_cols.extend(col for col in group.columns if col.startswith("vn_"))
+        processed_groups.append(group.loc[:, narrow_cols])
 
     # Reconstruct the full DataFrame
     # Ponytail: Avoid redundant sort on wide frame - groups already sorted (ticker groupby + date sort L44)
     res = pd.concat(processed_groups, ignore_index=True)
     
     # Fill in cross-sectional rankings now that everything is merged back
-    res["vn_sector_rel_momentum_20"] = res.groupby("date")["_raw_ret20"].transform(lambda x: x.rank(pct=True)).fillna(0.5)
-    res["vn_sector_rel_momentum_60"] = res.groupby("date")["_raw_ret60"].transform(lambda x: x.rank(pct=True)).fillna(0.5)
-
-    # Clean intermediate columns
-    cols_to_drop = ["_cs_median_vol", "_raw_ret_1d", "_mkt_ret", "_raw_ret20", "_raw_ret60"]
-    res = res.drop(columns=[c for c in cols_to_drop if c in res.columns])
+    res["vn_sector_rel_momentum_20"] = res.groupby("date")["_raw_ret20"].rank(pct=True).fillna(0.5)
+    res["vn_sector_rel_momentum_60"] = res.groupby("date")["_raw_ret60"].rank(pct=True).fillna(0.5)
 
     # Final cleanup of all numeric columns to prevent NaNs/Infs
     cols_to_clean = [col for col in res.columns if col not in ["ticker", "date"]]
     for col in cols_to_clean:
-        res[col] = np.nan_to_num(res[col].values, nan=0.0, posinf=0.0, neginf=0.0)
+        np.nan_to_num(res[col].to_numpy(copy=False), nan=0.0, posinf=0.0, neginf=0.0, copy=False)
 
-    return res
+    final_dict = {}
+    cols_to_drop = {"_cs_median_vol", "_raw_ret_1d", "_mkt_ret", "_raw_ret20", "_raw_ret60"}
+    for col in df_sorted.columns:
+        if col not in cols_to_drop and col not in cols_to_clean:
+            final_dict[col] = df_sorted[col].to_numpy(copy=False)
+
+    res.drop(columns=["ticker", "date"], inplace=True)
+    res_vals = res.values
+    for i, col in enumerate(cols_to_clean):
+        final_dict[col] = res_vals[:, i]
+
+    return pd.DataFrame(final_dict, copy=False)
 
 def alpha_vn_t2_momentum_adj(df, momentum_window=20, price_col='close', symbol_col='ticker'):
     momentum = df.groupby(symbol_col)[price_col].transform(lambda x: x.pct_change(periods=momentum_window))

@@ -363,6 +363,30 @@ def _prepare_individual_batch(ind, features):
     except Exception:
         return ind, None, 0.0
 
+def _score_prepared_individual(
+    idx,
+    prepared,
+    neutralized_rows,
+    features,
+    target,
+    hall_of_fame,
+    config,
+):
+    individual, alpha_series, valid_fraction = prepared
+    if alpha_series is None:
+        _set_rejected_fitness(individual)
+        return individual
+    individual._score_alpha_series(
+        alpha_series,
+        valid_fraction,
+        features,
+        target,
+        hall_of_fame,
+        config,
+        neutralized_alpha_series=neutralized_rows[idx],
+    )
+    return individual
+
 
 
 # =============================================================================
@@ -1514,7 +1538,9 @@ class GeneticEngine:
             prepared_population = [_prepare_individual_batch(ind, features) for ind in self.population]
         else:
             prepared_population = list(Parallel(
-                n_jobs=self.config.n_jobs, batch_size='auto'
+                n_jobs=self.config.n_jobs,
+                batch_size='auto',
+                prefer='threads',
             )(
                 delayed(_prepare_individual_batch)(ind, features)
                 for ind in self.population
@@ -1537,16 +1563,33 @@ class GeneticEngine:
                 neutralized_rows[idx] = neutralized_matrix[:, valid_col]
                 valid_col += 1
 
-        for idx, (individual, alpha_series, valid_fraction) in enumerate(prepared_population):
-            if alpha_series is None:
-                _set_rejected_fitness(individual)
-                continue
-            individual._score_alpha_series(
-                alpha_series,
-                valid_fraction,
-                features,
-                target,
-                self.hall_of_fame,
-                self.config,
-                neutralized_alpha_series=neutralized_rows[idx],
-            )
+        if self.config.n_jobs == 1:
+            self.population = [
+                _score_prepared_individual(
+                    idx,
+                    prepared,
+                    neutralized_rows,
+                    features,
+                    target,
+                    self.hall_of_fame,
+                    self.config,
+                )
+                for idx, prepared in enumerate(prepared_population)
+            ]
+        else:
+            self.population = list(Parallel(
+                n_jobs=self.config.n_jobs,
+                batch_size='auto',
+                prefer='threads',
+            )(
+                delayed(_score_prepared_individual)(
+                    idx,
+                    prepared,
+                    neutralized_rows,
+                    features,
+                    target,
+                    self.hall_of_fame,
+                    self.config,
+                )
+                for idx, prepared in enumerate(prepared_population)
+            ))

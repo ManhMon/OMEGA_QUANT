@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections import Counter
 from pathlib import Path
@@ -15,8 +16,18 @@ AUDIT_DIR = WORKSPACE / ".ly_state" / "session" / "audit_reports"
 KNOWLEDGE_DIR = WORKSPACE / ".agents" / "knowledge"
 LESSONS_FILE = KNOWLEDGE_DIR / "lessons.jsonl"
 CHROMA_DIR = KNOWLEDGE_DIR / "chromadb"
+LLM_CONFIG_FILE = WORKSPACE / "llm" / "llm.jsonl"
 COLLECTION_NAME = "omega_lessons_search"
 TOKEN_RE = re.compile(r"[a-z0-9_]{2,}")
+GATE_RE = re.compile(r'\*\*Gate\*\*:\s*([A-Za-z0-9_]+)')
+VERDICT_RE = re.compile(r'## Verdict\s*\n+\s*\[(APPROVED|NEEDS_FIX|APPROVED_PARTIAL)\]')
+JSON_BLOCK_RE = re.compile(r"\{.*\}", re.DOTALL)
+OPENAI_BASE_URL = "https://api.openai.com/v1"
+GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai"
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_OPENROUTER_MODEL = "free"
 
 ROLE_MAP = {
     6: "system-architect", 7: "tech-lead", 8: "frontend-engineer",
@@ -39,6 +50,163 @@ def _lesson_document(lesson):
         lesson.get("fix_pattern", ""),
     ]
     return "\n".join(part for part in parts if part)
+
+
+def _resolve_lesson_llm_config():
+    try:
+        file_config = _resolve_lesson_llm_config_file()
+    except (OSError, json.JSONDecodeError, TypeError, ValueError):
+        file_config = None
+    if file_config is not None:
+        env_config = _resolve_lesson_llm_env_config()
+        api_key = file_config.get("api_key") or (env_config or {}).get("api_key")
+        if not api_key:
+            return env_config
+        return {
+            "api_key": api_key,
+            "base_url": file_config.get("base_url") or (env_config or {}).get("base_url") or OPENAI_BASE_URL,
+            "model": file_config.get("model") or (env_config or {}).get("model") or DEFAULT_OPENAI_MODEL,
+        }
+
+    return _resolve_lesson_llm_env_config()
+
+
+def _resolve_lesson_llm_config_file(config_file=None):
+    config_path = Path(config_file or LLM_CONFIG_FILE)
+    if not config_path.exists():
+        return None
+
+    lines = config_path.read_text(encoding="utf-8").splitlines()
+    for line in reversed(lines):
+        line = line.strip()
+        if not line:
+            continue
+        config = json.loads(line)
+        return {
+            "api_key": config.get("api_key"),
+            "base_url": str(config["base_url"]).rstrip("/") if config.get("base_url") else None,
+            "model": config.get("model"),
+        }
+    return None
+
+
+def _resolve_lesson_llm_env_config():
+    openai_api_key = os.getenv("OPENAI_API_KEY")
+    if openai_api_key:
+        return {
+            "api_key": openai_api_key,
+            "base_url": os.getenv("OPENAI_BASE_URL", OPENAI_BASE_URL).rstrip("/"),
+            "model": os.getenv("OPENAI_MODEL", DEFAULT_OPENAI_MODEL),
+        }
+
+    omega_api_key = os.getenv("OMEGA_LLM_API_KEY")
+    if omega_api_key:
+        return {
+            "api_key": omega_api_key,
+            "base_url": os.getenv("OMEGA_LLM_BASE_URL", OPENROUTER_BASE_URL).rstrip("/"),
+            "model": os.getenv("OMEGA_LLM_MODEL", DEFAULT_OPENROUTER_MODEL),
+        }
+
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    if gemini_api_key:
+        return {
+            "api_key": gemini_api_key,
+            "base_url": os.getenv("GEMINI_BASE_URL", GEMINI_BASE_URL).rstrip("/"),
+            "model": os.getenv("GEMINI_MODEL", DEFAULT_GEMINI_MODEL),
+        }
+
+    return None
+
+
+def _fallback_lesson_fields(content, gate, role_name):
+    compact_content = (content or "").strip()
+    return {
+        "symptom": f"Audit gate '{gate}' failed for role '{role_name}'.",
+        "root_cause": compact_content[:4000],
+        "fix_pattern": "Review the audit report markdown and apply the required fix before rerunning the gate.",
+    }
+
+
+def _parse_llm_json_payload(payload):
+    if isinstance(payload, dict):
+        return payload
+
+    text = (payload or "").strip()
+    if not text:
+        raise ValueError("empty LLM response")
+
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        match = JSON_BLOCK_RE.search(text)
+        if not match:
+            raise
+        return json.loads(match.group(0))
+
+
+def _extract_lesson_fields_with_llm(content, gate, role_name):
+    config = _resolve_lesson_llm_config()
+    if config is None:
+        return _fallback_lesson_fields(content, gate, role_name)
+
+    try:
+        import requests
+    except ImportError:
+        return _fallback_lesson_fields(content, gate, role_name)
+
+    prompt = (
+        "Extract lessons learned from this L3 audit report. "
+        "Return JSON only with keys symptom, root_cause, fix_pattern. "
+        "Each value must be a concise plain string. "
+        "Do not wrap the JSON in markdown.\n\n"
+        f"Gate: {gate}\n"
+        f"Role: {role_name}\n\n"
+        "Audit report markdown:\n"
+        f"{content}"
+    )
+    payload = {
+        "model": config["model"],
+        "messages": [
+            {
+                "role": "system",
+                "content": "You extract structured lessons from audit reports and respond with strict JSON only.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }
+    headers = {
+        "Authorization": f"Bearer {config['api_key']}",
+        "Content-Type": "application/json",
+    }
+
+    try:
+        response = requests.post(
+            f"{config['base_url']}/chat/completions",
+            headers=headers,
+            json=payload,
+            timeout=30,
+        )
+        response.raise_for_status()
+        data = response.json()
+        message = data["choices"][0]["message"]["content"]
+        lesson_fields = _parse_llm_json_payload(message)
+    except Exception as error:
+        print(f"Warning: lesson extraction LLM call failed: {error}")
+        return _fallback_lesson_fields(content, gate, role_name)
+
+    symptom = str(lesson_fields.get("symptom", "")).strip()
+    root_cause = str(lesson_fields.get("root_cause", "")).strip()
+    fix_pattern = str(lesson_fields.get("fix_pattern", "")).strip()
+    if not symptom or not root_cause or not fix_pattern:
+        return _fallback_lesson_fields(content, gate, role_name)
+
+    return {
+        "symptom": symptom,
+        "root_cause": root_cause,
+        "fix_pattern": fix_pattern,
+    }
 
 
 def load_lessons(lessons_file=LESSONS_FILE):
@@ -210,9 +378,8 @@ def extract_lessons():
     for r_file in reports:
         content = r_file.read_text(encoding='utf-8')
         
-        # Parse fields using simple regex
-        gate_match = re.search(r'\*\*Gate\*\*:\s*([A-Za-z0-9_]+)', content)
-        verdict_match = re.search(r'## Verdict\s*\n+\s*\[(APPROVED|NEEDS_FIX|APPROVED_PARTIAL)\]', content)
+        gate_match = GATE_RE.search(content)
+        verdict_match = VERDICT_RE.search(content)
         
         if not gate_match or not verdict_match:
             continue
@@ -246,31 +413,17 @@ def extract_lessons():
                         role_id = int(nums[0])
                         role_name = ROLE_MAP.get(role_id, "unknown")
         
-        # Extract findings/issues
-        findings_sec = ""
-        findings_match = re.search(r'## Findings\s*\n(.*?)(\n##|$)', content, re.DOTALL)
-        if findings_match:
-            findings_sec = findings_match.group(1).strip()
-            
-        required_fixes_sec = ""
-        fixes_match = re.search(r'## Required Action[s]?\s*\n(.*?)(\n##|$)', content, re.DOTALL)
-        if fixes_match:
-            required_fixes_sec = fixes_match.group(1).strip()
-            
-        if verdict == "NEEDS_FIX" and findings_sec:
-            # We found a failure point! This is a rich lesson source.
-            symptom = f"Failed audit on gate '{gate}' for role '{role_name}'."
-            root_cause = findings_sec
-            fix_pattern = required_fixes_sec or "See subsequent fix gates."
-            
+        if verdict == "NEEDS_FIX":
+            lesson_fields = _extract_lesson_fields_with_llm(content, gate, role_name)
+
             lesson = {
                 "timestamp": r_file.stat().st_mtime,
                 "gate": gate,
                 "role_id": role_id,
                 "role_name": role_name,
-                "symptom": symptom,
-                "root_cause": root_cause,
-                "fix_pattern": fix_pattern,
+                "symptom": lesson_fields["symptom"],
+                "root_cause": lesson_fields["root_cause"],
+                "fix_pattern": lesson_fields["fix_pattern"],
                 "audit_report_path": str(r_file.relative_to(WORKSPACE))
             }
             lessons.append(lesson)

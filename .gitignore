@@ -13,6 +13,8 @@ __pycache__/
 .code-review-graph/
 .antigravitycli/
 /skills/
+llm/
+llm.jsonl
 pi_skill/
 cache/
 pytest_temp/

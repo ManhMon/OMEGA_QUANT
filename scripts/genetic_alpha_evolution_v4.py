@@ -43,6 +43,9 @@ SUBTREE_CACHE_KEY = "__subtree_cache__"
 TARGET_NEUTRALIZED_CACHE_KEY = "__target_neutralized_cache__"
 FEATURE_BANK_KEY = "__feature_bank__"
 BATCH_FOLD_IR_CACHE_KEY = "__batch_fold_ir_cache__"
+FOLD_FEATURES_CACHE_KEY = "__fold_features_cache__"
+DATE_FLAT_INDICES_KEY = "__date_flat_indices__"
+DATE_GROUP_OFFSETS_KEY = "__date_group_offsets__"
 EARLY_REJECT_PENALTY = -2.0
 EARLY_REJECT_FOLD_IC_THRESHOLD = -0.02
 EARLY_REJECT_CUMAVG_THRESHOLD = 0.0
@@ -957,7 +960,7 @@ def _copy_individual(individual: ge.GPIndividual) -> ge.GPIndividual:
 
 def _slice_row_aligned_features(features: dict[str, Any], mask: np.ndarray) -> dict[str, Any]:
     out: dict[str, Any] = {}
-    row_count = _feature_array_length(features)
+    row_count = len(np.asarray(features["__date__"])) if "__date__" in features else _feature_array_length(features)
     for key, value in features.items():
         try:
             value_arr = np.asarray(value)
@@ -980,6 +983,29 @@ def _build_fold_views(features: dict[str, np.ndarray], fold_structure: tuple[tup
             else:
                 fold_view[ge.NEUTRALIZATION_CACHE_KEY] = neutralization_cache
             _ensure_neutralization_jit_context(fold_view)
+    return fold_views
+
+def _ensure_date_group_index(features: dict[str, np.ndarray]) -> tuple[np.ndarray, np.ndarray]:
+    date_flat_indices = features.get(DATE_FLAT_INDICES_KEY)
+    date_group_offsets = features.get(DATE_GROUP_OFFSETS_KEY)
+    if date_flat_indices is not None and date_group_offsets is not None:
+        return date_flat_indices, date_group_offsets
+    date_flat_indices, date_group_offsets = _build_date_group_index_from_ids(
+        _factorize_dates(np.asarray(features["__date__"]))
+    )
+    features[DATE_FLAT_INDICES_KEY] = date_flat_indices
+    features[DATE_GROUP_OFFSETS_KEY] = date_group_offsets
+    features["__date_group_index__"] = (date_flat_indices, date_group_offsets)
+    return date_flat_indices, date_group_offsets
+
+def _build_cached_fold_features(
+    features: dict[str, np.ndarray],
+    fold_structure: tuple[tuple[np.ndarray, np.ndarray], ...],
+) -> list[dict[str, np.ndarray]]:
+    fold_views = _build_fold_views(features, fold_structure)
+    for fold_features in fold_views:
+        if "__date__" in fold_features:
+            _ensure_date_group_index(fold_features)
     return fold_views
 
 
@@ -1180,7 +1206,9 @@ def _batch_fold_ir_scores(
         fold_structure = ge._build_time_fold_structure(np.asarray(features["__date__"]), fold_count)
     if not fold_structure:
         return {idx: (0.0, False) for idx in range(alpha_matrix.shape[1])}
-    fold_views = _build_fold_views(features, fold_structure)
+    fold_views = features.get(FOLD_FEATURES_CACHE_KEY)
+    if fold_views is None:
+        fold_views = _build_cached_fold_features(features, fold_structure)
     target_arr = np.asarray(target, dtype=np.float64)
     scores: dict[int, tuple[float, bool]] = {}
     fold_means_by_candidate: list[list[float]] = [[] for _ in range(alpha_matrix.shape[1])]
@@ -1211,14 +1239,7 @@ def _batch_fold_ir_scores(
         if liquidity_mask is not None:
             eval_mask_matrix &= np.asarray(liquidity_mask, dtype=bool)[:, np.newaxis]
         
-        # Cache date group indices to avoid recalculation
-        if '__date_group_index__' not in fold_features:
-            date_flat_indices, date_group_offsets = _build_date_group_index_from_ids(
-                _factorize_dates(np.asarray(fold_features["__date__"]))
-            )
-            fold_features['__date_group_index__'] = (date_flat_indices, date_group_offsets)
-        else:
-            date_flat_indices, date_group_offsets = fold_features['__date_group_index__']
+        date_flat_indices, date_group_offsets = _ensure_date_group_index(fold_features)
         
         daily_ic_matrix = _numba_batch_daily_ics(
             alpha_fold,
@@ -1365,9 +1386,7 @@ def _compute_daily_ic_mean(alpha: np.ndarray, target: np.ndarray, features: dict
     valid = ge._evaluation_mask(alpha, target, features)
     if not np.any(valid):
         return 0.0
-    date_flat_indices, date_group_offsets = _build_date_group_index_from_ids(
-        _factorize_dates(np.asarray(features["__date__"]))
-    )
+    date_flat_indices, date_group_offsets = _ensure_date_group_index(features)
     daily_ics = _numba_daily_ics(
         np.asarray(alpha, dtype=np.float64),
         np.asarray(target, dtype=np.float64),
@@ -1454,15 +1473,14 @@ def _compute_time_fold_ir_v4(
         fold_structure = ge._build_time_fold_structure(date_arr, fold_count)
     fold_ics: list[float] = []
     audit_sample = _is_audit_sample(features.get("__candidate_tree_text__", ""), config)
+    cached_fold_features = features.get(FOLD_FEATURES_CACHE_KEY)
     for fold_idx, (fold_mask, _fold_dates) in enumerate(fold_structure):
-        fold_features: dict[str, np.ndarray] = {}
-        for key, value in features.items():
-            try:
-                value_arr = np.asarray(value)
-            except ValueError:
-                continue
-            if value_arr.ndim > 0 and len(value_arr) == len(date_arr):
-                fold_features[key] = value_arr[fold_mask]
+        if cached_fold_features is not None and fold_idx < len(cached_fold_features):
+            fold_features = cached_fold_features[fold_idx]
+        else:
+            fold_features = _slice_row_aligned_features(features, fold_mask)
+            if "__date__" in fold_features:
+                _ensure_date_group_index(fold_features)
         alpha_fold = np.asarray(alpha[fold_mask], dtype=np.float64)
         target_fold = np.asarray(target[fold_mask], dtype=np.float64)
         if config.neutralize_size_sector and fold_features.get("__sector__") is not None:
@@ -1672,7 +1690,7 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
         else:
             gen_features = features
             gen_target = target
-        if self.config.use_fast_penalties and "__date__" in gen_features:
+        if (self.config.use_fast_penalties or self.config.use_time_fold_ir) and "__date__" in gen_features:
             if gen_features is features:
                 gen_features = dict(gen_features)
             fold_count = 2 if getattr(self.config, "time_folds_fast_mode", False) else int(self.config.time_folds)
@@ -1703,6 +1721,15 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
                 np.asarray(gen_features.get("__date__")),
             )
             _ensure_neutralization_jit_context(gen_features)
+        if self.config.use_time_fold_ir and "__date__" in gen_features:
+            if gen_features is features:
+                gen_features = dict(gen_features)
+            fold_structure = gen_features.get(ge.FOLD_STRUCTURE_CACHE_KEY)
+            if fold_structure is None:
+                fold_count = 2 if getattr(self.config, "time_folds_fast_mode", False) else int(self.config.time_folds)
+                fold_structure = ge._build_time_fold_structure(np.asarray(gen_features["__date__"]), fold_count)
+                gen_features[ge.FOLD_STRUCTURE_CACHE_KEY] = fold_structure
+            gen_features[FOLD_FEATURES_CACHE_KEY] = _build_cached_fold_features(gen_features, fold_structure)
         return gen_features, gen_target
 
     def _evaluate_population_with_batch_neutralization(self, features: dict[str, np.ndarray], target: np.ndarray) -> None:
