@@ -20,6 +20,7 @@ Date: 2026-05-28
 import sys
 import json
 import logging
+import os
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -858,26 +859,22 @@ def run_evolution(
     fold_ir_std_floor: float = 0.03,
 ) -> list:
     """Run GP evolution on training data with Option D orthogonalization and multi-horizon targets."""
-    # Resolve workers mapping: -1 or <= 0 means use all available CPUs
-    # Windows safeguard: cap workers to avoid memory pressure and GIL contention
-    import os
-    import platform
-    
+    # Resolve workers mapping: -1 or <= 0 means use all available CPUs.
+    # ponytail: Windows subprocess overhead is high here; raise cap only after measuring resident memory.
     n_jobs = workers
     if workers <= 0:
         cpu_count = os.cpu_count() or 4
-        # Windows worker cap: max 4 workers to prevent memory thrashing when auto-detecting
-        if platform.system() == "Windows":
+        if sys.platform == "win32":
             n_jobs = min(cpu_count, 4)
             logger.info(f"Workers={workers} resolved to n_jobs={n_jobs} (Windows cap: min(cpu_count={cpu_count}, 4))")
         else:
             n_jobs = cpu_count
             logger.info(f"Workers={workers} resolved to n_jobs={n_jobs} (os.cpu_count())")
     else:
-        # Explicit worker count: respect user choice, but warn on Windows if >4
         n_jobs = workers
-        if platform.system() == "Windows" and workers > 4:
-            logger.warning(f"Using {n_jobs} workers on Windows (>4 may cause memory pressure; recommended max: 4)")
+        if sys.platform == "win32" and workers > 4:
+            n_jobs = 4
+            logger.warning(f"Workers={workers} capped to n_jobs={n_jobs} on Windows to avoid memory pressure")
         else:
             logger.info(f"Using n_jobs={n_jobs}")
     
@@ -1176,7 +1173,7 @@ def main():
         "--workers",
         type=int,
         default=4,
-        help="Number of parallel workers for joblib (default: 4)"
+        help="Number of parallel workers for joblib (default: 4; Windows hard cap: 4)"
     )
     parser.add_argument(
         "--backend",
@@ -1222,6 +1219,12 @@ def main():
         help="Minimum standard deviation floor for fold IR stability (default: 0.03)"
     )
     args = parser.parse_args()
+
+    if sys.platform == "win32" and args.workers > 4:
+        logger.warning("--workers=%d capped to 4 on Windows to avoid memory pressure", args.workers)
+        args.workers = 4
+    elif sys.platform == "win32" and args.workers <= 0:
+        args.workers = min(os.cpu_count() or 4, 4)
 
     logger.info("=== WEEKLY GP ALPHA EVOLUTION START ===")
     logger.info("Config: regime=%s, generations=%d, pop=%d, ortho=%s, alt_features=%s, workers=%d, backend=%s",
