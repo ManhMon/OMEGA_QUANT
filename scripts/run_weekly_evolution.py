@@ -396,7 +396,11 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     alt_features_df = _generate_alternative_features(result[alt_input_cols])
     alt_value_cols = [c for c in alt_features_df.columns if c not in {"date", "ticker"}]
     if alt_value_cols:
-        result = result.merge(alt_features_df, on=["date", "ticker"], how="left")
+        result = result.set_index(["date", "ticker"])
+        alt_features_indexed = alt_features_df.set_index(["date", "ticker"])
+        for col in alt_value_cols:
+            result[col] = alt_features_indexed[col].reindex(result.index)
+        result = result.reset_index()
 
     # PIT SAFETY: Apply T-1 lag to ALL alternative features strictly per ticker
     for col in ALTERNATIVE_FEATURE_COLUMNS:
@@ -495,14 +499,19 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
         logger.warning(f"AlternativeDataFetcher failed: {e}")
 
     if not alt_features_df.empty or not alt_data_features_df.empty:
-        combined_alt = alt_features_df.merge(alt_data_features_df, on=["date", "ticker"], how="outer")
-        assert not combined_alt.duplicated(subset=["date", "ticker"]).any()
         original_dates = result_keys["date"].copy()
-        result_keys = result_keys.assign(date=pd.to_datetime(result_keys["date"])).merge(
-            combined_alt,
-            on=["date", "ticker"],
-            how="left",
-        )
+        result_keys = result_keys.assign(date=pd.to_datetime(result_keys["date"])).set_index(["date", "ticker"])
+
+        for source_df in (alt_features_df, alt_data_features_df):
+            if source_df.empty:
+                continue
+
+            source_cols = [c for c in source_df.columns if c not in {"date", "ticker"}]
+            source_indexed = source_df.set_index(["date", "ticker"])
+            for col in source_cols:
+                result_keys[col] = source_indexed[col].reindex(result_keys.index)
+
+        result_keys = result_keys.reset_index()
         result_keys["date"] = original_dates.to_numpy(copy=False)
 
     return result_keys
