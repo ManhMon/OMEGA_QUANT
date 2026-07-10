@@ -154,6 +154,7 @@ def _extract_lesson_fields_with_llm(content, gate, role_name):
     except ImportError:
         return _fallback_lesson_fields(content, gate, role_name)
 
+    content_excerpt = content[:3000]
     prompt = (
         "Extract lessons learned from this L3 audit report. "
         "Return JSON only with keys symptom, root_cause, fix_pattern. "
@@ -162,7 +163,7 @@ def _extract_lesson_fields_with_llm(content, gate, role_name):
         f"Gate: {gate}\n"
         f"Role: {role_name}\n\n"
         "Audit report markdown:\n"
-        f"{content}"
+        f"{content_excerpt}"
     )
     payload = {
         "model": config["model"],
@@ -189,7 +190,8 @@ def _extract_lesson_fields_with_llm(content, gate, role_name):
             timeout=30,
         )
         response.raise_for_status()
-        data = response.json()
+        raw_text = response.text.split("\ndata:")[0].strip()
+        data = json.loads(raw_text)
         message = data["choices"][0]["message"]["content"]
         lesson_fields = _parse_llm_json_payload(message)
     except Exception as error:
