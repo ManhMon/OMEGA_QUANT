@@ -257,6 +257,23 @@ def _are_frames_aligned(left: pd.DataFrame, right: pd.DataFrame) -> bool:
     return True
 
 
+def _float64_columns(df: pd.DataFrame, cols: Optional[List[str]] = None) -> List[str]:
+    candidate_cols = cols if cols is not None else list(df.columns)
+    return [col for col in candidate_cols if df[col].dtype == np.float64]
+
+
+def _downcast_float64_columns(df: pd.DataFrame, cols: Optional[List[str]] = None) -> None:
+    for col in _float64_columns(df, cols):
+        df[col] = df[col].astype("float32")
+
+
+def _all_notna_mask(df: pd.DataFrame, cols: List[str]) -> np.ndarray:
+    valid_mask = np.ones(len(df), dtype=bool)
+    for col in cols:
+        valid_mask &= df[col].notna().to_numpy(copy=False)
+    return valid_mask
+
+
 def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     """Compute features with T-1 lag for PIT safety, strictly grouped by ticker."""
     result = df.copy()
@@ -356,9 +373,7 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     from omega.quant.alpha.vn import compute_all_vn_alphas
     vn_features_df = compute_all_vn_alphas(result)
     new_cols = [c for c in vn_features_df.columns if c not in ["ticker", "date"]]
-    vn_float64_cols = vn_features_df[new_cols].select_dtypes(include="float64").columns
-    if len(vn_float64_cols) > 0:
-        vn_features_df[vn_float64_cols] = vn_features_df[vn_float64_cols].astype("float32")
+    _downcast_float64_columns(vn_features_df, new_cols)
     
     # MEMORY OPTIMIZATION: Direct column assignment instead of merge (GP_VN_ALPHAS_MERGE_DIRECT_ASSIGN)
     # Skip redundant full-frame sorting when compute_all_vn_alphas() preserved row order.
@@ -399,9 +414,7 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     alt_features_df = _generate_alternative_features(result[alt_input_cols])
     alt_value_cols = [c for c in alt_features_df.columns if c not in {"date", "ticker"}]
     if alt_value_cols:
-        alt_float64_cols = alt_features_df[alt_value_cols].select_dtypes(include="float64").columns
-        if len(alt_float64_cols) > 0:
-            alt_features_df[alt_float64_cols] = alt_features_df[alt_float64_cols].astype("float32")
+        _downcast_float64_columns(alt_features_df, alt_value_cols)
         alt_features_indexed = alt_features_df.set_index(["date", "ticker"])
         alt_result_index = pd.MultiIndex.from_arrays(
             [
@@ -425,9 +438,7 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     # Primary target (T+5) strictly per ticker
     result["target"] = result.groupby("ticker")["close"].pct_change(TARGET_HORIZON).shift(-TARGET_HORIZON)
 
-    float64_cols = result.select_dtypes(include="float64").columns
-    if len(float64_cols) > 0:
-        result[float64_cols] = result[float64_cols].astype("float32")
+    _downcast_float64_columns(result)
 
     # Determine which columns to drop NaN on: base features + available alt features + all targets
     available_alt = [c for c in ALTERNATIVE_FEATURE_COLUMNS if c in result.columns]
@@ -435,7 +446,7 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
     drop_cols = FEATURE_COLUMNS + available_alt + target_cols
 
     # Drop NaN rows using boolean masking instead of dropna
-    valid_mask = result[drop_cols].notna().all(axis=1)
+    valid_mask = _all_notna_mask(result, drop_cols)
     result = result[valid_mask]
     result.index = pd.RangeIndex(len(result))
 
