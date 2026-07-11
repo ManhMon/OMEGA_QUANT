@@ -547,5 +547,10 @@ updated: 2026-07-02
 - **Solution**:
   - Lowered the default `min_hit_rate` value to `0.515` (51.5%) in `src/omega/quant/evolution/diverse_alpha_evolution.py` to match standard daily quant signal requirements, ensuring strong alpha signals survive the quality filter.
 
-
-
+## 49. Demeaned Hit Rate Formula in GP Diverse Evolution (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_DEMEANED_HIT_RATE` (Approved by Codex L3 role 21)
+- **Problem**:
+  - The previous hit rate formula used raw validation signal and target signs. Since many operators output positive-only values (like `volume`, `std`), the raw hit rate was strictly capped by the positive daily return ratio (typically ~47%), preventing any positive-only signal from passing the quality filter.
+- **Solution**:
+  - Implemented the demeaned hit rate formula `hit_rate = (np.sign(val_signal - val_signal.mean()) == np.sign(val_df[target_col] - val_df[target_col].mean())).mean()` in `DiverseAlphaEvolution._evaluate_population` (line 152), evaluating the directional accuracy of demeaned signals against demeaned returns.
