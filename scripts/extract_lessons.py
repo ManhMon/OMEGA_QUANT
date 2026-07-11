@@ -145,6 +145,9 @@ def _parse_llm_json_payload(payload):
 
 
 def _extract_lesson_fields_with_llm(content, gate, role_name):
+    if os.getenv("SKIP_LESSON_EXTRACTION") == "1" or os.getenv("OMEGA_SKIP_LLM") == "1":
+        return {"symptom": "Skipped", "root_cause": "Skipped", "fix_pattern": "Skipped"}
+
     config = _resolve_lesson_llm_config()
     if config is None:
         return _fallback_lesson_fields(content, gate, role_name)
