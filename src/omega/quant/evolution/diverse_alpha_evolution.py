@@ -149,7 +149,7 @@ class DiverseAlphaEvolution:
                 if np.isnan(train_ic) or np.isnan(val_ic):
                     continue
 
-                hit_rate = (np.sign(val_signal) == np.sign(val_df[target_col])).mean()
+                hit_rate = (np.sign(val_signal - val_signal.mean()) == np.sign(val_df[target_col] - val_df[target_col].mean())).mean()
                 turnover = val_signal.diff().abs().mean() / (val_signal.abs().mean() + 1e-10)
 
                 candidates.append(AlphaCandidate(
