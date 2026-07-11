@@ -157,6 +157,24 @@ def test_converted_delay_tree():
     np.testing.assert_allclose(values, np.array([0.0, 1.0, 2.0]))
 
 
+def test_converted_binary_tree():
+    class LegacyNode:
+        def __init__(self, value, children=None):
+            self.value = value
+            self.children = children or []
+
+    converted = _convert_diverse_node(LegacyNode("add", [LegacyNode("close"), LegacyNode("returns")]))
+    assert converted.operator == "+"
+    assert [child.value for child in converted.children] == ["close", "returns_1d"]
+
+    features = {
+        "close": np.array([1.0, 2.0, 3.0]),
+        "returns_1d": np.array([0.1, 0.2, 0.3]),
+    }
+    values = GPIndividual(tree=converted)._execute_tree(converted, features)
+    np.testing.assert_allclose(values, np.array([1.1, 2.2, 3.3]))
+
+
 def test_multi_horizon_time_fold_ir_weighted_scoring():
     alpha = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
     target_h3 = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0])

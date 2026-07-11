@@ -821,6 +821,11 @@ def _convert_diverse_node(node) -> "GPNode":
             return child
         return GPNode(operator=operator, children=[child])
 
+    return GPNode(
+        operator=binary_map.get(node.value, node.value),
+        children=[_convert_diverse_node(child) for child in node.children],
+    )
+
 
 def _inject_private_gp_columns(df: pd.DataFrame, features: Dict[str, np.ndarray]) -> None:
     if "date" in df.columns:
@@ -852,11 +857,6 @@ def _inject_liquidity_mask(
         features["__liquidity_mask__"] = (avg_vol > min_avg_volume).astype(bool)
     else:
         features["__liquidity_mask__"] = np.ones(len(df), dtype=bool)
-
-    return GPNode(
-        operator=binary_map.get(node.value, node.value),
-        children=[_convert_diverse_node(child) for child in node.children],
-    )
 
 
 def walk_forward_split(df: pd.DataFrame, horizon: int = 5, regime: str = "all", start_date: str = None, end_date: str = None):
