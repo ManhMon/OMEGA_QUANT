@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+import gc
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -1109,6 +1110,7 @@ class GeneticEngine:
         self.history: List[Dict[str, float]] = []
         self.feature_names: List[str] = []
         self._date_chunk_cache: Tuple[Optional[int], Optional[Dict[str, Any]]] = (None, None)
+        self._fold_structure_cache: Tuple[Optional[Tuple[int, int]], Optional[Tuple[Tuple[np.ndarray, np.ndarray], ...]]] = (None, None)
         # Reset ICIR telemetry so get_icir_stats() reflects this engine's runs.
         # (Counters live on GPIndividual, whose _compute_combined_ic increments
         # them; they are process-global, so constructing a new engine resets them.)
@@ -1266,6 +1268,19 @@ class GeneticEngine:
         }
         self._date_chunk_cache = (cache_key, cached_chunks)
         return cached_chunks
+
+    def _get_cached_fold_structure(
+        self,
+        date_values: np.ndarray,
+    ) -> Tuple[Tuple[np.ndarray, np.ndarray], ...]:
+        fold_count = 2 if getattr(self.config, 'time_folds_fast_mode', False) else int(self.config.time_folds)
+        cache_key = (id(date_values), fold_count)
+        cached_key, cached_structure = self._fold_structure_cache
+        if cached_key == cache_key and cached_structure is not None:
+            return cached_structure
+        fold_structure = _build_time_fold_structure(np.asarray(date_values), fold_count)
+        self._fold_structure_cache = (cache_key, fold_structure)
+        return fold_structure
     
     def generate_random_tree(self, depth: int = 0) -> GPNode:
         """Generate random expression tree."""
@@ -1420,11 +1435,7 @@ class GeneticEngine:
             if self.config.use_fast_penalties and '__date__' in gen_features:
                 if gen_features is features:
                     gen_features = dict(gen_features)
-                fold_count = 2 if getattr(self.config, 'time_folds_fast_mode', False) else int(self.config.time_folds)
-                gen_features[FOLD_STRUCTURE_CACHE_KEY] = _build_time_fold_structure(
-                    np.asarray(gen_features['__date__']),
-                    fold_count,
-                )
+                gen_features[FOLD_STRUCTURE_CACHE_KEY] = self._get_cached_fold_structure(gen_features['__date__'])
 
             if self.config.use_fast_penalties and self.hall_of_fame:
                 if gen_features is features:
@@ -1465,7 +1476,7 @@ class GeneticEngine:
                     self._evaluate_population_with_batch_neutralization(gen_features, gen_target)
                 else:
                     self.population = list(Parallel(
-                        n_jobs=self.config.n_jobs, batch_size='auto'
+                        n_jobs=self.config.n_jobs, batch_size='auto', prefer='threads'
                     )(
                         delayed(_evaluate_individual)(
                             ind, gen_features, gen_target, self.hall_of_fame, self.config
@@ -1509,6 +1520,7 @@ class GeneticEngine:
                 self.config.early_stopping_rounds > 0
                 and stagnant_generations >= self.config.early_stopping_rounds
             ):
+                gc.collect()
                 logger.info(
                     f"Early stopping: no best-fitness improvement for "
                     f"{self.config.early_stopping_rounds} generations"
@@ -1516,7 +1528,8 @@ class GeneticEngine:
                 break
             if generation + 1 < self.config.generations:
                 self._next_generation()
-        
+            gc.collect()
+
         return self.hall_of_fame
 
     def _should_use_batch_neutralization(self, features: Dict[str, np.ndarray]) -> bool:

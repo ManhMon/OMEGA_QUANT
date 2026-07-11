@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import gc
 import random
 import threading
 import time as pytime
@@ -1693,8 +1694,7 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
         if (self.config.use_fast_penalties or self.config.use_time_fold_ir) and "__date__" in gen_features:
             if gen_features is features:
                 gen_features = dict(gen_features)
-            fold_count = 2 if getattr(self.config, "time_folds_fast_mode", False) else int(self.config.time_folds)
-            gen_features[ge.FOLD_STRUCTURE_CACHE_KEY] = ge._build_time_fold_structure(np.asarray(gen_features["__date__"]), fold_count)
+            gen_features[ge.FOLD_STRUCTURE_CACHE_KEY] = self._get_cached_fold_structure(gen_features["__date__"])
         if self.config.use_fast_penalties and self.hall_of_fame:
             if gen_features is features:
                 gen_features = dict(gen_features)
@@ -1818,7 +1818,7 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
             for individual in self.population:
                 individual.evaluate(features, target, self.hall_of_fame, self.config)
         else:
-            self.population = list(ge.Parallel(n_jobs=self.config.n_jobs, batch_size="auto")(
+            self.population = list(ge.Parallel(n_jobs=self.config.n_jobs, batch_size="auto", prefer="threads")(
                 ge.delayed(ge._evaluate_individual)(ind, features, target, self.hall_of_fame, self.config)
                 for ind in self.population
             ))
@@ -1912,6 +1912,7 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
             else:
                 stagnant_generations += 1
             if self.config.early_stopping_rounds > 0 and stagnant_generations >= self.config.early_stopping_rounds:
+                gc.collect()
                 logger.info(
                     f"Early stopping: no best-fitness improvement for {self.config.early_stopping_rounds} generations"
                 )
@@ -1924,6 +1925,7 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
                     )
                     for island_idx, island in enumerate(evaluated_islands)
                 ]
+            gc.collect()
         return self.hall_of_fame
 
 
