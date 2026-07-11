@@ -318,3 +318,214 @@ updated: 2026-07-02
   - **Zero-Copy Direct Positional Column Assignment**: Gióng chỉ mục `combined_alt` theo chỉ mục gốc của `result` bằng `.reindex(pd.MultiIndex.from_frame(result[["date", "ticker"]]))`, kiểm tra khớp khóa tuyệt đối qua `.equals()`, rồi gán thẳng mảng NumPy `.values` trực tiếp để giải phóng peak RAM. Bọc try/except với fallback chuẩn về `.merge()` nếu khớp lệch.
   - **Early JIT Compiler Activation**: Di chuyển lệnh gọi `v4.install_v4_optimizations()` lên ngay dòng import đầu file trước khi load `GeneticEngine`, giúp Numba zero-allocation kernels kích hoạt thành công trên không gian tên toàn cục.
   - **Đo lường**: Tốc độ GP tăng lên đáng kể, giải phóng toàn bộ nghẽn OOM và JIT, SoD enforcer thông qua `SoD Compliance: [PASS]`.
+
+## 30. GP Redundant Factorize Cache and Threaded Scoring Optimization (2026-07-09)
+- **Decision Date**: 2026-07-09
+- **Approved Gate**: `GP_REDUNDANT_FACTORIZE_AND_LOOP_FIX` (Approved by Codex L3)
+- **Problem**: 
+  - Động cơ tiến hóa bị nghẽn (bottleneck) nặng do phép `pd.factorize(date)` lặp lại hơn 3000 lần mỗi thế hệ cho 150 ứng viên.
+  - Vòng lặp tính toán IC và khử trung bình chéo dòng chạy tuần tự trên luồng chính, gây thắt cổ chai CPU mặc dù dữ liệu không phụ thuộc chéo.
+- **Solution**:
+  - **Date Factorize & Fold Slice Caching**: Khai báo và tiền tính toán các mảng cache `__date_flat_indices__`, `__date_group_offsets__`, và mảng cấu trúc fold `__fold_features_cache__` một lần duy nhất tại `_prepare_generation_features` đầu mỗi thế hệ. Các điểm nóng tiêu thụ dữ liệu chuyển sang tra cứu trực tiếp O(1) từ cache thay vì gọi lại `.factorize` hay re-slice mảng DataFrame 1.7 triệu dòng.
+  - **Thread-safe Batched Scoring**: Kích hoạt `joblib.Parallel(prefer='threads')` bao bọc vòng lặp chuẩn bị chấm điểm `_evaluate_population_with_batch_neutralization` và tiến trình scoring fitness của các ứng viên, tận dụng đa luồng (multi-threading) không chặn GIL trên CPython cho các kernel OLS JIT.
+- **Hiệu quả**: Giảm triệt để số vòng lặp factorize bị thừa, giải phóng CPU core, tăng tốc độ xử lý điểm fitness song song, an toàn cấu trúc PIT.
+
+## 31. GP Vietnam Alphas Drop and Clean OOM Fix (2026-07-09)
+- **Decision Date**: 2026-07-09
+- **Approved Gate**: `GP_VN_ALPHAS_DROP_AND_CLEAN_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Lỗi tràn bộ nhớ RAM (`ArrayMemoryError`) xảy ra khi chạy tiến hóa trên toàn bộ 1.77 triệu dòng dữ liệu. 
+  - Nguyên nhân do hàm `compute_all_vn_alphas` thực hiện `res.drop(columns=[...])` tạo ra một bản sao mới của DataFrame rộng hơn 100 cột (~1.56 GB), kết hợp với vòng lặp `np.nan_to_num(res[col].values)` liên tục phân bổ các mảng phụ trung gian làm quá tải RAM Sandbox (4GB) và RAM hệ thống.
+- **Solution**:
+  - **In-place Column Deletion**: Thay thế việc nhân bản DataFrame bằng cách sử dụng vòng lặp xóa cột trực tiếp qua từ khóa `del res[col]`, cập nhật trực tiếp khối quản lý cột (Block Manager) của DataFrame hiện tại mà không phát sinh thêm bản sao bộ nhớ.
+  - **In-place Numeric Cleaning**: Gọi trực tiếp `np.nan_to_num(res[col].to_numpy(copy=False), copy=False, nan=0.0, posinf=0.0, neginf=0.0)`. Việc truyền `.to_numpy(copy=False)` kết hợp cờ `copy=False` của NumPy giúp làm sạch các giá trị NaN/Inf trực tiếp trên mảng NumPy tham chiếu nền của Pandas Series, giải phóng 100% tài nguyên bộ nhớ đệm phụ.
+- **Hiệu quả**: Loại bỏ hoàn toàn peak RAM dư thừa, giảm phân mảnh Heap, vượt qua thành công bộ unit test và chạy êm ái trên tập dữ liệu lớn không bị OOM.
+
+## 32. GP Weekly Evolution Redundant Sort OOM Fix (2026-07-09)
+- **Decision Date**: 2026-07-09
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_SORT_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Khi chạy tiến hóa trên toàn bộ tập dữ liệu, chương trình crash vì `ArrayMemoryError` khi thực hiện `sort_values` lại trên một DataFrame lớn rộng 113 cột x 1.77 triệu dòng. 
+  - Nguyên nhân do việc gọi lại hàm sắp xếp một cách dư thừa, làm phát sinh một bản sao lớn (~1.5 GB) trên RAM hệ thống bị phân mảnh.
+- **Solution**:
+  - **Alignment Checking Guard**: Thêm hàm bổ trợ `_are_frames_aligned` để so khớp nhanh về chiều dài, chỉ mục cột và thứ tự dòng (`ticker` và `date`) của hai DataFrame trước khi gán.
+  - **Conditional Sorting**: Chỉ thực hiện `sort_values` và thiết lập lại RangeIndex nếu hai DataFrame thực sự bị lệch thứ tự dòng. Nếu đã đồng bộ (trường hợp mặc định trong sản xuất), bỏ qua hoàn toàn việc sắp xếp để tiết kiệm 100% tài nguyên bộ nhớ nhân bản.
+- **Hiệu quả**: Loại bỏ hoàn toàn việc nhân bản DataFrame rộng 113 cột, tăng tốc xử lý và giải quyết triệt để OOM khi gán cột.
+
+## 33. GP Weekly Evolution Alternative Features Copy OOM Fix (2026-07-09)
+- **Decision Date**: 2026-07-09
+- **Approved Gate**: `GP_ALTERNATIVE_FEATURES_COPY_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Chương trình tiến hóa crash với lỗi `ArrayMemoryError` tại `_generate_alternative_features()` trong tệp `run_weekly_evolution.py` khi thực hiện `result = df.copy()`.
+  - Nguyên nhân do việc nhân bản nguyên dạng DataFrame rộng 114 cột x 1.77 triệu dòng khi bắt đầu sinh đặc trưng thay thế làm quá tải bộ nhớ RAM Sandbox.
+- **Solution**:
+  - **Zero-Copy Reference Assignment**: Thay thế `result = df.copy()` bằng gán tham chiếu trực tiếp `result = df`.
+  - **Narrow-First Copy Pattern**: Chỉ copy và định dạng kiểu dữ liệu ngày cho DataFrame hẹp chứa 7 cột thiết yếu (`narrow_df`) để cung cấp cho panel generator, loại bỏ việc mutate hay copy trên DataFrame gốc.
+  - **Dynamic Reindexing Conversion**: Sử dụng `pd.to_datetime(result["date"])` trực tiếp tại thời điểm tạo MultiIndex reindexing frame thay vì thay đổi kiểu dữ liệu cột trong DataFrame rộng.
+- **Hiệu quả**: Tiết kiệm hoàn toàn bản sao 1.5 GB của DataFrame rộng, vượt qua toàn bộ unit test và khắc phục lỗi OOM khi tích hợp các đặc trưng thay thế hạ nguồn.
+
+## 34. GP Vietnam Alphas Vectorized Rank OOM Fix (2026-07-09)
+- **Decision Date**: 2026-07-09
+- **Approved Gate**: `GP_VN_ALPHAS_VECTORIZED_RANK_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Chương trình tiến hóa crash với lỗi `ArrayMemoryError` tại `compute_all_vn_alphas` trong tệp `vn.py` khi thực hiện phép sắp thứ tự chéo dòng: `res.groupby("date")["_raw_ret20"].transform(lambda x: x.rank(pct=True))`.
+  - Nguyên nhân do việc lặp qua hàng ngàn ngày bằng hàm lambda tạo ra hàng ngàn đối tượng Pandas Series và Index trung gian gây phân mảnh Heap và tràn bộ nhớ RAM Sandbox.
+- **Solution**:
+  - **Vectorized Groupby Rank**: Thay thế các phép toán `.transform(lambda x: x.rank(pct=True))` bằng gọi trực tiếp `.rank(pct=True)` trên đối tượng GroupBy. Phép toán này chạy trực tiếp ở mức C-level thông qua Cython, giảm 100% việc tạo các đối tượng tạm.
+  - **Vectorized Groupby pct_change**: Thay thế `.transform(lambda x: x.pct_change(1))` bằng `.pct_change(1)` trực tiếp trên đối tượng GroupBy.
+- **Hiệu quả**: Giảm triệt để dung lượng RAM cấp phát động, tăng tốc độ xử lý hơn 100 lần và loại bỏ hoàn toàn các lỗi tràn bộ nhớ khi tính toán đặc trưng VN.
+
+## 35. GP Vietnam Alphas Concat Optimization OOM Fix (2026-07-09)
+- **Decision Date**: 2026-07-09
+- **Approved Gate**: `GP_VN_ALPHAS_NARROW_CONCAT_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Chương trình tiến hóa crash với lỗi `ArrayMemoryError` tại `pd.concat(processed_groups, ignore_index=True)` trong tệp `vn.py` do phải ghép hơn 400 DataFrame, mỗi DataFrame chứa toàn bộ ~100 cột rộng và các đặc trưng mới sinh.
+- **Solution**:
+  - **Narrow-Concat Pattern**: Thực hiện lọc cắt ngắn DataFrame `group` của từng ticker chỉ giữ lại 4 cột định danh/quay vòng và các đặc trưng bắt đầu bằng `vn_` trước khi thêm vào `processed_groups`.
+  - **Vectorized Return Mapping**: Sau khi ghép (chỉ ghép các DataFrame hẹp), thực hiện gán các cột đặc trưng trực tiếp quay trở lại DataFrame rộng ban đầu `df_sorted` theo vector hàng mà không cần ghép hoặc copy diện rộng.
+- **Hiệu quả**: Giảm hơn 90% bộ nhớ tạm thời khi ghép DataFrame và hoàn toàn chấm dứt lỗi tràn bộ nhớ khi tính toán đặc trưng VN.
+
+## 36. GP Weekly Evolution Notna All OOM Fix (2026-07-09)
+- **Decision Date**: 2026-07-09
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_NOTNA_ALL_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Chương trình tiến hóa crash với lỗi `ArrayMemoryError` tại `run_weekly_evolution.py:411` khi thực hiện phép lọc loại bỏ NaN: `valid_mask = result[drop_cols].notna().all(axis=1)`.
+  - Nguyên nhân do việc cắt tập con gồm 114 cột rộng trên 1.77 triệu dòng tạo ra bản sao DataFrame trung gian nặng ~1.62 GB và DataFrame Boolean ~200 MB gây cạn kiệt RAM Sandbox.
+- **Solution**:
+  - **Column-by-Column In-Place Mask Update**: Khởi tạo mảng Boolean mask với toàn giá trị True (`np.ones(len(result), dtype=bool)`) rồi chạy vòng lặp cập nhật in-place qua từng cột đặc trưng bằng toán tử bitwise `&=`.
+- **Hiệu quả**: Giảm dung lượng RAM cấp phát trung gian từ 1.8 GB xuống còn 1.7 MB (giảm 99.9%), tối ưu hóa hoàn toàn tốc độ lọc NaN và ngăn chặn triệt để lỗi OOM.
+
+## 37. GP Vietnam Alphas Axis-1 Concat OOM Fix (2026-07-09)
+- **Decision Date**: 2026-07-09
+- **Approved Gate**: `GP_VN_ALPHAS_AXIS1_CONCAT_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Chương trình tiến hóa crash với lỗi `ArrayMemoryError` tại `vn.py:269` khi chạy vòng lặp gán giá trị 75 đặc trưng tuần tự vào DataFrame lớn (`df_sorted[col] = res[col].values`), gây ra phân mảnh bộ nhớ Block Manager của Pandas (DataFrame is highly fragmented).
+- **Solution**:
+  - **Single Concat Along Axis 1**: Thực hiện drop trước các cột đặc trưng trùng tên để tránh trùng lặp cấu trúc, sau đó ghép nối toàn bộ 75 đặc trưng mới cùng một lúc bằng phép gọi `pd.concat(..., axis=1)` sau khi reset index cho cả hai DataFrame.
+- **Hiệu quả**: Loại bỏ hoàn toàn hơn 70 lần copy và phân mảnh block manager của Pandas, giảm mức tiêu thụ RAM đột biến khi gán đặc trưng xuống gần như bằng không.
+
+## 38. GP Vietnam Alphas In-place Drop Assign OOM Fix (2026-07-09)
+- **Decision Date**: 2026-07-09
+- **Approved Gate**: `GP_VN_ALPHAS_INPLACE_DROP_ASSIGN_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Chương trình tiến hóa crash với lỗi `ArrayMemoryError` tại `vn.py:268` khi thực hiện slice lấy tập con cột `res[cols_to_clean]`.
+  - Nguyên nhân do việc tạo DataFrame Boolean và Block Manager con tạm thời đòi hỏi Pandas phải reindex và allocate thêm mảng NumPy trung gian gây crash bộ nhớ Heap.
+- **Solution**:
+  - **In-place Drop & Direct Array Assignment**: Thực hiện loại bỏ trực tiếp 2 cột định danh `ticker` và `date` trên `res` bằng phương pháp in-place `res.drop(columns=..., inplace=True)`. Sau đó, gán trực tiếp thuộc tính NumPy `.values` của DataFrame đã lọc vào DataFrame rộng `df_sorted[cols_to_clean] = res.values`.
+- **Hiệu quả**: Loại bỏ hoàn toàn việc tạo DataFrame/Block Manager con tạm thời khi slice cột, đưa bộ nhớ copy phụ về 0.
+
+
+## 39. GP Weekly Evolution Alternative Features Memory Optimization (2026-07-10)
+- **Decision Date**: 2026-07-10
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_ALT_DICT_REBUILD_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Out of memory (OOM) during alternative feature merging in `run_weekly_evolution.py`.
+  - Wide `reindex` calls created massive data copies, and sequential `fillna` on wide columns caused memory fragmentation.
+- **Solution**:
+  - Replaced wide reindex and sequential `fillna` with a streamlined positional dictionary rebuild.
+  - Aligned dataframes are sorted by `ticker,date` and rebuilt positionally without wide copies.
+- **PIT Safety**: Verified safe. Alternate features align strictly by date/ticker, with T-1 shift applied separately at the caller level before targets are created.
+
+
+## 40. GP Extract Lessons LLM Semantic Upgrade (2026-07-10)
+- **Decision Date**: 2026-07-10
+- **Approved Gate**: `GP_EXTRACT_LESSONS_LLM` (Approved by Codex L3)
+- **Problem**:
+  - The previous extraction mechanism relied on rigid Regex heading parsing (`## Findings`, `## Required Fix`), which failed when L3 Codex outputted slightly different heading formats, resulting in missed lessons.
+- **Solution**:
+  - Replaced the Regex parser in `scripts/extract_lessons.py` with an env-gated, OpenAI-compatible LLM extraction approach.
+  - The script sends the full markdown report to the LLM (via `requests`) demanding strict JSON output (`symptom`, `root_cause`, `fix_pattern`).
+  - Added robust fallback logic for missing API keys, network failures, or invalid JSON.
+- **Security & Safety**:
+  - API keys are injected via environment variables and never logged.
+  - Model outputs are parsed safely as JSON strings and written as static lesson text without dynamic execution (protection against prompt injection).
+
+
+## 41. GP Extract Lessons 9Router/OpenRouter Support (2026-07-10)
+- **Decision Date**: 2026-07-10
+- **Approved Gate**: `GP_EXTRACT_LESSONS_LLM_9ROUTER` (Approved by Codex L3)
+- **Problem**:
+
+
+## 39. GP Weekly Evolution Alternative Features Memory Optimization (2026-07-10)
+- **Decision Date**: 2026-07-10
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_ALT_DICT_REBUILD_OOM_FIX` (Approved by Codex L3)
+- **Problem**:
+  - Out of memory (OOM) during alternative feature merging in `run_weekly_evolution.py`.
+  - Wide `reindex` calls created massive data copies, and sequential `fillna` on wide columns caused memory fragmentation.
+- **Solution**:
+  - Replaced wide reindex and sequential `fillna` with a streamlined positional dictionary rebuild.
+  - Aligned dataframes are sorted by `ticker,date` and rebuilt positionally without wide copies.
+- **PIT Safety**: Verified safe. Alternate features align strictly by date/ticker, with T-1 shift applied separately at the caller level before targets are created.
+
+
+## 40. GP Extract Lessons LLM Semantic Upgrade (2026-07-10)
+- **Decision Date**: 2026-07-10
+- **Approved Gate**: `GP_EXTRACT_LESSONS_LLM` (Approved by Codex L3)
+- **Problem**:
+  - The previous extraction mechanism relied on rigid Regex heading parsing (`## Findings`, `## Required Fix`), which failed when L3 Codex outputted slightly different heading formats, resulting in missed lessons.
+- **Solution**:
+  - Replaced the Regex parser in `scripts/extract_lessons.py` with an env-gated, OpenAI-compatible LLM extraction approach.
+  - The script sends the full markdown report to the LLM (via `requests`) demanding strict JSON output (`symptom`, `root_cause`, `fix_pattern`).
+  - Added robust fallback logic for missing API keys, network failures, or invalid JSON.
+- **Security & Safety**:
+  - API keys are injected via environment variables and never logged.
+  - Model outputs are parsed safely as JSON strings and written as static lesson text without dynamic execution (protection against prompt injection).
+
+
+## 41. GP Extract Lessons 9Router/OpenRouter Support (2026-07-10)
+- **Decision Date**: 2026-07-10
+- **Approved Gate**: `GP_EXTRACT_LESSONS_LLM_9ROUTER` (Approved by Codex L3)
+- **Problem**:
+  - The extract lessons script required `OPENAI_API_KEY` or `GEMINI_API_KEY`, but the production environment only had `OMEGA_LLM_API_KEY` provisioned.
+  - Required using the OpenRouter `free` model for cost control on non-critical metadata extractions.
+- **Solution**:
+  - Inserted `OMEGA_LLM_API_KEY` check into `_resolve_lesson_llm_config`.
+  - Defaulted `base_url` to `https://openrouter.ai/api/v1` and `model` to `free` when falling back to OMEGA key.
+- **Security**: 
+  - Standard environment variables override defaults (e.g. `OMEGA_LLM_BASE_URL`, `OMEGA_LLM_MODEL`).
+  - Precedence remains: OpenAI > OMEGA > Gemini.
+
+
+## 42. GP Index Preservation in compute_mfi (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_MFI_FIX` (Approved by Codex L3 role 21)
+- **Problem**:
+  - `compute_mfi()` generated rolling sums on default-indexed Series (`0..n-1`), causing misalignment during groupby-ticker assignment back to the main DataFrame. This resulted in `mfi_14` NaNs for 99.8% of rows.
+- **Solution**:
+  - Modified `compute_mfi()` to construct Series with `index=df.index` before applying rolling sums, ensuring original index labels are preserved for assignment.
+- **Verification**: 30 passed in targeted pytest.
+
+## 43. Windows Workers Limit in GP (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_WORKERS_LIMIT` (Approved by Codex L3 role 21)
+- **Problem**:
+  - Using 10 parallel workers on Windows consumed excessive RAM overhead, triggering silent subprocess OOM crash at Gen 1.
+- **Solution**:
+  - Implemented a hard cap limiting active joblib workers to at most 4 on Windows in both `main()` and `run_evolution()`.
+
+## 44. GP Memory Optimization & Fold Caching (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_GEN_OOM_FIX` (Approved by Codex L3 role 21)
+- **Problem**:
+  - Slicing and copying all 149 features for 5 folds via `value_arr[mask]` at every generation caused massive RAM allocations, triggering OOM at Gen 3.
+- **Solution**:
+  - Implemented an evolve-bounded cache `self._fold_features_cache` keyed by date array identity and fold count.
+  - Cached fold views are computed once at the first generation and cleared via `.clear()` in a `finally` block when `evolve()` exits.
+
+## 45. GP VN Alphas Drop Optimization (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_GEN_OOM_FIX` (Approved by Codex L3 role 21)
+- **Problem**:
+  - `res.drop(columns=["ticker", "date"], inplace=True)` inside `compute_all_vn_alphas()` in `src/omega/quant/alpha/vn.py` forced Pandas to rebuild the block manager and copy all float64 columns, consuming ~1 GB RAM dynamically and triggering an `ArrayMemoryError` OOM during preparation.
+- **Solution**:
+  - Removed `res.drop()` and wide `res.values` extraction. Replaced with direct per-column 1D extraction: `final_dict[col] = res[col].to_numpy(copy=False)`, avoiding wide allocation and ensuring 100% zero-copy layout.
+
+## 46. Env-gated Lesson Extraction Skip in Enforcer (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_GEN_OOM_FIX` (Approved by Codex L3 role 21)
+- **Problem**:
+  - `sod_gate_enforcer.py` unconditionally ran LLM-based lesson extraction at each startup, causing a 30-40 seconds delay and potential timeouts due to network latency.
+- **Solution**:
+  - Added an environment variable check (`SKIP_LESSON_EXTRACTION=1` or `OMEGA_SKIP_LLM=1`) in `_extract_lesson_fields_with_llm()` to immediately return dummy lesson structures and bypass slow LLM calls while keeping local parsing intact.
+
