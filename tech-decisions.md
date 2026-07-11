@@ -552,5 +552,16 @@ updated: 2026-07-02
 - **Approved Gate**: `GP_WEEKLY_EVOLUTION_DEMEANED_HIT_RATE` (Approved by Codex L3 role 21)
 - **Problem**:
   - The previous hit rate formula used raw validation signal and target signs. Since many operators output positive-only values (like `volume`, `std`), the raw hit rate was strictly capped by the positive daily return ratio (typically ~47%), preventing any positive-only signal from passing the quality filter.
-- **Solution**:
   - Implemented the demeaned hit rate formula `hit_rate = (np.sign(val_signal - val_signal.mean()) == np.sign(val_df[target_col] - val_df[target_col].mean())).mean()` in `DiverseAlphaEvolution._evaluate_population` (line 152), evaluating the directional accuracy of demeaned signals against demeaned returns.
+
+## 50. GP Island Model Terminal Pools and Primitive Expansion (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_ISLAND_EXPANSION` (Approved by Codex L3 role 21)
+- **Problem**:
+  - The GP islands was restricted to a narrow set of basic terminals (close, open, high, low, returns, rsi, macd) and lacked access to newly generated premium alternative features and Vietnam-specific indicators. In addition, the operators lacked basic math functions (abs, sign, neg), and the process lacked early stopping to prevent wasting CPU during long runs.
+- **Solution**:
+  - Added new unary primitives `abs`, `sign`, `neg` to `Node.OPERATORS` in `src/omega/quant/evolution/genetic_alpha.py` and implemented their evaluation.
+  - Implemented dynamic column retrieval in `Node.evaluate()` when column name is present in DataFrame.
+  - Expanded `ISLAND_ALTERNATIVE_TERMINALS` in `src/omega/quant/evolution/diverse_alpha_evolution.py` with actual alternative features (alt_cs_rank_volume, alt_vp_divergence, alt_ad_line, etc.) and smart money flow indicators.
+  - Added island startup terminal auto-registration and implemented an early stopping check (patience=50) in `DiverseAlphaEvolution.run()` to optimize run speed.
+
