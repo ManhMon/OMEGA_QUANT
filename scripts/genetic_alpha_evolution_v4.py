@@ -1729,7 +1729,13 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
                 fold_count = 2 if getattr(self.config, "time_folds_fast_mode", False) else int(self.config.time_folds)
                 fold_structure = ge._build_time_fold_structure(np.asarray(gen_features["__date__"]), fold_count)
                 gen_features[ge.FOLD_STRUCTURE_CACHE_KEY] = fold_structure
-            gen_features[FOLD_FEATURES_CACHE_KEY] = _build_cached_fold_features(gen_features, fold_structure)
+            fold_count = 2 if getattr(self.config, "time_folds_fast_mode", False) else int(self.config.time_folds)
+            fold_features = self._fold_features_cache.get((id(gen_features["__date__"]), fold_count))
+            if fold_features is None and gen_features is features:
+                fold_features = _build_cached_fold_features(gen_features, fold_structure)
+                self._fold_features_cache[(id(gen_features["__date__"]), fold_count)] = fold_features
+            if fold_features is not None:
+                gen_features[FOLD_FEATURES_CACHE_KEY] = fold_features
         return gen_features, gen_target
 
     def _evaluate_population_with_batch_neutralization(self, features: dict[str, np.ndarray], target: np.ndarray) -> None:
@@ -1858,6 +1864,7 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
         if self.config.random_seed is not None:
             np.random.seed(self.config.random_seed)
             random.seed(self.config.random_seed)
+        self._fold_features_cache = {}
         self.feature_names = [k for k in features.keys() if not k.startswith("target") and not k.startswith("__")]
         logger = ge.logger
         logger.info(f"Starting GP evolution V4 advanced: pop={self.config.population_size}, gen={self.config.generations}")
@@ -1867,65 +1874,68 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
         t_start = pytime.monotonic()
         best_fitness_seen = -np.inf
         stagnant_generations = 0
-        for generation in range(self.config.generations):
-            gen_features, gen_target = self._prepare_generation_features(features, target, generation)
-            pre_neutralized = bool(
-                self.config.neutralize_size_sector
-                and gen_features.get(ge.NEUTRALIZATION_CACHE_KEY) is not None
-                and self._should_use_batch_neutralization(gen_features)
-            )
-            evaluated_islands: list[list[ge.GPIndividual]] = []
-            base_seed = int(self.config.random_seed or 0) + generation * 10_000
-            for island_idx, island in enumerate(islands):
-                island_features = dict(gen_features)
-                island_features.pop(SUBTREE_CACHE_KEY, None)
-                island_features.pop(TARGET_NEUTRALIZED_CACHE_KEY, None)
-                island_features.pop(BATCH_FOLD_IR_CACHE_KEY, None)
-                if pre_neutralized:
-                    island_features["__pre_neutralized__"] = True
-                island_seed = base_seed + island_idx * 1000
-                np.random.seed(island_seed)
-                random.seed(island_seed)
-                evaluated_islands.append(self._evaluate_population_group(island, island_features, gen_target))
-            if (generation + 1) % max(1, int(getattr(self.config, "island_migration_interval", ISLAND_MIGRATION_INTERVAL))) == 0:
-                evaluated_islands = self._migrate_islands(evaluated_islands)
-            self.population = [ind for island in evaluated_islands for ind in island]
-            self.population = _stable_rank_population(self.population)
-            self.update_hall_of_fame()
-            best = self.population[0]
-            self.history.append({
-                "generation": generation,
-                "best_fitness": best.fitness,
-                "best_ic": best.ic_score,
-                "best_tree_size": best.tree.size(),
-            })
-            logger.info(f"Gen {generation + 1}: Fold_IR={best.ic_score:.4f}, Fitness={best.fitness:.4f}")
-            elapsed = pytime.monotonic() - t_start
-            gen_time = elapsed / (generation + 1)
-            remaining = gen_time * (self.config.generations - generation - 1)
-            self.history[-1]["elapsed_sec"] = round(elapsed, 2)
-            self.history[-1]["gen_time_sec"] = round(gen_time, 3)
-            self.history[-1]["eta_sec"] = round(remaining, 1)
-            if best.fitness > best_fitness_seen + 1e-6:
-                best_fitness_seen = best.fitness
-                stagnant_generations = 0
-            else:
-                stagnant_generations += 1
-            if self.config.early_stopping_rounds > 0 and stagnant_generations >= self.config.early_stopping_rounds:
-                gc.collect()
-                logger.info(
-                    f"Early stopping: no best-fitness improvement for {self.config.early_stopping_rounds} generations"
+        try:
+            for generation in range(self.config.generations):
+                gen_features, gen_target = self._prepare_generation_features(features, target, generation)
+                pre_neutralized = bool(
+                    self.config.neutralize_size_sector
+                    and gen_features.get(ge.NEUTRALIZATION_CACHE_KEY) is not None
+                    and self._should_use_batch_neutralization(gen_features)
                 )
-                break
-            if generation + 1 < self.config.generations:
-                islands = [
-                    self._breed_island(
-                        island,
-                        base_seed + island_idx * 1000 + 1,
+                evaluated_islands: list[list[ge.GPIndividual]] = []
+                base_seed = int(self.config.random_seed or 0) + generation * 10_000
+                for island_idx, island in enumerate(islands):
+                    island_features = dict(gen_features)
+                    island_features.pop(SUBTREE_CACHE_KEY, None)
+                    island_features.pop(TARGET_NEUTRALIZED_CACHE_KEY, None)
+                    island_features.pop(BATCH_FOLD_IR_CACHE_KEY, None)
+                    if pre_neutralized:
+                        island_features["__pre_neutralized__"] = True
+                    island_seed = base_seed + island_idx * 1000
+                    np.random.seed(island_seed)
+                    random.seed(island_seed)
+                    evaluated_islands.append(self._evaluate_population_group(island, island_features, gen_target))
+                if (generation + 1) % max(1, int(getattr(self.config, "island_migration_interval", ISLAND_MIGRATION_INTERVAL))) == 0:
+                    evaluated_islands = self._migrate_islands(evaluated_islands)
+                self.population = [ind for island in evaluated_islands for ind in island]
+                self.population = _stable_rank_population(self.population)
+                self.update_hall_of_fame()
+                best = self.population[0]
+                self.history.append({
+                    "generation": generation,
+                    "best_fitness": best.fitness,
+                    "best_ic": best.ic_score,
+                    "best_tree_size": best.tree.size(),
+                })
+                logger.info(f"Gen {generation + 1}: Fold_IR={best.ic_score:.4f}, Fitness={best.fitness:.4f}")
+                elapsed = pytime.monotonic() - t_start
+                gen_time = elapsed / (generation + 1)
+                remaining = gen_time * (self.config.generations - generation - 1)
+                self.history[-1]["elapsed_sec"] = round(elapsed, 2)
+                self.history[-1]["gen_time_sec"] = round(gen_time, 3)
+                self.history[-1]["eta_sec"] = round(remaining, 1)
+                if best.fitness > best_fitness_seen + 1e-6:
+                    best_fitness_seen = best.fitness
+                    stagnant_generations = 0
+                else:
+                    stagnant_generations += 1
+                if self.config.early_stopping_rounds > 0 and stagnant_generations >= self.config.early_stopping_rounds:
+                    gc.collect()
+                    logger.info(
+                        f"Early stopping: no best-fitness improvement for {self.config.early_stopping_rounds} generations"
                     )
-                    for island_idx, island in enumerate(evaluated_islands)
-                ]
-            gc.collect()
+                    break
+                if generation + 1 < self.config.generations:
+                    islands = [
+                        self._breed_island(
+                            island,
+                            base_seed + island_idx * 1000 + 1,
+                        )
+                        for island_idx, island in enumerate(evaluated_islands)
+                    ]
+                gc.collect()
+        finally:
+            self._fold_features_cache.clear()
         return self.hall_of_fame
 
 
