@@ -92,7 +92,7 @@ class DiverseEvolutionConfig:
     elitism_count: int = 3
     corr_threshold: float = 0.5       # Relaxed from 0.7
     ic_threshold: float = 0.05
-    min_hit_rate: float = 0.53
+    min_hit_rate: float = 0.515
     profit_factor_min: float = 1.3
     max_active_alphas: int = 15
     state_dir: str = "data/diverse_evolution"
