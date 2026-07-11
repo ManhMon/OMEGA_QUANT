@@ -565,3 +565,16 @@ updated: 2026-07-02
   - Expanded `ISLAND_ALTERNATIVE_TERMINALS` in `src/omega/quant/evolution/diverse_alpha_evolution.py` with actual alternative features (alt_cs_rank_volume, alt_vp_divergence, alt_ad_line, etc.) and smart money flow indicators.
   - Added island startup terminal auto-registration and implemented an early stopping check (patience=50) in `DiverseAlphaEvolution.run()` to optimize run speed.
 
+## 51. GP Island Model Indentation and Embargo Validation Hardening (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_ISLAND_EXPANSION` (Approved by Codex L3 role 21)
+- **Problem**:
+  - The conversion of diverse nodes in `run_weekly_evolution.py` was broken due to helper functions `_inject_private_gp_columns` and `_inject_liquidity_mask` being nested within `_convert_diverse_node`, causing the binary conversion return statement to be placed inside the helper function and return `None` for binary operations.
+  - An unreachable return statement in `_compute_icir_loop` inside `genetic_engine.py` (indented under an if block check) caused the normal fallback ICIR computation path to return `None` on cached non-finite targets.
+  - `validate_embargo()` returned `False` if checked before registration since the alpha ID was not registered in the system yet.
+- **Solution**:
+  - Moved `_inject_private_gp_columns` and `_inject_liquidity_mask` to top-level helpers in `scripts/run_weekly_evolution.py`, restoring the binary node tree conversion block.
+  - Corrected the indentation of the fallback return statement in `_compute_icir_loop` in `src/omega/quant/evolution/genetic_engine.py` so that it returns the computed ICIR.
+  - Restructured `run_weekly_evolution.py` to register the evolved alpha first via `register_alpha()` before calling `validate_embargo()`.
+
+
