@@ -21,6 +21,7 @@ import sys
 import json
 import logging
 import os
+import math
 from pathlib import Path
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -782,6 +783,42 @@ def _evaluate_formula_string(formula: str, features: Dict[str, np.ndarray]) -> O
     return np.nan_to_num(composite, nan=0.0, posinf=0.0, neginf=0.0)
 
 
+def _convert_diverse_node(node) -> "GPNode":
+    from omega.quant.evolution.genetic_engine import GPNode
+
+    terminal_map = {
+        "returns": "returns_1d",
+        "rsi": "rsi_14",
+        "macd": "macd_line",
+    }
+    binary_map = {"add": "+", "sub": "-", "mul": "*", "div": "/"}
+    unary_map = {
+        "std": "ts_std",
+        "mean": "ts_mean",
+        "rank": "rank",
+        "delay": None,
+        "max": None,
+        "min": None,
+    }
+
+    if not node.children:
+        return GPNode(operator="terminal", value=terminal_map.get(node.value, node.value))
+
+    if len(node.children) == 1:
+        operator = unary_map.get(node.value)
+        child = _convert_diverse_node(node.children[0])
+        if operator in {"ts_std", "ts_mean"}:
+            return GPNode(operator=operator, children=[child, GPNode(operator="terminal", value="14")])
+        if operator is None:
+            return child
+        return GPNode(operator=operator, children=[child])
+
+    return GPNode(
+        operator=binary_map.get(node.value, node.value),
+        children=[_convert_diverse_node(child) for child in node.children],
+    )
+
+
 def walk_forward_split(df: pd.DataFrame, horizon: int = 5, regime: str = "all", start_date: str = None, end_date: str = None):
     """
     Chronological date-based split (sliding timeline) to prevent cross-ticker leakage.
@@ -844,6 +881,7 @@ def walk_forward_split(df: pd.DataFrame, horizon: int = 5, regime: str = "all", 
 
 def run_evolution(
     train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
     generations: int = 30,
     population_size: int = 100,
     ortho_baseline_set: Optional[Dict[str, np.ndarray]] = None,
@@ -857,8 +895,36 @@ def run_evolution(
     use_time_fold_ir: bool = True,
     time_folds: int = 3,
     fold_ir_std_floor: float = 0.03,
+    engine_type: str = "standard",
 ) -> list:
     """Run GP evolution on training data with Option D orthogonalization and multi-horizon targets."""
+    if engine_type == "diverse":
+        from omega.quant.evolution.diverse_alpha_evolution import (
+            DiverseAlphaEvolution,
+            DiverseEvolutionConfig,
+        )
+        from omega.quant.evolution.genetic_engine import GPIndividual
+
+        config = DiverseEvolutionConfig(
+            population_per_island=max(1, math.ceil(population_size / DiverseEvolutionConfig().n_islands)),
+            generations=generations,
+        )
+        candidates = DiverseAlphaEvolution(config=config).run(
+            train_df=train_df,
+            val_df=val_df,
+            target_col="target",
+        )
+        hall_of_fame = []
+        for candidate in candidates:
+            individual = GPIndividual(tree=_convert_diverse_node(candidate.genome.tree))
+            individual.fitness = candidate.fitness()
+            individual.ic_score = candidate.test_ic
+            individual.turnover_rate = candidate.turnover
+            hall_of_fame.append(individual)
+
+        logger.info("Diverse evolution complete. Hall of Fame size: %d", len(hall_of_fame))
+        return hall_of_fame
+
     # Resolve workers mapping: -1 or <= 0 means use all available CPUs.
     # ponytail: Windows subprocess overhead is high here; raise cap only after measuring resident memory.
     n_jobs = workers
@@ -1124,6 +1190,13 @@ def main():
         help="Number of GP generations (default: 30)"
     )
     parser.add_argument(
+        "--engine",
+        type=str,
+        default="standard",
+        choices=["standard", "diverse"],
+        help="Evolution engine to use (default: standard)"
+    )
+    parser.add_argument(
         "--population-size",
         type=int,
         default=100,
@@ -1281,6 +1354,7 @@ def main():
     # Step 4: Run GP evolution on training set (with multi-horizon + ortho)
     hall_of_fame = run_evolution(
         train_df,
+        val_df,
         generations=args.generations,
         population_size=args.population_size,
         ortho_baseline_set=ortho_baseline_set,
@@ -1294,6 +1368,7 @@ def main():
         use_time_fold_ir=args.use_time_fold_ir,
         time_folds=args.time_folds,
         fold_ir_std_floor=args.fold_ir_std_floor,
+        engine_type=args.engine,
     )
 
     if not hall_of_fame:
