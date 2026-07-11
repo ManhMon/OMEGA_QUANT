@@ -539,4 +539,13 @@ updated: 2026-07-02
   - Implemented the `diverse` branch inside `run_evolution()`, configuring and running `DiverseAlphaEvolution` (Island Model) with target `'target'`.
   - Added a node-tree converter `_convert_diverse_node()` to map diverse `Genome.tree` nodes recursively back to standard `GPNode` trees, wrapping results as `GPIndividual` to maintain ABI compatibility with the downstream continuous learning bridge.
 
+## 48. Lowering GP Diverse Evolution Hit Rate Threshold (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_HIT_RATE_TUNE` (Approved by Codex L3 role 21)
+- **Problem**:
+  - The default quality filter threshold `min_hit_rate` in `DiverseEvolutionConfig` was set to `0.53` (53% daily directional accuracy), which is unrealistically high for stock return predictions and filtered out high-IC alphas (such as those with IC=0.1245).
+- **Solution**:
+  - Lowered the default `min_hit_rate` value to `0.515` (51.5%) in `src/omega/quant/evolution/diverse_alpha_evolution.py` to match standard daily quant signal requirements, ensuring strong alpha signals survive the quality filter.
+
+
 
