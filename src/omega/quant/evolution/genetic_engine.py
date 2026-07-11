@@ -968,7 +968,7 @@ class GPIndividual:
             ic_std = float(np.std(chunk_ics))
             if ic_std < 1e-9:
                 return float(np.mean(chunk_ics))
-                return float(np.mean(chunk_ics) / ic_std)
+            return float(np.mean(chunk_ics) / ic_std)
 
         if getattr(config, 'use_time_fold_ir', False):
             if len(horizons) <= 1:
