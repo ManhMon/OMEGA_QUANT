@@ -479,6 +479,66 @@ def _decay_linear(x: np.ndarray, window: int = 10) -> np.ndarray:
     return np.concatenate([np.zeros(window - 1), res])
 
 
+def _ts_max(x: np.ndarray, window: int = 10) -> np.ndarray:
+    """Rolling maximum."""
+    if len(x) < window:
+        return np.zeros_like(x)
+    return pd.Series(x).rolling(window).max().fillna(0.0).values
+
+
+def _ts_min(x: np.ndarray, window: int = 10) -> np.ndarray:
+    """Rolling minimum."""
+    if len(x) < window:
+        return np.zeros_like(x)
+    return pd.Series(x).rolling(window).min().fillna(0.0).values
+
+
+def _ts_delay(x: np.ndarray, periods: int = 1) -> np.ndarray:
+    """Lag series by periods."""
+    if periods <= 0:
+        return x.copy()
+    if len(x) <= periods:
+        return np.zeros_like(x)
+    out = np.empty_like(x)
+    out[:periods] = 0.0
+    out[periods:] = x[:-periods]
+    return out
+
+
+def _apply_grouped_ts_transform(
+    values: np.ndarray,
+    tickers: Optional[np.ndarray],
+    dates: Optional[np.ndarray],
+    transform: Callable[[np.ndarray], np.ndarray],
+) -> np.ndarray:
+    """Apply TS transform per ticker, sorted by ticker/date, then restore row order."""
+    arr = np.asarray(values, dtype=np.float64)
+    if tickers is None:
+        return transform(arr)
+
+    ticker_arr = np.asarray(tickers)
+    if ticker_arr.shape[0] != arr.shape[0]:
+        return transform(arr)
+
+    if dates is not None:
+        date_arr = pd.to_datetime(np.asarray(dates))
+        order = np.lexsort((np.asarray(date_arr, dtype='datetime64[ns]'), ticker_arr))
+    else:
+        order = np.argsort(ticker_arr, kind='mergesort')
+
+    sorted_values = arr[order]
+    sorted_tickers = ticker_arr[order]
+    out_sorted = np.empty_like(sorted_values)
+    _, starts = np.unique(sorted_tickers, return_index=True)
+    stops = np.concatenate((starts[1:], np.array([len(sorted_tickers)])))
+    for start, stop in zip(starts, stops):
+        out_sorted[start:stop] = transform(sorted_values[start:stop])
+
+    out = np.empty_like(out_sorted)
+    out[order] = out_sorted
+    return out
+
+
 # =============================================================================
 # GP Node (Expression Tree)
 # =============================================================================
@@ -568,7 +628,7 @@ class GPConfig:
     terminal_prob: float = 0.3
     unary_ops: List[str] = field(default_factory=lambda: ['abs', 'log', 'sqrt', 'rank', 'neg', 'sigmoid', 'cs_rank', 'cs_zscore'])
     binary_ops: List[str] = field(default_factory=lambda: ['+', '-', '*', '/', 'max', 'min'])
-    ts_ops: List[str] = field(default_factory=lambda: ['ts_std', 'ts_mean', 'ts_rank', 'decay_linear'])
+    ts_ops: List[str] = field(default_factory=lambda: ['ts_std', 'ts_mean', 'ts_rank', 'ts_max', 'ts_min', 'ts_delay', 'decay_linear'])
     ts_windows: List[int] = field(default_factory=lambda: [5, 10, 20])
     use_icir: bool = False
     neutralize_size_sector: bool = False
@@ -865,15 +925,6 @@ class GPIndividual:
             ic_value, _ = spearmanr(alpha_values[valid], target_values[valid])
             return float(ic_value) if not np.isnan(ic_value) else 0.0
 
-        if getattr(config, 'use_time_fold_ir', False):
-            return _compute_time_fold_ir(
-                alpha_series,
-                target,
-                features,
-                config,
-                pre_neutralized=pre_neutralized,
-            )
-
         if getattr(config, 'neutralize_size_sector', False):
             if not pre_neutralized:
                 alpha_series = _neutralize_cross_section(
@@ -917,7 +968,36 @@ class GPIndividual:
             ic_std = float(np.std(chunk_ics))
             if ic_std < 1e-9:
                 return float(np.mean(chunk_ics))
-            return float(np.mean(chunk_ics) / ic_std)
+                return float(np.mean(chunk_ics) / ic_std)
+
+        if getattr(config, 'use_time_fold_ir', False):
+            if len(horizons) <= 1:
+                return _compute_time_fold_ir(
+                    alpha_series,
+                    target,
+                    features,
+                    config,
+                    pre_neutralized=True,
+                )
+
+            if len(weights) != len(horizons):
+                weights = [1.0] * len(horizons)
+            weighted_ir = 0.0
+            used_weight = 0.0
+            for horizon, weight in zip(horizons, weights):
+                target_h = features.get(f'target_h{horizon}', target)
+                ir_h = _compute_time_fold_ir(
+                    alpha_series,
+                    np.asarray(target_h, dtype=np.float64),
+                    features,
+                    config,
+                    pre_neutralized=True,
+                )
+                if np.isnan(ir_h):
+                    continue
+                weighted_ir += float(weight) * float(ir_h)
+                used_weight += float(weight)
+            return 0.0 if used_weight <= 0 else weighted_ir / used_weight
 
         # Single-target back-compat path
         if len(horizons) <= 1:
@@ -1061,19 +1141,30 @@ class GPIndividual:
                 return -child_val
             return child_val
         
-        elif len(node.children) == 2 and node.operator in ['ts_std', 'ts_mean', 'ts_rank', 'decay_linear']:
+        elif len(node.children) == 2 and node.operator in ['ts_std', 'ts_mean', 'ts_rank', 'ts_max', 'ts_min', 'ts_delay', 'decay_linear']:
             child_val = self._execute_tree(node.children[0], features)
             window = int(self._execute_tree(node.children[1], features)[0])
-            window = max(2, min(window, 60))
+            if node.operator == 'ts_delay':
+                window = max(1, min(window, 10))
+            else:
+                window = max(2, min(window, 60))
+            tickers = features.get('__ticker__')
+            dates = features.get('__date__')
             
             if node.operator == 'ts_std':
-                return _ts_std(child_val, window)
+                return _apply_grouped_ts_transform(child_val, tickers, dates, lambda x: _ts_std(x, window))
             elif node.operator == 'ts_mean':
-                return _ts_mean(child_val, window)
+                return _apply_grouped_ts_transform(child_val, tickers, dates, lambda x: _ts_mean(x, window))
             elif node.operator == 'ts_rank':
-                return _ts_rank(child_val, window)
+                return _apply_grouped_ts_transform(child_val, tickers, dates, lambda x: _ts_rank(x, window))
+            elif node.operator == 'ts_max':
+                return _apply_grouped_ts_transform(child_val, tickers, dates, lambda x: _ts_max(x, window))
+            elif node.operator == 'ts_min':
+                return _apply_grouped_ts_transform(child_val, tickers, dates, lambda x: _ts_min(x, window))
+            elif node.operator == 'ts_delay':
+                return _apply_grouped_ts_transform(child_val, tickers, dates, lambda x: _ts_delay(x, window))
             elif node.operator == 'decay_linear':
-                return _decay_linear(child_val, window)
+                return _apply_grouped_ts_transform(child_val, tickers, dates, lambda x: _decay_linear(x, window))
 
         elif len(node.children) == 2:
             left_val = self._execute_tree(node.children[0], features)

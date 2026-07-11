@@ -34,8 +34,6 @@ import numpy as np
 import pandas as pd
 from joblib import parallel_backend
 
-import genetic_alpha_evolution_v4 as v4
-v4.install_v4_optimizations()
 from omega.quant.evolution.genetic_engine import GeneticEngine, GPConfig
 from omega.quant.evolution.continuous_learning import ContinuousLearningEngine
 from omega.quant.evolution.alpha_to_execution_bridge import AlphaToExecutionBridge
@@ -48,6 +46,14 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] EVOLUTION: %(message)s"
 )
 logger = logging.getLogger("weekly_evolution")
+
+
+def _install_v4_optimizations() -> None:
+    try:
+        import genetic_alpha_evolution_v4 as v4
+    except ModuleNotFoundError:
+        from scripts import genetic_alpha_evolution_v4 as v4
+    v4.install_v4_optimizations()
 
 # --- Constants ---
 MARKET_DATA_PATH = PROJECT_ROOT / "data" / "market_2015_now.parquet"
@@ -796,9 +802,9 @@ def _convert_diverse_node(node) -> "GPNode":
         "std": "ts_std",
         "mean": "ts_mean",
         "rank": "rank",
-        "delay": None,
-        "max": None,
-        "min": None,
+        "delay": "ts_delay",
+        "max": "ts_max",
+        "min": "ts_min",
     }
 
     if not node.children:
@@ -807,11 +813,45 @@ def _convert_diverse_node(node) -> "GPNode":
     if len(node.children) == 1:
         operator = unary_map.get(node.value)
         child = _convert_diverse_node(node.children[0])
-        if operator in {"ts_std", "ts_mean"}:
+        if operator in {"ts_std", "ts_mean", "ts_max", "ts_min"}:
             return GPNode(operator=operator, children=[child, GPNode(operator="terminal", value="14")])
+        if operator == "ts_delay":
+            return GPNode(operator=operator, children=[child, GPNode(operator="terminal", value="1")])
         if operator is None:
             return child
         return GPNode(operator=operator, children=[child])
+
+
+def _inject_private_gp_columns(df: pd.DataFrame, features: Dict[str, np.ndarray]) -> None:
+    if "date" in df.columns:
+        features["__date__"] = df["date"].values
+    if "ticker" in df.columns:
+        features["__ticker__"] = df["ticker"].astype(str).values
+    if "market_cap" in df.columns:
+        features["__log_market_cap__"] = np.log1p(df["market_cap"].values)
+    elif "log_market_cap" in df.columns:
+        features["__log_market_cap__"] = df["log_market_cap"].values
+    else:
+        features["__log_market_cap__"] = np.zeros(len(df), dtype=np.float64)
+
+    if "sector" in df.columns:
+        features["__sector__"] = df["sector"].values
+    else:
+        features["__sector__"] = np.zeros(len(df), dtype=np.int32)
+
+
+def _inject_liquidity_mask(
+    df: pd.DataFrame,
+    features: Dict[str, np.ndarray],
+    *,
+    avg_volume_window: int = 20,
+    min_avg_volume: float = 500000.0,
+) -> None:
+    if "volume" in df.columns:
+        avg_vol = pd.Series(df["volume"].values).rolling(avg_volume_window).mean().fillna(0.0).values
+        features["__liquidity_mask__"] = (avg_vol > min_avg_volume).astype(bool)
+    else:
+        features["__liquidity_mask__"] = np.ones(len(df), dtype=bool)
 
     return GPNode(
         operator=binary_map.get(node.value, node.value),
@@ -954,31 +994,8 @@ def run_evolution(
 
     # Inject private double-underscore columns for V4 JIT VM compatibility
     # These columns are used by neutralize_size_sector and liquidity filtering
-    if "date" in train_df.columns:
-        features["__date__"] = train_df["date"].values
-    if "market_cap" in train_df.columns:
-        features["__log_market_cap__"] = np.log1p(train_df["market_cap"].values)
-    elif "log_market_cap" in train_df.columns:
-        features["__log_market_cap__"] = train_df["log_market_cap"].values
-    else:
-        # Fallback: neutral size factor (all zeros)
-        features["__log_market_cap__"] = np.zeros(len(train_df), dtype=np.float64)
-    
-    if "sector" in train_df.columns:
-        features["__sector__"] = train_df["sector"].values
-    else:
-        # Fallback: single sector (all zeros)
-        features["__sector__"] = np.zeros(len(train_df), dtype=np.int32)
-    
-    if "volume" in train_df.columns:
-        # Compute liquidity mask: avg_volume > min threshold
-        avg_volume_window = 20
-        min_avg_volume = 500000.0
-        avg_vol = pd.Series(train_df["volume"].values).rolling(avg_volume_window).mean().fillna(0.0).values
-        features["__liquidity_mask__"] = (avg_vol > min_avg_volume).astype(bool)
-    else:
-        # Fallback: all liquid
-        features["__liquidity_mask__"] = np.ones(len(train_df), dtype=bool)
+    _inject_private_gp_columns(train_df, features)
+    _inject_liquidity_mask(train_df, features)
 
     # Multi-horizon targets injected into features dict for GP IC evaluation
     if multi_target_horizons:
@@ -1044,25 +1061,8 @@ def evaluate_and_promote(
     test_features = {col: test_df[col].values for col in all_test_feature_cols}
 
     # Inject private double-underscore columns for V4 JIT VM compatibility
-    if "date" in test_df.columns:
-        test_features["__date__"] = test_df["date"].values
-    if "market_cap" in test_df.columns:
-        test_features["__log_market_cap__"] = np.log1p(test_df["market_cap"].values)
-    elif "log_market_cap" in test_df.columns:
-        test_features["__log_market_cap__"] = test_df["log_market_cap"].values
-    else:
-        test_features["__log_market_cap__"] = np.zeros(len(test_df), dtype=np.float64)
-    
-    if "sector" in test_df.columns:
-        test_features["__sector__"] = test_df["sector"].values
-    else:
-        test_features["__sector__"] = np.zeros(len(test_df), dtype=np.int32)
-    
-    if "volume" in test_df.columns:
-        avg_vol = pd.Series(test_df["volume"].values).rolling(20).mean().fillna(0.0).values
-        test_features["__liquidity_mask__"] = (avg_vol > 500000.0).astype(bool)
-    else:
-        test_features["__liquidity_mask__"] = np.ones(len(test_df), dtype=bool)
+    _inject_private_gp_columns(test_df, test_features)
+    _inject_liquidity_mask(test_df, test_features)
 
     # Include multi-horizon targets in feature dict for GP tree IC evaluation
     for horizon in MULTI_TARGET_HORIZONS:
@@ -1098,6 +1098,7 @@ def evaluate_and_promote(
 
         # Promotion criteria: IC > 0.05 and Sharpe > 0.1
         if abs(ic) > 0.05 and sharpe > 0.1:
+            validation_date = pd.to_datetime(test_df["date"]).max() if "date" in test_df.columns else train_end_date
             # Bridge only accepts horizon 3 or 5; use primary TARGET_HORIZON
             registered = bridge.register_alpha(
                 alpha_id=alpha_id,
@@ -1108,6 +1109,10 @@ def evaluate_and_promote(
                 sharpe=sharpe
             )
             if registered:
+                if not bridge.validate_embargo(alpha_id, validation_date):
+                    bridge.active_alphas.pop(alpha_id, None)
+                    logger.info("  Embargo block: %s not eligible after registration", alpha_id)
+                    continue
                 promoted_alphas.append({
                     "alpha_id": alpha_id,
                     "formula": individual.tree.to_string(),
@@ -1159,6 +1164,7 @@ def save_results(promoted_alphas: list, ortho_enabled: bool = False, alt_feature
 
 def main():
     import argparse
+    _install_v4_optimizations()
     parser = argparse.ArgumentParser(description="Weekly GP Alpha Discovery")
     parser.add_argument(
         "--regime",
@@ -1385,25 +1391,8 @@ def main():
     val_features = {col: val_df[col].values for col in all_val_feature_cols}
 
     # Inject private double-underscore columns for V4 JIT VM compatibility
-    if "date" in val_df.columns:
-        val_features["__date__"] = val_df["date"].values
-    if "market_cap" in val_df.columns:
-        val_features["__log_market_cap__"] = np.log1p(val_df["market_cap"].values)
-    elif "log_market_cap" in val_df.columns:
-        val_features["__log_market_cap__"] = val_df["log_market_cap"].values
-    else:
-        val_features["__log_market_cap__"] = np.zeros(len(val_df), dtype=np.float64)
-    
-    if "sector" in val_df.columns:
-        val_features["__sector__"] = val_df["sector"].values
-    else:
-        val_features["__sector__"] = np.zeros(len(val_df), dtype=np.int32)
-    
-    if "volume" in val_df.columns:
-        avg_vol = pd.Series(val_df["volume"].values).rolling(20).mean().fillna(0.0).values
-        val_features["__liquidity_mask__"] = (avg_vol > 500000.0).astype(bool)
-    else:
-        val_features["__liquidity_mask__"] = np.ones(len(val_df), dtype=bool)
+    _inject_private_gp_columns(val_df, val_features)
+    _inject_liquidity_mask(val_df, val_features)
 
     # Include multi-horizon targets in validation features for GP tree evaluation
     for horizon in MULTI_TARGET_HORIZONS:
@@ -1433,7 +1422,7 @@ def main():
     logger.info("Validation complete: %d / %d individuals survived", len(surviving_hof), len(hall_of_fame))
 
     # Step 5: Evaluate and promote via champion/challenger strictly on OOS Test set
-    train_end_date = pd.Timestamp(datetime.now().strftime("%Y-%m-%d"))
+    train_end_date = pd.to_datetime(train_df["date"]).max() if "date" in train_df.columns else pd.Timestamp(datetime.now().strftime("%Y-%m-%d"))
     promoted = evaluate_and_promote(surviving_hof, test_df, train_end_date)
 
     # Step 6: Save results

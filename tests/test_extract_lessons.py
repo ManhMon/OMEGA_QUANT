@@ -192,6 +192,16 @@ def test_extract_lessons_uses_persistent_chromadb_client(tmp_path, monkeypatch):
             return FakeCollection()
 
     class FakeResponse:
+        def __init__(self):
+            content = json.dumps(
+                {
+                    "symptom": "Repo-local evidence missing.",
+                    "root_cause": "The audit report omitted the required repo-local skill evidence.",
+                    "fix_pattern": "List the exact repo-local role and skill files read in the L2 report.",
+                }
+            )
+            self.text = json.dumps({"choices": [{"message": {"content": content}}]})
+
         def raise_for_status(self):
             return None
 
@@ -257,6 +267,16 @@ def test_extract_lessons_uses_llm_json_response(tmp_path, monkeypatch):
     )
 
     class FakeResponse:
+        def __init__(self):
+            content = json.dumps(
+                {
+                    "symptom": "Semantic extraction failed.",
+                    "root_cause": "The old parser depended on markdown headings instead of report meaning.",
+                    "fix_pattern": "Use an LLM to extract structured JSON from the full markdown.",
+                }
+            )
+            self.text = json.dumps({"choices": [{"message": {"content": content}}]})
+
         def raise_for_status(self):
             return None
 
@@ -316,6 +336,16 @@ def test_extract_lessons_uses_omega_openrouter_defaults(tmp_path, monkeypatch):
     captured = {}
 
     class FakeResponse:
+        def __init__(self):
+            content = json.dumps(
+                {
+                    "symptom": "OpenRouter extraction used.",
+                    "root_cause": "OMEGA_LLM_API_KEY selected the OpenRouter-compatible config.",
+                    "fix_pattern": "Keep OMEGA_LLM defaults pointed at OpenRouter unless explicitly overridden.",
+                }
+            )
+            self.text = json.dumps({"choices": [{"message": {"content": content}}]})
+
         def raise_for_status(self):
             return None
 

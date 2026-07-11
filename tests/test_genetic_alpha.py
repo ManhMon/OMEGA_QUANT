@@ -8,6 +8,8 @@ import pytest
 
 from omega.quant.evolution.genetic_alpha import Node, Genome, enforce_t_minus_1_lag
 from omega.quant.evolution.fitness import FitnessEvaluator
+from omega.quant.evolution.genetic_engine import GPIndividual, GPNode, GPConfig
+from scripts.run_weekly_evolution import _convert_diverse_node
 
 
 @pytest.fixture
@@ -114,3 +116,67 @@ def test_performance_benchmark(mock_df):
     duration = time.time() - start
     # Should take < 2 seconds for 100 genomes
     assert duration < 2.0
+
+
+def test_interleaved_ticker_rolling():
+    features = {
+        "close": np.array([1.0, 10.0, 2.0, 20.0, 3.0, 30.0]),
+        "__ticker__": np.array(["AAA", "BBB", "AAA", "BBB", "AAA", "BBB"], dtype=object),
+        "__date__": pd.to_datetime([
+            "2024-01-01", "2024-01-01", "2024-01-02", "2024-01-02", "2024-01-03", "2024-01-03"
+        ]).to_numpy(),
+    }
+    tree = GPNode(
+        operator="ts_mean",
+        children=[
+            GPNode(operator="terminal", value="close"),
+            GPNode(operator="terminal", value="2"),
+        ],
+    )
+
+    values = GPIndividual(tree=tree)._execute_tree(tree, features)
+    np.testing.assert_allclose(values, np.array([0.0, 0.0, 1.5, 15.0, 2.5, 25.0]))
+
+
+def test_converted_delay_tree():
+    class LegacyNode:
+        def __init__(self, value, children=None):
+            self.value = value
+            self.children = children or []
+
+    converted = _convert_diverse_node(LegacyNode("delay", [LegacyNode("close")]))
+    assert converted.operator == "ts_delay"
+    assert converted.children[1].value == "1"
+
+    features = {
+        "close": np.array([1.0, 2.0, 3.0]),
+        "__ticker__": np.array(["AAA", "AAA", "AAA"], dtype=object),
+        "__date__": pd.to_datetime(["2024-01-01", "2024-01-02", "2024-01-03"]).to_numpy(),
+    }
+    values = GPIndividual(tree=converted)._execute_tree(converted, features)
+    np.testing.assert_allclose(values, np.array([0.0, 1.0, 2.0]))
+
+
+def test_multi_horizon_time_fold_ir_weighted_scoring():
+    alpha = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
+    target_h3 = np.array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 6.0, 5.0, 4.0, 3.0, 2.0, 1.0])
+    target_h5 = np.array([6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0])
+    features = {
+        "target_h3": target_h3,
+        "target_h5": target_h5,
+        "__date__": pd.to_datetime([
+            "2024-01-01", "2024-01-01", "2024-01-01", "2024-01-01", "2024-01-01", "2024-01-01",
+            "2024-01-02", "2024-01-02", "2024-01-02", "2024-01-02", "2024-01-02", "2024-01-02",
+        ]).to_numpy(),
+    }
+    config = GPConfig(
+        use_time_fold_ir=True,
+        time_folds=2,
+        fold_ir_std_floor=0.01,
+        multi_target_horizons=[3, 5],
+        multi_target_weights=[0.75, 0.25],
+    )
+    individual = GPIndividual(tree=GPNode(operator="terminal", value="close"))
+
+    score = individual._compute_combined_ic(alpha, target_h3, features, config)
+    assert score > 0.45
