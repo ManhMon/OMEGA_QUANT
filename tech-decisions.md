@@ -529,3 +529,14 @@ updated: 2026-07-02
 - **Solution**:
   - Added an environment variable check (`SKIP_LESSON_EXTRACTION=1` or `OMEGA_SKIP_LLM=1`) in `_extract_lesson_fields_with_llm()` to immediately return dummy lesson structures and bypass slow LLM calls while keeping local parsing intact.
 
+## 47. Weekly GP Island Model Integration (2026-07-11)
+- **Decision Date**: 2026-07-11
+- **Approved Gate**: `GP_WEEKLY_EVOLUTION_ISLAND_MODEL` (Approved by Codex L3 role 21)
+- **Problem**:
+  - `run_weekly_evolution.py` was hardcoded to use a single-population `GeneticEngine`, which lacks diversity and could converge too early, missing orthogonal alpha families.
+- **Solution**:
+  - Added a CLI parameter `--engine {standard,diverse}`.
+  - Implemented the `diverse` branch inside `run_evolution()`, configuring and running `DiverseAlphaEvolution` (Island Model) with target `'target'`.
+  - Added a node-tree converter `_convert_diverse_node()` to map diverse `Genome.tree` nodes recursively back to standard `GPNode` trees, wrapping results as `GPIndividual` to maintain ABI compatibility with the downstream continuous learning bridge.
+
+
