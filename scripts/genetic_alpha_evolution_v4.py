@@ -72,6 +72,7 @@ JIT_MAX_GROUP_SIZE_KEY = "__jit_max_group_size__"
 _THREAD_LOCAL_STACK = threading.local()
 _GLOBAL_VM_PROGRAM_CACHE: dict[tuple[tuple[str, ...], str], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
 _GLOBAL_VM_PROGRAM_CACHE_LOCK = threading.Lock()
+_GLOBAL_FOLD_FEATURES_CACHE: dict[tuple[int, int], list[dict[str, np.ndarray]]] = {}
 
 
 def _get_thread_local_stack(row_count: int) -> np.ndarray:
@@ -1205,9 +1206,14 @@ def _batch_fold_ir_scores(
     if fold_structure is None:
         fold_count = 2 if getattr(config, "time_folds_fast_mode", False) else int(config.time_folds)
         fold_structure = ge._build_time_fold_structure(np.asarray(features["__date__"]), fold_count)
+    else:
+        fold_count = 2 if getattr(config, "time_folds_fast_mode", False) else int(config.time_folds)
     if not fold_structure:
         return {idx: (0.0, False) for idx in range(alpha_matrix.shape[1])}
-    fold_views = features.get(FOLD_FEATURES_CACHE_KEY)
+    date_arr = np.asarray(features["__date__"])
+    fold_views = _GLOBAL_FOLD_FEATURES_CACHE.get((id(date_arr), fold_count))
+    if fold_views is None:
+        fold_views = features.get(FOLD_FEATURES_CACHE_KEY)
     if fold_views is None:
         fold_views = _build_cached_fold_features(features, fold_structure)
     target_arr = np.asarray(target, dtype=np.float64)
@@ -1474,14 +1480,15 @@ def _compute_time_fold_ir_v4(
         fold_structure = ge._build_time_fold_structure(date_arr, fold_count)
     fold_ics: list[float] = []
     audit_sample = _is_audit_sample(features.get("__candidate_tree_text__", ""), config)
-    cached_fold_features = features.get(FOLD_FEATURES_CACHE_KEY)
+    cached_fold_features = _GLOBAL_FOLD_FEATURES_CACHE.get((id(date_arr), fold_count))
+    if cached_fold_features is None:
+        cached_fold_features = features.get(FOLD_FEATURES_CACHE_KEY)
     for fold_idx, (fold_mask, _fold_dates) in enumerate(fold_structure):
         if cached_fold_features is not None and fold_idx < len(cached_fold_features):
             fold_features = cached_fold_features[fold_idx]
         else:
-            fold_features = _slice_row_aligned_features(features, fold_mask)
-            if "__date__" in fold_features:
-                _ensure_date_group_index(fold_features)
+            rebuilt_fold_features = _build_cached_fold_features(features, fold_structure)
+            fold_features = rebuilt_fold_features[fold_idx]
         alpha_fold = np.asarray(alpha[fold_mask], dtype=np.float64)
         target_fold = np.asarray(target[fold_mask], dtype=np.float64)
         if config.neutralize_size_sector and fold_features.get("__sector__") is not None:
@@ -1724,18 +1731,17 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
         if self.config.use_time_fold_ir and "__date__" in gen_features:
             if gen_features is features:
                 gen_features = dict(gen_features)
+            date_arr = np.asarray(gen_features["__date__"])
+            fold_count = 2 if getattr(self.config, "time_folds_fast_mode", False) else int(self.config.time_folds)
             fold_structure = gen_features.get(ge.FOLD_STRUCTURE_CACHE_KEY)
             if fold_structure is None:
-                fold_count = 2 if getattr(self.config, "time_folds_fast_mode", False) else int(self.config.time_folds)
-                fold_structure = ge._build_time_fold_structure(np.asarray(gen_features["__date__"]), fold_count)
+                fold_structure = ge._build_time_fold_structure(date_arr, fold_count)
                 gen_features[ge.FOLD_STRUCTURE_CACHE_KEY] = fold_structure
-            fold_count = 2 if getattr(self.config, "time_folds_fast_mode", False) else int(self.config.time_folds)
-            fold_features = self._fold_features_cache.get((id(gen_features["__date__"]), fold_count))
-            if fold_features is None and gen_features is features:
+            cache_key = (id(date_arr), fold_count)
+            fold_features = _GLOBAL_FOLD_FEATURES_CACHE.get(cache_key)
+            if fold_features is None:
                 fold_features = _build_cached_fold_features(gen_features, fold_structure)
-                self._fold_features_cache[(id(gen_features["__date__"]), fold_count)] = fold_features
-            if fold_features is not None:
-                gen_features[FOLD_FEATURES_CACHE_KEY] = fold_features
+                _GLOBAL_FOLD_FEATURES_CACHE[cache_key] = fold_features
         return gen_features, gen_target
 
     def _evaluate_population_with_batch_neutralization(self, features: dict[str, np.ndarray], target: np.ndarray) -> None:
@@ -1864,7 +1870,6 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
         if self.config.random_seed is not None:
             np.random.seed(self.config.random_seed)
             random.seed(self.config.random_seed)
-        self._fold_features_cache = {}
         self.feature_names = [k for k in features.keys() if not k.startswith("target") and not k.startswith("__")]
         logger = ge.logger
         logger.info(f"Starting GP evolution V4 advanced: pop={self.config.population_size}, gen={self.config.generations}")
@@ -1935,7 +1940,8 @@ class GeneticEngineV4(ORIGINAL_GENETIC_ENGINE):
                     ]
                 gc.collect()
         finally:
-            self._fold_features_cache.clear()
+            _GLOBAL_FOLD_FEATURES_CACHE.clear()
+            gc.collect()
         return self.hall_of_fame
 
 
