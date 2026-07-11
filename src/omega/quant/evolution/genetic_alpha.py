@@ -22,7 +22,7 @@ class Node:
     """Tree node for genetic program representation."""
     
     TERMINALS = ['close', 'open', 'high', 'low', 'volume', 'returns', 'rsi', 'macd']
-    OPERATORS = ['add', 'sub', 'mul', 'div', 'std', 'mean', 'max', 'min', 'rank', 'delay']
+    OPERATORS = ['add', 'sub', 'mul', 'div', 'std', 'mean', 'max', 'min', 'rank', 'delay', 'abs', 'sign', 'neg']
     
     def __init__(self, value: str, children: Optional[List['Node']] = None):
         """
@@ -41,7 +41,7 @@ class Node:
         if self.value in ['add', 'sub', 'mul', 'div']:
             if len(self.children) != 2:
                 raise ValueError(f"Operator {self.value} requires exactly 2 children, got {len(self.children)}")
-        elif self.value in ['std', 'mean', 'max', 'min', 'rank']:
+        elif self.value in ['std', 'mean', 'max', 'min', 'rank', 'abs', 'sign', 'neg']:
             if len(self.children) != 1:
                 raise ValueError(f"Operator {self.value} requires exactly 1 child, got {len(self.children)}")
         elif self.value == 'delay':
@@ -60,6 +60,8 @@ class Node:
             pd.Series: Evaluated signal
         """
         # Terminals
+        if self.value in df.columns:
+            return df[self.value].copy()
         if self.value == 'close':
             return df['close'].copy()
         if self.value == 'open':
@@ -78,7 +80,7 @@ class Node:
             return df.get('macd', pd.Series(0.0, index=df.index))
         
         # Unary operators
-        if self.value in ['std', 'mean', 'max', 'min', 'rank', 'delay']:
+        if self.value in ['std', 'mean', 'max', 'min', 'rank', 'delay', 'abs', 'sign', 'neg']:
             if len(self.children) < 1:
                 raise ValueError(f"Operator {self.value} requires at least 1 child")
             child_signal = self.children[0].evaluate(df, window)
@@ -95,6 +97,12 @@ class Node:
                 return child_signal.rolling(window=window, min_periods=1).rank()
             if self.value == 'delay':
                 return child_signal.shift(1)
+            if self.value == 'abs':
+                return child_signal.abs()
+            if self.value == 'sign':
+                return pd.Series(np.sign(child_signal), index=child_signal.index)
+            if self.value == 'neg':
+                return -child_signal
         
         # Binary operators
         if len(self.children) < 2:

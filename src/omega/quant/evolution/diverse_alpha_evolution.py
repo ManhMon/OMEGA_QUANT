@@ -35,6 +35,16 @@ from omega.quant.evolution.alpha_evolution_pipeline import (
 logger = logging.getLogger(__name__)
 
 
+ISLAND_ALTERNATIVE_TERMINALS = [
+    ['alt_cs_rank_volume', 'alt_vp_divergence', 'alt_ad_line'],
+    ['alt_intraday_range', 'alt_gap', 'alt_upper_shadow', 'alt_lower_shadow'],
+    ['alt_volume_momentum', 'alt_ret_5d', 'alt_momentum_accel', 'vn_smart_money_proxy'],
+    ['alt_trend_strength', 'alt_distance_from_ma20', 'alt_sector_rotation', 'vn_foreign_net_flow_5d'],
+]
+
+EARLY_STOPPING_PATIENCE = 50
+
+
 # ============================================================
 # SEEDED ALPHA FAMILIES
 # ============================================================
@@ -270,9 +280,16 @@ class DiverseAlphaEvolution:
                     n_islands, self.config.population_per_island, self.config.generations)
 
         # Initialize islands with seeded populations
+        for terminals in ISLAND_TERMINALS:
+            for terminal in terminals:
+                if terminal not in Node.TERMINALS:
+                    Node.TERMINALS.append(terminal)
+
         islands = [self._create_island_population(i) for i in range(n_islands)]
         island_candidates: List[List[AlphaCandidate]] = [[] for _ in range(n_islands)]
         all_candidates: List[AlphaCandidate] = []
+        best_ic_overall = float('-inf')
+        generations_without_improvement = 0
 
         # Evolution loop
         for gen in range(self.config.generations):
@@ -284,6 +301,16 @@ class DiverseAlphaEvolution:
 
             gc.collect()
 
+            current_best_ic = max(
+                (candidates[0].test_ic for candidates in island_candidates if candidates),
+                default=float('-inf'),
+            )
+            if current_best_ic > best_ic_overall:
+                best_ic_overall = current_best_ic
+                generations_without_improvement = 0
+            else:
+                generations_without_improvement += 1
+
             # Migration every N generations
             if (gen + 1) % self.config.migration_interval == 0:
                 self._migrate(islands, island_candidates)
@@ -294,6 +321,10 @@ class DiverseAlphaEvolution:
                 best_per_island = [c[0].test_ic if c else 0 for c in island_candidates]
                 logger.info("Gen %d: Island best ICs: %s",
                             gen, [f"{ic:.4f}" for ic in best_per_island])
+
+            if generations_without_improvement >= EARLY_STOPPING_PATIENCE:
+                logger.info("Early stopping triggered")
+                break
 
         # Collect all unique candidates
         # Deduplicate by expression
@@ -324,10 +355,10 @@ class DiverseAlphaEvolution:
 # ============================================================
 
 ISLAND_TERMINALS = [
-    ['close', 'returns', 'volume'],          # Island 0: Price + Volume
-    ['high', 'low', 'close', 'open'],        # Island 1: OHLC patterns
-    ['volume', 'returns', 'rsi'],            # Island 2: Volume + Momentum
-    ['close', 'open', 'macd', 'volume'],     # Island 3: Trend + Volume
+    ['close', 'returns', 'volume', *ISLAND_ALTERNATIVE_TERMINALS[0]],
+    ['high', 'low', 'close', 'open', *ISLAND_ALTERNATIVE_TERMINALS[1]],
+    ['volume', 'returns', 'rsi', *ISLAND_ALTERNATIVE_TERMINALS[2]],
+    ['close', 'open', 'macd', 'volume', *ISLAND_ALTERNATIVE_TERMINALS[3]],
 ]
 
 
