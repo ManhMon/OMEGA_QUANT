@@ -271,10 +271,8 @@ def compute_all_vn_alphas(df: pd.DataFrame) -> pd.DataFrame:
         if col not in cols_to_drop and col not in cols_to_clean:
             final_dict[col] = df_sorted[col].to_numpy(copy=False)
 
-    res.drop(columns=["ticker", "date"], inplace=True)
-    res_vals = res.values
-    for i, col in enumerate(cols_to_clean):
-        final_dict[col] = res_vals[:, i]
+    for col in cols_to_clean:
+        final_dict[col] = res[col].to_numpy(copy=False)
 
     return pd.DataFrame(final_dict, copy=False)
 
