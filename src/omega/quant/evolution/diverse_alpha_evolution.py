@@ -16,6 +16,7 @@ PIT Safety: PASS - T-1 lag enforced via evaluate_vectorized.
 
 from __future__ import annotations
 
+import gc
 import logging
 import time
 from dataclasses import dataclass, field
@@ -164,6 +165,7 @@ class DiverseAlphaEvolution:
                 continue
 
         candidates.sort(key=lambda c: c.fitness(), reverse=True)
+        gc.collect()
         return candidates
 
     def _evolve_island(
@@ -279,6 +281,8 @@ class DiverseAlphaEvolution:
                 island_candidates[i] = candidates
                 if candidates:
                     all_candidates.extend(candidates[:3])  # Top 3 per island per gen
+
+            gc.collect()
 
             # Migration every N generations
             if (gen + 1) % self.config.migration_interval == 0:
