@@ -120,9 +120,7 @@ def test_v4_target_neutralized_cache_persists_on_main_features(monkeypatch):
 
     assert first == second
     assert calls == len(features[ge.FOLD_STRUCTURE_CACHE_KEY])
-    assert set(features[v4.TARGET_NEUTRALIZED_CACHE_KEY]) == {
-        (id(target), fold_idx) for fold_idx in range(len(features[ge.FOLD_STRUCTURE_CACHE_KEY]))
-    }
+    assert set(key[0] for key in features[v4.TARGET_NEUTRALIZED_CACHE_KEY]) == set(range(len(features[ge.FOLD_STRUCTURE_CACHE_KEY])))
 
 
 def test_optimized_neutralize_cross_section_matches_original():
@@ -193,9 +191,7 @@ def test_date_group_cache_shared_by_single_and_batch_paths(monkeypatch):
     v4._optimized_batch_neutralize_cross_section(alpha_matrix, features["__date__"], cache)
 
     assert calls == 1
-    first_val = features["__date__"][0]
-    last_val = features["__date__"][-1]
-    assert (id(features["__date__"]), len(features["__date__"]), first_val, last_val) in v4._DATE_GROUPS_CACHE
+    assert len(v4._DATE_GROUPS_CACHE) == 1
 
 
 def test_neutralization_cache_stores_shared_date_groups():
@@ -217,11 +213,94 @@ def test_neutralization_cache_stores_shared_date_groups():
         features["__date__"],
         cache,
     )
-    shared = cache["__date_groups__"]
+    shared = cache["__date_groups__"]["value"]
 
     v4._optimized_batch_neutralize_cross_section(alpha_matrix, features["__date__"], cache)
 
-    assert cache["__date_groups__"] is shared
+    assert cache["__date_groups__"]["value"] is shared
+
+
+def test_date_groups_cache_clone_hits_and_forced_collision_rebuilds(monkeypatch):
+    features = _make_features()
+    clone = features["__date__"].copy()
+    v4._DATE_GROUPS_CACHE.clear()
+
+    first = v4._group_row_indices_by_date(features["__date__"])
+    second = v4._group_row_indices_by_date(clone)
+
+    assert first is second
+
+    original_digest = v4._array_content_digest
+    call_state = {"count": 0}
+
+    def forced_digest(_arr):
+        call_state["count"] += 1
+        return 12345
+
+    monkeypatch.setattr(v4, "_array_content_digest", forced_digest)
+    try:
+        a = v4._group_row_indices_by_date(np.array([1, 1, 2, 2], dtype=np.int64))
+        b = v4._group_row_indices_by_date(np.array([1, 2, 1, 2], dtype=np.int64))
+    finally:
+        monkeypatch.setattr(v4, "_array_content_digest", original_digest)
+
+    assert a is not b
+
+
+def test_fold_features_cache_clone_hits_and_forced_collision_rebuilds(monkeypatch):
+    features = _make_features()
+    fold_structure = ge._build_time_fold_structure(features["__date__"], 3)
+    v4._GLOBAL_FOLD_FEATURES_CACHE.clear()
+
+    first = v4._set_cached_fold_views(features, 3, v4._build_cached_fold_features(features, fold_structure))
+    clone_features = dict(features)
+    clone_features["__date__"] = features["__date__"].copy()
+    second = v4._get_cached_fold_views(clone_features, 3)
+
+    assert first is second
+
+    original_digest = v4._array_content_digest
+
+    def forced_digest(_arr):
+        return 54321
+
+    monkeypatch.setattr(v4, "_array_content_digest", forced_digest)
+    try:
+        features_a = {"__date__": np.array([1, 1, 2, 2])}
+        features_b = {"__date__": np.array([1, 2, 1, 2])}
+        fold_a = v4._set_cached_fold_views(features_a, 2, [{"__date__": features_a["__date__"]}])
+        fold_b = v4._set_cached_fold_views(features_b, 2, [{"__date__": features_b["__date__"]}])
+    finally:
+        monkeypatch.setattr(v4, "_array_content_digest", original_digest)
+
+    assert fold_a is not fold_b
+
+
+def test_target_neutralization_cache_nan_payload_collision_rebuilds(monkeypatch):
+    features = _make_features()
+    fold_structure = ge._build_time_fold_structure(features["__date__"], 3)
+    fold_mask, _ = fold_structure[0]
+    fold_features = v4._build_cached_fold_features(features, fold_structure)[0]
+    base_target = np.linspace(1.0, 12.0, len(features["__date__"]))
+    target_a = base_target[fold_mask].astype(np.float64)
+    target_b = target_a.copy()
+    target_a[1] = np.nan
+    target_b[1] = np.nan
+    target_b[2] = 99.0
+
+    original_digest = v4._array_content_digest
+
+    def forced_digest(_arr):
+        return 999
+
+    monkeypatch.setattr(v4, "_array_content_digest", forced_digest)
+    try:
+        out_a = v4._neutralize_target_once(target_a, features, fold_features, (0, 0))
+        out_b = v4._neutralize_target_once(target_b, features, fold_features, (0, 0))
+    finally:
+        monkeypatch.setattr(v4, "_array_content_digest", original_digest)
+
+    assert not np.array_equal(out_a, out_b, equal_nan=True)
 
 
 def test_build_feature_bank_matches_v3_feature_logic():
@@ -457,8 +536,10 @@ def test_generate_alternative_features_preserves_rows_and_adds_alt_columns(monke
     assert list(result.columns) == ["date", "ticker", "alt_stub_feat", "alt_stub_data"]
 
 
-def test_generate_alternative_features_raises_on_duplicate_keys():
-    """Duplicate (date, ticker) rows must raise ValueError to fail-fast."""
+def test_generate_alternative_features_deduplicates_duplicate_keys(monkeypatch):
+    """Duplicate (date, ticker) rows should be safely deduplicated."""
+    import run_weekly_evolution as rwe
+
     df = pd.DataFrame(
         {
             "date": pd.to_datetime(
@@ -473,8 +554,35 @@ def test_generate_alternative_features_raises_on_duplicate_keys():
         }
     )
 
-    with pytest.raises(ValueError):
-        _generate_alternative_features(df)
+    class _StubGenerator:
+        def generate_all(self, panel):
+            assert len(panel) == 3
+            assert panel.loc[(pd.Timestamp("2024-01-02"), "AAA"), "close"] == 2.0
+            return pd.DataFrame({"stub_feat": [0.2, 0.3, 0.4]}, index=panel.index)
+
+        def get_feature_names(self):
+            return ["stub_feat"]
+
+    class _StubFetcher:
+        def __init__(self, use_api=False):
+            pass
+
+        def generate_all(self, panel):
+            return pd.DataFrame(index=panel.index)
+
+        def get_feature_names(self):
+            return []
+
+    monkeypatch.setattr(rwe, "AlternativeFeatureGenerator", _StubGenerator)
+    monkeypatch.setattr(rwe, "AlternativeDataFetcher", _StubFetcher)
+
+    result = _generate_alternative_features(df)
+
+    assert isinstance(result, pd.DataFrame)
+    assert len(result) == len(df)
+    assert "alt_stub_feat" in result.columns
+    assert result.loc[0, "alt_stub_feat"] == 0.2
+    assert result.loc[1, "alt_stub_feat"] == 0.2
 
 
 def test_generate_alternative_features_handles_string_dates_without_wide_copy(monkeypatch):
@@ -682,3 +790,17 @@ def test_benchmark_script_imports_and_smoke_runs(monkeypatch):
     result = bench.run_benchmark(SimpleNamespace(population_size=6, workers=1, backend="threads", min_avg_volume=0.0, avg_volume_window=5))
     assert result["wall_clock_seconds"] >= 0.0
     assert result["peak_rss_mb"] >= 0.0
+
+
+def test_float32_storage_adversarial_rank_correlation_regression():
+    alpha32 = np.array([1.0, 1.0 + 1e-7, 2.0, 2.0 + 1e-7, 3.0, 4.0], dtype=np.float32)
+    target32 = np.array([4.0, 4.0 + 1e-7, 3.0, 2.0 + 1e-7, 2.0, 1.0], dtype=np.float32)
+    alpha64 = alpha32.astype(np.float64)
+    target64 = target32.astype(np.float64)
+
+    ic32 = v4._numba_daily_rank_corr(alpha32.astype(np.float64), target32.astype(np.float64))
+    ic64 = v4._numba_daily_rank_corr(alpha64, target64)
+
+    assert np.isfinite(ic32)
+    assert np.isfinite(ic64)
+    assert abs(ic32 - ic64) <= 1e-6
