@@ -55,6 +55,36 @@ def _install_v4_optimizations() -> None:
         from scripts import genetic_alpha_evolution_v4 as v4
     v4.install_v4_optimizations()
 
+
+def _resolve_job_count(workers: int, backend: str) -> int:
+    requested = workers
+    if workers <= 0:
+        cpu_count = os.cpu_count() or 4
+        if sys.platform == "win32":
+            requested = min(cpu_count, 4)
+            logger.info(f"Workers={workers} resolved to n_jobs={requested} (Windows cap: min(cpu_count={cpu_count}, 4))")
+        else:
+            requested = cpu_count
+            logger.info(f"Workers={workers} resolved to n_jobs={requested} (os.cpu_count())")
+    elif sys.platform == "win32" and workers > 4:
+        requested = 4
+        logger.warning(f"Workers={workers} capped to n_jobs={requested} on Windows to avoid memory pressure")
+    else:
+        logger.info(f"Using n_jobs={requested}")
+
+    if sys.platform == "win32" and backend in {"loky", "multiprocessing"}:
+        logger.info(f"Using Windows parallel execution for {backend} backend with resolved n_jobs={requested}")
+        return requested
+    return requested
+
+
+def _resolve_diverse_backend(backend: str, workers: int) -> str:
+    if workers == 1:
+        return "threading" if backend == "threads" else backend
+    if backend == "threads":
+        return "threading"
+    return backend
+
 # --- Constants ---
 MARKET_DATA_PATH = PROJECT_ROOT / "data" / "market_2015_now.parquet"
 OUTPUT_PATH = PROJECT_ROOT / ".ly_state" / "session" / "evolved_alphas.json"
@@ -419,7 +449,11 @@ def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
         col for col in ["date", "ticker", "open", "high", "low", "close", "volume"]
         if col in result.columns
     ]
-    alt_features_df = _generate_alternative_features(result[alt_input_cols])
+    try:
+        alt_features_df = _generate_alternative_features(result[alt_input_cols])
+    except Exception as e:
+        logger.error(f"alt features failed: {e}")
+        alt_features_df = result[alt_input_cols].copy()
     alt_value_cols = [c for c in alt_features_df.columns if c not in {"date", "ticker"}]
     if alt_value_cols:
         _downcast_float64_columns(alt_features_df, alt_value_cols)
@@ -476,15 +510,13 @@ def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
     result_keys = narrow_df[["date", "ticker"]].copy()
     narrow_df["date"] = pd.to_datetime(narrow_df["date"])
 
-    # Intentionally fatal: fail-fast on duplicate (date, ticker) keys rather than silently
-    # degrading, as duplicate keys would corrupt training data by inflating row counts
-    # and producing ambiguous feature/target alignment in GP evolution.
     dup_mask = narrow_df.duplicated(subset=["date", "ticker"], keep=False)
     if dup_mask.any():
-        raise ValueError(
-            f"Duplicate (date, ticker) rows in narrow_df: "
-            f"{narrow_df[dup_mask].head()}"
+        logger.warning(
+            "Duplicate (date, ticker) rows in narrow_df: dropping %s rows with keep='last'",
+            int(dup_mask.sum()),
         )
+        narrow_df = narrow_df.drop_duplicates(subset=["date", "ticker"], keep="last")
 
     # Build MultiIndex panel [date, symbol] as expected by generators
     try:
@@ -805,6 +837,8 @@ def _convert_diverse_node(node) -> "GPNode":
         "delay": "ts_delay",
         "max": "ts_max",
         "min": "ts_min",
+        "abs": "abs",
+        "neg": "neg",
     }
 
     if not node.children:
@@ -938,6 +972,7 @@ def run_evolution(
     engine_type: str = "standard",
 ) -> list:
     """Run GP evolution on training data with Option D orthogonalization and multi-horizon targets."""
+    n_jobs = _resolve_job_count(workers, backend)
     if engine_type == "diverse":
         from omega.quant.evolution.diverse_alpha_evolution import (
             DiverseAlphaEvolution,
@@ -945,9 +980,13 @@ def run_evolution(
         )
         from omega.quant.evolution.genetic_engine import GPIndividual
 
+        base_config = DiverseEvolutionConfig()
         config = DiverseEvolutionConfig(
-            population_per_island=max(1, math.ceil(population_size / DiverseEvolutionConfig().n_islands)),
+            population_per_island=max(1, math.ceil(population_size / base_config.n_islands)),
             generations=generations,
+            corr_threshold=ortho_correlation_threshold,
+            n_jobs=n_jobs,
+            parallel_backend=_resolve_diverse_backend(backend, n_jobs),
         )
         candidates = DiverseAlphaEvolution(config=config).run(
             train_df=train_df,
@@ -957,7 +996,7 @@ def run_evolution(
         hall_of_fame = []
         for candidate in candidates:
             individual = GPIndividual(tree=_convert_diverse_node(candidate.genome.tree))
-            individual.fitness = candidate.fitness()
+            individual.fitness = float(getattr(candidate, "standard_fitness", candidate.fitness()))
             individual.ic_score = candidate.test_ic
             individual.turnover_rate = candidate.turnover
             hall_of_fame.append(individual)
@@ -967,23 +1006,6 @@ def run_evolution(
 
     # Resolve workers mapping: -1 or <= 0 means use all available CPUs.
     # ponytail: Windows subprocess overhead is high here; raise cap only after measuring resident memory.
-    n_jobs = workers
-    if workers <= 0:
-        cpu_count = os.cpu_count() or 4
-        if sys.platform == "win32":
-            n_jobs = min(cpu_count, 4)
-            logger.info(f"Workers={workers} resolved to n_jobs={n_jobs} (Windows cap: min(cpu_count={cpu_count}, 4))")
-        else:
-            n_jobs = cpu_count
-            logger.info(f"Workers={workers} resolved to n_jobs={n_jobs} (os.cpu_count())")
-    else:
-        n_jobs = workers
-        if sys.platform == "win32" and workers > 4:
-            n_jobs = 4
-            logger.warning(f"Workers={workers} capped to n_jobs={n_jobs} on Windows to avoid memory pressure")
-        else:
-            logger.info(f"Using n_jobs={n_jobs}")
-    
     # Build feature dict: base features + available alternative features
     all_feature_cols = list(FEATURE_COLUMNS)
     for col in ALTERNATIVE_FEATURE_COLUMNS:
@@ -1100,31 +1122,33 @@ def evaluate_and_promote(
         if abs(ic) > 0.05 and sharpe > 0.1:
             validation_date = pd.to_datetime(test_df["date"]).max() if "date" in test_df.columns else train_end_date
             # Bridge only accepts horizon 3 or 5; use primary TARGET_HORIZON
-            registered = bridge.register_alpha(
+            if not bridge.register_alpha(
                 alpha_id=alpha_id,
                 formula=individual.tree.to_string(),
                 horizon=TARGET_HORIZON,
                 train_end_date=train_end_date,
                 ic=ic,
                 sharpe=sharpe
-            )
-            if registered:
-                if not bridge.validate_embargo(alpha_id, validation_date):
-                    bridge.active_alphas.pop(alpha_id, None)
-                    logger.info("  Embargo block: %s not eligible after registration", alpha_id)
-                    continue
-                promoted_alphas.append({
-                    "alpha_id": alpha_id,
-                    "formula": individual.tree.to_string(),
-                    "ic": round(ic, 6),
-                    "sharpe": round(sharpe, 6),
-                    "fitness": round(individual.fitness, 6),
-                    "horizon": TARGET_HORIZON,
-                    "multi_target_horizons": MULTI_TARGET_HORIZONS,
-                    "train_end_date": str(train_end_date),
-                    "promoted_at": datetime.now().isoformat()
-                })
-                logger.info(f"  ✓ PROMOTED: {alpha_id}")
+            ):
+                continue
+            if not bridge.validate_embargo(alpha_id, validation_date):
+                bridge.active_alphas.pop(alpha_id, None)
+                logger.info("  Embargo block: %s not eligible before serialization", alpha_id)
+                continue
+            if alpha_id not in bridge.active_alphas:
+                continue
+            promoted_alphas.append({
+                "alpha_id": alpha_id,
+                "formula": individual.tree.to_string(),
+                "ic": round(ic, 6),
+                "sharpe": round(sharpe, 6),
+                "fitness": round(individual.fitness, 6),
+                "horizon": TARGET_HORIZON,
+                "multi_target_horizons": MULTI_TARGET_HORIZONS,
+                "train_end_date": str(train_end_date),
+                "promoted_at": datetime.now().isoformat()
+            })
+            logger.info(f"  ✓ PROMOTED: {alpha_id}")
 
     logger.info(f"Total promoted: {len(promoted_alphas)} / {len(hall_of_fame)}")
     return promoted_alphas

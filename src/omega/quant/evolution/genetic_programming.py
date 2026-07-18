@@ -22,7 +22,12 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import rankdata, spearmanr
+
+try:
+    import bottleneck as bn
+except ImportError:  # pragma: no cover - optional fast path
+    bn = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -62,7 +67,12 @@ def _rank_transform(x: np.ndarray) -> np.ndarray:
     """Rank transformation (percentile rank)."""
     if len(x) == 0:
         return x
-    return pd.Series(x).rank(pct=True, method='average').values
+    nan_mask = np.isnan(x)
+    ranks = np.full(len(x), np.nan, dtype=float)
+    valid_count = np.count_nonzero(~nan_mask)
+    if valid_count:
+        ranks[~nan_mask] = rankdata(x[~nan_mask], method='average') / valid_count
+    return ranks
 
 
 def _ts_rank(x: np.ndarray, window: int = 10) -> np.ndarray:
@@ -78,6 +88,10 @@ def _ts_std(x: np.ndarray, window: int = 10) -> np.ndarray:
     """Rolling standard deviation."""
     if len(x) < window:
         return np.zeros_like(x)
+    if bn is not None:
+        values = bn.move_std(x, window=window, min_count=1, ddof=1)
+        values[:window - 1] = np.nan
+        return np.nan_to_num(values, nan=0.0)
     return pd.Series(x).rolling(window).std().fillna(0).values
 
 
@@ -85,7 +99,39 @@ def _ts_mean(x: np.ndarray, window: int = 10) -> np.ndarray:
     """Rolling mean."""
     if len(x) < window:
         return np.zeros_like(x)
+    if bn is not None:
+        values = bn.move_mean(x, window=window, min_count=1)
+        values[:window - 1] = np.nan
+        return np.nan_to_num(values, nan=0.0)
     return pd.Series(x).rolling(window).mean().fillna(0).values
+
+
+def _cached_spearman_corr(
+    signal: np.ndarray,
+    finite_mask: np.ndarray,
+    target_ranks: np.ndarray,
+) -> float:
+    """Spearman correlation using cached target ranks."""
+    signal_arr = np.asarray(signal)[finite_mask]
+    if signal_arr.size < 2:
+        return 0.0
+    signal_ranks = rankdata(signal_arr, method='average')
+    target_rank_slice = target_ranks[finite_mask]
+    if target_rank_slice.size < 2:
+        return 0.0
+    corr = np.corrcoef(signal_ranks, target_rank_slice)[0, 1]
+    if np.isnan(corr):
+        return 0.0
+    return float(corr)
+
+
+def _precompute_target_ranks(target: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Cache finite target mask and ranks for repeated Spearman evaluation."""
+    finite_mask = ~np.isnan(target)
+    target_ranks = np.full(target.shape, np.nan, dtype=float)
+    if np.any(finite_mask):
+        target_ranks[finite_mask] = rankdata(target[finite_mask], method='average')
+    return finite_mask, target_ranks
 
 
 def _decay_linear(x: np.ndarray, window: int = 10) -> np.ndarray:
@@ -192,7 +238,9 @@ class GPIndividual:
         features: Dict[str, np.ndarray],
         target: np.ndarray,
         hall_of_fame: List[GPIndividual],
-        config: GeneticProgrammingConfig
+        config: GeneticProgrammingConfig,
+        target_ranks: Optional[np.ndarray] = None,
+        finite_mask: Optional[np.ndarray] = None,
     ) -> None:
         """Evaluate fitness of individual."""
         try:
@@ -216,20 +264,19 @@ class GPIndividual:
             # Handle inf/nan
             alpha_series = np.nan_to_num(alpha_series, nan=0.0, posinf=0.0, neginf=0.0)
             
-            # Align with target and drop NaN
-            combined = pd.DataFrame({'alpha': alpha_series, 'target': target}).dropna()
-            
+            if finite_mask is None or target_ranks is None:
+                finite_mask, target_ranks = _precompute_target_ranks(target)
+
+            valid_observations = int(np.count_nonzero(finite_mask))
+
             # Observation threshold: require 1000+ samples for institutional grade
-            if len(combined) < config.min_observations:
+            if valid_observations < config.min_observations:
                 self.fitness = -np.inf
-                logger.debug(f"Rejected low-observation alpha: {len(combined)} < {config.min_observations}")
+                logger.debug(f"Rejected low-observation alpha: {valid_observations} < {config.min_observations}")
                 return
-            
             # Calculate Information Coefficient (Spearman)
-            ic, _ = spearmanr(combined['alpha'], combined['target'])
-            if np.isnan(ic):
-                ic = 0.0
-            
+            ic = _cached_spearman_corr(alpha_series, finite_mask, target_ranks)
+
             self.ic_score = abs(ic)
             
             # Transaction Cost Penalty (Slippage + Fees)
@@ -506,11 +553,19 @@ class GeneticProgrammingEngine:
         
         # Initialize population
         self.initialize_population()
+        finite_mask, target_ranks = _precompute_target_ranks(target)
         
         for generation in range(self.config.generations):
             # Evaluate population
             for individual in self.population:
-                individual.evaluate(features, target, self.hall_of_fame, self.config)
+                individual.evaluate(
+                    features,
+                    target,
+                    self.hall_of_fame,
+                    self.config,
+                    target_ranks=target_ranks,
+                    finite_mask=finite_mask,
+                )
             
             # Sort by fitness
             self.population.sort(key=lambda ind: ind.fitness, reverse=True)
