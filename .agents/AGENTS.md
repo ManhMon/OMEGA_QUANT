@@ -110,7 +110,7 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 ```text
 L2 OpenCode: implement + tests + L2 report
   -> L3 Codex: independent audit -> [APPROVED] / [NEEDS_FIX]
-  -> L1 Ly: update phase_gates.json + dispatch Claude Code final deep audit
+  -> L1 Ly: update phase_gates.json + dispatch final deep audit to Codex CLI model cx/gpt-5.6-sol
   -> L1 Ly: run sod_gate_enforcer.py
   -> exit 0: safe to push
 ```
@@ -119,7 +119,7 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 
 ### Verdict Handling
 
-- **[APPROVED]**: L1 records gate metadata, dispatches a final deep audit to Claude Code to run in the background, runs enforcer, and proceeds if exit 0.
+- **[APPROVED]**: L1 records gate metadata, then dispatches a final deep audit to Codex CLI model `cx/gpt-5.6-sol` after L3 approval and before the final enforcer. The audit is advisory only, read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. L3's `[APPROVED]` verdict remains the sole approval authority. L1 runs enforcer and proceeds if exit 0.
 - **[NEEDS_FIX]**: L1 creates new L2 session with fix scope, L3 re-audits after fix, cycle repeats until [APPROVED]
 - **No verdict or partial verdict**: Gate remains `PENDING_L3_AUDIT`, no progression
 - **Manual override**: Forbidden. All approvals require valid L3 audit + enforcer exit 0
@@ -232,10 +232,8 @@ Missing/invalid fields -> `PENDING_L3_AUDIT`.
 2. **Timer Ban**: Absolutely do not use timer tools (`schedule`, `cron`, or background sleeps). Rely strictly on Reactive Wakeup.
 3. **L1 Dynamic Composite Role**: L1's base role is `orchestrator`. Depending on the task domain, L1 must dynamically combine it with a specialist role (e.g. `tech-lead` or `machine-learning-engineer` for quant/architecture, `release-manager` for gates). Announce this composite role on the very first line of the response: `🤖 **Applying knowledge of @[orchestrator / <specialist-role>]...**`.
 4. **Memory Update Gate**: Whenever a gate is `[APPROVED]`, L1 must review and update `tech-decisions.md` to record the new configurations/findings before starting a new phase.
-5. **Claude Code CLI Dispatch Rule**: When the user requests a review, brainstorming, or advisory task via Claude/Claude Code, run the command in the background with the following format (bypassing permissions):
+5. **Final Codex Deep Audit Rule**: After L3 returns `[APPROVED]` and before the final enforcer, L1 MUST dispatch a final deep audit to Codex CLI model `cx/gpt-5.6-sol`. The audit is advisory and read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. Codex L3's verdict remains the sole approval authority. Use this safe command pattern:
    ```powershell
-   claude --permission-mode bypassPermissions -p "<TASK_PROMPT>"
+   echo "<TASK_PROMPT>" | codex exec -m cx/gpt-5.6-sol --dangerously-bypass-approvals-and-sandbox
    ```
-6. **Plan Approval Rule**: Mọi kế hoạch triển khai (implementation_plan.md hoặc tệp kế hoạch tùy chỉnh) bắt buộc phải được gửi cho Codex và Claude Code duyệt trước khi L1 ủy quyền cho L2 triển khai thực tế. Tuyệt đối không tự động bỏ qua bước này ngay cả khi hệ thống tự động cho phép (auto-approved).
-
-
+6. **Plan Approval Rule**: Mọi kế hoạch triển khai (implementation_plan.md hoặc tệp kế hoạch tùy chỉnh) bắt buộc phải được gửi cho Codex (sử dụng model `cx/gpt-5.6-sol-review` qua tham số `-m`) -duyệt trước khi L1 ủy quyền cho L2 triển khai thực tế. Tuyệt đối không tự động bỏ qua bước này ngay cả khi hệ thống tự động cho phép (auto-approved).
