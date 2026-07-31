@@ -634,7 +634,8 @@ def test_compliance_does_not_bypass_nonresidual_gate(monkeypatch):
     assert sod.check_sod_compliance() is False
 
 
-def test_retry1_bundle_fails_closed_without_trusted_tag():
+def test_retry1_bundle_requires_valid_trusted_tag_oid_pin(monkeypatch):
+    monkeypatch.setattr(sod, "PROVENANCE_TRUST_TAG_OBJECT_OID", None)
     assert sod.validate_legacy_residual_provenance_retry1() == (
         False, "retry1 provenance trusted tag object OID pin unset"
     )
@@ -747,8 +748,18 @@ def test_validsig_integration_accepts_exact_trusted_signed_tag(tmp_path, monkeyp
     git("config", "user.signingkey", sod.PROVENANCE_TRUST_FINGERPRINT)
     (tmp_path / "proof").write_text("proof\n", encoding="utf-8")
     git("add", "proof")
-    git("commit", "-qm", "proof")
+    git("commit", "-qm", "first proof")
+    original_commit_oid = git("rev-parse", "HEAD").stdout.strip()
     git("tag", "-s", "-m", "proof", "trusted-proof")
+    original_tag_oid = git("rev-parse", "trusted-proof^{tag}").stdout.strip().decode()
+    (tmp_path / "proof").write_text("later proof\n", encoding="utf-8")
+    git("commit", "-am", "later proof", "-q")
+    recreated_commit_oid = git("rev-parse", "HEAD").stdout.strip()
+    git("tag", "-s", "-f", "-m", "later proof", "trusted-proof")
+    recreated_tag_oid = git("rev-parse", "trusted-proof^{tag}").stdout.strip().decode()
+    assert recreated_tag_oid != original_tag_oid
+    assert recreated_commit_oid != original_commit_oid
+    assert git("rev-parse", "trusted-proof^{commit}").stdout.strip() == recreated_commit_oid
     verified = git("verify-tag", "--raw", "trusted-proof")
     status = (verified.stdout + verified.stderr).decode("utf-8", "replace")
     assert sod._validsig_matches_trusted_fingerprint(status)
@@ -763,12 +774,19 @@ def test_validsig_integration_accepts_exact_trusted_signed_tag(tmp_path, monkeyp
 
     monkeypatch.setattr(sod, "WORKSPACE", tmp_path)
     monkeypatch.setattr(sod, "PROVENANCE_TRUST_TAG", "refs/tags/trusted-proof")
-    monkeypatch.setattr(sod, "PROVENANCE_TRUST_TAG_OBJECT_OID", "0" * 40)
+    monkeypatch.setattr(sod, "PROVENANCE_TRUST_TAG_OBJECT_OID", original_tag_oid)
     monkeypatch.setattr(sod, "_git", tracked_git)
     assert sod._trusted_provenance_bundle(b"canonical") == (
         False, "retry1 provenance trusted tag object OID mismatch"
     )
     assert ("verify-tag", "--raw", "refs/tags/trusted-proof") not in calls
+
+    calls.clear()
+    monkeypatch.setattr(sod, "PROVENANCE_TRUST_TAG_OBJECT_OID", recreated_tag_oid)
+    assert sod._trusted_provenance_bundle(b"canonical") == (
+        False, "retry1 provenance bundle does not match trusted tag"
+    )
+    assert ("verify-tag", "--raw", "refs/tags/trusted-proof") in calls
 
 
 def test_closed_authority_report_parser_rejects_swapped_tuple(tmp_path):
