@@ -635,6 +635,8 @@ def test_compliance_does_not_bypass_nonresidual_gate(monkeypatch):
 
 
 def test_retry1_bundle_requires_valid_trusted_tag_oid_pin(monkeypatch):
+    assert sod.PROVENANCE_TRUST_TAG == "refs/tags/omega-provenance-retry1-gate3-20260801"
+    assert sod.PROVENANCE_TRUST_TAG_OBJECT_OID == "58cbde4924eef16166ea57b9ee8e6197fdced302"
     monkeypatch.setattr(sod, "PROVENANCE_TRUST_TAG_OBJECT_OID", None)
     assert sod.validate_legacy_residual_provenance_retry1() == (
         False, "retry1 provenance trusted tag object OID pin unset"
