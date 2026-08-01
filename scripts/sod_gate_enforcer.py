@@ -144,11 +144,20 @@ PROVENANCE_BUNDLE_PATH = ".ly_state/session/legacy_residual_provenance_retry1_20
 LEGACY_RESIDUAL_PROVENANCE_KEYS = frozenset({
     "GP_ALT_DATA_FETCHER_OPTIMIZATION",
     "GP_OVERFITTING_REMEDIATION_GATE4_20260704",
+    "GP_GATE3_BATCH_NEUTRALIZATION_20260703",
 })
 LEGACY_RESIDUAL_OPEN_KEY = "lesson_llm_config_precedence_20260726"
 LEGACY_GATE4_SIDECAR_AUTHORITY_PATH = ".ly_state/session/audit_reports/role21_gate4_original_provenance_sidecar_fix1_20260731.md"
 LEGACY_GATE4_SIDECAR_AUTHORITY_SHA256 = "3d89de09ec8ea80fc20eee8de369398775d2b8bdf62b39e8434bbb093b3a6fc4"
 LEGACY_GATE4_SIDECAR_AUTHORITY_GATE = "gate4_original_provenance_sidecar_fix1_20260731"
+LEGACY_GATE3_ORIGINAL_PROVENANCE_FILE = WORKSPACE / ".ly_state" / "session" / "legacy_gate3_original_provenance_20260731.json"
+LEGACY_GATE3_ORIGINAL_PROVENANCE_LOCK = LEGACY_GATE3_ORIGINAL_PROVENANCE_FILE.with_suffix(".sha256")
+LEGACY_GATE3_ORIGINAL_PROVENANCE_VERSION = "legacy-gate-original-provenance/v1"
+LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY = "GP_GATE3_BATCH_NEUTRALIZATION_20260703"
+LEGACY_GATE3_ORIGINAL_PROVENANCE_COMMIT = "12d9e88de0d8510720595757e95b146c6593307d"
+LEGACY_GATE3_AUTHORITY_PATH = ".ly_state/session/audit_reports/role21_gate3_original_provenance_authority_20260731.md"
+LEGACY_GATE3_AUTHORITY_SHA256 = "c0598a4ae323b2b0ef49f4f1f97b42ec3ee84a3d08fd60c000925b93f4533cf4"
+LEGACY_GATE3_AUTHORITY_SESSION = "l3_role21_gate3_original_provenance_authority_20260731"
 LEGACY_GATE1_ORIGINAL_AUDIT_REPORT_PATH = ".ly_state/session/audit_reports/role21_gp_alt_data_fetcher_optimization_20260708.md"
 LEGACY_GATE1_ORIGINAL_AUDIT_REPORT_BLOB_OID = "0a9752cbf99a5f03c3f51b3be82273ce51d66b7d"
 LEGACY_GATE1_ORIGINAL_AUDIT_REPORT_SHA256 = "bf161592e4314867905c4b320237b38a5a249abb438284f56cec7c72ede93c75"
@@ -413,6 +422,9 @@ def resolve_active_residual_reconciliation(gates: dict | None = None) -> tuple[b
     valid, message = validate_legacy_gate4_original_provenance(gates)
     if not valid:
         return valid, message
+    valid, message = validate_legacy_gate3_original_provenance(gates)
+    if not valid:
+        return valid, message
     return validate_legacy_residual_provenance_retry1(gates)
 
 
@@ -543,6 +555,20 @@ def _closed_gate4_sidecar_authority(path: Path, session: str) -> bool:
             lines.count("[APPROVED]") == 1)
 
 
+def _closed_gate3_authority(path: Path) -> bool:
+    try:
+        raw = path.read_bytes()
+        if b"\r" in raw:
+            return False
+        lines = raw.decode("utf-8").splitlines()
+    except (OSError, UnicodeError):
+        return False
+    return (lines.count("**Authority Role**: Role 21 code-reviewer (Codex L3)") == 1 and
+            lines.count(f"**Fresh Session ID**: {LEGACY_GATE3_AUTHORITY_SESSION}") == 1 and
+            lines.count(f"**Fresh Session Key**: {LEGACY_GATE3_AUTHORITY_SESSION}") == 1 and
+            lines.count("[APPROVED]") == 1)
+
+
 def validate_legacy_gate4_original_provenance(gates: dict | None = None) -> tuple[bool, str]:
     """Validate the append-only repair for the broken Gate4 snapshot claim."""
     target, lock = LEGACY_GATE4_ORIGINAL_PROVENANCE_FILE, LEGACY_GATE4_ORIGINAL_PROVENANCE_LOCK
@@ -637,6 +663,68 @@ def publish_legacy_gate4_original_provenance(payload: dict) -> tuple[Path, Path]
     return target, lock
 
 
+def validate_legacy_gate3_original_provenance(gates: dict | None = None) -> tuple[bool, str]:
+    """Validate Gate3's immutable pinned record and fresh authority sidecar."""
+    target, lock = LEGACY_GATE3_ORIGINAL_PROVENANCE_FILE, LEGACY_GATE3_ORIGINAL_PROVENANCE_LOCK
+    if not target.is_file() or not lock.is_file():
+        return False, "Gate3 original provenance sidecar and lock are required"
+    try:
+        raw = target.read_bytes()
+        payload = json.loads(raw.decode("utf-8"))
+        declared_lock = lock.read_text(encoding="utf-8").strip()
+    except (OSError, ValueError, UnicodeError):
+        return False, "Gate3 original provenance sidecar unreadable"
+    required = {
+        "schema_version", "gate", "original_commit", "original_gate_path", "original_gate_record_sha256",
+        "original_l2_report_path", "original_l2_report_sha256",
+        "original_audit_report_path", "original_audit_report_sha256", "authority_evidence_path",
+        "authority_evidence_sha256", "authority_l3_session_id", "authority_l3_session_key",
+        "reason", "published_at",
+    }
+    if raw != _canonical_gate4_provenance_json(payload) or declared_lock != _sha256(raw):
+        return False, "Gate3 original provenance canonical bytes or lock drift"
+    if not isinstance(payload, dict) or set(payload) != required:
+        return False, "Gate3 original provenance schema invalid"
+    if (payload["schema_version"] != LEGACY_GATE3_ORIGINAL_PROVENANCE_VERSION or
+            payload["gate"] != LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY or
+            payload["original_commit"] != LEGACY_GATE3_ORIGINAL_PROVENANCE_COMMIT or
+            payload["original_gate_path"] != ".ly_state/session/phase_gates.json" or
+            payload["original_l2_report_path"] != ".ly_state/session/l2_role16_gp_gate3_20260703.md" or
+            payload["original_audit_report_path"] != ".ly_state/session/audit_reports/role23_gp_gate3_audit_20260703.md" or
+            payload["authority_evidence_path"] != LEGACY_GATE3_AUTHORITY_PATH or
+            payload["authority_evidence_sha256"] != LEGACY_GATE3_AUTHORITY_SHA256 or
+            payload["authority_l3_session_id"] != LEGACY_GATE3_AUTHORITY_SESSION or
+            payload["authority_l3_session_key"] != LEGACY_GATE3_AUTHORITY_SESSION or
+            payload["reason"] != "pinned_commit_original_gate_record" or
+            not isinstance(payload["published_at"], str) or
+            any(not _is_sha256(payload[field]) for field in (
+                "original_gate_record_sha256", "original_l2_report_sha256", "original_audit_report_sha256",
+                "authority_evidence_sha256",
+            ))):
+        return False, "Gate3 original provenance field invalid"
+    try:
+        published_at = datetime.strptime(payload["published_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return False, "Gate3 original provenance published_at invalid"
+    if published_at > datetime.now(timezone.utc):
+        return False, "Gate3 original provenance published_at is future-dated"
+    pinned = _pinned_gate_record(payload["original_commit"], payload["gate"])
+    pinned_l2 = _pinned_file_bytes(payload["original_commit"], payload["original_l2_report_path"])
+    pinned_audit = _pinned_file_bytes(payload["original_commit"], payload["original_audit_report_path"])
+    authority = _safe_repo_path(payload["authority_evidence_path"], ".ly_state/session/audit_reports/")
+    current = (gates if gates is not None else load_canonical_gate_map()).get(payload["gate"])
+    if (pinned is None or pinned_l2 is None or pinned_audit is None or authority is None or not authority.is_file() or current is None or
+            payload["original_gate_record_sha256"] != _sha256(_immutable_gate_record(pinned)) or
+            payload["original_l2_report_sha256"] != _sha256(pinned_l2) or
+            payload["original_audit_report_sha256"] != _sha256(pinned_audit) or
+            not _closed_original_role23_report(pinned_audit, payload["gate"]) or
+            _sha256(authority.read_bytes()) != LEGACY_GATE3_AUTHORITY_SHA256 or
+            not _closed_gate3_authority(authority) or
+            _sha256(_immutable_gate_record(current)) != payload["original_gate_record_sha256"]):
+        return False, "Gate3 original provenance pinned authority drift"
+    return True, "Gate3 original provenance valid"
+
+
 def _bundle_report(record: dict, field: str) -> tuple[Path | None, str]:
     path = _safe_repo_path(record.get(field), ".ly_state/session/audit_reports/")
     if path is None or not path.is_file():
@@ -712,16 +800,23 @@ def validate_legacy_residual_provenance_retry1(gates: dict | None = None) -> tup
         }
         if key == "GP_ALT_DATA_FETCHER_OPTIMIZATION":
             required_record.add("original_audit_report_blob_oid")
+        if key == LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY:
+            required_record -= {"authoritative_record_sha256", "authoritative_record", "field_drift"}
         if not isinstance(record, dict) or set(record) != required_record or record["original_key"] != key:
             return False, f"retry1 provenance record {key} schema invalid"
-        baseline_record = baseline_records.get(key) if isinstance(baseline_records, dict) else None
-        if (not isinstance(baseline_record, dict) or
-                record["recorded_claim_sha256"] != baseline_record.get("original_gate_record_sha256")):
-            return False, f"retry1 provenance record {key} recorded claim drift"
-        if any(not _is_sha256(record[field]) for field in (
+        if key != LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY:
+            baseline_record = baseline_records.get(key) if isinstance(baseline_records, dict) else None
+            if (not isinstance(baseline_record, dict) or
+                    record["recorded_claim_sha256"] != baseline_record.get("original_gate_record_sha256")):
+                return False, f"retry1 provenance record {key} recorded claim drift"
+        hash_fields = (
+            "recorded_claim_sha256", "current_record_sha256", "authority_evidence_sha256",
+            "original_audit_report_sha256",
+        ) if key == LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY else (
             "recorded_claim_sha256", "authoritative_record_sha256", "current_record_sha256",
             "authority_evidence_sha256", "original_audit_report_sha256",
-        )):
+        )
+        if any(not _is_sha256(record[field]) for field in hash_fields):
             return False, f"retry1 provenance record {key} hash invalid"
         authority_session = record.get("authority_l3_session_id")
         if (not isinstance(authority_session, str) or not authority_session or authority_session in identities or
@@ -739,17 +834,22 @@ def validate_legacy_residual_provenance_retry1(gates: dict | None = None) -> tup
         evidence_text = evidence.read_text(encoding="utf-8")
         original_text = original.read_text(encoding="utf-8") if original is not None else "[APPROVED]"
         is_gate4_sidecar = key == LEGACY_GATE4_ORIGINAL_PROVENANCE_KEY
+        is_gate3_sidecar = key == LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY
         authority_valid = (record["authority_evidence_path"] == LEGACY_GATE2_AUTHORITY_PATH and
-                           record["authority_evidence_sha256"] == LEGACY_GATE2_AUTHORITY_SHA256 and
-                           authority_session == LEGACY_GATE2_AUTHORITY_SESSION and
-                           _closed_report_tuple(evidence, key, 21, authority_session)) if is_gate4_sidecar else (
-                           _declared_report_identity(evidence) == (record["authority_l3_session_id"], record["authority_l3_session_key"]))
+                            record["authority_evidence_sha256"] == LEGACY_GATE2_AUTHORITY_SHA256 and
+                            authority_session == LEGACY_GATE2_AUTHORITY_SESSION and
+                            _closed_report_tuple(evidence, key, 21, authority_session)) if is_gate4_sidecar else (
+                            record["authority_evidence_path"] == LEGACY_GATE3_AUTHORITY_PATH and
+                            record["authority_evidence_sha256"] == LEGACY_GATE3_AUTHORITY_SHA256 and
+                            authority_session == LEGACY_GATE3_AUTHORITY_SESSION and
+                            _closed_gate3_authority(evidence)) if is_gate3_sidecar else (
+                            _declared_report_identity(evidence) == (record["authority_l3_session_id"], record["authority_l3_session_key"]))
         if ("[APPROVED]" not in evidence_text or "[NEEDS_FIX]" in evidence_text or not authority_valid or
                 "[APPROVED]" not in original_text):
             return False, f"retry1 provenance record {key} report authority invalid"
-        if key == "GP_OVERFITTING_REMEDIATION_GATE4_20260704" and (
+        if key in {"GP_OVERFITTING_REMEDIATION_GATE4_20260704", LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY} and (
                 original is None or not _closed_original_role23_report(original.read_bytes(), key)):
-            return False, "retry1 provenance Gate2 original Role23 report invalid"
+            return False, f"retry1 provenance {key} original Role23 report invalid"
         current = canonical.get(key)
         if current is None or _sha256(_immutable_gate_record(current)) != record["current_record_sha256"]:
             return False, f"retry1 provenance record {key} current snapshot drift"
@@ -763,6 +863,11 @@ def validate_legacy_residual_provenance_retry1(gates: dict | None = None) -> tup
                     record["authoritative_record_sha256"] != record["current_record_sha256"] or
                     record["field_drift"] != {"phase_name": {"recorded": None, "authoritative": key}}):
                 return False, "retry1 provenance Gate1 drift invalid"
+        elif key == LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY:
+            pinned = _pinned_gate_record(record["pinned_commit"], key)
+            if (record["reason"] != "pinned_commit_snapshot" or pinned is None or
+                    record["recorded_claim_sha256"] != _sha256(_immutable_gate_record(pinned))):
+                return False, "retry1 provenance Gate3 pinned snapshot invalid"
         else:
             commit = record["pinned_commit"]
             pinned = _pinned_gate_record(commit, key) if isinstance(commit, str) and re.fullmatch(r"[0-9a-f]{40}", commit) else None
