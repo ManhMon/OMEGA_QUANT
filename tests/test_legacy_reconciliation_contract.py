@@ -661,11 +661,76 @@ def test_retry1_bundle_accepts_only_exact_gate2_authority_tuple(monkeypatch):
     assert record["authority_l3_session_key"] == sod.LEGACY_GATE2_AUTHORITY_SESSION
 
 
-def test_retry1_validated_resolution_is_16_resolved_1_open(monkeypatch):
+def test_retry1_validated_resolution_is_17_resolved_1_open(monkeypatch):
     monkeypatch.setattr(sod, "_trusted_provenance_bundle", lambda raw: (True, "ok"))
     assert sod.validate_legacy_residual_provenance_retry1() == (
-        True, "legacy residual reconciliation: 16 resolved; 1 open"
+        True, "legacy residual reconciliation: 17 resolved; 1 open"
     )
+
+
+def test_retry1_gate3_absent_from_immutable_predecessor_uses_pinned_claim(tmp_path, monkeypatch):
+    predecessor = Path(r"C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\legacy_residual_reconciliation_20260727.json")
+    predecessor_lock = predecessor.with_suffix(".sha256")
+    if not predecessor.is_file() or not predecessor_lock.is_file():
+        pytest.skip("primary immutable predecessor unavailable")
+    payload = json.loads(sod.LEGACY_RESIDUAL_PROVENANCE_RETRY1_FILE.read_text(encoding="utf-8"))
+    assert sod._sha256(predecessor.read_bytes()) == payload["supersedes_raw_sha256"]
+    assert predecessor_lock.read_text(encoding="utf-8").strip() == payload["supersedes_lock_value"]
+    gate1 = payload["records"]["GP_ALT_DATA_FETCHER_OPTIMIZATION"]
+    gate2 = payload["records"]["GP_OVERFITTING_REMEDIATION_GATE4_20260704"]
+    for record in (gate2, payload["records"][sod.LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY]):
+        for field in ("authority_evidence_path", "original_audit_report_path"):
+            source = sod.WORKSPACE / record[field]
+            raw = source.read_bytes() if source.is_file() else sod._pinned_file_bytes(sod.PROVENANCE_TRUST_TAG, record[field])
+            assert raw is not None, record[field]
+            destination = tmp_path / record[field]
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(raw)
+    gate1_authority = sod._git("cat-file", "blob", "9c588c18506f0d9fe9a3aebc785fbbb18df6f929")
+    assert gate1_authority.returncode == 0
+    assert sod._sha256(gate1_authority.stdout) == gate1["authority_evidence_sha256"]
+    destination = tmp_path / gate1["authority_evidence_path"]
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.write_bytes(gate1_authority.stdout)
+    current_gates = sod.load_canonical_gate_map()
+    current_gate2 = sod._immutable_gate_record(current_gates[gate2["original_key"]])
+    pinned_gate2 = sod._immutable_gate_record(sod._pinned_gate_record(gate2["pinned_commit"], gate2["original_key"]))
+    gate2["current_record_sha256"] = sod._sha256(current_gate2)
+    gate2["field_drift"] = {
+        field: {"pinned": pinned_gate2.get(field), "current": current_gate2.get(field)}
+        for field in sorted(set(pinned_gate2) | set(current_gate2))
+        if pinned_gate2.get(field) != current_gate2.get(field)
+    }
+    unsigned = dict(payload)
+    del unsigned["bundle_sha256"]
+    payload["bundle_sha256"] = sod._sha256(sod._canonical_bundle_json(unsigned))
+    bundle = tmp_path / "bundle.json"
+    bundle.write_bytes(sod._canonical_bundle_json(payload))
+    git_dir = sod._git("rev-parse", "--git-dir")
+    assert git_dir.returncode == 0
+    (tmp_path / ".git").write_text(f"gitdir: {git_dir.stdout.decode().strip()}\n", encoding="utf-8")
+    monkeypatch.setattr(sod, "WORKSPACE", tmp_path)
+    monkeypatch.setattr(sod, "LEGACY_RESIDUAL_RECONCILIATION_FILE", predecessor)
+    monkeypatch.setattr(sod, "LEGACY_RESIDUAL_RECONCILIATION_LOCK", predecessor_lock)
+    monkeypatch.setattr(sod, "LEGACY_RESIDUAL_PROVENANCE_RETRY1_FILE", bundle)
+    monkeypatch.setattr(sod, "LEGACY_RESIDUAL_PROVENANCE_RETRY1_PENDING", Path(f"{bundle}.pending"))
+    monkeypatch.setattr(sod, "_trusted_provenance_bundle", lambda raw: (True, "ok"))
+    gates = {
+        gate1["original_key"]: gate1["authoritative_record"],
+        gate2["original_key"]: current_gates[gate2["original_key"]],
+        sod.LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY: current_gates[sod.LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY],
+    }
+    assert sod.LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY not in json.loads(predecessor.read_text(encoding="utf-8"))["records"]
+    assert sod.validate_legacy_residual_provenance_retry1(gates) == (
+        True, "legacy residual reconciliation: 17 resolved; 1 open"
+    )
+
+    payload["records"][sod.LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY]["recorded_claim_sha256"] = "0" * 64
+    unsigned = dict(payload)
+    del unsigned["bundle_sha256"]
+    payload["bundle_sha256"] = sod._sha256(sod._canonical_bundle_json(unsigned))
+    bundle.write_bytes(sod._canonical_bundle_json(payload))
+    assert not sod.validate_legacy_residual_provenance_retry1(gates)[0]
 
 
 def test_retry1_recreated_trusted_tag_oid_rejected_before_signature(monkeypatch):
@@ -932,3 +997,19 @@ def test_gate4_original_provenance_publisher_never_clobbers(tmp_path, monkeypatc
     with pytest.raises(FileExistsError):
         sod.publish_legacy_gate4_original_provenance({})
     assert target.read_bytes() == before
+
+
+def test_gate3_original_provenance_validates_pinned_authority():
+    assert sod.validate_legacy_gate3_original_provenance() == (True, "Gate3 original provenance valid")
+
+
+def test_gate3_original_provenance_rejects_authority_hash_drift(tmp_path, monkeypatch):
+    target = tmp_path / "gate3.json"
+    lock = target.with_suffix(".sha256")
+    payload = json.loads(sod.LEGACY_GATE3_ORIGINAL_PROVENANCE_FILE.read_text(encoding="utf-8"))
+    payload["authority_evidence_sha256"] = "0" * 64
+    target.write_bytes(sod._canonical_gate4_provenance_json(payload))
+    lock.write_text(hashlib.sha256(target.read_bytes()).hexdigest(), encoding="utf-8")
+    monkeypatch.setattr(sod, "LEGACY_GATE3_ORIGINAL_PROVENANCE_FILE", target)
+    monkeypatch.setattr(sod, "LEGACY_GATE3_ORIGINAL_PROVENANCE_LOCK", lock)
+    assert not sod.validate_legacy_gate3_original_provenance()[0]
