@@ -20,6 +20,7 @@ in-memory mocking.  This avoids WinError 5 ACL issues under Codex.
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, mock_open, MagicMock
 
@@ -30,6 +31,7 @@ SCRIPTS_DIR = Path(__file__).parent.parent / "scripts"
 sys.path.insert(0, str(SCRIPTS_DIR))
 
 from sod_gate_enforcer import (
+    AUDIT_L2_SESSION_IDENTITY_CUTOFF,
     CUTOFF_TIMESTAMP,
     FORBIDDEN_SKILL_PATHS,
     SKILL_LOADING_CUTOFF,
@@ -46,9 +48,12 @@ from sod_gate_enforcer import (
     get_superseded_gates,
     check_sod_compliance,
     load_gates,
+    load_canonical_gate_map,
     validate_l3_panel,
     validate_task_graph,
     validate_audit_report_path,
+    validate_audit_report_l2_session,
+    audit_l2_session_identity_required,
     validate_forbidden_path_usage,
 )
 
@@ -282,6 +287,67 @@ class TestCheckAuditReportSkillSources:
         assert "legacy" in msg.lower()
 
 
+class TestAuditReportL2SessionIdentity:
+    def test_exact_declared_session_passes(self):
+        valid, message = validate_audit_report_l2_session(
+            "**L2 Session**: `l2_role11_identity_20260729`",
+            "l2_role11_identity_20260729",
+        )
+        assert valid is True
+        assert message == ""
+
+    @pytest.mark.parametrize(
+        ("timestamp", "content", "expected"),
+        [
+            ("2026-07-28T23:59:59Z", "# Audit Report", True),
+            ("2026-07-28T23:59:59Z", "L2 Session: l2_role11_other_20260729", True),
+            ("2026-07-28T23:59:59Z", "L2 Session: l2_role11_identity_20260729", True),
+            ("2026-07-29T00:00:00Z", "# Audit Report", False),
+            ("2026-07-29T00:00:00Z", "L2 Session: l2_role11_other_20260729", False),
+            ("2026-07-29T00:00:00Z", "L2 Session: l2_role11_identity_20260729", True),
+            ("2026-07-29T00:00:01Z", "# Audit Report", False),
+            ("2026-07-29T00:00:01Z", "L2 Session: l2_role11_other_20260729", False),
+            ("2026-07-29T00:00:01Z", "L2 Session: l2_role11_identity_20260729", True),
+        ],
+    )
+    def test_cutoff_enforces_exact_audit_session(self, timestamp, content, expected):
+        valid, _ = validate_audit_report_l2_session(content, "l2_role11_identity_20260729")
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+        assert (not audit_l2_session_identity_required(parsed) or valid) is expected
+
+    def test_identity_cutoff_is_exact_utc_boundary(self):
+        assert AUDIT_L2_SESSION_IDENTITY_CUTOFF == datetime(2026, 7, 29, tzinfo=timezone.utc).timestamp()
+
+    def test_post_cutoff_gate_fails_on_mismatched_audit_session(self):
+        gate = {
+            "phase_name": "IDENTITY_GATE_20260611",
+            "l2_session_id": "l2_role11_identity_20260611",
+            "l2_completed": True,
+            "l2_role_id": 11,
+            "l2_role_name": "devops-engineer",
+            "l3_role_id": 21,
+            "l3_role_name": "code-reviewer",
+            "audit_report_path": ".ly_state/session/audit_reports/role21_identity_20260611.md",
+            "final_verdict": "[APPROVED]",
+            "timestamp": "2026-06-11T18:00:00+07:00",
+        }
+        role_specs = {
+            11: {"name": "devops-engineer", "tier": 2, "platform": "OpenCode"},
+            21: {"name": "code-reviewer", "tier": 3, "platform": "Codex", "sod_boundary": "READ-ONLY"},
+        }
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data=json.dumps([gate]))):
+                with patch("sod_gate_enforcer.load_role_specs", return_value=role_specs):
+                    with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                        with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                            with patch("pathlib.Path.is_file", return_value=True):
+                                with patch("sod_gate_enforcer.check_audit_report_l2_session", return_value=(False, "mismatch")):
+                                    assert check_sod_compliance() is False
+
+
 class TestSkillLoadingCutoff:
     """Test SKILL_LOADING_CUTOFF constant and behavior."""
 
@@ -477,6 +543,11 @@ class TestTaskGraphValidation:
 
     def test_empty_gates_list_with_invalid_task_graph_fails_compliance(self):
         with patch("sod_gate_enforcer.validate_task_graph", return_value=(False, "bad graph")):
+            with patch("sod_gate_enforcer.load_gates", return_value=[]):
+                assert check_sod_compliance() is False
+
+    def test_empty_gates_list_blocks_compliance_with_valid_task_graph(self):
+        with patch("sod_gate_enforcer.validate_task_graph", return_value=(True, "valid DAG")):
             with patch("sod_gate_enforcer.load_gates", return_value=[]):
                 assert check_sod_compliance() is False
 
@@ -951,8 +1022,78 @@ class TestGateFieldsAndHardBlocking:
 
         assert gates == []
 
-    def test_dict_shaped_gates_non_gate_values_skipped(self):
-        """Dict entries with non-dict values are skipped."""
+    @pytest.mark.parametrize(
+        ("data", "expected_message"),
+        [
+            ({"": {}}, "dict-shaped gate keys must be non-empty phase names"),
+            ({"VALID_GATE": {"phase_name": ""}}, "dict-shaped gates must have a non-empty phase_name"),
+        ],
+    )
+    def test_dict_shaped_gates_reject_empty_phase_name(self, data, expected_message, capsys):
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data=json.dumps(data))):
+                with pytest.raises(SystemExit) as exc_info:
+                    load_gates()
+
+        assert exc_info.value.code == 1
+        assert expected_message in capsys.readouterr().err
+
+    def test_load_gates_accepts_utf8_bom(self, tmp_path):
+        gates_file = tmp_path / "phase_gates.json"
+        gates_file.write_text('[{"phase_name":"BOM_GATE"}]', encoding="utf-8-sig")
+        with patch("sod_gate_enforcer.GATES_FILE", gates_file):
+            assert load_gates() == [{"phase_name": "BOM_GATE"}]
+
+    def test_load_gates_fails_closed_on_invalid_json(self):
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data="{")):
+                with pytest.raises(SystemExit) as exc_info:
+                    load_gates()
+
+        assert exc_info.value.code == 1
+
+    @pytest.mark.parametrize("invalid_json", ['{"gates": {}}', '"not gates"'])
+    def test_load_gates_fails_closed_on_invalid_structure(self, invalid_json):
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data=invalid_json)):
+                with pytest.raises(SystemExit) as exc_info:
+                    load_gates()
+
+        assert exc_info.value.code == 1
+
+    @pytest.mark.parametrize("invalid_json", ['["not a gate"]', '[{}]'])
+    def test_load_gates_fails_closed_on_invalid_raw_list_member(self, invalid_json):
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data=invalid_json)):
+                with pytest.raises(SystemExit) as exc_info:
+                    load_gates()
+
+        assert exc_info.value.code == 1
+
+    def test_load_gates_fails_closed_on_invalid_wrapped_list_member(self):
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data='{"gates": [42]}')):
+                with pytest.raises(SystemExit) as exc_info:
+                    load_gates()
+
+        assert exc_info.value.code == 1
+
+    def test_dict_shaped_gates_non_gate_values_fail_closed(self):
+        """Dict entries with non-dict values are rejected."""
         mixed = {
             "VALID_GATE": {
                 "phase_name": "VALID_GATE",
@@ -967,10 +1108,31 @@ class TestGateFieldsAndHardBlocking:
 
         with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
             with patch("builtins.open", mock_open(read_data=json_str)):
-                gates = load_gates()
+                with pytest.raises(SystemExit) as exc_info:
+                    load_gates()
 
-        assert len(gates) == 1
-        assert gates[0]["phase_name"] == "VALID_GATE"
+        assert exc_info.value.code == 1
+
+    def test_dict_shaped_gates_reject_mismatched_phase_name(self):
+        data = {"CANONICAL_GATE_20260729": {"phase_name": "other_gate_20260729"}}
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            with patch("builtins.open", mock_open(read_data=json.dumps(data))):
+                with pytest.raises(SystemExit) as exc_info:
+                    load_gates()
+
+        assert exc_info.value.code == 1
+
+    def test_canonical_gate_map_rejects_mismatched_phase_name(self):
+        data = {"CANONICAL_GATE_20260729": {"phase_name": "other_gate_20260729"}}
+        mock_gates_file = MagicMock()
+        mock_gates_file.exists.return_value = True
+        mock_gates_file.read_text.return_value = json.dumps(data)
+
+        with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
+            assert load_canonical_gate_map() == {}
 
 
 # =========================================================================
@@ -1406,6 +1568,15 @@ class TestRemediationChainBuilding:
         assert "ANOTHER_GATE_20260612" in chains
         for key in chains:
             assert len(chains[key]) == 1
+
+    def test_mixed_case_fix_suffixes_share_one_chain(self):
+        gates = {
+            "audit_20260729": {"final_verdict": "[NEEDS_FIX]"},
+            "audit_fix1_20260729": {"final_verdict": "[NEEDS_FIX]"},
+            "audit_FIX2_20260729": {"final_verdict": "[APPROVED]"},
+        }
+        chains = build_remediation_chains(gates)
+        assert [member[0] for member in chains["audit_20260729"]] == [0, 1, 2]
 
     def test_non_chain_gates_excluded(self):
         """Gates without date suffix are not included in chains."""

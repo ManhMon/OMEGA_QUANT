@@ -1,0 +1,46 @@
+    def _create_island_population(self, island_id: int, seed: Optional[int] = None) -> List[Genome]:
+        """Create population for one island, seeded with family archetypes."""
+        with _temporary_random_seed(seed):
+            population = []
+
+            # Seed with 2-3 family archetypes per island (rotated)
+            n_families = len(SEED_FAMILIES)
+            seeds_per_island = 3
+            for j in range(seeds_per_island):
+                family_idx = (island_id * seeds_per_island + j) % n_families
+                _, factory = SEED_FAMILIES[family_idx]
+                population.append(factory())
+                for _ in range(2):
+                    population.append(factory().mutate())
+
+            while len(population) < self.config.population_per_island:
+                population.append(Genome(max_depth=self.config.max_depth))
+
+            return population
+
+    def _evaluate_population(
+        self,
+        population: List[Genome],
+        train_df: pd.DataFrame,
+        val_df: pd.DataFrame,
+        target_col: str,
+        train_features: Dict[str, np.ndarray],
+        train_target: np.ndarray,
+        val_features: Dict[str, np.ndarray],
+        val_target: np.ndarray,
+    ) -> List[AlphaCandidate]:
+        """Evaluate all genomes, return viable candidates sorted by fitness."""
+        n_jobs = _resolve_parallel_jobs_with_headroom(self.config, len(population)) if population else 1
+        if n_jobs == 1:
+            evaluated = [
+                _evaluate_genome_job(
+                    genome,
+                    0,
+                    0,
+                    train_df,
+                    val_df,
+                    target_col,
+                    self.config,
+                    train_features,
+                    train_target,
+                    val_features,

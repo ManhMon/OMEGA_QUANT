@@ -1,0 +1,405 @@
+{
+  "schema_version": 1,
+  "evidence": [
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "ATS",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-ats-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "d8253f6725dda3feb32f52f8a6774d09dc89c34ec186347b5fb5cb3562fca54e",
+        "signature": "05069b1e89676b49fb952f7efec9a6e83305fc44df2d03da8e5c05dd17e2fcbc"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "BCG",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-bcg-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "4fa88a2a5495db67060ff026ced62ec7d93a2152582253143d41bcc484166eca",
+        "signature": "30ed2006f43004c5645dd701d0d402872bd88009182ad9a48b9607fcc46d3ca1"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "BED",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-bed-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "7d682042456a3cdb093cf85b16216ee63d0b7ec4bf638bab333265625c743c9f",
+        "signature": "d297f9ec9f9327a6ca6d59449b001b1b1bc1da20a8b3ccdabf18b855511e91e0"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "BPC",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-bpc-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "15d0bdc2f1330c8ac81c8fdcf46b83ca46da35c7d52485ed544ec2a555df6947",
+        "signature": "52130e4c72bd2bcc765500738fab49fb2e168b67fb0bd71be5b5778edacd40d5"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "DAE",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-dae-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "9545fdec83e6c1b7fc3bc1cdd09bdd5b410ad04bf261379dc9dde7bfb2c6b577",
+        "signature": "21fdfdf86020468fc803b2ff77540999fb85ce521eee24fa0d03e84cfa975fbb"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "ECI",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-eci-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "cb56bf2322993973902b9a45f5ce90b6b59c76f915b9cd12150ec7da999b4767",
+        "signature": "aec26d2bb4d5346aafb02b1335d672a393ae87d17b54e638b39a39c46317f211"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "GMA",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-gma-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "ae7599fafed82d4bdd49a3a244d18a9e1e851a2f62ce3758396fcd72e69a930b",
+        "signature": "7fb238d81f6f67503392b6b0bb8a414a57e85ae9ed487ebea2deeeb9b62cd6c8"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "HCT",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-hct-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "0c183672bc8022c06ebcebb810280941a4457b6a00954bdf8b508fc02aaca983",
+        "signature": "9b1e14743f73e677bac9fcc49ab759c59b6a620c0b27950aa70ef0d6844d4120"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "HEV",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-hev-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "5c044d1e623f5f2d23d95f573709a69c00d59c3f758575796c0617e868aa864f",
+        "signature": "d3370a3d8bf62bbbd2b72548e7296f558cc6479c15eb1812e0ad02ab3ba2d84d"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "INC",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-inc-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "9ac9d58955e451fcea48b2a555dacd31d53446f8869b99f0a266adef96262457",
+        "signature": "e70b18e2cc09f65f3c38b90fc3804c84b297e43b5edaf8bec7910fe2395aaf52"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "KMT",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-kmt-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "0720fd85eb0e25a29c3c8c338581261f2910250c53949acad8c95ed5a6198759",
+        "signature": "2b6df417da8f2eab8046bc19834b6f3bf2436efe0bead76e4ad31ad4471c848c"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "LCD",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-lcd-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "31c52e5041b4410ea79432c418c67e2b72e27b4c84f43f917d2b72852be8b758",
+        "signature": "2274caeddd84bde7c6f9beaf680c2938f809b27edf1a6ad2a18680e9731a48e5"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "LGC",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-lgc-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "ad5dd3fc5f32bd5756ddaed768f98115787d8b72ae25643191ab7f1442d1dc4a",
+        "signature": "c71fe2d5ecb9ab305792cf7f7243cbe710c7efaf8f64aedf1648df0cc908475d"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "MED",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-med-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "cdd40b509d94c862b464bc382788088458c607e0a478f7f149be02a4fd6ccfa5",
+        "signature": "bc48344ec3abbf2a483d7850785588a854c62a655499a441913ff8d69619d475"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "NHC",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-nhc-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "8638d053ca386b05c3fc164a60cc49101feae362f8aefb1a088616beb464ed23",
+        "signature": "720dbf0639efe3e2eb5645a4d57f39ce6e3cd1a4dd094e963a01f34d8921f254"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "PEN",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-pen-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "c1db2b22ef07963c386dece21be80d41f9ad7c7e5bc8f96400261db428f84fb4",
+        "signature": "9299c69a0d5b7c2dece1d98e22808e582588605161450609b4dda62a20664101"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "PIA",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-pia-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "8acf68a0d460b62efc5526cb61b3b793e4a9ec542b2e5811e1a1145cc19a2164",
+        "signature": "2cc2cb55c3130260c12debbdfce308577800c0d6f31441abc170e55a0e2411fa"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "THS",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-ths-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "2395a9572803a2907c0d16011f15c10bf9c6fde6e7aec9af2296d199f7d34a0b",
+        "signature": "a7fc3fc8c3ec21899b7145fe704ff5c7e5c7c86f94385a335820866d7ae139f2"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "TTE",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-tte-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "bdcfcd874932bb958f483b9994ec66c9573c86777ae09a78a61dac7afb7720f9",
+        "signature": "235f1d2e4e2792b8b6907a4e560a5e98a64e3f69bf2e65c8cdba714bfeb2bc1d"
+      }
+    },
+    {
+      "schema_version": 1,
+      "payload": {
+        "ticker": "VE4",
+        "status": "halted",
+        "reason": "official exchange suspension notice",
+        "effective_at": "2025-01-01T00:00:00+00:00",
+        "as_of": "2026-08-05T00:00:00+00:00",
+        "source": "VCI"
+      },
+      "signed_at": "2026-08-05T23:50:00+00:00",
+      "expires_at": "2026-08-07T23:50:00+00:00",
+      "receipt_id": "lifecycle-receipt-ve4-20260805",
+      "integrity": {
+        "algorithm": "HMAC-SHA256",
+        "key_id": "lifecycle-authority",
+        "payload_sha256": "0857ee609bd7eeff4f6393ae0a69d7d85d7a201451305f603bebf175c465b8c7",
+        "signature": "9bf99fe5206480b62354b0e4cd55fec5b898e4544304105207e407a9902bc251"
+      }
+    }
+  ]
+}

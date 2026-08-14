@@ -7,7 +7,7 @@
 |------|----------|----------|----------|
 | L1 | Ly / Antigravity | 1-5 | Orchestrate, plan, delegate, enforce gates |
 | L2 | OpenCode | 6-16 | Implement, refactor, run tests, write L2 report |
-| L3 | Codex | 17-25 | Independent audit, verdict, gate metadata |
+| L3 | Codex | 17-30 | Plan, independent audit, verdict, gate metadata |
 
 ## AG Kit Loading
 
@@ -76,7 +76,7 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 
 ### L3 (Codex) Routing Constraints
 
-- role_id MUST be in range 17-25
+- role_id MUST be in range 17-30
 - tier MUST be 3
 - platform MUST be "Codex"
 - sod_boundary MUST be defined in frontmatter
@@ -95,14 +95,25 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 1. **1 Agent = 1 Role = 1 Task**.
 2. **Writer != Auditor**. Self-approval forbidden.
 3. L2 must exit/save state before L3 starts.
-4. L1 never implements or audits; L1 only delegates, records evidence, enforces gates.
+4. L1 never plans, implements, or audits; L1 only delegates, records evidence, enforces gates. L1 MUST delegate all master plan and implementation plan creation to Codex L3 (model "cx/gpt-5.6-sol(max)") using a non-audit role.
 5. All state/evidence must be file-backed in `.ly_state/session/`.
 6. Do not run OpenCode and Codex simultaneously. Platform cap: 4GB.
-7. **L3 write boundary**: L3 may ONLY write to `.ly_state/session/audit_reports/` and update `.ly_state/session/phase_gates.json`. L3 MUST NOT edit production source code, tests, or any files outside `.ly_state/`.
+7. **L3 write boundary**: L3 may ONLY write to `.ly_state/session/audit_reports/`, `.ly_state/session/` (for plans), and update `.ly_state/session/phase_gates.json`. L3 MUST NOT edit production source code, tests, or any files outside `.ly_state/`.
 8. **Scratch path prohibition**: L2 and L3 MUST NOT read or write Antigravity scratch paths. All operations use `REPO_ROOT` with repo-relative paths only.
 9. **No manual override**: Manual approval overrides are forbidden. All gates require valid L3 audit with [APPROVED] verdict and `python scripts/sod_gate_enforcer.py` exit 0.
 10. **L2 session ID format**: L2 session IDs MUST follow format `l2_role{role_id}_{task_slug}_{YYYYMMDD}` (e.g., `l2_role11_agents_md_strict_sod_hardening_20260611`).
 11. **GEMINI.md Conflict Resolution**: In case of any conflict between the Tier 0 Edit Mode instructions in GEMINI.md (which may allow direct editing of single-file fixes by the L1 orchestrator) and the SoD platform isolation constraints in AGENTS.md, the SoD platform isolation constraints in AGENTS.md take absolute precedence. Under no circumstances is L1 allowed to bypass SoD or modify code directly. All code edits must go through L2 OpenCode.
+
+### L1 Audit Report Mechanical Correction Exception
+
+L1 may directly correct an L3 audit report without a full L3 re-audit only when all conditions hold:
+
+1. The report already contains an unchanged `[APPROVED]` verdict.
+2. The correction is limited to an extremely simple syntax, formatting, or exact enforcer-required heading/wording omission.
+3. The correction does not change the verdict, findings, evidence, scope, test results, role identities, gate metadata, or any substantive audit conclusion.
+4. L1 records the exact report path, correction, and unchanged `[APPROVED]` verdict in file-backed session evidence, then reruns `python scripts/sod_gate_enforcer.py`.
+
+This exception does not permit L1 to approve a gate, alter a `[NEEDS_FIX]` report, or make substantive report edits.
 
 
 ## Required Flow
@@ -110,7 +121,7 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 ```text
 L2 OpenCode: implement + tests + L2 report
   -> L3 Codex: independent audit -> [APPROVED] / [NEEDS_FIX]
-  -> L1 Ly: update phase_gates.json + dispatch final deep audit to Codex CLI model cx/gpt-5.6-sol
+  -> L1 Ly: update phase_gates.json + dispatch final deep audit to Codex CLI model cx/gpt-5.6-sol(max)
   -> L1 Ly: run sod_gate_enforcer.py
   -> exit 0: safe to push
 ```
@@ -119,10 +130,21 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 
 ### Verdict Handling
 
-- **[APPROVED]**: L1 records gate metadata, then dispatches a final deep audit to Codex CLI model `cx/gpt-5.6-sol` after L3 approval and before the final enforcer. The audit is advisory only, read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. L3's `[APPROVED]` verdict remains the sole approval authority. L1 runs enforcer and proceeds if exit 0.
-- **[NEEDS_FIX]**: L1 creates new L2 session with fix scope, L3 re-audits after fix, cycle repeats until [APPROVED]
+- **[APPROVED]**: L1 records gate metadata, then dispatches a final deep audit to Codex CLI model `cx/gpt-5.6-sol(max)` after L3 approval and before the final enforcer. The audit is advisory only, read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. L3's `[APPROVED]` verdict remains the sole approval authority. L1 runs enforcer and proceeds if exit 0.
+- **[NEEDS_FIX]**: L1 MUST complete the lesson extraction hard gate below before creating or dispatching any remediation L2 session; after extraction succeeds, L1 creates a new L2 session with fix scope, L3 re-audits after fix, cycle repeats until [APPROVED]
 - **No verdict or partial verdict**: Gate remains `PENDING_L3_AUDIT`, no progression
 - **Manual override**: Forbidden. All approvals require valid L3 audit + enforcer exit 0
+
+### Lesson Extraction Hard Gate (lessons_extraction_hard_gate_20260726)
+
+Before ANY L2 remediation dispatch triggered by an L3 or final advisory `[NEEDS_FIX]`, L1 MUST:
+
+1. Run the existing extractor from `REPO_ROOT`: `python scripts/extract_lessons.py` over the current `.ly_state/session/audit_reports/` evidence.
+2. Verify extraction completed successfully and persisted/deduplicated lessons in `.agents/knowledge/lessons.jsonl`. The extractor's persisted count and deduplication outcome MUST be recorded in a file-backed evidence report under `.ly_state/session/`.
+3. Use `python scripts/get_relevant_lessons.py` only for retrieval/context. Retrieval is not extraction and MUST NOT substitute for `extract_lessons.py`.
+4. Block remediation dispatch when extraction fails, persistence cannot be verified, deduplication cannot be determined, or the evidence report is missing.
+
+The extraction evidence MUST include gate name `lessons_extraction_hard_gate_20260726`, source evidence paths/date scope, exact extractor command, exit status, exact count persisted, deduplication outcome, lesson-store path, and timestamp. No manual override is permitted.
 
 ## Call L2 OpenCode Implementation Work
 
@@ -161,7 +183,7 @@ echo "" | opencode run --pure --dangerously-skip-permissions --dir "C:\Users\GHC
 7. Touch/create the empty audit report file at `.ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md` before dispatching Codex, to prevent file-system sandbox patch failures on Windows.
 
 ```powershell
-New-Item -ItemType File -Path .ly_state\session\audit_reports\role{role_id}_{gate_slug}_{YYYYMMDD}.md -Force; echo "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - Codex L3 Independent Review. GATE: {gate_name}. L2_SESSION: {l2_session_id}. L2_ROLE: {l2_role_id} {l2_role_name}. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; read required SKILL.md only from REPO_SKILL_ROOT. Any skill from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local files read and forbidden path scan result. SCOPE: [FILES]. CHECKS: [CHECKLIST]. REQUIREMENTS: first run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; use repo-relative paths from REPO_ROOT only; never read/write Antigravity scratch paths. AUDIT EVIDENCE CHECKLIST: 1. Verify l2_role_id={l2_role_id} != l3_role_id={role_id}. 2. Verify code changes match approved scope. 3. Run all tests. 4. Check PIT safety, no look-ahead bias. 5. Validate SOD boundaries. 6. Verify L2 report lists repo-local skill source evidence. VERDICT: Write [APPROVED] or [NEEDS_FIX] to .ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md. GATE UPDATE: Update ONLY the '{gate_name}' entry in phase_gates.json with: l2_session_id='{l2_session_id}', l2_role_id={l2_role_id}, l2_role_name='{l2_role_name}', l3_session_id='{l3_session_id}', l3_role_id={role_id}, l3_role_name='{role_name}', audit_report_path='.ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md', final_verdict='[verdict]', sod_boundary_checked=true, writer_auditor_separated=true. FINAL STEP: L1 must run 'python scripts/sod_gate_enforcer.py' after gate update." | codex exec -s danger-full-access --dangerously-bypass-approvals-and-sandbox
+New-Item -ItemType File -Path .ly_state\session\audit_reports\role{role_id}_{gate_slug}_{YYYYMMDD}.md -Force; echo "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - Codex L3 Independent Review. GATE: {gate_name}. L2_SESSION: {l2_session_id}. L2_ROLE: {l2_role_id} {l2_role_name}. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; read required SKILL.md only from REPO_SKILL_ROOT. Any skill from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local files read and forbidden path scan result. SCOPE: [FILES]. CHECKS: [CHECKLIST]. REQUIREMENTS: first run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; use repo-relative paths from REPO_ROOT only; never read/write Antigravity scratch paths. AUDIT EVIDENCE CHECKLIST: 1. Verify l2_role_id={l2_role_id} != l3_role_id={role_id}. 2. Verify code changes match approved scope. 3. Run all tests. 4. Check PIT safety, no look-ahead bias. 5. Validate SOD boundaries. 6. Verify L2 report lists repo-local skill source evidence. VERDICT: Write [APPROVED] or [NEEDS_FIX] to .ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md. GATE UPDATE: Update ONLY the '{gate_name}' entry in phase_gates.json with: l2_session_id='{l2_session_id}', l2_role_id={l2_role_id}, l2_role_name='{l2_role_name}', l3_session_id='{l3_session_id}', l3_role_id={role_id}, l3_role_name='{role_name}', audit_report_path='.ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md', final_verdict='[verdict]', sod_boundary_checked=true, writer_auditor_separated=true. FINAL STEP: L1 must run 'python scripts/sod_gate_enforcer.py' after gate update." | codex exec -m "cx/gpt-5.6-sol(max)" -s danger-full-access --dangerously-bypass-approvals-and-sandbox
 ```
 
 **Scoped gate updates:** L3 MUST update only the specific gate being audited. Do not modify other gates or create new gates.
@@ -203,7 +225,7 @@ Valid gate requires all fields:
 **Field requirements (gates after 2026-06-11)**:
 - `l2_role_id`: Integer role ID (6-16 for OpenCode L2), must exist in `.agents/agent/*.md`
 - `l2_role_name`: Role name from spec (e.g., "backend-engineer", "compliance-officer")
-- `l3_role_id`: Integer role ID (17-25 for Codex L3), validated: tier=3, platform=Codex, has sod_boundary
+- `l3_role_id`: Integer role ID (17-30 for Codex L3), validated: tier=3, platform=Codex, has sod_boundary
 - `l3_role_name`: Role name from spec (e.g., "code-reviewer", "compliance-officer")
 - `l2_role_id != l3_role_id`: Writer != Auditor enforcement
 - `audit_report_path`: Must exist as file and contain the verdict string
@@ -232,8 +254,8 @@ Missing/invalid fields -> `PENDING_L3_AUDIT`.
 2. **Timer Ban**: Absolutely do not use timer tools (`schedule`, `cron`, or background sleeps). Rely strictly on Reactive Wakeup.
 3. **L1 Dynamic Composite Role**: L1's base role is `orchestrator`. Depending on the task domain, L1 must dynamically combine it with a specialist role (e.g. `tech-lead` or `machine-learning-engineer` for quant/architecture, `release-manager` for gates). Announce this composite role on the very first line of the response: `🤖 **Applying knowledge of @[orchestrator / <specialist-role>]...**`.
 4. **Memory Update Gate**: Whenever a gate is `[APPROVED]`, L1 must review and update `tech-decisions.md` to record the new configurations/findings before starting a new phase.
-5. **Final Codex Deep Audit Rule**: After L3 returns `[APPROVED]` and before the final enforcer, L1 MUST dispatch a final deep audit to Codex CLI model `cx/gpt-5.6-sol`. The audit is advisory and read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. Codex L3's verdict remains the sole approval authority. Use this safe command pattern:
+5. **Final Codex Deep Audit Rule**: After L3 returns `[APPROVED]` and before the final enforcer, L1 MUST dispatch a final deep audit to Codex CLI model `"cx/gpt-5.6-sol(max)"`. The audit is advisory and read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. Codex L3's verdict remains the sole approval authority. Use this safe command pattern:
    ```powershell
-   echo "<TASK_PROMPT>" | codex exec -m cx/gpt-5.6-sol --dangerously-bypass-approvals-and-sandbox
+   echo "<TASK_PROMPT>" | codex exec -m "cx/gpt-5.6-sol(max)" --dangerously-bypass-approvals-and-sandbox
    ```
-6. **Plan Approval Rule**: Mọi kế hoạch triển khai (implementation_plan.md hoặc tệp kế hoạch tùy chỉnh) bắt buộc phải được gửi cho Codex (sử dụng model `cx/gpt-5.6-sol-review` qua tham số `-m`) -duyệt trước khi L1 ủy quyền cho L2 triển khai thực tế. Tuyệt đối không tự động bỏ qua bước này ngay cả khi hệ thống tự động cho phép (auto-approved).
+6. **Plan Creation & Approval Rule**: L1 TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ LẬP KẾ HOẠCH. Mọi tác vụ lập kế hoạch tổng thể (master plan) và kế hoạch chi tiết (implementation_plan.md) bắt buộc phải được giao cho Codex L3 (sử dụng model `"cx/gpt-5.6-sol(max)"`) với một role phù hợp (không phải role audit) thực hiện. Sau khi kế hoạch được lập, quy trình audit bởi Codex L3 (role audit) vẫn phải diễn ra nghiêm ngặt trước khi chuyển cho L2 triển khai thực tế. L1 chỉ đóng vai trò điều phối, không được phép viết hay chỉnh sửa kế hoạch.

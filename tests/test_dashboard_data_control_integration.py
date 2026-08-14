@@ -354,6 +354,20 @@ class TestUpdateMarketDataResult:
         result = DataLoaderService.load_update_market_data_result()
         assert result["exists"] is False
 
+    def test_projection_remains_display_only_while_ledger_is_surfaced(self, tmp_path):
+        projection = tmp_path / "update_market_data_result.json"
+        projection.write_text(json.dumps({"status": "published"}), encoding="utf-8")
+        ledger = tmp_path / "market_data_receipts"
+        ledger.mkdir()
+        (ledger / "20260729T090000000000Z_a.terminal.json").write_text(
+            json.dumps({"attempt_id": "20260729T090000000000Z_a", "state": "terminal", "execution_allowed": False}),
+            encoding="utf-8",
+        )
+        with patch("services.data_loader.MARKET_UPDATE_RESULT_FILE", projection):
+            with patch("services.data_loader.SESSION_DIR", tmp_path):
+                assert DataLoaderService.load_update_market_data_result()["data"]["status"] == "published"
+                assert DataLoaderService.load_market_data_attempt_ledger()["state"] == "BLOCKED"
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # Command Center: Phase Definitions Tests

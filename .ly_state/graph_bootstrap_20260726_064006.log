@@ -1,0 +1,194 @@
+2026-07-26 06:40:06,913 INFO start total_symbols=703 log_path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_bootstrap_20260726_064006.log
+2026-07-26 06:40:08,135 INFO endpoint result symbol=INDUSTRY endpoint=list rows=177
+2026-07-26 06:40:08,147 INFO snapshot saved entity=industry_list path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\industry_list\2026-07-25\snapshot.parquet
+2026-07-26 06:40:15,880 INFO endpoint result symbol=INDUSTRY endpoint=sectors rows=695
+2026-07-26 06:40:15,884 INFO snapshot saved entity=industry_sectors path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\industry_sectors\2026-07-25\snapshot.parquet
+2026-07-26 06:40:16,635 INFO endpoint result symbol=INDUSTRY endpoint=list_by_industry rows=7809
+2026-07-26 06:40:16,645 INFO snapshot saved entity=industry_list_by_industry path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\industry_list_by_industry\2026-07-25\snapshot.parquet
+2026-07-26 06:40:16,646 INFO symbol start symbol=AAA
+2026-07-26 06:40:17,417 INFO endpoint result symbol=AAA endpoint=info rows=1
+2026-07-26 06:40:17,422 INFO snapshot saved entity=info path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\info\2026-07-25\snapshot.parquet
+2026-07-26 06:40:18,235 INFO endpoint result symbol=AAA endpoint=shareholders rows=1
+2026-07-26 06:40:18,236 INFO snapshot saved entity=shareholders path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\shareholders\2026-07-25\snapshot.parquet
+2026-07-26 06:40:19,216 INFO endpoint result symbol=AAA endpoint=subsidiaries rows=14
+2026-07-26 06:40:19,218 INFO snapshot saved entity=subsidiaries path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\subsidiaries\2026-07-25\snapshot.parquet
+2026-07-26 06:40:20,215 INFO endpoint result symbol=AAA endpoint=ownership rows=4
+2026-07-26 06:40:20,218 INFO snapshot saved entity=ownership path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ownership\2026-07-25\snapshot.parquet
+2026-07-26 06:40:21,231 INFO endpoint result symbol=AAA endpoint=officers rows=11
+2026-07-26 06:40:21,233 INFO snapshot saved entity=officers path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\officers\2026-07-25\snapshot.parquet
+2026-07-26 06:40:22,239 INFO endpoint result symbol=AAA endpoint=news rows=1
+2026-07-26 06:40:22,242 INFO snapshot saved entity=news path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\news\2026-07-25\snapshot.parquet
+2026-07-26 06:40:25,552 INFO endpoint result symbol=AAA endpoint=income_statement rows=25
+2026-07-26 06:40:25,555 INFO snapshot saved entity=income_statement path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\income_statement\2026-07-25\snapshot.parquet
+2026-07-26 06:40:28,905 INFO endpoint result symbol=AAA endpoint=cash_flow rows=50
+2026-07-26 06:40:28,908 INFO snapshot saved entity=cash_flow path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\cash_flow\2026-07-25\snapshot.parquet
+2026-07-26 06:40:29,248 INFO endpoint result symbol=AAA endpoint=ratios rows=58
+2026-07-26 06:40:29,250 INFO snapshot saved entity=ratios path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ratios\2026-07-25\snapshot.parquet
+2026-07-26 06:40:29,250 INFO symbol done symbol=AAA errors=0
+2026-07-26 06:40:29,250 INFO symbol start symbol=AAM
+2026-07-26 06:40:30,223 INFO endpoint result symbol=AAM endpoint=info rows=1
+2026-07-26 06:40:30,229 INFO snapshot saved entity=info path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\info\2026-07-25\snapshot.parquet
+2026-07-26 06:40:31,223 INFO endpoint result symbol=AAM endpoint=shareholders rows=2
+2026-07-26 06:40:31,227 INFO snapshot saved entity=shareholders path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\shareholders\2026-07-25\snapshot.parquet
+2026-07-26 06:40:32,274 INFO endpoint result symbol=AAM endpoint=subsidiaries rows=1
+2026-07-26 06:40:32,276 INFO snapshot saved entity=subsidiaries path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\subsidiaries\2026-07-25\snapshot.parquet
+2026-07-26 06:40:33,210 INFO endpoint result symbol=AAM endpoint=ownership rows=2
+2026-07-26 06:40:33,212 INFO snapshot saved entity=ownership path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ownership\2026-07-25\snapshot.parquet
+2026-07-26 06:40:34,193 INFO endpoint result symbol=AAM endpoint=officers rows=13
+2026-07-26 06:40:34,195 INFO snapshot saved entity=officers path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\officers\2026-07-25\snapshot.parquet
+2026-07-26 06:40:35,225 INFO endpoint result symbol=AAM endpoint=news rows=1
+2026-07-26 06:40:35,228 INFO snapshot saved entity=news path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\news\2026-07-25\snapshot.parquet
+2026-07-26 06:40:36,246 INFO endpoint result symbol=AAM endpoint=income_statement rows=25
+2026-07-26 06:40:36,249 INFO snapshot saved entity=income_statement path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\income_statement\2026-07-25\snapshot.parquet
+2026-07-26 06:40:37,572 INFO endpoint result symbol=AAM endpoint=cash_flow rows=50
+2026-07-26 06:40:37,575 INFO snapshot saved entity=cash_flow path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\cash_flow\2026-07-25\snapshot.parquet
+2026-07-26 06:40:38,282 INFO endpoint result symbol=AAM endpoint=ratios rows=58
+2026-07-26 06:40:38,284 INFO snapshot saved entity=ratios path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ratios\2026-07-25\snapshot.parquet
+2026-07-26 06:40:38,284 INFO symbol done symbol=AAM errors=0
+2026-07-26 06:40:38,285 INFO symbol start symbol=AAN
+2026-07-26 06:40:39,243 INFO endpoint result symbol=AAN endpoint=info rows=1
+2026-07-26 06:40:39,247 INFO snapshot saved entity=info path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\info\2026-07-25\snapshot.parquet
+2026-07-26 06:40:40,221 INFO endpoint result symbol=AAN endpoint=shareholders rows=1
+2026-07-26 06:40:40,225 INFO snapshot saved entity=shareholders path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\shareholders\2026-07-25\snapshot.parquet
+2026-07-26 06:40:41,230 INFO endpoint result symbol=AAN endpoint=subsidiaries rows=2
+2026-07-26 06:40:41,235 INFO snapshot saved entity=subsidiaries path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\subsidiaries\2026-07-25\snapshot.parquet
+2026-07-26 06:40:42,319 INFO endpoint result symbol=AAN endpoint=ownership rows=2
+2026-07-26 06:40:42,321 INFO snapshot saved entity=ownership path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ownership\2026-07-25\snapshot.parquet
+2026-07-26 06:40:43,249 INFO endpoint result symbol=AAN endpoint=officers rows=10
+2026-07-26 06:40:43,251 INFO snapshot saved entity=officers path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\officers\2026-07-25\snapshot.parquet
+2026-07-26 06:40:44,259 INFO endpoint result symbol=AAN endpoint=news rows=1
+2026-07-26 06:40:44,261 INFO snapshot saved entity=news path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\news\2026-07-25\snapshot.parquet
+2026-07-26 06:40:45,559 INFO endpoint result symbol=AAN endpoint=income_statement rows=25
+2026-07-26 06:40:45,561 INFO snapshot saved entity=income_statement path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\income_statement\2026-07-25\snapshot.parquet
+2026-07-26 06:40:46,850 INFO endpoint result symbol=AAN endpoint=cash_flow rows=50
+2026-07-26 06:40:46,852 INFO snapshot saved entity=cash_flow path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\cash_flow\2026-07-25\snapshot.parquet
+2026-07-26 06:40:47,578 INFO endpoint result symbol=AAN endpoint=ratios rows=58
+2026-07-26 06:40:47,580 INFO snapshot saved entity=ratios path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ratios\2026-07-25\snapshot.parquet
+2026-07-26 06:40:47,580 INFO symbol done symbol=AAN errors=0
+2026-07-26 06:40:47,580 INFO symbol start symbol=AAT
+2026-07-26 06:40:48,221 INFO endpoint result symbol=AAT endpoint=info rows=1
+2026-07-26 06:40:48,225 INFO snapshot saved entity=info path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\info\2026-07-25\snapshot.parquet
+2026-07-26 06:40:49,221 INFO endpoint result symbol=AAT endpoint=shareholders rows=1
+2026-07-26 06:40:49,223 INFO snapshot saved entity=shareholders path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\shareholders\2026-07-25\snapshot.parquet
+2026-07-26 06:40:50,241 INFO endpoint result symbol=AAT endpoint=subsidiaries rows=4
+2026-07-26 06:40:50,243 INFO snapshot saved entity=subsidiaries path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\subsidiaries\2026-07-25\snapshot.parquet
+2026-07-26 06:40:51,234 INFO endpoint result symbol=AAT endpoint=ownership rows=2
+2026-07-26 06:40:51,236 INFO snapshot saved entity=ownership path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ownership\2026-07-25\snapshot.parquet
+2026-07-26 06:40:52,259 INFO endpoint result symbol=AAT endpoint=officers rows=13
+2026-07-26 06:40:52,262 INFO snapshot saved entity=officers path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\officers\2026-07-25\snapshot.parquet
+2026-07-26 06:40:53,251 INFO endpoint result symbol=AAT endpoint=news rows=1
+2026-07-26 06:40:53,254 INFO snapshot saved entity=news path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\news\2026-07-25\snapshot.parquet
+2026-07-26 06:40:54,259 INFO endpoint result symbol=AAT endpoint=income_statement rows=25
+2026-07-26 06:40:54,261 INFO snapshot saved entity=income_statement path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\income_statement\2026-07-25\snapshot.parquet
+2026-07-26 06:40:55,926 INFO endpoint result symbol=AAT endpoint=cash_flow rows=50
+2026-07-26 06:40:55,931 INFO snapshot saved entity=cash_flow path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\cash_flow\2026-07-25\snapshot.parquet
+2026-07-26 06:40:56,229 INFO endpoint result symbol=AAT endpoint=ratios rows=58
+2026-07-26 06:40:56,232 INFO snapshot saved entity=ratios path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ratios\2026-07-25\snapshot.parquet
+2026-07-26 06:40:56,232 INFO symbol done symbol=AAT errors=0
+2026-07-26 06:40:56,232 INFO symbol start symbol=ABR
+2026-07-26 06:40:57,251 INFO endpoint result symbol=ABR endpoint=info rows=1
+2026-07-26 06:40:57,255 INFO snapshot saved entity=info path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\info\2026-07-25\snapshot.parquet
+2026-07-26 06:40:58,256 INFO endpoint result symbol=ABR endpoint=shareholders rows=3
+2026-07-26 06:40:58,258 INFO snapshot saved entity=shareholders path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\shareholders\2026-07-25\snapshot.parquet
+2026-07-26 06:40:59,240 INFO endpoint result symbol=ABR endpoint=subsidiaries rows=1
+2026-07-26 06:40:59,242 INFO snapshot saved entity=subsidiaries path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\subsidiaries\2026-07-25\snapshot.parquet
+2026-07-26 06:41:00,257 INFO endpoint result symbol=ABR endpoint=ownership rows=4
+2026-07-26 06:41:00,259 INFO snapshot saved entity=ownership path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ownership\2026-07-25\snapshot.parquet
+2026-07-26 06:41:01,220 INFO endpoint result symbol=ABR endpoint=officers rows=10
+2026-07-26 06:41:01,222 INFO snapshot saved entity=officers path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\officers\2026-07-25\snapshot.parquet
+2026-07-26 06:41:01,935 WARNING endpoint error symbol=ABR endpoint=news
+2026-07-26 06:41:01,936 WARNING endpoint error symbol=ABR endpoint=income_statement
+2026-07-26 06:41:01,937 WARNING endpoint error symbol=ABR endpoint=cash_flow
+2026-07-26 06:41:01,938 WARNING endpoint error symbol=ABR endpoint=ratios
+2026-07-26 06:41:01,939 INFO symbol done symbol=ABR errors=4
+2026-07-26 06:41:01,939 INFO symbol start symbol=ABS
+2026-07-26 06:41:02,935 WARNING endpoint error symbol=ABS endpoint=info
+2026-07-26 06:41:03,937 WARNING endpoint error symbol=ABS endpoint=shareholders
+2026-07-26 06:41:04,938 WARNING endpoint error symbol=ABS endpoint=subsidiaries
+2026-07-26 06:41:05,937 WARNING endpoint error symbol=ABS endpoint=ownership
+2026-07-26 06:41:06,939 WARNING endpoint error symbol=ABS endpoint=officers
+2026-07-26 06:41:08,223 INFO endpoint result symbol=ABS endpoint=news rows=1
+2026-07-26 06:41:08,226 INFO snapshot saved entity=news path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\news\2026-07-25\snapshot.parquet
+2026-07-26 06:41:08,941 WARNING endpoint error symbol=ABS endpoint=income_statement
+2026-07-26 06:41:08,945 WARNING endpoint error symbol=ABS endpoint=cash_flow
+2026-07-26 06:41:08,947 WARNING endpoint error symbol=ABS endpoint=ratios
+2026-07-26 06:41:08,947 INFO symbol done symbol=ABS errors=8
+2026-07-26 06:41:08,948 INFO symbol start symbol=ABT
+2026-07-26 06:41:09,941 WARNING endpoint error symbol=ABT endpoint=info
+2026-07-26 06:41:10,941 WARNING endpoint error symbol=ABT endpoint=shareholders
+2026-07-26 06:41:11,942 WARNING endpoint error symbol=ABT endpoint=subsidiaries
+2026-07-26 06:41:12,942 WARNING endpoint error symbol=ABT endpoint=ownership
+2026-07-26 06:41:13,942 WARNING endpoint error symbol=ABT endpoint=officers
+2026-07-26 06:41:14,943 WARNING endpoint error symbol=ABT endpoint=news
+2026-07-26 06:41:14,948 WARNING endpoint error symbol=ABT endpoint=income_statement
+2026-07-26 06:41:14,952 WARNING endpoint error symbol=ABT endpoint=cash_flow
+2026-07-26 06:41:14,953 WARNING endpoint error symbol=ABT endpoint=ratios
+2026-07-26 06:41:14,954 INFO symbol done symbol=ABT errors=9
+2026-07-26 06:41:14,954 INFO symbol start symbol=ACB
+2026-07-26 06:41:16,265 INFO endpoint result symbol=ACB endpoint=info rows=1
+2026-07-26 06:41:16,269 INFO snapshot saved entity=info path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\info\2026-07-25\snapshot.parquet
+2026-07-26 06:41:17,232 INFO endpoint result symbol=ACB endpoint=shareholders rows=15
+2026-07-26 06:41:17,235 INFO snapshot saved entity=shareholders path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\shareholders\2026-07-25\snapshot.parquet
+2026-07-26 06:41:18,285 INFO endpoint result symbol=ACB endpoint=subsidiaries rows=4
+2026-07-26 06:41:18,289 INFO snapshot saved entity=subsidiaries path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\subsidiaries\2026-07-25\snapshot.parquet
+2026-07-26 06:41:19,290 INFO endpoint result symbol=ACB endpoint=ownership rows=4
+2026-07-26 06:41:19,293 INFO snapshot saved entity=ownership path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ownership\2026-07-25\snapshot.parquet
+2026-07-26 06:41:20,236 INFO endpoint result symbol=ACB endpoint=officers rows=20
+2026-07-26 06:41:20,238 INFO snapshot saved entity=officers path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\officers\2026-07-25\snapshot.parquet
+2026-07-26 06:41:21,260 INFO endpoint result symbol=ACB endpoint=news rows=1
+2026-07-26 06:41:21,262 INFO snapshot saved entity=news path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\news\2026-07-25\snapshot.parquet
+2026-07-26 06:41:21,263 WARNING endpoint error symbol=ACB endpoint=income_statement
+2026-07-26 06:41:21,264 WARNING endpoint error symbol=ACB endpoint=cash_flow
+2026-07-26 06:41:21,266 WARNING endpoint error symbol=ACB endpoint=ratios
+2026-07-26 06:41:21,266 INFO symbol done symbol=ACB errors=3
+2026-07-26 06:41:21,267 INFO symbol start symbol=ACC
+2026-07-26 06:41:22,264 INFO endpoint result symbol=ACC endpoint=info rows=1
+2026-07-26 06:41:22,268 INFO snapshot saved entity=info path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\info\2026-07-25\snapshot.parquet
+2026-07-26 06:41:23,234 INFO endpoint result symbol=ACC endpoint=shareholders rows=3
+2026-07-26 06:41:23,236 INFO snapshot saved entity=shareholders path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\shareholders\2026-07-25\snapshot.parquet
+2026-07-26 06:41:24,223 INFO endpoint result symbol=ACC endpoint=subsidiaries rows=2
+2026-07-26 06:41:24,225 INFO snapshot saved entity=subsidiaries path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\subsidiaries\2026-07-25\snapshot.parquet
+2026-07-26 06:41:24,947 WARNING endpoint error symbol=ACC endpoint=ownership
+2026-07-26 06:41:26,251 INFO endpoint result symbol=ACC endpoint=officers rows=11
+2026-07-26 06:41:26,254 INFO snapshot saved entity=officers path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\officers\2026-07-25\snapshot.parquet
+2026-07-26 06:41:27,264 INFO endpoint result symbol=ACC endpoint=news rows=1
+2026-07-26 06:41:27,266 INFO snapshot saved entity=news path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\news\2026-07-25\snapshot.parquet
+2026-07-26 06:41:27,267 WARNING endpoint error symbol=ACC endpoint=income_statement
+2026-07-26 06:41:27,268 WARNING endpoint error symbol=ACC endpoint=cash_flow
+2026-07-26 06:41:27,269 WARNING endpoint error symbol=ACC endpoint=ratios
+2026-07-26 06:41:27,269 INFO symbol done symbol=ACC errors=4
+2026-07-26 06:41:27,269 INFO symbol start symbol=ACG
+2026-07-26 06:41:27,950 WARNING endpoint error symbol=ACG endpoint=info
+2026-07-26 06:41:29,241 INFO endpoint result symbol=ACG endpoint=shareholders rows=3
+2026-07-26 06:41:29,243 INFO snapshot saved entity=shareholders path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\shareholders\2026-07-25\snapshot.parquet
+2026-07-26 06:41:30,254 INFO endpoint result symbol=ACG endpoint=subsidiaries rows=4
+2026-07-26 06:41:30,259 INFO snapshot saved entity=subsidiaries path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\subsidiaries\2026-07-25\snapshot.parquet
+2026-07-26 06:41:31,284 INFO endpoint result symbol=ACG endpoint=ownership rows=2
+2026-07-26 06:41:31,286 INFO snapshot saved entity=ownership path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ownership\2026-07-25\snapshot.parquet
+2026-07-26 06:41:32,271 INFO endpoint result symbol=ACG endpoint=officers rows=15
+2026-07-26 06:41:32,273 INFO snapshot saved entity=officers path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\officers\2026-07-25\snapshot.parquet
+2026-07-26 06:41:33,307 INFO endpoint result symbol=ACG endpoint=news rows=1
+2026-07-26 06:41:33,309 INFO snapshot saved entity=news path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\news\2026-07-25\snapshot.parquet
+2026-07-26 06:41:34,292 INFO endpoint result symbol=ACG endpoint=income_statement rows=25
+2026-07-26 06:41:34,295 INFO snapshot saved entity=income_statement path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\income_statement\2026-07-25\snapshot.parquet
+2026-07-26 06:41:35,591 INFO endpoint result symbol=ACG endpoint=cash_flow rows=50
+2026-07-26 06:41:35,593 INFO snapshot saved entity=cash_flow path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\cash_flow\2026-07-25\snapshot.parquet
+2026-07-26 06:41:35,955 WARNING endpoint error symbol=ACG endpoint=ratios
+2026-07-26 06:41:35,957 INFO symbol done symbol=ACG errors=2
+2026-07-26 06:41:35,958 INFO symbol start symbol=ACL
+2026-07-26 06:41:37,321 INFO endpoint result symbol=ACL endpoint=info rows=1
+2026-07-26 06:41:37,324 INFO snapshot saved entity=info path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\info\2026-07-25\snapshot.parquet
+2026-07-26 06:41:38,367 INFO endpoint result symbol=ACL endpoint=shareholders rows=2
+2026-07-26 06:41:38,369 INFO snapshot saved entity=shareholders path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\shareholders\2026-07-25\snapshot.parquet
+2026-07-26 06:41:39,281 INFO endpoint result symbol=ACL endpoint=subsidiaries rows=1
+2026-07-26 06:41:39,283 INFO snapshot saved entity=subsidiaries path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\subsidiaries\2026-07-25\snapshot.parquet
+2026-07-26 06:41:40,278 INFO endpoint result symbol=ACL endpoint=ownership rows=2
+2026-07-26 06:41:40,279 INFO snapshot saved entity=ownership path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\ownership\2026-07-25\snapshot.parquet
+2026-07-26 06:41:41,259 INFO endpoint result symbol=ACL endpoint=officers rows=11
+2026-07-26 06:41:41,262 INFO snapshot saved entity=officers path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\officers\2026-07-25\snapshot.parquet
+2026-07-26 06:41:42,309 INFO endpoint result symbol=ACL endpoint=news rows=1
+2026-07-26 06:41:42,312 INFO snapshot saved entity=news path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\news\2026-07-25\snapshot.parquet
+2026-07-26 06:41:43,285 INFO endpoint result symbol=ACL endpoint=income_statement rows=25
+2026-07-26 06:41:43,289 INFO snapshot saved entity=income_statement path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\income_statement\2026-07-25\snapshot.parquet
+2026-07-26 06:41:44,631 INFO endpoint result symbol=ACL endpoint=cash_flow rows=50
+2026-07-26 06:41:44,635 INFO snapshot saved entity=cash_flow path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\cash_flow\2026-07-25\snapshot.parquet

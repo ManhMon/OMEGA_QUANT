@@ -24,6 +24,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Any
 
+import psutil
+
 import numpy as np
 import pandas as pd
 
@@ -54,9 +56,10 @@ class PerformanceProfiler:
     - Bottleneck identification
     """
     
-    def __init__(self, num_tickers: int = 100, num_days: int = 252):
+    def __init__(self, num_tickers: int = 100, num_days: int = 252, end_date: str = "2026-06-13"):
         self.num_tickers = num_tickers
         self.num_days = num_days
+        self.end_date = datetime.strptime(end_date, "%Y-%m-%d")
         self.results: Dict[str, Any] = {}
         
     def generate_test_universe(self) -> List[str]:
@@ -82,7 +85,7 @@ class PerformanceProfiler:
         universe = self.generate_test_universe()
         
         # Configure pipeline
-        end_date = datetime.now()
+        end_date = self.end_date
         start_date = end_date - timedelta(days=self.num_days)
         
         config = PipelineConfig(
@@ -129,6 +132,7 @@ class PerformanceProfiler:
                 "profile_output": profile_output,
                 "timestamp": datetime.now().isoformat()
             }
+            metrics["max_rss_mb"] = psutil.Process().memory_info().rss / (1024 * 1024)
             
             # Add pipeline-specific metrics if available
             if result.metrics:
@@ -305,6 +309,11 @@ def main():
         help="Number of days to test (default: 252)"
     )
     parser.add_argument(
+        "--end-date",
+        default="2026-06-13",
+        help="Fixed inclusive data end date (YYYY-MM-DD)",
+    )
+    parser.add_argument(
         "--profile-detailed",
         action="store_true",
         help="Enable detailed cProfile profiling"
@@ -322,6 +331,7 @@ def main():
     profiler = PerformanceProfiler(
         num_tickers=args.tickers,
         num_days=args.days
+        , end_date=args.end_date
     )
     
     # Run profiling

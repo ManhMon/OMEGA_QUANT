@@ -1,6 +1,6 @@
 """Unit tests for PIT-safe news aggregation."""
 
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -104,17 +104,19 @@ def test_vnstock_news_filters_keywords_and_pit_window(mock_universe, mock_vnstoc
 
     company = MagicMock()
     company.news.return_value = mock_vnstock_news_frame
+    mock_vnstock_news_frame.attrs["pagination"] = {"next_cursor": None}
 
     with patch("vnstock.Company", return_value=company) as mock_company:
         news = agg._scrape_vnstock_news(as_of_time=as_of, hours_back=24)
 
     assert [item.ticker for item in news] == ["VCB", "VCB"]
     assert [item.timestamp for item in news] == [
-        datetime(2026, 6, 19, 14, 30, 0),
-        datetime(2026, 6, 18, 15, 0, 1),
+        datetime(2026, 6, 19, 7, 30, 0, tzinfo=timezone.utc),
+        datetime(2026, 6, 18, 8, 0, 1, tzinfo=timezone.utc),
     ]
-    assert all(item.timestamp < as_of for item in news)
-    assert all(item.timestamp > as_of - timedelta(hours=24) for item in news)
+    as_of_utc = datetime(2026, 6, 19, 8, 0, 0, tzinfo=timezone.utc)
+    assert all(item.timestamp < as_of_utc for item in news)
+    assert all(item.timestamp > as_of_utc - timedelta(hours=24) for item in news)
     assert all(item.source == "vnstock" for item in news)
     assert all(isinstance(item, SentimentInput) for item in news)
     mock_universe.assert_called_once_with()
@@ -130,6 +132,7 @@ def test_vnstock_news_continues_on_symbol_failure(mock_universe, mock_vnstock_ne
     bad_company.news.side_effect = RuntimeError("boom")
     good_company = MagicMock()
     good_company.news.return_value = mock_vnstock_news_frame.iloc[[0]].copy()
+    good_company.news.return_value.attrs["pagination"] = {"next_cursor": None}
 
     def company_side_effect(symbol, source):
         assert source == "VCI"
@@ -171,13 +174,16 @@ def test_vietstock_relative_time(mock_get, mock_vietstock_html):
 
     relative_article = [item for item in news if "HPG" in item.text]
     assert len(relative_article) == 1
-    assert relative_article[0].timestamp == as_of - timedelta(minutes=15)
+    assert relative_article[0].timestamp == datetime(2026, 6, 19, 7, 45, tzinfo=timezone.utc)
 
 
+@patch.object(NewsAggregator, "_scrape_cafef", return_value=[])
+@patch.object(NewsAggregator, "_scrape_tinnhanhck", return_value=[])
+@patch.object(NewsAggregator, "_scrape_vneconomy", return_value=[])
 @patch.object(NewsAggregator, "_scrape_vnstock_news")
 @patch.object(NewsAggregator, "_scrape_vietstock")
-def test_fetch_recent_news_sorts_desc(mock_vietstock, mock_vnstock):
-    as_of = datetime(2026, 6, 19, 15, 0, 0)
+def test_fetch_recent_news_sorts_desc(mock_vietstock, mock_vnstock, mock_vnecon, mock_tinnhanh, mock_cafef):
+    as_of = datetime.now(timezone.utc)
     mock_vnstock.return_value = [
         SentimentInput(text="old", source="vnstock", timestamp=as_of - timedelta(hours=2), ticker="VCB")
     ]
@@ -190,14 +196,17 @@ def test_fetch_recent_news_sorts_desc(mock_vietstock, mock_vnstock):
     assert [item.text for item in news] == ["new", "old"]
 
 
+@patch.object(NewsAggregator, "_scrape_cafef", return_value=[])
+@patch.object(NewsAggregator, "_scrape_tinnhanhck", return_value=[])
+@patch.object(NewsAggregator, "_scrape_vneconomy", return_value=[])
 @patch.object(NewsAggregator, "_load_universe_tickers", return_value=[])
 @patch("requests.get")
-def test_empty_results_on_network_failure(mock_get, mock_universe):
+def test_empty_results_on_network_failure(mock_get, mock_universe, mock_vnecon, mock_tinnhanh, mock_cafef):
     fail_resp = MagicMock()
     fail_resp.raise_for_status = MagicMock(side_effect=Exception("Network error"))
     mock_get.return_value = fail_resp
 
-    as_of = datetime(2026, 6, 19, 15, 0, 0)
+    as_of = datetime.now(timezone.utc)
     news = NewsAggregator().fetch_recent_news(as_of_time=as_of, hours_back=24)
 
     assert news == []

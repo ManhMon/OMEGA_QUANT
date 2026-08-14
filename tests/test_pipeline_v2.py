@@ -118,8 +118,8 @@ def test_trading_pipeline_v2_backtest(tmp_path):
         DriftOverlay(lookback=5, ic_threshold=0.0, drift_exposure=0.5),
         HMMRegimeOverlay(bear_exposure=0.5, bull_exposure=1.1, sideways_exposure=0.8, retrain_every=10),
         RegimeAwareWFOverlay(bear_scale=0.3, bull_scale=1.0, sideways_scale=0.7, retrain_every=10, min_train=10),
+        ThompsonSamplingWeightOverlay(lookback=5, update_every=2),
         RegimeOverlay(hysteresis_days=2, dd_threshold=-0.10),
-        ThompsonSamplingWeightOverlay(lookback=5, update_every=2)
     ]
     
     pipeline = TradingPipelineV2(
@@ -416,3 +416,102 @@ def test_weight_smoothing_overlay_exposure_blend_one_matches_old_rescale():
     smoothed = WeightSmoothingOverlay(ema_alpha=0.5, exposure_blend=1.0).apply(weights, pd.DataFrame(), {})
 
     assert smoothed.abs().sum(axis=1).loc[dates[1]] == pytest.approx(0.0)
+
+
+def test_pipeline_rejects_duplicate_regime_overlay(tmp_path):
+    with pytest.raises(ValueError, match="At most one RegimeOverlay"):
+        TradingPipelineV2(
+            feature_store=DatabaseFeatureStoreAdapter(lambda *_: pd.DataFrame()),
+            state_manager=PipelineStateManager(tmp_path),
+            output_handler=BacktestOutputHandler(tmp_path / "a.json", tmp_path / "a.csv"),
+            overlays=[RegimeOverlay(), RegimeOverlay()],
+            config={},
+        )
+
+
+def test_pipeline_rejects_regime_overlay_not_last(tmp_path):
+    with pytest.raises(ValueError, match="RegimeOverlay must be the last overlay"):
+        TradingPipelineV2(
+            feature_store=DatabaseFeatureStoreAdapter(lambda *_: pd.DataFrame()),
+            state_manager=PipelineStateManager(tmp_path),
+            output_handler=BacktestOutputHandler(tmp_path / "a.json", tmp_path / "a.csv"),
+            overlays=[RegimeOverlay(), TCostOverlay()],
+            config={},
+        )
+
+
+def test_regime_overlay_preserves_cash_residual_without_renorm():
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    weights = pd.DataFrame({"HPG": [0.4, 0.4], "SSI": [0.2, -0.1]}, index=dates)
+    panel = pd.DataFrame(
+        [{"date": dt, "symbol": sym, "returns": 0.01} for dt in dates for sym in ["HPG", "SSI"]]
+    )
+    result = RegimeOverlay(bull_exposure=0.8, bear_exposure=0.8, sideways_exposure=0.8).apply(weights, panel, {})
+    assert result.abs().sum(axis=1).iloc[0] == pytest.approx(weights.abs().sum(axis=1).iloc[0] * 0.8)
+
+
+def test_crash_detector_excludes_inactive_members_without_survivorship_bias(tmp_path):
+    captured = {}
+
+    def query_fn(start, end, tickers):
+        dates = pd.date_range(end=end, periods=6, freq="D")
+        rows = []
+        symbols = ["HPG", "SSI", "VCB", "FPT", "MBB"]
+        for i, d in enumerate(dates):
+            for symbol in symbols:
+                volume = 1000.0
+                returns = 0.01
+                if symbol == "SSI":
+                    volume = 0.0 if i >= 3 else 1000.0
+                    returns = 0.50
+                rows.append({"date": d, "symbol": symbol, "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "volume": volume, "returns": returns, "composite_signal": 1.0})
+        return pd.DataFrame(rows)
+
+    class CaptureOverlay(TCostOverlay):
+        def apply(self, weights, panel, state):
+            captured.update(state["crash_detector"])
+            return weights
+
+    pipeline = TradingPipelineV2(
+        feature_store=DatabaseFeatureStoreAdapter(query_fn),
+        state_manager=PipelineStateManager(tmp_path),
+        output_handler=BacktestOutputHandler(tmp_path / "a.json", tmp_path / "a.csv"),
+        overlays=[CaptureOverlay()],
+        config={"initial_capital_vnd": 1e9},
+    )
+    pipeline.execute("crash", "2026-01-01", "2026-01-06", ["HPG", "SSI"])
+    assert captured["market_proxy_returns"][4] == pytest.approx(0.0)
+
+
+def test_crash_detector_breadth_floor_applies(tmp_path):
+    captured = {}
+
+    def query_fn(start, end, tickers):
+        dates = pd.date_range(end=end, periods=3, freq="D")
+        rows = []
+        for d in dates:
+            rows.append({"date": d, "symbol": "HPG", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "volume": 1000.0, "returns": 0.03, "composite_signal": 1.0})
+        return pd.DataFrame(rows)
+
+    class CaptureOverlay(TCostOverlay):
+        def apply(self, weights, panel, state):
+            captured.update(state["crash_detector"])
+            return weights
+
+    pipeline = TradingPipelineV2(
+        feature_store=DatabaseFeatureStoreAdapter(query_fn),
+        state_manager=PipelineStateManager(tmp_path),
+        output_handler=BacktestOutputHandler(tmp_path / "b.json", tmp_path / "b.csv"),
+        overlays=[CaptureOverlay()],
+        config={"initial_capital_vnd": 1e9},
+    )
+    pipeline.execute("crashfloor", "2026-01-01", "2026-01-03", ["HPG"])
+    assert captured["breadth_insufficient"].all()
+    assert np.allclose(captured["market_proxy_returns"], 0.0)
+
+
+def test_crash_detector_warmup_defaults_sideways():
+    from omega.quant.portfolio.regime_overlay import compute_regime_exposure
+
+    exposures = compute_regime_exposure(np.array([0.01, -0.01, 0.0]), ma_long=5)
+    assert np.allclose(exposures, 1.0)

@@ -1,0 +1,17 @@
+{
+  "prompt_hash": "bc434cc0fe90820e65b637497d68d4ea806ddcffb76ef3ee1d75db3480214cbe",
+  "prompt_version": "vn_alpha_search_v3_closed_loop",
+  "formulas": [
+    "sub(ts_rank(ret_5d, 7), ts_rank(ret_20d, 30))",
+    "mul(neg(ts_rank(ret_1d, 3)), rank(ts_mean(volume, 5)))",
+    "div(rank(ret_5d), add(abs(ret_1d), ts_std(ret_1d, 20)))",
+    "sub(ts_rank(close, 15), ts_rank(volume, 15))",
+    "mul(rank(volume), sub(ts_rank(close, 5), ts_rank(close, 20)))",
+    "div(ts_mean(ret_1d, 5), add(ts_std(ret_1d, 10), abs(ret_1d)))",
+    "sub(decay_linear(ret_5d, 8), ts_mean(ret_20d, 40))",
+    "mul(ts_rank(volume, 10), neg(ts_rank(ret_1d, 5)))",
+    "div(sub(high, low), add(close, ts_mean(close, 20)))",
+    "sub(ts_std(ret_1d, 5), ts_std(ret_1d, 30))"
+  ],
+  "timestamp": "2026-07-21T00:25:52.486900"
+}

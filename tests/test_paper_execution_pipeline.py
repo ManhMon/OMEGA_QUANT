@@ -14,6 +14,9 @@ Date: 2026-06-19
 """
 
 import json
+import base64
+import hashlib
+import pandas as pd
 import pytest
 import uuid
 from pathlib import Path
@@ -45,6 +48,8 @@ from scripts.run_paper_execution_pipeline import (
 )
 from omega.execution.broker_gateway import OrderSide
 from omega.quant.risk.realtime_risk import RealtimeRiskGuard, RiskLimits, RiskVerdict
+from scripts import update_market_data as updater
+from scripts.run_paper_execution_pipeline import _market_data_decision
 
 
 # ------------------------------------------------------------------ #
@@ -510,6 +515,14 @@ class TestRunPaperExecutionPipeline:
         yield
         _reset_kill_switch_for_testing(auth_token="OMEGA_TEST")
 
+    @pytest.fixture(autouse=True)
+    def _eligible_market_data(self):
+        with patch(
+            "scripts.run_paper_execution_pipeline._market_data_decision",
+            return_value={"code": "MARKET_DATA_EXECUTABLE", "attempt_id": "test", "receipt_path": "test"},
+        ):
+            yield
+
     def test_no_signal_returns_error(self):
         """Pipeline returns error when no signal is available."""
         with patch("scripts.run_paper_execution_pipeline.load_latest_signal", return_value=None):
@@ -631,6 +644,107 @@ class TestRunPaperExecutionPipeline:
         real_pnl_after = real_pnl_latest.read_text() if real_pnl_latest.exists() else None
         assert real_risk_before == real_risk_after, "Real risk_status.json should not be modified by test"
         assert real_pnl_before == real_pnl_after, "Real pnl_latest.json should not be modified by test"
+
+
+class TestMarketDataExecutionGate:
+    @pytest.fixture(autouse=True)
+    def _receipt_keyring(self, monkeypatch):
+        monkeypatch.setenv(updater.MARKET_DATA_RECEIPT_ACTIVE_KEY_ID, "test-20260729")
+        monkeypatch.setenv(updater.MARKET_DATA_RECEIPT_KEYRING, json.dumps({"test-20260729": base64.b64encode(b"x" * 32).decode()}))
+
+    def _signed_receipt(self, directory, attempt_id, state, **fields):
+        record = {
+            "schema_version": 2,
+            "attempt_id": attempt_id,
+            "state": state,
+            "started_at": "2026-07-29T09:00:00+00:00",
+        }
+        record.update(fields)
+        _, keyring = updater._trusted_keyring()
+        signed = updater._sign_receipt(record, "test-20260729", keyring["test-20260729"])
+        (directory / f"{attempt_id}.{state}.json").write_text(json.dumps(signed), encoding="utf-8")
+        return signed
+
+    def _write_v2_attempt(self, tmp_path, attempt_id="20260729T090000000000Z_" + "a" * 32, **terminal_fields):
+        ledger = tmp_path / "market_data_receipts"
+        ledger.mkdir()
+        candidate = tmp_path / "candidate.parquet"
+        pd.DataFrame([{
+            "ticker": "VNM", "date": "2026-07-29", "exchange": "HOSE",
+            "open": 100000.0, "high": 101000.0, "low": 99000.0,
+            "close": 100500.0, "volume": 1000, "as_of": "2026-07-29",
+            "available_at": "2026-07-30T00:00:00+07:00", "source": "test",
+            "price_scale": "VND_FULL", "adjusted": False, "rebuild_date": "2026-07-29",
+        }], columns=updater.CANONICAL_COLUMNS).to_parquet(candidate, index=False)
+        candidate_sha256 = hashlib.sha256(candidate.read_bytes()).hexdigest()
+        pointer = tmp_path / "pointer.json"
+        pointer.write_text(json.dumps({"candidate": str(candidate), "sha256": candidate_sha256}), encoding="utf-8")
+        projection = tmp_path / "projection.json"
+        projection.write_text(json.dumps({"market_data_attempt_id": attempt_id}), encoding="utf-8")
+        authority = {
+            "schema_version": 2, "attempt_id": attempt_id, "state": "terminal",
+            "started_at": "2026-07-29T09:00:00+00:00", "completed_at": "2026-07-29T10:01:00+00:00",
+            "published": True, "stale": False, "terminal_session": "2026-07-29",
+            "execution_allowed": True, "reason": "vci_authority_v2",
+            "publication": {"run_id": attempt_id, "candidate_path": str(candidate), "pointer_path": str(pointer), "sha256": candidate_sha256},
+            "projection_path": "", "projection_sha256": "", "projection_attempt_id": attempt_id,
+            "provenance": {}, "gate_evidence": {"candidate_sha256": candidate_sha256, "terminal_session": "2026-07-29", "cutoff_at": "2026-07-29T10:00:00+00:00"},
+        }
+        _, keyring = updater._trusted_keyring()
+        authority_path = tmp_path / "vci_authority_receipt.v2.json"
+        authority_path.write_text(json.dumps(updater._sign_receipt(authority, "test-20260729", keyring["test-20260729"])), encoding="utf-8")
+        evidence = {
+            "schema_version": 2, "terminal_session": "2026-07-29", "cutoff_at": "2026-07-29T10:00:00+00:00",
+            "candidate_path": str(candidate), "candidate_sha256": candidate_sha256,
+            "pointer_path": str(pointer), "pointer_sha256": hashlib.sha256(pointer.read_bytes()).hexdigest(),
+            "projection_path": str(projection), "projection_sha256": hashlib.sha256(projection.read_bytes()).hexdigest(),
+            "projection_attempt_id": attempt_id, "release_gate_passed": True,
+            "vci_authority_receipt_path": str(authority_path), "vci_authority_receipt_sha256": hashlib.sha256(authority_path.read_bytes()).hexdigest(),
+        }
+        self._signed_receipt(ledger, attempt_id, "in_progress", execution_allowed=False)
+        terminal = self._signed_receipt(
+            ledger, attempt_id, "terminal", completed_at="2026-07-29T10:01:00+00:00",
+            published=True, stale=False, terminal_session="2026-07-29", execution_allowed=True,
+            reason="eligible", publication={"run_id": attempt_id, "candidate_path": str(candidate), "pointer_path": str(pointer), "sha256": candidate_sha256},
+            projection_path=str(projection), projection_sha256=evidence["projection_sha256"],
+            projection_attempt_id=attempt_id, provenance={"projection_error": None}, gate_evidence=evidence,
+            **terminal_fields,
+        )
+        return ledger, terminal
+
+    def test_valid_newest_v2_terminal_receipt_is_executable(self, tmp_path):
+        ledger, terminal = self._write_v2_attempt(tmp_path)
+        assert updater.verify_market_data_receipt(terminal)
+        decision = _market_data_decision(ledger, now=datetime(2026, 7, 29, 11, tzinfo=timezone.utc))
+        assert decision["code"] == "MARKET_DATA_EXECUTABLE", decision
+
+    @pytest.mark.parametrize("mutation", [
+        lambda terminal: terminal["gate_evidence"].__setitem__("candidate_sha256", "0" * 64),
+        lambda terminal: terminal["integrity"].__setitem__("signature", "0" * 64),
+    ], ids=["binding", "hmac"])
+    def test_tampered_v2_terminal_receipt_blocks_before_pipeline(self, tmp_path, mutation):
+        ledger, terminal = self._write_v2_attempt(tmp_path)
+        mutation(terminal)
+        terminal_path = next(ledger.glob("*.terminal.json"))
+        terminal_path.write_text(json.dumps(terminal), encoding="utf-8")
+        with patch("scripts.run_paper_execution_pipeline.build_pipeline") as build:
+            result = run_paper_execution_pipeline(SAMPLE_SIGNAL, CURRENT_POSITIONS, market_data_receipt_dir=ledger)
+        assert result["error"] == "MARKET_DATA_NOT_EXECUTABLE"
+        build.assert_not_called()
+
+    def test_newest_stale_v2_attempt_blocks_older_valid_attempt(self, tmp_path):
+        ledger, _ = self._write_v2_attempt(tmp_path)
+        attempt_id = "20260729T090100000000Z_" + "b" * 32
+        self._signed_receipt(ledger, attempt_id, "in_progress", execution_allowed=False)
+        self._signed_receipt(ledger, attempt_id, "terminal", completed_at="2026-07-29T09:02:00+00:00", published=False, stale=True, terminal_session=None, execution_allowed=False, reason="stale", publication={}, projection_path="", projection_sha256="", projection_attempt_id=attempt_id, provenance={"projection_error": "stale"}, gate_evidence=None)
+        assert _market_data_decision(ledger, now=datetime(2026, 7, 29, 10, tzinfo=timezone.utc))["code"] == "MARKET_DATA_NOT_EXECUTABLE"
+
+    def test_v1_only_receipt_blocks(self, tmp_path):
+        ledger = tmp_path / "market_data_receipts"
+        ledger.mkdir()
+        attempt_id = "20260729T090000000000Z_" + "a" * 32
+        (ledger / f"{attempt_id}.in_progress.json").write_text(json.dumps({"schema_version": 1}), encoding="utf-8")
+        assert _market_data_decision(ledger, now=datetime(2026, 7, 29, 10, tzinfo=timezone.utc))["code"] == "MARKET_DATA_NOT_EXECUTABLE"
 
 
 # ------------------------------------------------------------------ #

@@ -70,6 +70,7 @@ features_data = DataLoaderService.load_features_data()
 sector_mapping = DataLoaderService.load_sector_mapping()
 legacy = DataLoaderService.load_legacy_loader_inventory()
 last_result = DataLoaderService.load_update_market_data_result()
+attempt_ledger = DataLoaderService.load_market_data_attempt_ledger()
 
 # ══════════════════════════════════════════════════════════════════════════════
 # 1. COMMAND HEADER
@@ -428,6 +429,16 @@ st.markdown("</div>", unsafe_allow_html=True)
 # ══════════════════════════════════════════════════════════════════════════════
 st.markdown('<div class="section-hdr"><h3>Update Result // Log Panel</h3></div>', unsafe_allow_html=True)
 st.markdown('<div class="op-panel">', unsafe_allow_html=True)
+
+ledger_state = attempt_ledger.get("state", "BLOCKED")
+ledger_cls = "pill-ok" if ledger_state == "ELIGIBLE" else "pill-error"
+st.markdown(
+    f'<span class="pill {ledger_cls}">IMMUTABLE LEDGER: {ledger_state}</span> '
+    f'<span class="mono-micro">ATTEMPT: {attempt_ledger.get("attempt_id", "N/A")} | '
+    f'{attempt_ledger.get("path", "ledger missing")}</span><p class="mono-micro">'
+    'Projection below is display-only. Execution trusts immutable ledger receipts.</p>',
+    unsafe_allow_html=True,
+)
 
 if last_result.get("exists") and last_result.get("data"):
     rd = last_result["data"]

@@ -1,0 +1,6 @@
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:weekly_evolution:=== WEEKLY GP ALPHA EVOLUTION START ===
+INFO:weekly_evolution:Config: regime=all, generations=2, pop=200, ortho=none, alt_features=OFF, workers=4, backend=threads
+INFO:weekly_evolution:Loaded market data: 1776743 rows, columns: ['ticker', 'date', 'exchange', 'open', 'high', 'low', 'close', 'volume', 'as_of', 'available_at', 'source', 'price_scale', 'adjusted', 'rebuild_date']

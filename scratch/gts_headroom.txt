@@ -1,0 +1,61 @@
+    except Exception:
+        return 0
+
+
+def _child_peak_rss_bytes() -> int:
+    if psutil is None:
+        return 0
+    try:
+        process = psutil.Process(os.getpid())
+        children = process.children(recursive=True)
+    except Exception:
+        return 0
+    peak = 0
+    for child in children:
+        try:
+            peak = max(peak, int(child.memory_info().rss))
+        except Exception:
+            continue
+    return peak
+
+
+def _compute_headroom_limit_bytes(n_jobs: int) -> int:
+    return int(max(1.5, 0.3 * max(1, n_jobs)) * GB)
+
+
+def _resolve_parallel_jobs_with_headroom(config: DiverseEvolutionConfig, population_size: int) -> int:
+    requested = min(max(1, int(config.n_jobs)), max(1, population_size), _safe_cpu_count())
+    available = _available_memory_bytes()
+    parent_rss = _process_rss_bytes()
+    by_available = (available - config.memory_headroom_reserve_bytes) // max(1, config.worker_memory_estimate_bytes)
+    by_parent_budget = (config.parent_memory_budget_bytes - parent_rss) // max(1, config.worker_memory_estimate_bytes)
+    n_jobs = min(requested, int(by_available), int(by_parent_budget))
+    if n_jobs <= 0:
+        raise InsufficientMemoryError(
+            f"Insufficient memory headroom: available={available} parent_rss={parent_rss} requested={requested}"
+        )
+    return max(1, n_jobs)
+
+
+class _MemoryHeadroomGuard:
+    def __init__(self, config: DiverseEvolutionConfig, n_jobs: int):
+        self._config = config
+        self._n_jobs = n_jobs
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        self.triggered = False
+
+    def __enter__(self) -> "_MemoryHeadroomGuard":
+        if not self._config.memory_guard_enabled or psutil is None:
+            return self
+        self._thread = threading.Thread(target=self._run, name="oom-headroom-guard", daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._stop_event.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        headroom_limit = _compute_headroom_limit_bytes(self._n_jobs)

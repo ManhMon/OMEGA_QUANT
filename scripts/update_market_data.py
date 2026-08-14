@@ -67,22 +67,38 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
+import hashlib
+import hmac
 import json
 import logging
+import os
 import shutil
 import sys
 import tempfile
 import time
 import traceback
-from datetime import datetime, timedelta
+import uuid
+import io
+from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
+
+if os.name == "nt":
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+else:
+    import fcntl
 
 import numpy as np
 import pandas as pd
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
+
 
 logging.basicConfig(
     level=logging.INFO,
@@ -96,10 +112,30 @@ CANONICAL_COLUMNS = [
     "volume", "as_of", "available_at", "source", "price_scale",
     "adjusted", "rebuild_date",
 ]
+OVERLAP_EQUIVALENCE_COLUMNS = [
+    "exchange", "open", "high", "low", "close", "volume", "available_at",
+    "source", "price_scale", "adjusted",
+]
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 DEFAULT_CANONICAL_PATH = REPO_ROOT / "data" / "market_2015_now.parquet"
+DEFAULT_RELEASE_ROOT = REPO_ROOT / "data" / "market_releases"
+DEFAULT_POINTER_PATH = REPO_ROOT / "data" / "market_current.json"
 UNIVERSE_PATH = REPO_ROOT / ".ly_state" / "session" / "vci_universe_hsx_hnx.json"
+MARKET_DATA_RECEIPT_DIR = REPO_ROOT / ".ly_state" / "session" / "market_data_receipts"
+MARKET_DATA_ATTEMPT_SCHEMA_VERSION = 2
+VCI_AUTHORITY_RECEIPT_SCHEMA_VERSION = 2
+MARKET_DATA_RECEIPT_ALGORITHM = "HMAC-SHA256"
+MARKET_DATA_RECEIPT_ACTIVE_KEY_ID = "OMEGA_MARKET_RECEIPT_HMAC_ACTIVE_KEY_ID"
+MARKET_DATA_RECEIPT_KEYRING = "OMEGA_MARKET_RECEIPT_HMAC_KEYRING_JSON"
+MARKET_DATA_PROJECTION = REPO_ROOT / ".ly_state" / "session" / "update_market_data_result.json"
+MARKET_DATA_RECONCILIATION_LATEST = REPO_ROOT / ".ly_state" / "session" / "market_data_reconciliation_latest.json"
+MARKET_DATA_RECONCILIATION_STATE = REPO_ROOT / ".ly_state" / "session" / "market_data_reconciliation_state.json"
+MARKET_DATA_RECEIPT_FIELDS = {
+    "in_progress": {"schema_version", "attempt_id", "state", "started_at", "execution_allowed", "integrity"},
+    "terminal": {"schema_version", "attempt_id", "state", "started_at", "completed_at", "published", "stale", "terminal_session", "execution_allowed", "reason", "publication", "projection_path", "projection_sha256", "projection_attempt_id", "provenance", "gate_evidence", "integrity"},
+}
+GATE_EVIDENCE_FIELDS = {"schema_version", "terminal_session", "cutoff_at", "candidate_path", "candidate_sha256", "pointer_path", "pointer_sha256", "projection_path", "projection_sha256", "projection_attempt_id", "release_gate_passed", "vci_authority_receipt_path", "vci_authority_receipt_sha256"}
 MIN_DATE = pd.Timestamp("2015-01-01")
 EXCHANGE_WHITELIST = {"HOSE", "HNX"}
 MAX_RETRIES = 3
@@ -113,6 +149,12 @@ BATCH_SIZE = 50
 # when median close < 1000.  We write price_scale="VND" for compatibility
 # with the existing canonical parquet, but the values satisfy VND_FULL.
 PRICE_SCALE_LABEL = "VND"
+LEGACY_VCI_SOURCE_VALUES = frozenset({"vnstock_vci", "vci"})
+LEGACY_VCI_PROVENANCE = {
+    "price_scale": "VND",
+    "adjusted": "backward_adjusted",
+    "rebuild_date": "2026-06-13",
+}
 
 # ── Targeted Re-fetch detection thresholds ──────────────────────────────────
 # Vietnam daily price limits are ±7% (±10% for stocks without reference price).
@@ -125,6 +167,19 @@ SPLIT_RATIO_HIGH = 0.72           # upper bound of split-like price ratio
 VOLUME_SPIKE_SPLIT = 1.5          # volume >= 1.5× 20-day avg → volume spike
 REFETCH_LOOKBACK_DAYS = 15        # symbol last canonical date minus 15 calendar days
 MAX_REFETCH_SYMBOLS = 20          # safety cap to prevent runaway re-fetches
+SPARSE_TERMINAL_MAX_MISSED_SESSIONS = 25
+TICKER_LIFECYCLE_PATH = REPO_ROOT / ".ly_state" / "session" / "vci_ticker_lifecycle.json"
+LIFECYCLE_RECEIPT_LEDGER_DIR = REPO_ROOT / ".ly_state" / "session" / "lifecycle_receipt_ledger"
+SPARSE_TERMINAL_STATUSES = frozenset({"halted", "delisted", "suspended"})
+LIFECYCLE_EVIDENCE_SCHEMA_VERSION = 1
+LIFECYCLE_EVIDENCE_ALGORITHM = "HMAC-SHA256"
+LIFECYCLE_EVIDENCE_FIELDS = {"schema_version", "payload", "signed_at", "expires_at", "receipt_id", "integrity"}
+LIFECYCLE_EVIDENCE_PAYLOAD_FIELDS = {"ticker", "status", "reason", "effective_at", "as_of", "source"}
+LIFECYCLE_EVIDENCE_INTEGRITY_FIELDS = {"algorithm", "key_id", "payload_sha256", "signature"}
+LIFECYCLE_RECEIPT_KEYRING = "OMEGA_LIFECYCLE_RECEIPT_KEYRING_JSON"
+LIFECYCLE_RECEIPT_LEDGER_SCHEMA_VERSION = 1
+LIFECYCLE_RECEIPT_MAX_SIGNING_AGE = timedelta(hours=24)
+VN_HOLIDAYS_PATH = REPO_ROOT / "config" / "vn_holidays.json"
 
 # ── Overlap Check thresholds ─────────────────────────────────────────────────
 # When re-fetching with a symbol-specific overlap window the re-fetched rows
@@ -142,6 +197,12 @@ OVERLAP_PASS_RATIO = 1.00         # direct overlap: every shared day must match
 # recovery is to reload the *entire* history from 2015-01-01 for the affected
 # ticker, delete all old rows, and overwrite with the fresh VCI data.
 FULL_HISTORY_START = "2015-01-01"
+RELEASE_RETENTION = 14
+CHECKPOINT_RETENTION = 3
+CHECKPOINT_RETENTION_DAYS = 7
+FAILED_RETENTION_DAYS = 90
+PIT_MANIFEST_RETENTION_DAYS = 365 * 7
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -219,6 +280,35 @@ def _create_vnstock_client():
         return None
 
 
+def _create_kbs_client():
+    """Create the reference-only KBS client."""
+    from omega.data.vnstock_client import VnstockClient, RateLimiter
+    return VnstockClient(source="KBS", rate_limiter=RateLimiter(max_requests=55, period_seconds=60.0))
+
+
+def _run_reconciliation(
+    combined: pd.DataFrame,
+    symbols: List[str],
+    exchange_map: Dict[str, str],
+    as_of_date: str,
+    state_path: Path,
+    latest_path: Path,
+) -> Dict:
+    """Best-effort KBS reconciliation. Never affects VCI publication."""
+    from omega.data.provider_reconciliation import reconcile_ohlcv
+    prior_state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    try:
+        kbs_data, _ = fetch_symbols(_create_kbs_client(), symbols, exchange_map, as_of_date, as_of_date)
+        payload, next_state = reconcile_ohlcv(combined, kbs_data, prior_state, as_of_date)
+    except Exception as exc:
+        logger.warning("KBS reconciliation unavailable: %s", exc)
+        payload, next_state = reconcile_ohlcv(combined, None, prior_state, as_of_date)
+        payload["findings"][0]["reason"] = f"reconciliation_failed: {exc}"
+    _write_fsync(state_path, _canonical_json(next_state))
+    _write_fsync(latest_path, _canonical_json(payload))
+    return payload
+
+
 def fetch_one_symbol(
     client,
     symbol: str,
@@ -273,7 +363,7 @@ def fetch_one_symbol(
     df["ticker"] = symbol.upper()
     df["exchange"] = exchange
     df["as_of"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    df["available_at"] = df["date"] + timedelta(days=1)
+    df["available_at"] = _vci_available_at(df["date"])
     df["source"] = "vnstock_vci"
     df["price_scale"] = PRICE_SCALE_LABEL
     df["adjusted"] = "backward_adjusted"
@@ -282,6 +372,52 @@ def fetch_one_symbol(
     # Select and order canonical columns
     existing = [c for c in CANONICAL_COLUMNS if c in df.columns]
     return df[existing].copy()
+
+
+def _vci_available_at(dates: pd.Series) -> pd.Series:
+    """Return exact next-calendar-day midnight in Vietnam time."""
+    return (pd.to_datetime(dates).dt.normalize() + timedelta(days=1)).dt.tz_localize(VN_TZ)
+
+
+def _normalize_legacy_vci_available_at(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize PIT timestamps; repair only positively identified legacy VCI rows."""
+    normalized = df.copy()
+    vci_rows = _is_legacy_vci_provenance(normalized)
+    normalized["available_at"] = pd.to_datetime(
+        normalized["available_at"], errors="coerce", utc=True
+    ).dt.tz_convert(VN_TZ)
+    normalized.loc[vci_rows, "available_at"] = _vci_available_at(normalized.loc[vci_rows, "date"])
+    return normalized
+
+
+def _is_legacy_vci_provenance(df: pd.DataFrame) -> pd.Series:
+    """Classify only known VCI source aliases or the complete canonical legacy signature."""
+    required = {"source", *LEGACY_VCI_PROVENANCE}
+    if not required.issubset(df.columns):
+        return pd.Series(False, index=df.index)
+    source = df["source"].astype("string").str.strip().str.casefold()
+    known_vci_source = source.isin(LEGACY_VCI_SOURCE_VALUES)
+    canonical_signature = pd.Series(True, index=df.index)
+    for field, value in LEGACY_VCI_PROVENANCE.items():
+        canonical_signature &= df[field].astype("string").str.strip().eq(value)
+    return known_vci_source | (source.isna() | source.eq("")) & canonical_signature
+
+
+def merge_canonical_and_new(existing: pd.DataFrame, new_data: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
+    """Merge ordinary overlaps only when immutable market fields agree."""
+    existing = _normalize_legacy_vci_available_at(existing)
+    new_data = _normalize_legacy_vci_available_at(new_data)
+    combined = pd.concat([existing, new_data], ignore_index=True)
+    duplicate_mask = combined.duplicated(["ticker", "date"], keep=False)
+    conflicts: List[str] = []
+    for (ticker, date), rows in combined.loc[duplicate_mask].groupby(["ticker", "date"], sort=False):
+        if len(rows[OVERLAP_EQUIVALENCE_COLUMNS].drop_duplicates()) != 1:
+            conflicts.append(f"overlap conflict: {ticker} {pd.Timestamp(date).date()}")
+    if conflicts:
+        return combined, conflicts
+    return combined.drop_duplicates(["ticker", "date"], keep="first").sort_values(
+        ["ticker", "date"]
+    ).reset_index(drop=True), []
 
 
 def fetch_symbols(
@@ -391,6 +527,35 @@ def fetch_symbols(
 # Pre-Write Validation
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _pit_timestamp_errors(df: pd.DataFrame, label: str) -> List[str]:
+    """Require aware available_at on the exact date+1 calendar-day rule."""
+    if "available_at" not in df.columns or "date" not in df.columns:
+        return []
+    expected = pd.to_datetime(df["date"], errors="coerce").dt.normalize() + timedelta(days=1)
+    available = df["available_at"]
+    parsed = pd.to_datetime(available, errors="coerce", utc=True)
+    if isinstance(available.dtype, pd.DatetimeTZDtype):
+        timezone_aware = pd.Series(True, index=df.index)
+    else:
+        timezone_aware = available.astype("string").str.contains(r"(?:Z|[+-]\d{2}:?\d{2})$", regex=True, na=False)
+    local = parsed.dt.tz_convert(VN_TZ)
+    invalid = (
+        expected.isna()
+        | parsed.isna()
+        | ~timezone_aware
+        | ~local.dt.normalize().dt.tz_localize(None).eq(expected)
+        | local.dt.hour.ne(0)
+        | local.dt.minute.ne(0)
+        | local.dt.second.ne(0)
+        | local.dt.microsecond.ne(0)
+    )
+    invalid_count = int(invalid.sum())
+    if not invalid_count:
+        return []
+    return [
+        f"{label}: {invalid_count} available_at values must be timezone-aware and equal date + 1 day at 00:00:00.000000 Asia/Ho_Chi_Minh"
+    ]
+
 def validate_dataframe(df: pd.DataFrame, label: str = "data") -> Tuple[bool, List[str]]:
     """Validate a DataFrame against canonical quality requirements.
 
@@ -447,15 +612,8 @@ def validate_dataframe(df: pd.DataFrame, label: str = "data") -> Tuple[bool, Lis
         if pre_min > 0:
             errors.append(f"{label}: {pre_min} rows before {MIN_DATE.date()}")
 
-    # 8. PIT available_at = date + 1
-    if "available_at" in df.columns and "date" in df.columns:
-        dates_norm = pd.to_datetime(df["date"]).dt.normalize()
-        avail = pd.to_datetime(df["available_at"]).dt.normalize()
-        pit_violations = int((avail != dates_norm + timedelta(days=1)).sum())
-        if pit_violations > 0:
-            errors.append(
-                f"{label}: {pit_violations} rows where available_at != date + 1 day"
-            )
+    # 8. PIT available_at = date + 1, timezone-aware
+    errors.extend(_pit_timestamp_errors(df, label))
 
     is_valid = len(errors) == 0
     return is_valid, errors
@@ -1028,7 +1186,10 @@ def atomic_write_with_backup(
         import os
         os.close(fd)
         df.to_parquet(tmp_path, index=False)
+        with tmp_path.open("rb+") as stream:
+            os.fsync(stream.fileno())
         tmp_path.replace(target_path)
+        _fsync_directory(target_path.parent)
         logger.info(f"Atomic write complete: {target_path} ({len(df)} rows)")
     except Exception:
         if tmp_path.exists():
@@ -1036,6 +1197,947 @@ def atomic_write_with_backup(
         raise
 
     return target_path
+
+
+def _write_fsync(path: Path, content: bytes) -> None:
+    path.write_bytes(content)
+    with path.open("rb+") as stream:
+        os.fsync(stream.fileno())
+    if os.name != "nt":
+        _fsync_directory(path.parent)
+
+
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_immutable_json(path: Path, payload: Dict) -> Path:
+    """Create an append-only, durable receipt through an atomic rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        raise RuntimeError(f"immutable receipt collision: {path.name}")
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(_canonical_json(payload))
+            stream.flush()
+            os.fsync(stream.fileno())
+        if path.exists():
+            raise RuntimeError(f"immutable receipt collision: {path.name}")
+        os.replace(tmp_name, path)
+        _fsync_directory(path.parent)
+    except Exception:
+        Path(tmp_name).unlink(missing_ok=True)
+        raise
+    return path
+
+
+def _reject_duplicate_keys(pairs: List[Tuple[str, object]]) -> Dict[str, object]:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("duplicate JSON key")
+        result[key] = value
+    return result
+
+
+def _load_strict_json(path: Path) -> Dict:
+    try:
+        value = json.loads(path.read_bytes().decode("utf-8", errors="strict"), object_pairs_hook=_reject_duplicate_keys, parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite JSON")))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+        raise ValueError("invalid JSON") from exc
+    if not isinstance(value, dict):
+        raise ValueError("receipt must be object")
+    return value
+
+
+def _canonical_json(value: object) -> bytes:
+    if value is None or isinstance(value, bool) or isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return str(value).encode("ascii")
+    if isinstance(value, float):
+        if not np.isfinite(value):
+            raise ValueError("nonfinite JSON")
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("ascii")
+    if isinstance(value, list):
+        return b"[" + b",".join(_canonical_json(item) for item in value) + b"]"
+    if isinstance(value, dict) and all(isinstance(key, str) for key in value):
+        return b"{" + b",".join(_canonical_json(key) + b":" + _canonical_json(value[key]) for key in sorted(value)) + b"}"
+    raise ValueError("unsupported JSON value")
+
+
+def _trusted_keyring() -> Tuple[str, Dict[str, bytes]]:
+    active_id = os.environ.get(MARKET_DATA_RECEIPT_ACTIVE_KEY_ID, "")
+    raw = os.environ.get(MARKET_DATA_RECEIPT_KEYRING, "")
+    if not active_id or not raw:
+        raise RuntimeError("market receipt signing configuration unavailable")
+    try:
+        keyring = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError("market receipt keyring invalid") from exc
+    if not isinstance(keyring, dict) or not keyring:
+        raise RuntimeError("market receipt keyring invalid")
+    parsed = {}
+    for key_id, encoded in keyring.items():
+        if not isinstance(key_id, str) or not __import__("re").fullmatch(r"[A-Za-z0-9._-]{1,64}", key_id) or not isinstance(encoded, str):
+            raise RuntimeError("market receipt keyring invalid")
+        try:
+            key = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("market receipt keyring invalid") from exc
+        if len(key) < 32:
+            raise RuntimeError("market receipt keyring invalid")
+        parsed[key_id] = key
+    if active_id not in parsed:
+        raise RuntimeError("market receipt active key unavailable")
+    return active_id, parsed
+
+
+def _trusted_lifecycle_keyring() -> Dict[str, Tuple[bytes, Set[str]]]:
+    raw = os.environ.get(LIFECYCLE_RECEIPT_KEYRING, "")
+    if not raw:
+        raise RuntimeError("lifecycle receipt keyring unavailable")
+    try:
+        keyring = json.loads(raw, object_pairs_hook=_reject_duplicate_keys)
+    except (json.JSONDecodeError, ValueError) as exc:
+        raise RuntimeError("lifecycle receipt keyring invalid") from exc
+    if not isinstance(keyring, dict) or not keyring:
+        raise RuntimeError("lifecycle receipt keyring invalid")
+    parsed = {}
+    for key_id, metadata in keyring.items():
+        if not isinstance(key_id, str) or __import__("re").fullmatch(r"[A-Za-z0-9._-]{1,64}", key_id) is None or not isinstance(metadata, dict) or set(metadata) != {"secret", "sources"} or not isinstance(metadata["secret"], str) or not isinstance(metadata["sources"], list):
+            raise RuntimeError("lifecycle receipt keyring invalid")
+        try:
+            key = base64.b64decode(metadata["secret"], validate=True)
+        except (binascii.Error, ValueError) as exc:
+            raise RuntimeError("lifecycle receipt keyring invalid") from exc
+        sources = set(metadata["sources"])
+        if len(key) < 32 or not sources or any(not isinstance(source, str) or not source for source in sources):
+            raise RuntimeError("lifecycle receipt keyring invalid")
+        parsed[key_id] = (key, sources)
+    return parsed
+
+
+def _sign_receipt(record: Dict, active_id: str, key: bytes) -> Dict:
+    record = dict(record)
+    record["integrity"] = {"algorithm": MARKET_DATA_RECEIPT_ALGORITHM, "key_id": active_id}
+    signature = hmac.new(key, _canonical_json(record), hashlib.sha256).hexdigest()
+    record["integrity"]["signature"] = signature
+    return record
+
+
+def verify_market_data_receipt(record: Dict) -> bool:
+    try:
+        state = record["state"]
+        if state not in MARKET_DATA_RECEIPT_FIELDS or set(record) != MARKET_DATA_RECEIPT_FIELDS[state]:
+            return False
+        integrity = record["integrity"]
+        if set(integrity) != {"algorithm", "key_id", "signature"} or integrity["algorithm"] != MARKET_DATA_RECEIPT_ALGORITHM:
+            return False
+        _, keyring = _trusted_keyring()
+        key = keyring.get(integrity["key_id"])
+        signature = integrity["signature"]
+        if key is None or not isinstance(signature, str) or len(signature) != 64:
+            return False
+        unsigned = dict(record)
+        unsigned["integrity"] = dict(integrity)
+        del unsigned["integrity"]["signature"]
+        return hmac.compare_digest(signature, hmac.new(key, _canonical_json(unsigned), hashlib.sha256).hexdigest())
+    except (KeyError, TypeError, ValueError, RuntimeError):
+        return False
+
+
+def start_market_data_attempt(receipt_dir: Path = MARKET_DATA_RECEIPT_DIR, now: Optional[datetime] = None) -> Dict:
+    active_id, keyring = _trusted_keyring()
+    now = now or datetime.now(timezone.utc)
+    attempt_id = now.strftime("%Y%m%dT%H%M%S%fZ") + "_" + uuid.uuid4().hex
+    record = {
+        "schema_version": MARKET_DATA_ATTEMPT_SCHEMA_VERSION,
+        "attempt_id": attempt_id,
+        "state": "in_progress",
+        "started_at": now.isoformat(timespec="seconds"),
+        "execution_allowed": False,
+    }
+    record = _sign_receipt(record, active_id, keyring[active_id])
+    path = _write_immutable_json(receipt_dir / f"{attempt_id}.in_progress.json", record)
+    return {"attempt_id": attempt_id, "path": path, "record": record}
+
+
+def finish_market_data_attempt(
+    attempt: Dict,
+    result: Dict,
+    projection_error: Optional[str] = None,
+    receipt_dir: Path = MARKET_DATA_RECEIPT_DIR,
+    projection_path: Optional[Path] = None,
+    now: Optional[datetime] = None,
+) -> Dict:
+    active_id, keyring = _trusted_keyring()
+    projection_failed = bool(projection_error)
+    projection_path = projection_path or MARKET_DATA_PROJECTION
+    projection_sha256 = _sha256(projection_path) if projection_error is None and projection_path.is_file() else None
+    completed_at = (now or datetime.now(timezone.utc)).isoformat(timespec="seconds")
+    gate_evidence = _gate_evidence_from_result(result, attempt["attempt_id"], projection_path, projection_sha256)
+    allowed = not projection_failed and validate_gate_evidence(gate_evidence, attempt["attempt_id"], completed_at)
+    terminal_session = gate_evidence["terminal_session"] if allowed else None
+    record = {
+        "schema_version": MARKET_DATA_ATTEMPT_SCHEMA_VERSION,
+        "attempt_id": attempt["attempt_id"],
+        "state": "terminal",
+        "started_at": attempt["record"]["started_at"],
+        "completed_at": completed_at,
+        "published": allowed,
+        "stale": not allowed,
+        "terminal_session": terminal_session,
+        "execution_allowed": allowed,
+        "reason": "eligible" if allowed else f"projection_failed: {projection_error}" if projection_failed else "pit_evidence_invalid",
+        "publication": {"run_id": result.get("run_id"), "candidate_path": result.get("candidate_path"), "pointer_path": result.get("pointer_path"), "sha256": result.get("sha256")},
+        "projection_path": str(projection_path),
+        "projection_sha256": projection_sha256,
+        "projection_attempt_id": attempt["attempt_id"],
+        "provenance": {"result_status": result.get("status"), "publication_run_id": result.get("run_id"), "projection_error": projection_error},
+        "gate_evidence": gate_evidence,
+    }
+    record = _sign_receipt(record, active_id, keyring[active_id])
+    path = _write_immutable_json(receipt_dir / f"{attempt['attempt_id']}.terminal.json", record)
+    return {"path": path, "record": record}
+
+
+def _write_quarantine(path: Path, content: bytes) -> None:
+    """Persist quarantine bytes; Windows makes no directory-durability claim."""
+    path.write_bytes(content)
+    with path.open("rb+") as stream:
+        os.fsync(stream.fileno())
+    if os.name != "nt":
+        _fsync_directory(path.parent)
+
+
+class _PublicationLockLease:
+    def __init__(self, token: str, fd: int, identity: tuple[int, int]) -> None:
+        self.token = token
+        self.fd = fd
+        self.identity = identity
+
+
+def _open_lock_lease(lock_path: Path, payload: Dict[str, object]) -> _PublicationLockLease:
+    if os.name == "nt":
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+            ctypes.c_void_p, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        handle = kernel32.CreateFileW(
+            wintypes.LPCWSTR(str(lock_path)),
+            0x00010000 | 0x80000000 | 0x40000000,
+            0x00000001 | 0x00000002 | 0x00000004,
+            None,
+            1,
+            0x00000080,
+            None,
+        )
+        if handle == wintypes.HANDLE(-1).value:
+            error = ctypes.get_last_error()
+            if error in (80, 183):
+                raise FileExistsError(error, "CreateFileW", str(lock_path))
+            raise OSError(error, "CreateFileW", str(lock_path))
+        fd = msvcrt.open_osfhandle(handle, os.O_RDWR | getattr(os, "O_BINARY", 0))
+    else:
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        _lock_fd(fd)
+        with os.fdopen(fd, "w", encoding="utf-8", closefd=False) as stream:
+            json.dump(payload, stream, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        stat = os.fstat(fd)
+        return _PublicationLockLease(str(payload["token"]), fd, (stat.st_dev, stat.st_ino))
+    except Exception:
+        _unlock_fd(fd)
+        os.close(fd)
+        raise
+
+
+def _lock_fd(fd: int) -> None:
+    if os.name == "nt":
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_fd(fd: int) -> None:
+    if os.name == "nt":
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _mark_handle_delete_pending_windows(fd: int) -> None:
+    """Delete the object bound to fd, never a separately resolved pathname."""
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.SetFileInformationByHandle.argtypes = [
+        wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+    ]
+    kernel32.SetFileInformationByHandle.restype = wintypes.BOOL
+    disposition = ctypes.c_ubyte(1)
+    handle = msvcrt.get_osfhandle(fd)
+    if kernel32.SetFileInformationByHandle(
+        wintypes.HANDLE(handle), 4, ctypes.byref(disposition), ctypes.sizeof(disposition)
+    ):
+        return
+    error = ctypes.get_last_error()
+    raise OSError(error, "SetFileInformationByHandle")
+
+
+def _acquire_publication_lock(lock_path: Path) -> _PublicationLockLease:
+    token = uuid.uuid4().hex
+    payload = {"pid": os.getpid(), "started_at": time.time(), "token": token}
+    try:
+        return _open_lock_lease(lock_path, payload)
+    except FileExistsError as exc:
+        raise RuntimeError("publication lock held; operator recovery required") from exc
+
+
+def _release_publication_lock(lock_path: Path, lease: _PublicationLockLease) -> None:
+    try:
+        os.lseek(lease.fd, 0, os.SEEK_SET)
+        owner = json.load(os.fdopen(lease.fd, "r", encoding="utf-8", closefd=False))
+    except (OSError, ValueError, json.JSONDecodeError):
+        _unlock_fd(lease.fd)
+        os.close(lease.fd)
+        return
+    try:
+        current = os.fstat(lease.fd)
+        if owner.get("token") != lease.token or (current.st_dev, current.st_ino) != lease.identity:
+            os.close(lease.fd)
+            lease.fd = -1
+            raise RuntimeError("publication lock owner mismatch")
+        if os.name == "nt":
+            _mark_handle_delete_pending_windows(lease.fd)
+        else:
+            raise RuntimeError("safe identity-bound lock deletion unavailable on this platform")
+        _unlock_fd(lease.fd)
+        os.close(lease.fd)
+        lease.fd = -1
+    finally:
+        if lease.fd >= 0:
+            _unlock_fd(lease.fd)
+            os.close(lease.fd)
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_hex(value: bytes) -> str:
+    """Hash immutable in-memory candidate bytes."""
+    return hashlib.sha256(value).hexdigest()
+
+
+def _parse_aware_timestamp(value: object, label: str) -> datetime:
+    if isinstance(value, pd.Timestamp):
+        parsed = value.to_pydatetime()
+    elif isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    else:
+        raise ValueError(f"{label} must be an aware ISO timestamp")
+    if parsed.tzinfo is None:
+        raise ValueError(f"{label} must be an aware ISO timestamp")
+    return parsed.astimezone(timezone.utc)
+
+
+def _vn_trading_days(start: pd.Timestamp, end: pd.Timestamp) -> pd.DatetimeIndex:
+    """Return documented Vietnam trading sessions in the inclusive range."""
+    holidays = json.loads(VN_HOLIDAYS_PATH.read_text(encoding="utf-8")).get("holidays", {})
+    closed = {day for dates in holidays.values() for day in dates}
+    days = pd.date_range(start.normalize(), end.normalize(), freq="B")
+    return days[~days.strftime("%Y-%m-%d").isin(closed)]
+
+
+def _canonical_terminal_by_ticker(canonical_path: Path) -> Dict[str, pd.Timestamp]:
+    if not canonical_path.exists():
+        return {}
+    dates = pd.read_parquet(canonical_path, columns=["ticker", "date"])
+    dates["date"] = pd.to_datetime(dates["date"]).dt.normalize()
+    return {
+        str(ticker).upper(): terminal
+        for ticker, terminal in dates.groupby("ticker")["date"].max().items()
+    }
+
+
+def _load_ticker_lifecycle(path: Path = TICKER_LIFECYCLE_PATH) -> Dict[str, Dict]:
+    """Load signed lifecycle envelopes; mutable repository labels are never evidence."""
+    if not path.exists():
+        return {}
+    try:
+        data = _load_strict_json(path)
+    except ValueError:
+        return {}
+    entries = data.get("evidence") if data.get("schema_version") == LIFECYCLE_EVIDENCE_SCHEMA_VERSION else None
+    if not isinstance(entries, list):
+        return {}
+    result = {}
+    for envelope in entries:
+        payload = envelope.get("payload") if isinstance(envelope, dict) else None
+        ticker = payload.get("ticker") if isinstance(payload, dict) else None
+        if isinstance(ticker, str) and ticker.upper() not in result:
+            result[ticker.upper()] = envelope
+    return result
+
+
+def _claim_lifecycle_receipt(evidence: Dict, payload: Dict, ledger_dir: Path) -> Optional[str]:
+    ledger = {"schema_version": LIFECYCLE_RECEIPT_LEDGER_SCHEMA_VERSION, "receipt_id": evidence["receipt_id"], "receipt_sha256": sha256_hex(_canonical_json(evidence)), "key_id": evidence["integrity"]["key_id"], "source": payload["source"], "ticker": payload["ticker"]}
+    ledger_bytes = _canonical_json(ledger)
+    path = ledger_dir / f"{evidence['receipt_id']}.json"
+    ledger_dir.mkdir(parents=True, exist_ok=True)
+    created_identity = None
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        try:
+            if path.read_bytes() != _canonical_json(_load_strict_json(path)) or _load_strict_json(path) != ledger:
+                return "receipt ledger integrity invalid"
+        except (OSError, ValueError):
+            return "receipt ledger integrity invalid"
+        return "evidence receipt replayed"
+    try:
+        created_identity = (os.fstat(fd).st_dev, os.fstat(fd).st_ino)
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(ledger_bytes)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _fsync_directory(ledger_dir)
+        if path.read_bytes() != ledger_bytes or _load_strict_json(path) != ledger:
+            raise RuntimeError("lifecycle receipt claim verification failed")
+    except Exception:
+        try:
+            current = path.stat()
+            if created_identity == (current.st_dev, current.st_ino):
+                path.unlink()
+                if path.exists():
+                    raise RuntimeError("lifecycle receipt claim cleanup failed")
+            _fsync_directory(ledger_dir)
+        except FileNotFoundError:
+            _fsync_directory(ledger_dir)
+        except Exception as cleanup_error:
+            raise RuntimeError("lifecycle receipt claim cleanup failed") from cleanup_error
+        raise RuntimeError("lifecycle receipt claim failed")
+    return None
+
+
+def _sparse_terminal_evidence_error(
+    ticker: str,
+    terminal: pd.Timestamp,
+    authority_terminal: pd.Timestamp,
+    cutoff_at: datetime,
+    evidence: object,
+    used_receipt_ids: Set[str],
+    lifecycle_receipt_ledger_dir: Optional[Path] = None,
+    claim_receipt: bool = True,
+) -> Optional[str]:
+    if not isinstance(evidence, dict):
+        return "missing independent lifecycle/provider evidence"
+    if set(evidence) != LIFECYCLE_EVIDENCE_FIELDS or evidence.get("schema_version") != LIFECYCLE_EVIDENCE_SCHEMA_VERSION:
+        return "evidence envelope invalid"
+    payload, integrity = evidence.get("payload"), evidence.get("integrity")
+    if not isinstance(payload, dict) or set(payload) != LIFECYCLE_EVIDENCE_PAYLOAD_FIELDS:
+        return "evidence payload invalid"
+    if not isinstance(integrity, dict) or set(integrity) != LIFECYCLE_EVIDENCE_INTEGRITY_FIELDS:
+        return "evidence integrity invalid"
+    receipt_id = evidence.get("receipt_id")
+    if not isinstance(receipt_id, str) or not __import__("re").fullmatch(r"[A-Za-z0-9._-]{16,128}", receipt_id):
+        return "evidence receipt ID invalid"
+    if receipt_id in used_receipt_ids:
+        return "evidence receipt replayed"
+    try:
+        key_metadata, signature = _trusted_lifecycle_keyring().get(integrity.get("key_id")), integrity.get("signature")
+        key = key_metadata[0] if key_metadata else None
+        unsigned = dict(evidence)
+        unsigned_integrity = dict(integrity)
+        unsigned_integrity.pop("signature")
+        unsigned["integrity"] = unsigned_integrity
+        if integrity.get("algorithm") != LIFECYCLE_EVIDENCE_ALGORITHM or key is None or payload.get("source") not in key_metadata[1] or not isinstance(signature, str) or len(signature) != 64 or integrity.get("payload_sha256") != sha256_hex(_canonical_json(payload)) or not hmac.compare_digest(signature, hmac.new(key, _canonical_json(unsigned), hashlib.sha256).hexdigest()):
+            return "evidence signature invalid"
+    except (TypeError, ValueError, RuntimeError):
+        return "evidence signature invalid"
+    if payload.get("ticker") != ticker:
+        return "evidence ticker mismatch"
+    if payload.get("status") not in SPARSE_TERMINAL_STATUSES:
+        return "evidence status is not halted, suspended, or delisted"
+    if not isinstance(payload.get("reason"), str) or not payload["reason"].strip():
+        return "evidence reason missing"
+    try:
+        effective_at = _parse_aware_timestamp(payload.get("effective_at"), "evidence effective_at")
+        evidence_as_of = _parse_aware_timestamp(payload.get("as_of"), "evidence as_of")
+        signed_at = _parse_aware_timestamp(evidence.get("signed_at"), "evidence signed_at")
+        expires_at = _parse_aware_timestamp(evidence.get("expires_at"), "evidence expires_at")
+    except ValueError:
+        return "evidence timestamp invalid"
+    if not effective_at <= evidence_as_of <= signed_at <= cutoff_at < expires_at:
+        return "evidence timestamp ordering invalid"
+    if cutoff_at - signed_at > LIFECYCLE_RECEIPT_MAX_SIGNING_AGE:
+        return "evidence signing age exceeds maximum"
+    if evidence_as_of.date() < authority_terminal.date() or evidence_as_of.date() < terminal.date():
+        return "evidence as_of is stale"
+    if claim_receipt:
+        claim_error = _claim_lifecycle_receipt(
+            evidence, payload, lifecycle_receipt_ledger_dir or LIFECYCLE_RECEIPT_LEDGER_DIR,
+        )
+        if claim_error:
+            return claim_error
+    used_receipt_ids.add(receipt_id)
+    return None
+
+
+def _vci_terminal_evidence(
+    candidate: pd.DataFrame,
+    requested_symbols: List[str],
+    requested_end: pd.Timestamp,
+    canonical_max: Optional[pd.Timestamp],
+    cutoff_at: datetime,
+    canonical_terminals: Optional[Dict[str, pd.Timestamp]] = None,
+    sparse_terminal_evidence: Optional[Dict[str, Dict]] = None,
+    lifecycle_receipt_ledger_dir: Optional[Path] = None,
+    claim_receipts: bool = True,
+) -> Tuple[bool, List[str], Dict]:
+    """Derive VCI authority while preserving reconciled sparse histories."""
+    errors: List[str] = []
+    requested = {str(ticker).upper() for ticker in requested_symbols}
+    observed = set(candidate["ticker"].astype(str).str.upper()) if "ticker" in candidate else set()
+    terminal_by_ticker: Dict[str, str] = {}
+    sparse_exceptions: Dict[str, str] = {}
+    used_lifecycle_receipt_ids: Set[str] = set()
+    if candidate.empty:
+        errors.append("candidate: empty")
+    else:
+        if observed != requested:
+            errors.append("coverage: fetched tickers diverge from requested universe")
+        for ticker in sorted(requested):
+            rows = candidate[candidate["ticker"].astype(str).str.upper() == ticker]
+            if rows.empty:
+                errors.append(f"coverage: missing ticker {ticker}")
+                continue
+            terminal_by_ticker[ticker] = pd.to_datetime(rows["date"]).max().strftime("%Y-%m-%d")
+        terminal_counts = pd.Series(terminal_by_ticker).value_counts()
+        terminal_session = terminal_counts.index[0] if not terminal_counts.empty else None
+        if terminal_session:
+            terminal = pd.Timestamp(terminal_session)
+            if terminal_counts.iloc[0] <= len(requested) // 2:
+                errors.append("terminal_session: no common authority cohort")
+            if terminal != pd.Timestamp(max(terminal_by_ticker.values())):
+                errors.append("terminal_session: common authority is not latest observed session")
+            if terminal > requested_end.normalize():
+                errors.append("terminal_session: beyond requested end")
+            elif terminal not in _vn_trading_days(terminal, terminal):
+                errors.append("terminal_session: authority is not a Vietnam trading session")
+            for ticker, value in terminal_by_ticker.items():
+                ticker_terminal = pd.Timestamp(value)
+                if ticker_terminal > requested_end.normalize():
+                    errors.append(f"terminal_session: {ticker} beyond requested end")
+                    continue
+                if ticker_terminal not in _vn_trading_days(ticker_terminal, ticker_terminal):
+                    errors.append(f"terminal_session: {ticker} terminal is not a Vietnam trading session")
+                    continue
+                canonical_terminal = (canonical_terminals or {}).get(ticker)
+                if canonical_terminal is not None and ticker_terminal < canonical_terminal.normalize():
+                    errors.append(f"terminal_session: {ticker} regressed below canonical terminal")
+                    continue
+                missed_sessions = len(_vn_trading_days(ticker_terminal + timedelta(days=1), terminal))
+                if missed_sessions > SPARSE_TERMINAL_MAX_MISSED_SESSIONS:
+                    evidence_error = _sparse_terminal_evidence_error(
+                        ticker, ticker_terminal, terminal, cutoff_at,
+                        (sparse_terminal_evidence or {}).get(ticker),
+                        used_lifecycle_receipt_ids,
+                        lifecycle_receipt_ledger_dir,
+                        claim_receipt=claim_receipts,
+                    )
+                    if evidence_error:
+                        errors.append(
+                            f"terminal_session: {ticker} stale {missed_sessions} sessions: {evidence_error}"
+                        )
+                    else:
+                        sparse_exceptions[ticker] = "independent_lifecycle_or_provider_evidence"
+        try:
+            if any(_parse_aware_timestamp(value, "available_at") > cutoff_at for value in candidate["available_at"]):
+                errors.append("provenance: available_at exceeds cutoff")
+        except (TypeError, ValueError):
+            errors.append("provenance: invalid available_at")
+    terminal_session = pd.Series(terminal_by_ticker).value_counts().index[0] if terminal_by_ticker else None
+    return not errors, errors, {
+        "provider": "VCI",
+        "requested_symbols": sorted(requested_symbols),
+        "terminal_by_ticker": terminal_by_ticker,
+        "terminal_session": terminal_session,
+        "sparse_terminal_max_missed_sessions": SPARSE_TERMINAL_MAX_MISSED_SESSIONS,
+        "sparse_terminal_exceptions": sparse_exceptions,
+        "cutoff_at": cutoff_at.isoformat(),
+        "validation_outcome": "passed" if not errors else "failed",
+    }
+
+
+def _claim_sparse_terminal_receipts(
+    authority: Dict,
+    sparse_terminal_evidence: Optional[Dict[str, Dict]],
+    lifecycle_receipt_ledger_dir: Optional[Path],
+    claimed_receipt_ids: Optional[Set[str]] = None,
+) -> List[str]:
+    """Consume lifecycle receipts only after every release gate has passed."""
+    errors = []
+    for ticker in authority.get("sparse_terminal_exceptions", {}):
+        evidence = (sparse_terminal_evidence or {}).get(ticker)
+        if evidence is None:
+            errors.append(f"terminal_session: {ticker} lifecycle receipt: evidence missing")
+            continue
+        claim_error = _claim_lifecycle_receipt(
+            evidence, evidence["payload"],
+            lifecycle_receipt_ledger_dir or LIFECYCLE_RECEIPT_LEDGER_DIR,
+        )
+        if claim_error:
+            errors.append(f"terminal_session: {ticker} lifecycle receipt: {claim_error}")
+        elif claimed_receipt_ids is not None:
+            claimed_receipt_ids.add(evidence["receipt_id"])
+    return errors
+
+
+def _release_lifecycle_receipt_claims(
+    authority: Dict,
+    sparse_terminal_evidence: Optional[Dict[str, Dict]],
+    lifecycle_receipt_ledger_dir: Optional[Path],
+    claimed_receipt_ids: Set[str],
+) -> None:
+    """Undo claims made by this unpublished transaction."""
+    ledger_dir = lifecycle_receipt_ledger_dir or LIFECYCLE_RECEIPT_LEDGER_DIR
+    for ticker in authority.get("sparse_terminal_exceptions", {}):
+        evidence = (sparse_terminal_evidence or {}).get(ticker)
+        if evidence is None or evidence["receipt_id"] not in claimed_receipt_ids:
+            continue
+        path = ledger_dir / f"{evidence['receipt_id']}.json"
+        expected = {
+            "schema_version": LIFECYCLE_RECEIPT_LEDGER_SCHEMA_VERSION,
+            "receipt_id": evidence["receipt_id"],
+            "receipt_sha256": sha256_hex(_canonical_json(evidence)),
+            "key_id": evidence["integrity"]["key_id"],
+            "source": evidence["payload"]["source"],
+            "ticker": evidence["payload"]["ticker"],
+        }
+        if not path.exists() or path.read_bytes() != _canonical_json(expected):
+            raise RuntimeError("lifecycle receipt claim rollback verification failed")
+        path.unlink()
+        if path.exists():
+            raise RuntimeError("lifecycle receipt claim rollback failed")
+        _fsync_directory(ledger_dir)
+
+
+def _restore_publication_pointer(pointer_path: Path, prior_pointer: Optional[bytes]) -> None:
+    """Restore and durably verify the pointer after an unpublished failure."""
+    if prior_pointer is None:
+        pointer_path.unlink(missing_ok=True)
+        _fsync_directory(pointer_path.parent)
+        if pointer_path.exists():
+            raise RuntimeError("publication pointer rollback verification failed")
+        return
+    restore_path = pointer_path.with_suffix(pointer_path.suffix + ".rollback.tmp")
+    restore_path.write_bytes(prior_pointer)
+    with restore_path.open("rb+") as stream:
+        os.fsync(stream.fileno())
+    os.replace(str(restore_path), str(pointer_path))
+    with pointer_path.open("rb+") as stream:
+        os.fsync(stream.fileno())
+    _fsync_directory(pointer_path.parent)
+    if pointer_path.read_bytes() != prior_pointer:
+        raise RuntimeError("publication pointer rollback verification failed")
+
+
+def _validate_phase_coverage(
+    candidate: pd.DataFrame,
+    requested_symbols: List[str],
+    fetch_stats: Dict,
+    full_refetch_stats: Optional[Dict],
+) -> List[str]:
+    """Require each requested ticker to survive the incremental or final full-history phase."""
+    errors: List[str] = []
+    requested = {str(ticker).upper() for ticker in requested_symbols}
+    details = (full_refetch_stats or {}).get("details", [])
+    full_targets = {str(detail.get("symbol", "")).upper() for detail in details}
+    full_success = {
+        str(detail.get("symbol", "")).upper()
+        for detail in details
+        if detail.get("status") == "success"
+    }
+    if full_targets - requested:
+        errors.append("coverage: full-history refetch includes unrequested ticker")
+    if full_targets - full_success:
+        errors.append("coverage: full-history refetch ticker missing or failed")
+    if fetch_stats.get("empty", 0) or fetch_stats.get("empty_tickers"):
+        errors.append(f"source empty tickers: {fetch_stats.get('empty_tickers', [])}")
+    observed = set(candidate["ticker"].astype(str).str.upper()) if "ticker" in candidate else set()
+    if observed != requested:
+        errors.append("coverage: fetched tickers diverge from requested universe")
+    return errors
+
+
+def validate_gate_evidence(evidence: object, attempt_id: str, completed_at: str) -> bool:
+    if not isinstance(evidence, dict) or set(evidence) != GATE_EVIDENCE_FIELDS:
+        return False
+    strings = ("terminal_session", "cutoff_at", "candidate_path", "pointer_path", "projection_path", "projection_attempt_id", "vci_authority_receipt_path")
+    if evidence.get("schema_version") != VCI_AUTHORITY_RECEIPT_SCHEMA_VERSION or evidence.get("projection_attempt_id") != attempt_id or evidence.get("release_gate_passed") is not True or any(not isinstance(evidence.get(key), str) or not evidence[key] for key in strings) or any(not isinstance(evidence.get(key), str) or __import__("re").fullmatch(r"[0-9a-f]{64}", evidence[key]) is None for key in ("candidate_sha256", "pointer_sha256", "projection_sha256", "vci_authority_receipt_sha256")):
+        return False
+    try:
+        cutoff = _parse_aware_timestamp(evidence["cutoff_at"], "cutoff_at")
+        pointer_path, projection_path, candidate_path = (Path(evidence[key]) for key in ("pointer_path", "projection_path", "candidate_path"))
+        pointer, projection = _load_strict_json(pointer_path), _load_strict_json(projection_path)
+        authority_path = Path(evidence["vci_authority_receipt_path"])
+        authority = _load_strict_json(authority_path)
+        if cutoff > _parse_aware_timestamp(completed_at, "completed_at") or _sha256(pointer_path) != evidence["pointer_sha256"] or pointer.get("candidate") != str(candidate_path) or pointer.get("sha256") != evidence["candidate_sha256"] or _sha256(projection_path) != evidence["projection_sha256"] or projection.get("market_data_attempt_id") != attempt_id or candidate_path.suffix != ".parquet" or _sha256(candidate_path) != evidence["candidate_sha256"] or _sha256(authority_path) != evidence["vci_authority_receipt_sha256"] or not verify_market_data_receipt(authority):
+            return False
+        candidate = pd.read_parquet(candidate_path)
+        valid, _ = validate_dataframe(candidate, "published_candidate")
+        authority_evidence = authority.get("gate_evidence", {})
+        if not valid or authority.get("terminal_session") != evidence["terminal_session"] or authority_evidence.get("candidate_sha256") != evidence["candidate_sha256"] or authority_evidence.get("cutoff_at") != evidence["cutoff_at"]:
+            return False
+        return True
+    except (OSError, ValueError, KeyError, TypeError, ImportError):
+        return False
+
+
+def _gate_evidence_from_result(result: Dict, attempt_id: str, projection_path: Path, projection_sha256: Optional[str]) -> Optional[Dict]:
+    report, authority = result.get("gate_report"), result.get("vci_authority")
+    if not isinstance(report, dict) or not isinstance(authority, dict) or not projection_sha256 or not all(isinstance(result.get(key), str) and result[key] for key in ("candidate_path", "pointer_path", "sha256", "vci_authority_receipt_path")) or not isinstance(report.get("terminal_session"), str) or not isinstance(report.get("gates"), dict) or not report["gates"] or not all(value is True for value in report["gates"].values()):
+        return None
+    try:
+        return {"schema_version": VCI_AUTHORITY_RECEIPT_SCHEMA_VERSION, "terminal_session": report["terminal_session"], "cutoff_at": authority["cutoff_at"], "candidate_path": result["candidate_path"], "candidate_sha256": result["sha256"], "pointer_path": result["pointer_path"], "pointer_sha256": _sha256(Path(result["pointer_path"])), "projection_path": str(projection_path), "projection_sha256": projection_sha256, "projection_attempt_id": attempt_id, "release_gate_passed": True, "vci_authority_receipt_path": result["vci_authority_receipt_path"], "vci_authority_receipt_sha256": _sha256(Path(result["vci_authority_receipt_path"]))}
+    except (KeyError, OSError, ValueError, TypeError):
+        return None
+
+
+def validate_release_gates(
+    combined: pd.DataFrame,
+    fetch_stats: Dict,
+    requested_symbols: List[str],
+    requested_end: pd.Timestamp,
+    canonical_max: Optional[pd.Timestamp],
+    cutoff_at: Optional[datetime] = None,
+    full_refetch_stats: Optional[Dict] = None,
+    terminal_candidate: Optional[pd.DataFrame] = None,
+    canonical_terminals: Optional[Dict[str, pd.Timestamp]] = None,
+    sparse_terminal_evidence: Optional[Dict[str, Dict]] = None,
+    lifecycle_receipt_ledger_dir: Optional[Path] = None,
+    claim_receipts: bool = True,
+) -> Tuple[bool, List[str], Dict]:
+    """Enforce publication gates without mutating candidate or production."""
+    errors: List[str] = []
+    rejected_rows = int(len(combined) - len(combined.drop_duplicates(["ticker", "date"]))) if not combined.empty else 0
+    if rejected_rows:
+        errors.append(f"duplicates: rejected {rejected_rows} duplicate (ticker, date) rows before publication")
+    if fetch_stats.get("errors", 0) != 0 or fetch_stats.get("errors_list"):
+        errors.append(f"source errors: {fetch_stats.get('errors_list', [])}")
+    errors.extend(_validate_phase_coverage(
+        combined, requested_symbols, fetch_stats, full_refetch_stats,
+    ))
+    cutoff_at = cutoff_at or datetime.now(timezone.utc)
+    authority_ok, authority_errors, authority = _vci_terminal_evidence(
+        terminal_candidate if terminal_candidate is not None else combined,
+        requested_symbols, requested_end, canonical_max, cutoff_at, canonical_terminals,
+        sparse_terminal_evidence,
+        lifecycle_receipt_ledger_dir,
+        claim_receipts=False,
+    )
+    errors.extend(authority_errors)
+    if not errors and claim_receipts:
+        errors.extend(_claim_sparse_terminal_receipts(
+            authority, sparse_terminal_evidence, lifecycle_receipt_ledger_dir,
+        ))
+    report = {
+        "requested_symbols": len(requested_symbols),
+        "observed_symbols": int(combined["ticker"].nunique()) if not combined.empty else 0,
+        "terminal_session": authority["terminal_session"],
+        "rejected_rows": rejected_rows,
+        "source_errors": int(fetch_stats.get("errors", 0)),
+        "gates": {"source_errors": not bool(fetch_stats.get("errors", 0) or fetch_stats.get("errors_list")), "terminal_coverage": authority_ok, "duplicates": rejected_rows == 0},
+    }
+    return not errors, errors, report | {"vci_authority": authority}
+
+
+def publish_candidate(
+    candidate: pd.DataFrame,
+    canonical_path: Path,
+    release_root: Path = DEFAULT_RELEASE_ROOT,
+    pointer_path: Path = DEFAULT_POINTER_PATH,
+    manifest: Optional[Dict] = None,
+    vci_authority: Optional[Dict] = None,
+    sparse_terminal_evidence: Optional[Dict[str, Dict]] = None,
+    lifecycle_receipt_ledger_dir: Optional[Path] = None,
+    expected_generation: Optional[int] = None,
+    expected_pointer_sha256: Optional[str] = None,
+) -> Dict:
+    """Write run-ID candidate, manifest, then atomically swap read-only pointer."""
+    release_root.mkdir(parents=True, exist_ok=True)
+    pointer_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = pointer_path.with_suffix(pointer_path.suffix + ".lock")
+    lock_lease = _acquire_publication_lock(lock_path)
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ") + "_" + uuid.uuid4().hex[:8]
+    run_dir = release_root / run_id
+    run_dir.mkdir()
+    candidate_path = run_dir / canonical_path.name
+    manifest_path = run_dir / "manifest.json"
+    prior_pointer = pointer_path.read_bytes() if pointer_path.exists() else None
+    claimed_lifecycle_receipt_ids: Set[str] = set()
+    try:
+        atomic_write_with_backup(candidate, candidate_path, backup=False)
+        # Test doubles may only assert the call; production always has the file.
+        if not candidate_path.exists():
+            candidate.to_parquet(candidate_path, index=False)
+        payload = dict(manifest or {})
+        prior = json.loads(pointer_path.read_text(encoding="utf-8")) if pointer_path.exists() else {}
+        prior_generation = int(prior.get("generation", 0))
+        prior_hash = _sha256(pointer_path) if pointer_path.exists() else None
+        if expected_generation is not None and prior_generation != expected_generation:
+            raise RuntimeError("stale publication generation")
+        if expected_pointer_sha256 is not None and prior_hash != expected_pointer_sha256:
+            raise RuntimeError("stale publication pointer")
+        if not isinstance(vci_authority, dict) or vci_authority.get("validation_outcome") != "passed":
+            raise RuntimeError("VCI authority evidence unavailable")
+        candidate_sha256 = _sha256(candidate_path)
+        active_id, keyring = _trusted_keyring()
+        authority = {
+            "schema_version": MARKET_DATA_ATTEMPT_SCHEMA_VERSION,
+            "attempt_id": run_id,
+            "state": "terminal",
+            "started_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "completed_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "published": True,
+            "stale": False,
+            "terminal_session": vci_authority["terminal_session"],
+            "execution_allowed": True,
+            "reason": "vci_authority_v2",
+            "publication": {"run_id": run_id, "candidate_path": str(candidate_path), "pointer_path": str(pointer_path), "sha256": candidate_sha256},
+            "projection_path": "",
+            "projection_sha256": "",
+            "projection_attempt_id": run_id,
+            "provenance": vci_authority,
+            "gate_evidence": {"candidate_sha256": candidate_sha256, "terminal_session": vci_authority["terminal_session"], "cutoff_at": vci_authority["cutoff_at"], "validation_outcome": "passed", "release_gate_evidence": payload.get("gate_report", {})},
+        }
+        authority = _sign_receipt(authority, active_id, keyring[active_id])
+        authority_path = run_dir / "vci_authority_receipt.v2.json"
+        _write_immutable_json(authority_path, authority)
+        if not verify_market_data_receipt(authority):
+            raise RuntimeError("VCI authority receipt signature invalid")
+        payload.update({"run_id": run_id, "candidate": str(candidate_path), "sha256": candidate_sha256, "canonical_sha256": _sha256(canonical_path) if canonical_path.exists() else None, "published_at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "pit_publication_timestamp": datetime.now(timezone.utc).isoformat(timespec="seconds"), "canonical_path": str(canonical_path), "release_class": payload.get("release_class", "release"), "state": "published", "generation": prior_generation + 1, "vci_authority_receipt_path": str(authority_path), "vci_authority_receipt_sha256": _sha256(authority_path)})
+        _write_fsync(manifest_path, json.dumps(payload, indent=2, default=str).encode())
+        _write_fsync(run_dir / "pit_manifest.json", json.dumps({"run_id": run_id, "published_at": payload["published_at"], "terminal_session": vci_authority["terminal_session"]}, indent=2).encode())
+        pointer = {"run_id": run_id, "candidate": str(candidate_path), "manifest": str(manifest_path), "sha256": payload["sha256"], "generation": payload["generation"]}
+        fd, tmp_name = tempfile.mkstemp(prefix="market_current.", suffix=".tmp", dir=str(pointer_path.parent))
+        os.close(fd)
+        tmp_pointer = Path(tmp_name)
+        tmp_pointer.write_text(json.dumps(pointer, indent=2), encoding="utf-8")
+        with tmp_pointer.open("rb+") as stream:
+            os.fsync(stream.fileno())
+        receipt_errors = _claim_sparse_terminal_receipts(
+            vci_authority, sparse_terminal_evidence, lifecycle_receipt_ledger_dir,
+            claimed_lifecycle_receipt_ids,
+        )
+        if receipt_errors:
+            raise RuntimeError("; ".join(receipt_errors))
+        tmp_pointer.replace(pointer_path)
+        _fsync_directory(pointer_path.parent)
+        try:
+            prune_releases(release_root, pointer_path)
+        except Exception:
+            logger.exception("Post-commit release pruning failed")
+            if os.name == "nt":
+                _write_quarantine(run_dir / "quarantine.json", json.dumps({"state": "quarantined", "reason": "post-pointer release pruning failed", "run_id": run_id}, indent=2).encode())
+                raise
+        return {"run_id": run_id, "candidate_path": str(candidate_path), "manifest_path": str(manifest_path), "pointer_path": str(pointer_path), "sha256": payload["sha256"], "vci_authority_receipt_path": str(authority_path)}
+    except Exception as exc:
+        rollback_errors = []
+        try:
+            _restore_publication_pointer(pointer_path, prior_pointer)
+        except Exception as rollback_exc:
+            rollback_errors.append(rollback_exc)
+        if claimed_lifecycle_receipt_ids:
+            try:
+                _release_lifecycle_receipt_claims(
+                    vci_authority, sparse_terminal_evidence, lifecycle_receipt_ledger_dir,
+                    claimed_lifecycle_receipt_ids,
+                )
+            except Exception as rollback_exc:
+                rollback_errors.append(rollback_exc)
+        _write_quarantine(run_dir / "quarantine.json", json.dumps({"state": "quarantined", "reason": str(exc), "run_id": run_id}, indent=2).encode())
+        logger.exception("Candidate quarantined: %s", run_dir)
+        if rollback_errors:
+            raise ExceptionGroup("publication failed and rollback failed", [exc, *rollback_errors])
+        raise
+    finally:
+        _release_publication_lock(lock_path, lock_lease)
+
+
+def prune_releases(release_root: Path = DEFAULT_RELEASE_ROOT, pointer_path: Path = DEFAULT_POINTER_PATH) -> None:
+    """Apply release, checkpoint, failed, and PIT-manifest retention classes."""
+    releases = sorted((p for p in release_root.iterdir() if p.is_dir()), reverse=True) if release_root.exists() else []
+    active = None
+    pointer = pointer_path
+    if pointer.exists():
+        try:
+            active = json.loads(pointer.read_text(encoding="utf-8")).get("run_id")
+        except (OSError, json.JSONDecodeError):
+            pass
+    now = datetime.now()
+    normal = []
+    checkpoints: Dict[str, List[Path]] = {}
+    for release in releases:
+        try:
+            metadata = json.loads((release / "manifest.json").read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            metadata = {}
+        if (release / "quarantine.json").exists() or metadata.get("state") in {"failed", "quarantined"}:
+            if now - datetime.fromtimestamp(release.stat().st_mtime) > timedelta(days=FAILED_RETENTION_DAYS) and release.name != active:
+                shutil.rmtree(release)
+        elif metadata.get("release_class") == "checkpoint":
+            checkpoint_run = str(metadata.get("checkpoint_run_id", "default"))
+            checkpoints.setdefault(checkpoint_run, []).append(release)
+            if now - datetime.fromtimestamp(release.stat().st_mtime) > timedelta(days=CHECKPOINT_RETENTION_DAYS) and release.name != active:
+                shutil.rmtree(release)
+        elif (release / "pit_manifest.json").exists():
+            if now - datetime.fromtimestamp((release / "pit_manifest.json").stat().st_mtime) > timedelta(days=PIT_MANIFEST_RETENTION_DAYS) and release.name != active:
+                shutil.rmtree(release)
+            else:
+                continue
+        else:
+            normal.append(release)
+    for checkpoint_releases in checkpoints.values():
+        live = [p for p in checkpoint_releases if p.exists()]
+        for release in live[CHECKPOINT_RETENTION:]:
+            if release.name != active:
+                shutil.rmtree(release)
+    for release in normal[RELEASE_RETENTION:]:
+        if release.name != active:
+            shutil.rmtree(release)
+
+
+def read_published_candidate(pointer_path: Path) -> pd.DataFrame:
+    """Read pointer and candidate from private in-memory copies."""
+    pointer_bytes = pointer_path.read_bytes()
+    pointer = json.loads(pointer_bytes)
+    candidate = Path(pointer["candidate"])
+    expected_hash = str(pointer["sha256"])
+    candidate_bytes = candidate.read_bytes() if candidate.is_file() else None
+    if candidate_bytes is None or hashlib.sha256(candidate_bytes).hexdigest() != expected_hash:
+        raise RuntimeError("published candidate hash mismatch")
+    return pd.read_parquet(io.BytesIO(candidate_bytes))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1050,6 +2152,11 @@ def run_updater(
     dry_run: bool = False,
     symbol_filter: Optional[Set[str]] = None,
     skip_refetch: bool = False,
+    bypass_lifecycle: bool = False,
+    expected_generation: Optional[int] = None,
+    expected_pointer_sha256: Optional[str] = None,
+    reconciliation_state_path: Path = MARKET_DATA_RECONCILIATION_STATE,
+    reconciliation_latest_path: Path = MARKET_DATA_RECONCILIATION_LATEST,
 ) -> Dict:
     """Main updater pipeline.
 
@@ -1061,6 +2168,7 @@ def run_updater(
         dry_run: If True, validate but do not write.
         symbol_filter: Optional set of symbols to restrict fetching.
         skip_refetch: If True, disable automatic targeted re-fetch on anomaly.
+        bypass_lifecycle: If True, allow writes despite unresolved lifecycle evidence.
 
     Returns:
         Dict with pipeline results summary.
@@ -1087,6 +2195,7 @@ def run_updater(
         logger.error("No symbols in universe. Cannot proceed.")
         return {"status": "error", "message": "Empty universe"}
 
+    requested_symbols = sorted(symbol_filter or set(all_symbols))
     # 2. Determine incremental date range
     symbol_max_dates: Dict[str, pd.Timestamp] = {}
     if start_date:
@@ -1136,6 +2245,26 @@ def run_updater(
         f"({fetch_stats['empty']} empty, {fetch_stats['errors']} errors)"
     )
 
+    unresolved_lifecycle_symbols = (
+        fetch_stats.get("empty_tickers", []) +
+        [failure["symbol"] for failure in fetch_stats.get("errors_list", [])]
+    )
+    if unresolved_lifecycle_symbols and not bypass_lifecycle:
+        logger.error(
+            "BLOCKED: unresolved sparse/lifecycle exceptions require independently "
+            "signed or checkpointed official exchange evidence; no write will be performed."
+        )
+        return {
+            "status": "lifecycle_evidence_required",
+            "unresolved_lifecycle_symbols": sorted(set(unresolved_lifecycle_symbols)),
+            "fetch_stats": fetch_stats,
+        }
+    if unresolved_lifecycle_symbols:
+        logger.warning(
+            "BYPASS: proceeding despite unresolved lifecycle evidence for symbols: %s",
+            sorted(set(unresolved_lifecycle_symbols)),
+        )
+
     if new_data.empty:
         logger.warning("No new data fetched. Nothing to update.")
         return {"status": "no_new_data", "fetch_stats": fetch_stats}
@@ -1144,6 +2273,7 @@ def run_updater(
     refetch_stats: Dict = {}
     full_refetch_stats: Dict = {}
     full_history_symbols: Set[str] = set()
+    terminal_candidate = new_data
     anomalies: List[Dict] = []
     if not skip_refetch:
         logger.info("─" * 50)
@@ -1186,6 +2316,9 @@ def run_updater(
             full_df, full_refetch_stats = run_full_history_refetch(
                 client, needs_full, exchange_map, end_str,
             )
+            # The incremental batch is the terminal-session authority. Full-history
+            # recovery replaces history but must not advance a ticker's session.
+            terminal_candidate = new_data.copy()
             full_history_symbols = {
                 d["symbol"]
                 for d in full_refetch_stats.get("details", [])
@@ -1211,25 +2344,15 @@ def run_updater(
     else:
         logger.info("Targeted re-fetch skipped (--no-refetch)")
 
-    # 4. Validate new data before merge
+    # 4. Normalize candidate PIT metadata before any overlap comparison or validation.
+    new_data = _normalize_legacy_vci_available_at(new_data)
+    terminal_candidate = _normalize_legacy_vci_available_at(terminal_candidate)
     new_valid, new_errors = validate_dataframe(new_data, "new_data")
     if not new_valid:
         logger.error("New data validation FAILED:")
         for err in new_errors:
             logger.error(f"  - {err}")
-        # Deduplicate new data and retry validation
-        logger.info("Attempting auto-fix: dedup + drop invalid rows")
-        new_data = new_data.drop_duplicates(subset=["ticker", "date"], keep="last")
-        new_data = new_data.dropna(subset=["open", "high", "low", "close", "volume"])
-        new_data = new_data[new_data["date"] >= MIN_DATE].copy()
-        new_data = new_data[new_data["exchange"].isin(EXCHANGE_WHITELIST)].copy()
-        new_valid, new_errors = validate_dataframe(new_data, "new_data (post-fix)")
-        if not new_valid:
-            logger.error("Post-fix validation still FAILED:")
-            for err in new_errors:
-                logger.error(f"  - {err}")
-            if not dry_run:
-                return {"status": "validation_failed", "errors": new_errors}
+        return {"status": "dry_run" if dry_run else "validation_failed", "errors": new_errors, "dry_run": dry_run, "rejected_rows": int(len(new_data))}
 
     # 5. Merge with existing canonical (if writing to canonical path)
     if target_path == canonical_path and canonical_path.exists():
@@ -1248,13 +2371,14 @@ def run_updater(
                     f"{len(full_history_symbols)} phase-shifted symbols: "
                     f"{sorted(full_history_symbols)}"
                 )
-            combined = pd.concat([existing, new_data], ignore_index=True)
-            before_dedup = len(combined)
-            combined = combined.drop_duplicates(subset=["ticker", "date"], keep="last")
-            after_dedup = len(combined)
-            if before_dedup != after_dedup:
-                logger.info(f"Deduplication removed {before_dedup - after_dedup} rows")
-            combined = combined.sort_values(["ticker", "date"]).reset_index(drop=True)
+            combined, overlap_errors = merge_canonical_and_new(existing, new_data)
+            if overlap_errors:
+                return {
+                    "status": "dry_run" if dry_run else "validation_failed",
+                    "errors": overlap_errors,
+                    "dry_run": dry_run,
+                    "rejected_rows": int(len(combined)),
+                }
         else:
             combined = new_data.sort_values(["ticker", "date"]).reset_index(drop=True)
     else:
@@ -1266,14 +2390,20 @@ def run_updater(
         logger.warning("Combined data validation issues:")
         for err in combined_errors:
             logger.warning(f"  - {err}")
-        # Gate: invalid combined data must NEVER reach atomic_write_with_backup
-        # when dry_run=False. Dry-run may return the invalid summary without writing.
-        if not dry_run:
-            logger.error(
-                "BLOCKED: combined validation failed and dry_run=False; "
-                "no write will be performed."
-            )
-            return {"status": "validation_failed", "errors": combined_errors}
+        return {"status": "dry_run" if dry_run else "validation_failed", "errors": combined_errors, "dry_run": dry_run, "rejected_rows": int(len(combined))}
+
+    canonical_max = read_canonical_max_date(canonical_path) if canonical_path.exists() else None
+    canonical_terminals = _canonical_terminal_by_ticker(canonical_path)
+    sparse_terminal_evidence = _load_ticker_lifecycle() if not skip_refetch else {}
+    gates_ok, gate_errors, gate_report = validate_release_gates(
+        combined, fetch_stats, requested_symbols, end_ts, canonical_max,
+        full_refetch_stats=full_refetch_stats, terminal_candidate=terminal_candidate,
+        canonical_terminals=canonical_terminals,
+        sparse_terminal_evidence=sparse_terminal_evidence,
+        claim_receipts=False,
+    )
+    if not gates_ok:
+        return {"status": "gates_failed", "errors": gate_errors, "gate_report": gate_report, "rejected_rows": gate_report["rejected_rows"]}
 
     # 7. Report summary
     summary = {
@@ -1292,10 +2422,20 @@ def run_updater(
         "refetch_stats": refetch_stats,
         "full_history_refetch_stats": full_refetch_stats,
         "full_history_symbols": sorted(full_history_symbols) if full_history_symbols else [],
+        "gate_report": {key: value for key, value in gate_report.items() if key != "vci_authority"},
+        "vci_authority": gate_report["vci_authority"],
     }
+    try:
+        summary["market_data_reconciliation"] = _run_reconciliation(
+            combined, requested_symbols, exchange_map, end_str,
+            reconciliation_state_path, reconciliation_latest_path,
+        )
+    except Exception as exc:
+        logger.warning("KBS reconciliation boundary failed: %s", exc)
+        summary["market_data_reconciliation"] = {"status": "warning", "reason": "reconciliation_failed"}
 
     if dry_run:
-        logger.info("DRY-RUN: No data written.")
+        logger.info("DRY-RUN: lifecycle receipts and market data writes bypassed.")
         logger.info(f"  New rows: {len(new_data)}")
         logger.info(f"  Combined rows: {len(combined)}")
         logger.info(f"  Combined tickers: {combined['ticker'].nunique()}")
@@ -1304,10 +2444,22 @@ def run_updater(
         summary["exchange_split"] = combined["exchange"].value_counts().to_dict()
         return summary
 
-    # 8. Write atomically with backup
-    written_path = atomic_write_with_backup(combined, target_path)
-    summary["output_path"] = str(written_path)
-    logger.info(f"Update complete: {written_path} ({len(combined)} total rows)")
+    # 8. Stage and publish only after every gate passes. Production parquet is read-only.
+    publication = publish_candidate(
+        combined,
+        canonical_path,
+        release_root=canonical_path.parent / "market_releases",
+        pointer_path=canonical_path.parent / "market_current.json",
+        manifest={"gate_report": summary["gate_report"], "fetch_stats": fetch_stats, "rejected_rows": gate_report["rejected_rows"]},
+        vci_authority=summary["vci_authority"],
+        sparse_terminal_evidence=sparse_terminal_evidence,
+        expected_generation=expected_generation,
+        expected_pointer_sha256=expected_pointer_sha256,
+    )
+    summary.update(publication)
+    summary["status"] = "published"
+    summary["output_path"] = publication["candidate_path"]
+
     return summary
 
 
@@ -1348,6 +2500,10 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
         "--no-refetch", action="store_true",
         help="Disable automatic targeted re-fetch on price anomaly detection",
     )
+    parser.add_argument(
+        "--bypass-lifecycle", action="store_true",
+        help="Bypass independent lifecycle evidence requirement",
+    )
     return parser.parse_args(argv)
 
 
@@ -1358,24 +2514,59 @@ def main(argv: Optional[List[str]] = None) -> int:
     output_path = Path(args.output) if args.output else None
     symbol_filter = set(s.upper() for s in args.symbols) if args.symbols else None
 
-    result = run_updater(
-        canonical_path=canonical_path,
-        output_path=output_path,
-        start_date=args.start,
-        end_date=args.end,
-        dry_run=args.dry_run,
-        symbol_filter=symbol_filter,
-        skip_refetch=args.no_refetch,
-    )
+    if args.dry_run:
+        try:
+            result = run_updater(
+                canonical_path=canonical_path, output_path=output_path, start_date=args.start, end_date=args.end,
+                dry_run=True, symbol_filter=symbol_filter, skip_refetch=args.no_refetch,
+                bypass_lifecycle=args.bypass_lifecycle,
+            )
+        except Exception as exc:
+            logger.exception("Updater dry-run crashed")
+            return 1
+        return 0 if result.get("status") == "dry_run" else 1
+
+    try:
+        attempt = start_market_data_attempt()
+    except RuntimeError:
+        logger.error("Market receipt signing configuration unavailable")
+        return 1
+    try:
+        result = run_updater(
+            canonical_path=canonical_path,
+            output_path=output_path,
+            start_date=args.start,
+            end_date=args.end,
+            dry_run=args.dry_run,
+            symbol_filter=symbol_filter,
+            skip_refetch=args.no_refetch,
+            bypass_lifecycle=args.bypass_lifecycle,
+        )
+    except Exception as exc:
+        result = {"status": "error", "message": str(exc)}
+        logger.exception("Updater crashed")
 
     # Save result summary
-    summary_path = REPO_ROOT / ".ly_state" / "session" / "update_market_data_result.json"
+    summary_path = MARKET_DATA_PROJECTION
     summary_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(summary_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, indent=2, default=str)
-    logger.info(f"Result summary saved to {summary_path}")
+    projection_error = None
+    try:
+        result["market_data_attempt_id"] = attempt["attempt_id"]
+        _write_fsync(summary_path, _canonical_json(result))
+        if _load_strict_json(summary_path) != result:
+            raise RuntimeError("dashboard projection verification failed")
+        logger.info(f"Result summary saved to {summary_path}")
+    except Exception as exc:
+        projection_error = str(exc)
+        logger.exception("Dashboard projection failed")
+    try:
+        terminal = finish_market_data_attempt(attempt, result, projection_error, projection_path=summary_path)
+        result["attempt_receipt"] = str(terminal["path"])
+    except Exception:
+        logger.exception("Failed to append terminal market-data receipt")
+        return 1
 
-    if result.get("status") in ("error", "validation_failed"):
+    if projection_error or result.get("status") not in ("dry_run", "published"):
         logger.error(f"Pipeline FAILED: {result.get('status')}")
         return 1
 

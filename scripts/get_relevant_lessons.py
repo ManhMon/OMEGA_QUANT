@@ -2,7 +2,7 @@ import json
 import sys
 from pathlib import Path
 
-from extract_lessons import search_similar_lessons
+from extract_lessons import normalize_lesson_text, search_similar_lessons
 
 WORKSPACE = Path(__file__).resolve().parent.parent
 LESSONS_FILE = WORKSPACE / ".agents" / "knowledge" / "lessons.jsonl"
@@ -24,7 +24,7 @@ def get_lessons(role_id_or_name, task_query=None, max_lessons=3):
     if not LESSONS_FILE.exists():
         return ""
 
-    role_str = str(role_id_or_name).lower()
+    role_str = normalize_lesson_text(role_id_or_name)
 
     if task_query:
         matches = search_similar_lessons(
@@ -43,7 +43,10 @@ def get_lessons(role_id_or_name, task_query=None, max_lessons=3):
             try:
                 obj = json.loads(line)
                 # Match by role_id or role_name
-                if str(obj.get("role_id")) == role_str or role_str in str(obj.get("role_name")).lower():
+                if (
+                    normalize_lesson_text(obj.get("role_id")) == role_str
+                    or role_str in normalize_lesson_text(obj.get("role_name"))
+                ):
                     lessons.append(obj)
             except Exception:
                 pass
@@ -71,4 +74,6 @@ if __name__ == "__main__":
         print("Usage: python get_relevant_lessons.py <role_id_or_name> <task_query>")
         sys.exit(1)
 
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding='utf-8')
     print(get_lessons(sys.argv[1], sys.argv[2]))

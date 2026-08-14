@@ -8,12 +8,15 @@ from typing import Dict, List, Any
 import numpy as np
 import pandas as pd
 
+from omega.quant.evolution.alpha_to_execution_bridge import CANONICAL_METRIC_KEY
+
 
 @dataclass
 class DiscoveredFeature:
     name: str
     ic: float
     coverage: float
+    signal_pnl_score: float = 0.0
 
 
 class AlphaDiscoveryEngine:
@@ -126,7 +129,7 @@ class AlphaDiscoveryEngine:
         for name, series in cands.items():
             ic, cov = self._calculate_ic(series, panel["target"])
             if abs(ic) >= self.min_ic:
-                results.append(DiscoveredFeature(name=name, ic=ic, coverage=cov))
+                results.append(DiscoveredFeature(name=name, ic=ic, coverage=cov, signal_pnl_score=ic))
 
         results.sort(key=lambda x: abs(x.ic), reverse=True)
         top = results[: self.max_features]
@@ -136,7 +139,7 @@ class AlphaDiscoveryEngine:
         for f in top:
             print(f"     - {f.name}: IC={f.ic:.4f}, coverage={f.coverage:.2%}")
 
-        return [{"name": f.name, "ic": f.ic, "coverage": f.coverage} for f in top]
+        return [{"name": f.name, "ic": f.ic, "coverage": f.coverage, CANONICAL_METRIC_KEY: f.signal_pnl_score} for f in top]
 
 
 def run_discovery(clean_df: Dict[str, Any], target_vector: Dict[str, Any]) -> List[Dict[str, Any]]:

@@ -338,6 +338,12 @@ class TestBuildRiskStatus(unittest.TestCase):
         rs = build_risk_status(SAMPLE_SIGNAL, {})
         self.assertEqual(rs["signal_date"], "2026-06-18")
 
+    def test_reconciliation_does_not_change_circuit_breaker(self):
+        reconciliation = {"status": "critical", "aggregate_by_exchange": {"HOSE": {"critical": 1}}, "findings": []}
+        rs = build_risk_status(SAMPLE_SIGNAL, {}, reconciliation)
+        self.assertEqual(rs["market_data_reconciliation"], reconciliation)
+        self.assertFalse(rs["breached"])
+
 
 class TestBuildPnlLatest(unittest.TestCase):
     """build_pnl_latest produces a correct PnL snapshot."""

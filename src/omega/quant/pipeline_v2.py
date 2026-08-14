@@ -21,6 +21,27 @@ from omega.quant.portfolio.execution_sim import (
     adv_tiered_half_spread_vectorized,
 )
 
+
+def _compute_market_proxy_returns(
+    returns_pivot: pd.DataFrame,
+    active_mask: pd.DataFrame,
+    min_breadth: int = 5,
+) -> tuple[np.ndarray, np.ndarray]:
+    active_returns = returns_pivot.where(active_mask)
+    breadth = active_mask.sum(axis=1).to_numpy(dtype=int)
+    proxy = active_returns.mean(axis=1).fillna(0.0).to_numpy(dtype=float)
+    insufficient = breadth < min_breadth
+    proxy[insufficient] = 0.0
+    return proxy, breadth
+
+
+def _validate_overlays(overlays: list["WeightOverlay"]) -> None:
+    regime_positions = [i for i, overlay in enumerate(overlays) if isinstance(overlay, RegimeOverlay)]
+    if len(regime_positions) > 1:
+        raise ValueError("At most one RegimeOverlay is allowed")
+    if regime_positions and regime_positions[0] != len(overlays) - 1:
+        raise ValueError("RegimeOverlay must be the last overlay")
+
 logger = logging.getLogger("pipeline_v2")
 
 
@@ -608,7 +629,8 @@ class HMMRegimeOverlay(WeightOverlay):
         panel_flat = panel.reset_index() if not {"date", "symbol"}.issubset(panel.columns) else panel
         returns_pivot = panel_flat.pivot_table(index="date", columns="symbol", values="returns").fillna(0.0)
         returns_pivot = returns_pivot.reindex(index=weights.index, columns=weights.columns, fill_value=0.0)
-        market_returns = returns_pivot.mean(axis=1).to_numpy()
+        active_mask = returns_pivot.ne(0.0)
+        market_returns, _ = _compute_market_proxy_returns(returns_pivot, active_mask)
         return apply_hmm_regime_overlay(
             weights, market_returns,
             bear_exposure=self.bear_exposure,
@@ -630,7 +652,8 @@ class RegimeAwareWFOverlay(WeightOverlay):
         panel_flat = panel.reset_index() if not {"date", "symbol"}.issubset(panel.columns) else panel
         returns_pivot = panel_flat.pivot_table(index="date", columns="symbol", values="returns").fillna(0.0)
         returns_pivot = returns_pivot.reindex(index=weights.index, columns=weights.columns, fill_value=0.0)
-        market_returns = returns_pivot.mean(axis=1).to_numpy()
+        active_mask = returns_pivot.ne(0.0)
+        market_returns, _ = _compute_market_proxy_returns(returns_pivot, active_mask)
         return apply_regime_aware_walk_forward(
             weights, market_returns,
             bear_scale=self.bear_scale,
@@ -653,7 +676,8 @@ class RegimeOverlay(WeightOverlay):
         panel_flat = panel.reset_index() if not {"date", "symbol"}.issubset(panel.columns) else panel
         returns_pivot = panel_flat.pivot_table(index="date", columns="symbol", values="returns").fillna(0.0)
         returns_pivot = returns_pivot.reindex(index=weights.index, columns=weights.columns, fill_value=0.0)
-        market_returns = returns_pivot.mean(axis=1).to_numpy()
+        active_mask = returns_pivot.ne(0.0)
+        market_returns, _ = _compute_market_proxy_returns(returns_pivot, active_mask)
         return apply_regime_overlay(
             weights, market_returns,
             hysteresis_days=self.hysteresis_days,
@@ -723,6 +747,7 @@ class TradingPipelineV2:
         self.output_handler = output_handler
         self.overlays = overlays
         self.config = config
+        _validate_overlays(overlays)
         
     def execute(
         self,
@@ -842,6 +867,19 @@ class TradingPipelineV2:
         )
         
         state = self.state_manager.load_state(run_id)
+        market_active_mask = panel.pivot_table(index="date", columns="symbol", values="volume", aggfunc="last").reindex(
+            index=pivot_sig.index,
+            columns=pivot_sig.columns,
+        ).fillna(0.0) > 0.0
+        market_proxy_returns, market_breadth = _compute_market_proxy_returns(
+            returns_pivot,
+            market_active_mask,
+        )
+        state["crash_detector"] = {
+            "market_proxy_returns": market_proxy_returns,
+            "breadth": market_breadth,
+            "breadth_insufficient": (market_breadth < 5),
+        }
 
         capital = self.config.get("initial_capital_vnd", 1e9)
         use_adv_tiered_spread = self.config.get("use_adv_tiered_spread", False)

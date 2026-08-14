@@ -3,7 +3,7 @@ OMEGA_QUANT VN Trading Calendar - Holiday and session validation for Vietnamese 
 """
 
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Set, Optional
 from pathlib import Path
 
@@ -187,3 +187,18 @@ class VNTradingCalendar:
                     return False
         
         return True
+
+
+def get_futures_expiry_date(year: int, month: int) -> date:
+    """Return VN index futures expiry date for a contract month.
+
+    Third Thursday. If that day is not a trading day, roll back to the
+    preceding trading day.
+    """
+    first_day = date(year, month, 1)
+    days_to_thursday = (3 - first_day.weekday()) % 7
+    first_thursday = first_day + timedelta(days=days_to_thursday)
+    expiry = first_thursday + timedelta(days=14)
+    while not VNTradingCalendar.is_trading_day(datetime.combine(expiry, datetime.min.time())):
+        expiry -= timedelta(days=1)
+    return expiry

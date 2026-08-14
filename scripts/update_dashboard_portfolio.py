@@ -35,6 +35,7 @@ SESSION_DIR = _REPO_ROOT / ".ly_state" / "session"
 SIGNAL_DIR = _REPO_ROOT / "data" / "paper_trading"
 RISK_STATUS_FILE = SESSION_DIR / "risk_status.json"
 PNL_LATEST_FILE = SESSION_DIR / "pnl_latest.json"
+MARKET_DATA_RECONCILIATION_FILE = SESSION_DIR / "market_data_reconciliation_latest.json"
 SECTOR_MAPPING_FILE = _REPO_ROOT / "data" / "sector_mapping_level2.csv"
 
 # Metrics owned by the monitoring / circuit-breaker subsystem.
@@ -201,11 +202,11 @@ def _build_metrics_section(signal: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def build_risk_status(signal: Dict[str, Any], sector_map: Dict[str, str]) -> Dict[str, Any]:
+def build_risk_status(signal: Dict[str, Any], sector_map: Dict[str, str], reconciliation: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Assemble a complete risk_status.json payload from a signal dict."""
     regime = signal.get("regime", {})
 
-    return {
+    payload = {
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "system_state": "RUNNING",
         "signal_date": signal.get("date", ""),
@@ -219,6 +220,9 @@ def build_risk_status(signal: Dict[str, Any], sector_map: Dict[str, str]) -> Dic
         "breached": False,
         "breached_reasons": [],
     }
+    if reconciliation is not None:
+        payload["market_data_reconciliation"] = reconciliation
+    return payload
 
 
 # ------------------------------------------------------------------ #
@@ -333,7 +337,7 @@ def sync_dashboard_portfolio(
     sector_map = _load_sector_mapping()
 
     # 3. Build payloads
-    risk_status = build_risk_status(signal, sector_map)
+    risk_status = build_risk_status(signal, sector_map, _load_json(MARKET_DATA_RECONCILIATION_FILE))
     pnl_latest = build_pnl_latest(signal)
 
     # 4. Merge with existing risk_status (preserve monitoring metrics)

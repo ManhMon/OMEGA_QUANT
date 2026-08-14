@@ -1,0 +1,45 @@
+{
+  "alpha_id": "hybrid_alpha_000",
+  "formula": "close",
+  "formula_hash": "strong_validation_weak_lockbox",
+  "source": "mock",
+  "ast_depth": 1,
+  "selection_window": {
+    "start": "2019-01-02",
+    "end": "2024-03-22"
+  },
+  "validation_metrics": {
+    "mean_ic": 0.02,
+    "icir": 0.4,
+    "signal_pnl_score": 0.2,
+    "dsr": 0.8,
+    "n_ic_days": 1,
+    "n_pnl_days": 1,
+    "pairwise_corr": 0.0
+  },
+  "lockbox_metrics": {
+    "mean_ic": -0.2,
+    "icir": -0.4,
+    "signal_pnl_score": -0.3,
+    "dsr": 0.1,
+    "n_ic_days": 1,
+    "n_pnl_days": 1
+  },
+  "thresholds": {
+    "mean_ic": 0.01,
+    "icir": 0.3,
+    "signal_pnl_score": 0.08,
+    "dsr": 0.5,
+    "pairwise_corr": 0.5
+  },
+  "feature_columns": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume"
+  ],
+  "provider": "openai-compatible",
+  "neutralize": true,
+  "registry_kind": "hybrid_llm_promoted_alpha"
+}

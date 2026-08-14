@@ -1,0 +1,3 @@
+/mnt/c/Users/GHC/repos/OMEGA_QUANT/src/omega/quant/evolution/diverse_alpha_evolution.py:302:    features["__grouped_ts_structure__"] = ge.precompute_grouped_ts_structure(
+/mnt/c/Users/GHC/repos/OMEGA_QUANT/src/omega/quant/evolution/genetic_engine.py:143:def precompute_grouped_ts_structure(
+/mnt/c/Users/GHC/repos/OMEGA_QUANT/src/omega/quant/evolution/genetic_engine.py:662:        cached = precompute_grouped_ts_structure(ticker_arr, date_arr)

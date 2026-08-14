@@ -1,0 +1,897 @@
+diff --git a/src/omega/quant/evolution/genetic_engine.py b/src/omega/quant/evolution/genetic_engine.py
+index 2534095e..67d3e279 100644
+--- a/src/omega/quant/evolution/genetic_engine.py
++++ b/src/omega/quant/evolution/genetic_engine.py
+@@ -23,10 +23,13 @@ Version: 1.0.0 (V21 Port)
+ 
+ from __future__ import annotations
+ 
++from collections import OrderedDict
++import ctypes
+ import logging
+ import random
+ import time
+ import gc
++import threading
+ from dataclasses import dataclass, field
+ from typing import Any, Callable, Dict, List, Optional, Tuple
+ 
+@@ -44,6 +47,123 @@ HOF_ALPHA_CACHE_KEY = '__hof_alphas__'
+ FOLD_STRUCTURE_CACHE_KEY = '__fold_structure__'
+ ORTHO_RANKS_CACHE_KEY = '__ortho_ranks__'
+ ALPHA_CACHE_KEY = '__alpha_cache__'
++GROUPED_TS_CACHE_MAX_SIZE = 4
++
++
++class _ThreadLocalOrderedDictProxy:
++    def __init__(self) -> None:
++        self._state = threading.local()
++
++    def _cache(self) -> "OrderedDict[Any, Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]":
++        cache = getattr(self._state, "grouped_ts_cache", None)
++        if cache is None:
++            cache = OrderedDict()
++            self._state.grouped_ts_cache = cache
++        return cache
++
++    def clear(self) -> None:
++        self._cache().clear()
++
++    def get(self, key: Any, default: Any = None) -> Any:
++        return self._cache().get(key, default)
++
++    def popitem(self, last: bool = True) -> Any:
++        return self._cache().popitem(last=last)
++
++    def values(self):
++        return self._cache().values()
++
++    def items(self):
++        return self._cache().items()
++
++    def __len__(self) -> int:
++        return len(self._cache())
++
++    def __iter__(self):
++        return iter(self._cache())
++
++    def __getitem__(self, key: Any) -> Any:
++        return self._cache()[key]
++
++    def __setitem__(self, key: Any, value: Any) -> None:
++        self._cache()[key] = value
++
++
++_THREAD_LOCAL_STATE = threading.local()
++_GROUPED_TS_CACHE = _ThreadLocalOrderedDictProxy()
++
++
++def set_active_dataset_id(dataset_id: Optional[str]) -> None:
++    _THREAD_LOCAL_STATE.active_dataset_id = dataset_id
++
++
++def get_active_dataset_id() -> Optional[str]:
++    return getattr(_THREAD_LOCAL_STATE, "active_dataset_id", None)
++
++
++def set_active_grouped_ts_structure(
++    grouped_ts_structure: Optional[
++        Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]
++    ],
++) -> None:
++    _THREAD_LOCAL_STATE.active_grouped_ts_structure = grouped_ts_structure
++
++
++def get_active_grouped_ts_structure(
++) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
++    return getattr(_THREAD_LOCAL_STATE, "active_grouped_ts_structure", None)
++
++
++def _grouped_ts_boundary_value(arr: Optional[np.ndarray], index: int) -> Any:
++    if arr is None or len(arr) == 0:
++        return None
++    return arr[index]
++
++
++def _build_grouped_ts_cache_key(
++    tickers: np.ndarray,
++    dates: Optional[np.ndarray],
++) -> Tuple[Any, ...]:
++    return (
++        id(tickers),
++        len(tickers),
++        _grouped_ts_boundary_value(tickers, 0),
++        _grouped_ts_boundary_value(tickers, -1),
++        id(dates) if dates is not None else None,
++        len(dates) if dates is not None else 0,
++        _grouped_ts_boundary_value(dates, 0),
++        _grouped_ts_boundary_value(dates, -1),
++    )
++
++
++def clear_grouped_ts_cache() -> None:
++    _GROUPED_TS_CACHE.clear()
++
++
++def precompute_grouped_ts_structure(
++    tickers: Optional[np.ndarray],
++    dates: Optional[np.ndarray],
++) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
++    if tickers is None:
++        return None
++
++    ticker_arr = np.asarray(tickers)
++    if ticker_arr.ndim != 1 or ticker_arr.size == 0:
++        return None
++
++    date_arr = None if dates is None else np.asarray(dates)
++    if date_arr is not None and date_arr.shape[0] != ticker_arr.shape[0]:
++        return None
++
++    if date_arr is not None:
++        order = np.lexsort((np.asarray(pd.to_datetime(date_arr), dtype='datetime64[ns]'), ticker_arr))
++    else:
++        order = np.argsort(ticker_arr, kind='mergesort')
++
++    sorted_tickers = ticker_arr[order]
++    _, starts = np.unique(sorted_tickers, return_index=True)
++    stops = np.concatenate((starts[1:], np.array([len(sorted_tickers)])))
++    return (order, starts, stops, ticker_arr, date_arr)
+ 
+ 
+ def _set_rejected_fitness(individual: "GPIndividual") -> None:
+@@ -520,17 +640,36 @@ def _apply_grouped_ts_transform(
+     if ticker_arr.shape[0] != arr.shape[0]:
+         return transform(arr)
+ 
+-    if dates is not None:
+-        date_arr = pd.to_datetime(np.asarray(dates))
+-        order = np.lexsort((np.asarray(date_arr, dtype='datetime64[ns]'), ticker_arr))
+-    else:
+-        order = np.argsort(ticker_arr, kind='mergesort')
++    if ticker_arr.shape[0] == 0:
++        return transform(arr)
++
++    date_arr = None if dates is None else np.asarray(dates)
++    if date_arr is not None and date_arr.shape[0] != arr.shape[0]:
++        return transform(arr)
++
++    cached = get_active_grouped_ts_structure()
++    if cached is not None:
++        order, starts, stops, cached_tickers, cached_dates = cached
++        if cached_tickers is not ticker_arr or cached_dates is not date_arr:
++            cached = None
++
++    if cached is None:
++        cache_key = get_active_dataset_id()
++        if cache_key is None:
++            cache_key = _build_grouped_ts_cache_key(ticker_arr, date_arr)
++        cached = _GROUPED_TS_CACHE.get(cache_key)
++    if cached is None:
++        cached = precompute_grouped_ts_structure(ticker_arr, date_arr)
++        if cached is None:
++            return transform(arr)
++        if len(_GROUPED_TS_CACHE) >= GROUPED_TS_CACHE_MAX_SIZE:
++            _GROUPED_TS_CACHE.popitem(last=False)
++        _GROUPED_TS_CACHE[cache_key] = cached
++
++    order, starts, stops, _, _ = cached
+ 
+     sorted_values = arr[order]
+-    sorted_tickers = ticker_arr[order]
+     out_sorted = np.empty_like(sorted_values)
+-    _, starts = np.unique(sorted_tickers, return_index=True)
+-    stops = np.concatenate((starts[1:], np.array([len(sorted_tickers)])))
+     for start, stop in zip(starts, stops):
+         out_sorted[start:stop] = transform(sorted_values[start:stop])
+ 
+@@ -1484,144 +1623,144 @@ class GeneticEngine:
+         features: Dict[str, np.ndarray],
+         target: np.ndarray
+     ) -> List[GPIndividual]:
+-        if self.config.random_seed is not None:
+-            np.random.seed(self.config.random_seed)
+-            random.seed(self.config.random_seed)
+-            
+-        self.feature_names = [k for k in features.keys() if not k.startswith('target') and not k.startswith('__')]
+-        
+-        logger.info(f"Starting GP evolution: pop={self.config.population_size}, gen={self.config.generations}")
+-        
+-        # Log Option D orthogonalization baseline configuration
+-        ortho_set = getattr(self.config, 'ortho_baseline_set', None) or {}
+-        if ortho_set:
+-            logger.info(
+-                f"Option D orthogonalization: {len(ortho_set)} baseline signal(s) configured, "
+-                f"weight={self.config.ortho_penalty_weight}, "
+-                f"threshold={self.config.ortho_correlation_threshold}"
+-            )
+-        else:
+-            logger.info("Option D orthogonalization: disabled (no baseline set)")
+-        
+-        self.initialize_population()
+-        
+-        t_start = time.monotonic()
+-        best_fitness_seen = -np.inf
+-        stagnant_generations = 0
+-        for generation in range(self.config.generations):
+-            # Time-fold IR requires chronological full-sample date structure.
+-            if len(target) > 100000 and not self.config.use_time_fold_ir:
+-                if self.config.random_seed is not None:
+-                    # Deterministically vary indices per generation using seeded generator
+-                    rng = np.random.RandomState(self.config.random_seed + generation)
+-                    sample_idx = rng.choice(len(target), size=100000, replace=False)
+-                else:
+-                    sample_idx = np.random.choice(len(target), size=100000, replace=False)
+-                gen_features = {k: v[sample_idx] for k, v in features.items()}
+-                gen_target = target[sample_idx]
+-            else:
+-                gen_features = features
+-                gen_target = target
++        clear_grouped_ts_cache()
++        try:
++            if self.config.random_seed is not None:
++                np.random.seed(self.config.random_seed)
++                random.seed(self.config.random_seed)
+ 
+-            if self.config.use_fast_penalties and '__date__' in gen_features:
+-                if gen_features is features:
+-                    gen_features = dict(gen_features)
+-                gen_features[FOLD_STRUCTURE_CACHE_KEY] = self._get_cached_fold_structure(gen_features['__date__'])
++            self.feature_names = [k for k in features.keys() if not k.startswith('target') and not k.startswith('__')]
+ 
+-            if self.config.use_fast_penalties and self.hall_of_fame:
+-                if gen_features is features:
+-                    gen_features = dict(gen_features)
+-                gen_features[HOF_ALPHA_CACHE_KEY] = self._build_hof_alpha_cache(self.hall_of_fame, gen_features)
+-                gen_features[ALPHA_CACHE_KEY] = {}
++            logger.info(f"Starting GP evolution: pop={self.config.population_size}, gen={self.config.generations}")
+ 
+-            if self.config.use_fast_penalties and self._ortho_ranks:
+-                if gen_features is features:
+-                    gen_features = dict(gen_features)
+-                gen_features[ORTHO_RANKS_CACHE_KEY] = self._ortho_ranks
+-
+-            if self.config.use_icir and '__date__' in gen_features:
+-                gen_features = dict(gen_features)
+-                gen_features[DATE_CHUNK_CACHE_KEY] = self._precompute_date_chunks(gen_features, gen_target)
+-            if (
+-                self.config.neutralize_size_sector
+-                and '__date__' in gen_features
+-                and '__log_market_cap__' in gen_features
+-                and '__sector__' in gen_features
+-            ):
+-                if gen_features is features:
+-                    gen_features = dict(gen_features)
+-                gen_features[NEUTRALIZATION_CACHE_KEY] = _build_neutralization_cache(
+-                    np.asarray(gen_features.get('__log_market_cap__'), dtype=np.float64),
+-                    np.asarray(gen_features.get('__sector__')),
+-                    np.asarray(gen_features.get('__date__')),
++            ortho_set = getattr(self.config, 'ortho_baseline_set', None) or {}
++            if ortho_set:
++                logger.info(
++                    f"Option D orthogonalization: {len(ortho_set)} baseline signal(s) configured, "
++                    f"weight={self.config.ortho_penalty_weight}, "
++                    f"threshold={self.config.ortho_correlation_threshold}"
+                 )
+-
+-            if self.config.n_jobs == 1:
+-                if self._should_use_batch_neutralization(gen_features):
+-                    self._evaluate_population_with_batch_neutralization(gen_features, gen_target)
+-                else:
+-                    for individual in self.population:
+-                        individual.evaluate(gen_features, gen_target, self.hall_of_fame, self.config)
+             else:
+-                if self._should_use_batch_neutralization(gen_features):
+-                    self._evaluate_population_with_batch_neutralization(gen_features, gen_target)
++                logger.info("Option D orthogonalization: disabled (no baseline set)")
++
++            self.initialize_population()
++
++            t_start = time.monotonic()
++            best_fitness_seen = -np.inf
++            stagnant_generations = 0
++            for generation in range(self.config.generations):
++                if len(target) > 100000 and not self.config.use_time_fold_ir:
++                    if self.config.random_seed is not None:
++                        rng = np.random.RandomState(self.config.random_seed + generation)
++                        sample_idx = rng.choice(len(target), size=100000, replace=False)
++                    else:
++                        sample_idx = np.random.choice(len(target), size=100000, replace=False)
++                    gen_features = {k: v[sample_idx] for k, v in features.items()}
++                    gen_target = target[sample_idx]
+                 else:
+-                    self.population = list(Parallel(
+-                        n_jobs=self.config.n_jobs, batch_size='auto', prefer='threads'
+-                    )(
+-                        delayed(_evaluate_individual)(
+-                            ind, gen_features, gen_target, self.hall_of_fame, self.config
+-                        )
+-                        for ind in self.population
+-                    ))
+-            
+-            self.population.sort(key=lambda ind: ind.fitness, reverse=True)
+-            self.update_hall_of_fame()
+-            
+-            best = self.population[0]
+-            self.history.append({
+-                'generation': generation,
+-                'best_fitness': best.fitness,
+-                'best_ic': best.ic_score,
+-                'best_tree_size': best.tree.size(),
+-            })
+-            
+-            logger.info(f"Gen {generation+1}: Fold_IR={best.ic_score:.4f}, Fitness={best.fitness:.4f}")
+-            
+-            # Progress metadata with timing and ETA
+-            elapsed = time.monotonic() - t_start
+-            gen_time = elapsed / (generation + 1)
+-            remaining = gen_time * (self.config.generations - generation - 1)
+-            self.history[-1]['elapsed_sec'] = round(elapsed, 2)
+-            self.history[-1]['gen_time_sec'] = round(gen_time, 3)
+-            self.history[-1]['eta_sec'] = round(remaining, 1)
+-            if (generation + 1) % max(1, self.config.generations // 5) == 0 or generation == 0:
+-                logger.info(
+-                    f"  Progress: {generation+1}/{self.config.generations} "
+-                    f"({100*(generation+1)/self.config.generations:.0f}%) "
+-                    f"elapsed={elapsed:.1f}s eta={remaining:.1f}s"
+-                )
++                    gen_features = features
++                    gen_target = target
++
++                if self.config.use_fast_penalties and '__date__' in gen_features:
++                    if gen_features is features:
++                        gen_features = dict(gen_features)
++                    gen_features[FOLD_STRUCTURE_CACHE_KEY] = self._get_cached_fold_structure(gen_features['__date__'])
++
++                if self.config.use_fast_penalties and self.hall_of_fame:
++                    if gen_features is features:
++                        gen_features = dict(gen_features)
++                    gen_features[HOF_ALPHA_CACHE_KEY] = self._build_hof_alpha_cache(self.hall_of_fame, gen_features)
++                    gen_features[ALPHA_CACHE_KEY] = {}
++
++                if self.config.use_fast_penalties and self._ortho_ranks:
++                    if gen_features is features:
++                        gen_features = dict(gen_features)
++                    gen_features[ORTHO_RANKS_CACHE_KEY] = self._ortho_ranks
++
++                if self.config.use_icir and '__date__' in gen_features:
++                    gen_features = dict(gen_features)
++                    gen_features[DATE_CHUNK_CACHE_KEY] = self._precompute_date_chunks(gen_features, gen_target)
++                if (
++                    self.config.neutralize_size_sector
++                    and '__date__' in gen_features
++                    and '__log_market_cap__' in gen_features
++                    and '__sector__' in gen_features
++                ):
++                    if gen_features is features:
++                        gen_features = dict(gen_features)
++                    gen_features[NEUTRALIZATION_CACHE_KEY] = _build_neutralization_cache(
++                        np.asarray(gen_features.get('__log_market_cap__'), dtype=np.float64),
++                        np.asarray(gen_features.get('__sector__')),
++                        np.asarray(gen_features.get('__date__')),
++                    )
+ 
+-            if best.fitness > best_fitness_seen + 1e-6:
+-                best_fitness_seen = best.fitness
+-                stagnant_generations = 0
+-            else:
+-                stagnant_generations += 1
+-            if (
+-                self.config.early_stopping_rounds > 0
+-                and stagnant_generations >= self.config.early_stopping_rounds
+-            ):
++                if self.config.n_jobs == 1:
++                    if self._should_use_batch_neutralization(gen_features):
++                        self._evaluate_population_with_batch_neutralization(gen_features, gen_target)
++                    else:
++                        for individual in self.population:
++                            individual.evaluate(gen_features, gen_target, self.hall_of_fame, self.config)
++                else:
++                    if self._should_use_batch_neutralization(gen_features):
++                        self._evaluate_population_with_batch_neutralization(gen_features, gen_target)
++                    else:
++                        self.population = list(Parallel(
++                            n_jobs=self.config.n_jobs, batch_size='auto', prefer='threads'
++                        )(
++                            delayed(_evaluate_individual)(
++                                ind, gen_features, gen_target, self.hall_of_fame, self.config
++                            )
++                            for ind in self.population
++                        ))
++
++                self.population.sort(key=lambda ind: ind.fitness, reverse=True)
++                self.update_hall_of_fame()
++
++                best = self.population[0]
++                self.history.append({
++                    'generation': generation,
++                    'best_fitness': best.fitness,
++                    'best_ic': best.ic_score,
++                    'best_tree_size': best.tree.size(),
++                })
++
++                logger.info(f"Gen {generation+1}: Fold_IR={best.ic_score:.4f}, Fitness={best.fitness:.4f}")
++
++                elapsed = time.monotonic() - t_start
++                gen_time = elapsed / (generation + 1)
++                remaining = gen_time * (self.config.generations - generation - 1)
++                self.history[-1]['elapsed_sec'] = round(elapsed, 2)
++                self.history[-1]['gen_time_sec'] = round(gen_time, 3)
++                self.history[-1]['eta_sec'] = round(remaining, 1)
++                if (generation + 1) % max(1, self.config.generations // 5) == 0 or generation == 0:
++                    logger.info(
++                        f"  Progress: {generation+1}/{self.config.generations} "
++                        f"({100*(generation+1)/self.config.generations:.0f}%) "
++                        f"elapsed={elapsed:.1f}s eta={remaining:.1f}s"
++                    )
++
++                if best.fitness > best_fitness_seen + 1e-6:
++                    best_fitness_seen = best.fitness
++                    stagnant_generations = 0
++                else:
++                    stagnant_generations += 1
++                if (
++                    self.config.early_stopping_rounds > 0
++                    and stagnant_generations >= self.config.early_stopping_rounds
++                ):
++                    gc.collect()
++                    logger.info(
++                        f"Early stopping: no best-fitness improvement for "
++                        f"{self.config.early_stopping_rounds} generations"
++                    )
++                    break
++                if generation + 1 < self.config.generations:
++                    self._next_generation()
+                 gc.collect()
+-                logger.info(
+-                    f"Early stopping: no best-fitness improvement for "
+-                    f"{self.config.early_stopping_rounds} generations"
+-                )
+-                break
+-            if generation + 1 < self.config.generations:
+-                self._next_generation()
+-            gc.collect()
+ 
+-        return self.hall_of_fame
++            return self.hall_of_fame
++        finally:
++            clear_grouped_ts_cache()
+ 
+     def _should_use_batch_neutralization(self, features: Dict[str, np.ndarray]) -> bool:
+         return bool(
+@@ -1697,3 +1836,435 @@ class GeneticEngine:
+                 )
+                 for idx, prepared in enumerate(prepared_population)
+             ))
++
++
++def _has_py_object_recursive(tp) -> bool:
++    if tp == ctypes.py_object:
++        return True
++    # c_void_p contains a native address requiring registry reroute, treat as pointer-bearing
++    if tp == ctypes.c_void_p:
++        return True
++    if issubclass(tp, (ctypes.Structure, ctypes.Union)):
++        for field_info in getattr(tp, "_fields_", []):
++            if len(field_info) == 3:
++                continue
++            if _has_py_object_recursive(field_info[1]):
++                return True
++    if issubclass(tp, ctypes.Array):
++        return _has_py_object_recursive(tp._type_)
++    return False
++
++
++def _union_has_pointer_or_py_object_recursive(tp) -> bool:
++    if tp == ctypes.py_object or issubclass(tp, ctypes._Pointer) or tp == ctypes.c_void_p:
++        return True
++    if issubclass(tp, (ctypes.Structure, ctypes.Union)):
++        for field_info in getattr(tp, "_fields_", []):
++            if len(field_info) == 3:
++                continue
++            if _union_has_pointer_or_py_object_recursive(field_info[1]):
++                return True
++    if issubclass(tp, ctypes.Array):
++        return _union_has_pointer_or_py_object_recursive(tp._type_)
++    return False
++
++
++def _contains_pointer_or_py_object_recursive(tp) -> bool:
++    if tp == ctypes.py_object or issubclass(tp, ctypes._Pointer) or tp == ctypes.c_void_p:
++        return True
++    if issubclass(tp, (ctypes.Structure, ctypes.Union)):
++        for field_info in getattr(tp, "_fields_", []):
++            if len(field_info) == 3:
++                continue
++            if _contains_pointer_or_py_object_recursive(field_info[1]):
++                return True
++    if issubclass(tp, ctypes.Array):
++        return _contains_pointer_or_py_object_recursive(tp._type_)
++    return False
++
++
++def _structure_or_union_contains_pointer_bearing_union(tp) -> bool:
++    if issubclass(tp, ctypes.Union) and _union_has_pointer_or_py_object_recursive(tp):
++        return True
++    if issubclass(tp, (ctypes.Structure, ctypes.Union)):
++        for field_info in getattr(tp, "_fields_", []):
++            if len(field_info) == 3:
++                continue
++            if _structure_or_union_contains_pointer_bearing_union(field_info[1]):
++                return True
++    if issubclass(tp, ctypes.Array):
++        return _structure_or_union_contains_pointer_bearing_union(tp._type_)
++    return False
++
++
++def _resolve_backing_allocation(obj: object, ctypes_registry: dict) -> tuple[object, int, int]:
++    # Recursively trace a ctypes object back to its root allocation, base address, and byte offset.
++    # Returns a 3-tuple: (root_owner, root_base_address, offset)
++    curr = obj
++    offset = 0
++    visited = set()
++    while True:
++        curr_id = id(curr)
++        if curr_id in visited:
++            # Raise ValueError when a cycle is detected in the backing chain rather than silently breaking
++            raise ValueError("Fail-closed: cycle detected in backing allocation hierarchy")
++        visited.add(curr_id)
++
++        b_base = getattr(curr, "_b_base_", None)
++        if b_base is not None:
++            try:
++                offset += ctypes.addressof(curr) - ctypes.addressof(b_base)
++            except (TypeError, ValueError) as e:
++                # Do not swallow offset failures; fail-closed immediately
++                raise ValueError(f"Fail-closed: unresolved ctypes backing offset: {e}")
++            curr = b_base
++            continue
++
++        # BLOCKER FIX: Support resolving both ctypes._Pointer AND ctypes.c_void_p via local registry and fail-closed
++        if isinstance(curr, (ctypes._Pointer, ctypes.c_void_p)):
++            if isinstance(curr, ctypes._Pointer):
++                ptr_val = ctypes.cast(curr, ctypes.c_void_p).value or 0
++            else:
++                ptr_val = curr.value or 0
++
++            if ptr_val == 0:
++                break
++
++            # Global range-resolution against registered root allocations
++            found = False
++            for base_addr, (root_obj, extent) in ctypes_registry.items():
++                if base_addr <= ptr_val < base_addr + extent:
++                    offset += ptr_val - base_addr
++                    curr = root_obj
++                    found = True
++                    break
++            if found:
++                continue
++
++            # Recursive deep search through nested _objects graph
++            objs = getattr(curr, "_objects", None)
++            if objs is not None:
++                # Separate cycle guard for objects container traversal
++                def recurse_find_owner(container, visited_con) -> tuple[object, int]:
++                    con_id = id(container)
++                    if con_id in visited_con:
++                        return None, 0
++                    visited_con.add(con_id)
++
++                    if isinstance(container, dict):
++                        for v in container.values():
++                            res = recurse_find_owner(v, visited_con)
++                            if res[0] is not None:
++                                return res
++                    elif isinstance(container, (list, tuple, set)):
++                        for item in container:
++                            res = recurse_find_owner(item, visited_con)
++                            if res[0] is not None:
++                                return res
++                    else:
++                        try:
++                            base_addr = ctypes.addressof(container)
++                            extent = ctypes.sizeof(container)
++                            if base_addr <= ptr_val < base_addr + extent:
++                                return container, ptr_val - base_addr
++                        except (TypeError, ValueError):
++                            pass
++                    return None, 0
++
++                matched_owner, matched_offset = recurse_find_owner(objs, set())
++                if matched_owner is not None:
++                    offset += matched_offset
++                    curr = matched_owner
++                    continue
++
++            # Fail-closed immediately for any pointer/c_void_p whose root allocation cannot be established in context
++            raise ValueError(f"Fail-closed: unverifiable ctypes pointer address {hex(ptr_val)} found in graph")
++
++        objs = getattr(curr, "_objects", None)
++        if objs is not None and not isinstance(objs, (dict, list, tuple)):
++            curr = objs
++            continue
++
++        break
++    try:
++        base_addr = ctypes.addressof(curr)
++    except (TypeError, ValueError):
++        base_addr = 0
++    return curr, base_addr, offset
++
++
++def _clone_recursive(obj: object, memo: dict, ctypes_memo: dict, in_progress: set, ctypes_registry: dict) -> object:
++    obj_id = id(obj)
++    if obj_id in memo:
++        return memo[obj_id]
++
++    if obj_id in in_progress:
++        raise ValueError("Fail-closed: cyclic reference through immutable container detected")
++
++    in_progress.add(obj_id)
++    try:
++        if isinstance(obj, np.ndarray):
++            if obj.dtype == 'O':
++                # Recursively deep clone each object cell inside object-dtype NumPy arrays
++                copied = np.empty_like(obj)
++                memo[obj_id] = copied
++                for idx in range(obj.size):
++                    copied.flat[idx] = _clone_recursive(obj.flat[idx], memo, ctypes_memo, in_progress, ctypes_registry)
++                return copied
++            else:
++                if obj.base is not None and isinstance(obj.base, np.ndarray):
++                    # Preserve geometry offsets for dependent ndarray views
++                    parent_offset = obj.ctypes.data - obj.base.ctypes.data
++                    base_cloned = _clone_recursive(obj.base, memo, ctypes_memo, in_progress, ctypes_registry)
++                    copied = np.ndarray(obj.shape, dtype=obj.dtype, buffer=base_cloned, offset=parent_offset, strides=obj.strides)
++                else:
++                    copied = obj.copy()
++                memo[obj_id] = copied
++                return copied
++
++        if isinstance(obj, bytearray):
++            copied = bytearray(obj)
++            memo[obj_id] = copied
++            return copied
++
++        if isinstance(obj, memoryview):
++            # Reject cloning any non-c-contiguous memoryview
++            if not obj.c_contiguous:
++                raise ValueError("Fail-closed: non-C-contiguous memoryview cloning not supported")
++
++            # Clone base
++            base_cloned = _clone_recursive(obj.obj, memo, ctypes_memo, in_progress, ctypes_registry)
++
++            # Force base to 1D bytes first so slicing is correct in byte coordinates
++            cloned_base_bytes = memoryview(base_cloned).cast('B')
++
++            try:
++                base_addr = ctypes.pythonapi.PyObject_GetBuffer  # type: ignore[attr-defined]
++                view_addr = ctypes.pythonapi.PyObject_GetBuffer  # type: ignore[attr-defined]
++                raise ValueError("Buffer address unresolved")
++            except Exception as e:
++                raise ValueError(f"Fail-closed: memoryview geometry address cannot be verified: {e}")
++
++        if isinstance(obj, list):
++            copied_list = []
++            memo[obj_id] = copied_list  # Register memo early for cycle protection
++            for item in obj:
++                copied_list.append(_clone_recursive(item, memo, ctypes_memo, in_progress, ctypes_registry))
++            return copied_list
++
++        if isinstance(obj, tuple):
++            cloned_elements = [_clone_recursive(item, memo, ctypes_memo, in_progress, ctypes_registry) for item in obj]
++            copied_tuple = tuple(cloned_elements)
++            memo[obj_id] = copied_tuple
++            return copied_tuple
++
++        if isinstance(obj, dict):
++            copied_dict = {}
++            memo[obj_id] = copied_dict  # Register memo early
++            for k, v in obj.items():
++                copied_dict[_clone_recursive(k, memo, ctypes_memo, in_progress, ctypes_registry)] = _clone_recursive(v, memo, ctypes_memo, in_progress, ctypes_registry)
++            return copied_dict
++
++        if isinstance(obj, set):
++            copied_set = set()
++            memo[obj_id] = copied_set  # Register memo early
++            for item in obj:
++                copied_set.add(_clone_recursive(item, memo, ctypes_memo, in_progress, ctypes_registry))
++            return copied_set
++
++        if isinstance(obj, frozenset):
++            copied_frozenset = frozenset(_clone_recursive(item, memo, ctypes_memo, in_progress, ctypes_registry) for item in obj)
++            memo[obj_id] = copied_frozenset
++            return copied_frozenset
++
++        if isinstance(obj, (int, float, str, bytes, type(None))):
++            return obj
++
++        # Explicit clone branch for ctypes._SimpleCData (scalars c_int, c_void_p, py_object...)
++        if isinstance(obj, ctypes._SimpleCData):
++            if isinstance(obj, ctypes.py_object):
++                val = obj.value
++                cloned_val = _clone_recursive(val, memo, ctypes_memo, in_progress, ctypes_registry)
++                copied = ctypes.py_object(cloned_val)
++            elif isinstance(obj, ctypes.c_void_p):
++                # Prevent c_void_p address leakage by safely re-routing to cloned root + offset from registry if found
++                addr_val = obj.value or 0
++                if addr_val == 0:
++                    copied = ctypes.c_void_p()
++                else:
++                    found = False
++                    for base_addr, (root_obj, extent) in ctypes_registry.items():
++                        if base_addr <= addr_val < base_addr + extent:
++                            offset = addr_val - base_addr
++                            cloned_root = _clone_recursive(root_obj, memo, ctypes_memo, in_progress, ctypes_registry)
++                            cloned_addr = ctypes.addressof(cloned_root) + offset
++                            copied = ctypes.c_void_p(cloned_addr)
++                            found = True
++                            break
++                    if not found:
++                        raise ValueError(f"Fail-closed: unresolved ctypes.c_void_p native address {hex(addr_val)}")
++            else:
++                copied = type(obj)(obj.value)
++            memo[obj_id] = copied
++            # SimpleCData does not own shared complex backing allocations, but memoize base address if any
++            try:
++                addr = ctypes.addressof(obj)
++                if addr > 0:
++                    ctypes_memo[(addr, 0, type(obj))] = copied
++            except (TypeError, ValueError):
++                pass
++            return copied
++
++        # Clone ctypes Array / Structure / Pointer and backing allocations
++        if isinstance(obj, (ctypes.Structure, ctypes.Union, ctypes.Array, ctypes._Pointer)):
++            try:
++                # Avoid collisions between pointer wrappers and pointee targets via memo key of base_address, offset, and type
++                root, base_addr, offset = _resolve_backing_allocation(obj, ctypes_registry)
++                memo_key = (base_addr, offset, type(obj))
++                if base_addr > 0 and memo_key in ctypes_memo:
++                    return ctypes_memo[memo_key]
++
++                if hasattr(obj, "_length_"):  # ctypes Array
++                    copied = type(obj)()
++                    memo[obj_id] = copied
++                    if base_addr > 0:
++                        ctypes_memo[memo_key] = copied
++                    # Early instantiation before cloning elements to protect array cycle
++                    for idx in range(len(obj)):
++                        copied[idx] = _clone_recursive(obj[idx], memo, ctypes_memo, in_progress, ctypes_registry)
++                    return copied
++                elif isinstance(obj, ctypes._Pointer):
++                    if not obj:  # NULL pointer
++                        copied = type(obj)()
++                        memo[obj_id] = copied
++                        if base_addr > 0:
++                            ctypes_memo[memo_key] = copied
++                        return copied
++                    else:
++                        # Absolutely forbid obj.contents dereference or cloning independent pointers not verified in registry
++                        if base_addr == 0:
++                            raise ValueError("Fail-closed: unverifiable non-NULL ctypes pointer found in graph")
++
++                        # Register placeholder pointer before clone to protect cyclic references
++                        copied = type(obj)()
++                        memo[obj_id] = copied
++                        ctypes_memo[memo_key] = copied
++
++                        # Reroute to cloned_root + matching offset
++                        cloned_root = _clone_recursive(root, memo, ctypes_memo, in_progress, ctypes_registry)
++                        cloned_ptr_val = ctypes.addressof(cloned_root) + offset
++
++                        # Write cloned_ptr_val safely into pointer memory without dereference
++                        ptr_address_var = ctypes.c_void_p(cloned_ptr_val)
++                        ctypes.memmove(ctypes.addressof(copied), ctypes.byref(ptr_address_var), ctypes.sizeof(copied))
++                        copied.__dict__["_lifetime_guard"] = cloned_root
++                        return copied
++                else:  # Structure / Union
++                    # Absolutely block fail-closed bypasses via nested unions containing pointer/py_object
++                    if _structure_or_union_contains_pointer_bearing_union(type(obj)):
++                        raise ValueError("Fail-closed: structure/union contains nested pointer-bearing Union")
++
++                    # Special safe handling for POD ctypes.Union:
++                    if isinstance(obj, ctypes.Union):
++                        copied = type(obj)()
++                        memo[obj_id] = copied
++                        if base_addr > 0:
++                            ctypes_memo[memo_key] = copied
++                        ctypes.memmove(ctypes.addressof(copied), ctypes.addressof(obj), ctypes.sizeof(obj))
++                        return copied
++
++                    # Normal Structure handling
++                    copied = type(obj)()
++                    memo[obj_id] = copied  # Register memo early
++                    if base_addr > 0:
++                        ctypes_memo[memo_key] = copied
++
++                    # Only raw memmove for purely POD recursive Structures (no pointers or py_object)
++                    has_ptr_or_py_obj = _contains_pointer_or_py_object_recursive(type(obj))
++                    if not has_ptr_or_py_obj:
++                        ctypes.memmove(ctypes.addressof(copied), ctypes.addressof(obj), ctypes.sizeof(obj))
++
++                        # Walk inline arrays / nested Structures for deep clone (no pointer/py_object)
++                        for field_info in getattr(type(obj), "_fields_", []):
++                            if len(field_info) == 3:
++                                continue
++                            field_name = field_info[0]
++                            field_type = field_info[1]
++                            if issubclass(field_type, ctypes.Array):
++                                dest_arr = getattr(copied, field_name)
++                                src_arr = getattr(obj, field_name)
++                                for idx in range(len(dest_arr)):
++                                    dest_arr[idx] = _clone_recursive(src_arr[idx], memo, ctypes_memo, in_progress, ctypes_registry)
++                            elif issubclass(field_type, ctypes.Structure):
++                                val_field = getattr(obj, field_name)
++                                cloned_sub = _clone_recursive(val_field, memo, ctypes_memo, in_progress, ctypes_registry)
++                                setattr(copied, field_name, cloned_sub)
++                    else:
++                        # For Structures containing py_object or pointers: assign field-by-field in a type-aware way
++                        # Prevent incorrect decref or memory corruption absolutely
++                        for field_info in getattr(type(obj), "_fields_", []):
++                            field_name = field_info[0]
++                            field_type = field_info[1]
++                            if len(field_info) == 3:  # Bitfields
++                                val_field = getattr(obj, field_name)
++                                setattr(copied, field_name, val_field)
++                                continue
++
++                            if field_type == ctypes.py_object:
++                                val_field = getattr(obj, field_name)
++                                cloned_py_obj = _clone_recursive(val_field, memo, ctypes_memo, in_progress, ctypes_registry)
++                                setattr(copied, field_name, cloned_py_obj)
++                            elif field_type == ctypes.c_void_p:
++                                # Type-aware c_void_p field cloning: registry reroute or fail-closed
++                                addr_val = getattr(obj, field_name) or 0
++                                if addr_val == 0:
++                                    setattr(copied, field_name, 0)
++                                else:
++                                    found = False
++                                    for base_addr, (root_obj, extent) in ctypes_registry.items():
++                                        if base_addr <= addr_val < base_addr + extent:
++                                            offset = addr_val - base_addr
++                                            cloned_root = _clone_recursive(root_obj, memo, ctypes_memo, in_progress, ctypes_registry)
++                                            cloned_addr = ctypes.addressof(cloned_root) + offset
++                                            setattr(copied, field_name, cloned_addr)
++                                            copied.__dict__[f"_lifetime_guard_{field_name}"] = cloned_root
++                                            found = True
++                                            break
++                                    if not found:
++                                        raise ValueError(f"Fail-closed: unresolved nested c_void_p field '{field_name}' address {hex(addr_val)}")
++                            else:
++                                val_field = getattr(obj, field_name)
++                                cloned_val = _clone_recursive(val_field, memo, ctypes_memo, in_progress, ctypes_registry)
++                                setattr(copied, field_name, cloned_val)
++                                if issubclass(field_type, ctypes._Pointer):
++                                    copied.__dict__[f"_lifetime_guard_{field_name}"] = cloned_val
++                    return copied
++            except Exception as e:
++                if isinstance(e, ValueError) and "Fail-closed" in str(e):
++                    raise e
++                raise ValueError(f"ctypes clone failed for type {type(obj)}") from e
++
++        try:
++            cls = type(obj)
++            copied = cls.__new__(cls)
++            memo[obj_id] = copied  # Register memo early
++            if hasattr(obj, "__dict__"):
++                copied.__dict__.update(_clone_recursive(obj.__dict__, memo, ctypes_memo, in_progress, ctypes_registry))
++            for base in cls.__mro__:
++                slots = getattr(base, "__slots__", None)
++                if slots is not None:
++                    if isinstance(slots, str):
++                        slots = [slots]
++                    for slot in slots:
++                        if slot in ("__dict__", "__weakref__"):
++                            continue
++                        slot_name = slot
++                        if slot.startswith("__") and not slot.endswith("__"):
++                            slot_name = f"_{base.__name__}{slot}"
++                        if hasattr(obj, slot_name):
++                            setattr(copied, slot_name, _clone_recursive(getattr(obj, slot_name), memo, ctypes_memo, in_progress, ctypes_registry))
++            return copied
++        except Exception as e:
++            raise ValueError(f"Cannot clone object of type {type(obj)}") from e
++    finally:
++        in_progress.remove(obj_id)

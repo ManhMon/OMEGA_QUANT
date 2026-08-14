@@ -32,8 +32,13 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.stats import rankdata, spearmanr
+from scipy.stats import rankdata
 from joblib import Parallel, delayed
+
+try:
+    import bottleneck as bn
+except ImportError:  # pragma: no cover - optional fast path
+    bn = None
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -68,6 +73,30 @@ def _pearson_corr(a: np.ndarray, b: np.ndarray) -> float:
     if denom < 1e-12:
         return np.nan
     return float(np.sum(a_valid * b_valid) / denom)
+
+
+def _average_rank(values: np.ndarray) -> np.ndarray:
+    order = np.argsort(values)
+    sorted_values = values[order]
+    starts = np.r_[True, sorted_values[1:] != sorted_values[:-1]]
+    group_starts = np.flatnonzero(starts)
+    group_ends = np.r_[group_starts[1:] - 1, values.size - 1]
+    ranks = np.empty(values.size, dtype=np.float64)
+    ranks[order] = np.repeat((group_starts + group_ends + 2.0) / 2.0, np.diff(np.r_[group_starts, values.size]))
+    return ranks
+
+
+def _spearman_corr_via_corrcoef(a: np.ndarray, b: np.ndarray) -> float:
+    """Calculate Spearman correlation without pandas or scipy overhead."""
+    span = min(len(a), len(b))
+    if span < 2:
+        return np.nan
+    valid = np.isfinite(a[:span]) & np.isfinite(b[:span])
+    if np.count_nonzero(valid) < 2:
+        return np.nan
+    a_rank = _average_rank(a[:span][valid])
+    b_rank = _average_rank(b[:span][valid])
+    return _pearson_corr(a_rank, b_rank)
 
 
 def _build_time_fold_structure(
@@ -284,9 +313,9 @@ def _compute_time_fold_ir(
             valid = date_mask & _evaluation_mask(alpha_fold, target_fold, fold_features)
             if np.count_nonzero(valid) <= 5:
                 continue
-            ic_value, _ = spearmanr(alpha_fold[valid], target_fold[valid])
+            ic_value = _spearman_corr_via_corrcoef(alpha_fold[valid], target_fold[valid])
             if not np.isnan(ic_value):
-                daily_ics.append(float(ic_value))
+                daily_ics.append(ic_value)
         if daily_ics:
             fold_ics.append(float(np.mean(daily_ics)))
 
@@ -459,6 +488,9 @@ def _ts_std(x: np.ndarray, window: int = 10) -> np.ndarray:
     """Rolling standard deviation."""
     if len(x) < window:
         return np.zeros_like(x)
+    if bn is not None:
+        values = bn.move_std(np.where(np.isfinite(x), x, np.nan), window=window, min_count=window, ddof=1)
+        return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
     return pd.Series(x).rolling(window).std().fillna(0.0).values
 
 
@@ -466,6 +498,9 @@ def _ts_mean(x: np.ndarray, window: int = 10) -> np.ndarray:
     """Rolling mean."""
     if len(x) < window:
         return np.zeros_like(x)
+    if bn is not None:
+        values = bn.move_mean(np.where(np.isfinite(x), x, np.nan), window=window, min_count=window)
+        return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
     return pd.Series(x).rolling(window).mean().fillna(0.0).values
 
 
@@ -483,6 +518,9 @@ def _ts_max(x: np.ndarray, window: int = 10) -> np.ndarray:
     """Rolling maximum."""
     if len(x) < window:
         return np.zeros_like(x)
+    if bn is not None:
+        values = bn.move_max(np.where(np.isfinite(x), x, np.nan), window=window, min_count=window)
+        return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
     return pd.Series(x).rolling(window).max().fillna(0.0).values
 
 
@@ -490,6 +528,9 @@ def _ts_min(x: np.ndarray, window: int = 10) -> np.ndarray:
     """Rolling minimum."""
     if len(x) < window:
         return np.zeros_like(x)
+    if bn is not None:
+        values = bn.move_min(np.where(np.isfinite(x), x, np.nan), window=window, min_count=window)
+        return np.nan_to_num(values, nan=0.0, posinf=0.0, neginf=0.0)
     return pd.Series(x).rolling(window).min().fillna(0.0).values
 
 
@@ -823,7 +864,7 @@ class GPIndividual:
                         hof_cache_key = id(hof_individual)
                         corr = candidate_cache.get(hof_cache_key)
                         if corr is None:
-                            corr, _ = spearmanr(alpha_series, hof_alpha[:len(alpha_series)])
+                            corr = _spearman_corr_via_corrcoef(alpha_series, hof_alpha)
                             candidate_cache[hof_cache_key] = float(corr) if not np.isnan(corr) else np.nan
                         if not np.isnan(corr) and abs(corr) > config.diversity_threshold:
                             self.diversity_penalty = max(self.diversity_penalty, 0.02)
@@ -864,13 +905,10 @@ class GPIndividual:
                         if bl_signal is None or len(bl_signal) == 0:
                             continue
                         try:
-                            bl_df = pd.DataFrame({
-                                'a': alpha_series,
-                                'b': bl_signal[:len(alpha_series)]
-                            }).dropna()
-                            if len(bl_df) < 100:
+                            span = min(len(alpha_series), len(bl_signal))
+                            if span < 100:
                                 continue
-                            bl_corr, _ = spearmanr(bl_df['a'], bl_df['b'])
+                            bl_corr = _spearman_corr_via_corrcoef(alpha_series[:span], bl_signal[:span])
                             if not np.isnan(bl_corr):
                                 max_abs_corr = max(max_abs_corr, abs(bl_corr))
                         except Exception:
@@ -922,8 +960,8 @@ class GPIndividual:
             valid = _evaluation_mask(alpha_values, target_values, eval_features)
             if np.count_nonzero(valid) < 2:
                 return 0.0
-            ic_value, _ = spearmanr(alpha_values[valid], target_values[valid])
-            return float(ic_value) if not np.isnan(ic_value) else 0.0
+            ic_value = _spearman_corr_via_corrcoef(alpha_values[valid], target_values[valid])
+            return ic_value if not np.isnan(ic_value) else 0.0
 
         if getattr(config, 'neutralize_size_sector', False):
             if not pre_neutralized:
@@ -958,9 +996,9 @@ class GPIndividual:
                 valid = _evaluation_mask(alpha_chunk, target_chunk, chunk_features)
                 if np.count_nonzero(valid) < 2:
                     continue
-                ic_value, _ = spearmanr(alpha_chunk[valid], target_chunk[valid])
+                ic_value = _spearman_corr_via_corrcoef(alpha_chunk[valid], target_chunk[valid])
                 if not np.isnan(ic_value):
-                    chunk_ics.append(float(ic_value))
+                    chunk_ics.append(ic_value)
 
             if not chunk_ics:
                 return _compute_spearman_ic(alpha_series, target, features)
@@ -1068,9 +1106,11 @@ class GPIndividual:
                     chunk_mask = np.isin(valid_dates, chunk_dates)
                     if np.count_nonzero(chunk_mask) < 2:
                         continue
-                    ic_value, _ = spearmanr(valid_alpha[chunk_mask], valid_target[chunk_mask])
+                    ic_value = _spearman_corr_via_corrcoef(
+                        valid_alpha[chunk_mask], valid_target[chunk_mask]
+                    )
                     if not np.isnan(ic_value):
-                        chunk_ics.append(float(ic_value))
+                        chunk_ics.append(ic_value)
 
                 if not chunk_ics:
                     return _compute_spearman_ic(alpha_series, target, features)
@@ -1097,7 +1137,7 @@ class GPIndividual:
             valid = _evaluation_mask(alpha_series, target_h, features)
             if np.count_nonzero(valid) < 2:
                 continue
-            ic_h, _ = spearmanr(alpha_series[valid], target_h[valid])
+            ic_h = _spearman_corr_via_corrcoef(alpha_series[valid], target_h[valid])
             if np.isnan(ic_h):
                 continue
             weighted_ic += float(weight) * float(ic_h)

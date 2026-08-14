@@ -1,13 +1,17 @@
-"""PIT-safe VN news aggregation via vnstock + Vietstock."""
+"""PIT-safe VN news aggregation via vnstock, Vietstock, and Vietcap."""
 
+import hashlib
 import json
 import logging
 from pathlib import Path
 import re
 import time
-from datetime import datetime, timedelta
+import unicodedata
+from datetime import datetime, timedelta, timezone
 from typing import List, Optional
 from dataclasses import dataclass
+from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
@@ -15,7 +19,13 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 VIETSTOCK_HTML_URL = "https://vietstock.vn/chung-khoan.htm"
-MAX_ARTICLES_PER_SOURCE = 100
+CAFEF_HTML_URL = "https://cafef.vn/thi-truong-chung-khoan.chn"
+TINNHANHCK_HTML_URL = "https://tinnhanhchungkhoan.vn/chung-khoan/"
+VNECONOMY_HTML_URL = "https://vneconomy.vn/chung-khoan.htm"
+VNSTOCK_PAGE_SIZE = 100
+VIETCAP_NEWS_API_URL = "https://api.vietcap.com.vn/market-news"
+VIETCAP_PAGE_SIZE = 100
+VIETCAP_HISTORICAL_START = datetime(2015, 1, 1, tzinfo=timezone.utc)
 REQUEST_TIMEOUT = 15
 UNIVERSE_PATH = Path(".ly_state/session/vci_universe_hsx_hnx.json")
 BULLISH_KEYWORDS = {
@@ -51,13 +61,29 @@ COMMON_TICKERS = (
     "TCB", "VCB", "BID", "CTG", "MBB", "ACB", "STB",
     "VNI", "SSI", "HCM", "VND", "PNJ", "REE", "DGC",
 )
+ICT = ZoneInfo("Asia/Ho_Chi_Minh")
+AMBIGUOUS_TICKER_WORDS = {"HCM", "HN", "VND"}
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone(timedelta(hours=7)))
+    return value.astimezone(timezone.utc)
 
 
 def infer_tickers_from_text(text: Optional[str], candidates: Optional[List[str]] = None) -> List[str]:
     if not text:
         return []
-    text_upper = text.upper()
-    return [ticker for ticker in (candidates or list(COMMON_TICKERS)) if ticker in text_upper]
+    candidate_tickers = candidates or list(COMMON_TICKERS)
+    ticker_words = {match.group() for match in re.finditer(r"\b[A-Z]{3}\b", text)}
+    explicit_tickers = {
+        match.group(1)
+        for match in re.finditer(r"(?:mã|cổ phiếu|cp)\s+([A-Z]{3})\b", text, re.IGNORECASE)
+    }
+    return [
+        ticker for ticker in candidate_tickers
+        if ticker in ticker_words and (ticker not in AMBIGUOUS_TICKER_WORDS or ticker in explicit_tickers)
+    ]
 
 
 @dataclass
@@ -68,12 +94,20 @@ class SentimentInput:
     timestamp: datetime
     ticker: Optional[str] = None
     weight_override: Optional[float] = None
+    url: Optional[str] = None
+    fetched_at: Optional[datetime] = None
+    raw_timestamp: Optional[str] = None
+    payload_sha256: Optional[str] = None
+    parser_version: str = "news-v10"
 
 
 class NewsAggregator:
     """Vietnamese financial news collector with strict PIT safety."""
 
-    def __init__(self):
+    def __init__(self, max_articles_per_source: int = 100):
+        if max_articles_per_source <= 0:
+            raise ValueError("max_articles_per_source must be a positive integer")
+        self.max_articles_per_source = max_articles_per_source
         self.last_request_time = {}
         self.rate_limit_seconds = 2.0
         self.headers = {
@@ -111,6 +145,118 @@ class NewsAggregator:
             return None
         return BeautifulSoup(response.content, "html.parser")
 
+    @staticmethod
+    def _payload_sha256(payload: bytes | str) -> str:
+        return hashlib.sha256(payload if isinstance(payload, bytes) else payload.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _dedupe_key(item: SentimentInput) -> tuple[str, str, str]:
+        normalized_text = "".join(
+            char for char in unicodedata.normalize("NFD", item.text.casefold())
+            if unicodedata.category(char) != "Mn"
+        ).replace("đ", "d")
+        normalized_text = re.sub(
+            r"\b(?:co phieu|cong bo|nam truoc|the gioi di dong|vinamilk|truc tuyen|vietjet|masan)\b",
+            "",
+            normalized_text,
+        )
+        return (
+            item.ticker or "",
+            item.timestamp.isoformat(),
+            " ".join(sorted(re.findall(r"\w+", normalized_text))),
+        )
+
+    def _canonical_url(self, base_url: str, href: Optional[str]) -> Optional[str]:
+        if not href:
+            return None
+        parsed = urlsplit(urljoin(base_url, href))
+        base_domain = urlsplit(base_url).hostname
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or not base_domain
+            or (parsed.hostname or "").lower() not in {base_domain.lower()}
+            and not (parsed.hostname or "").lower().endswith(f".{base_domain.lower()}")
+        ):
+            return None
+        query = urlencode([
+            (key, value) for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+            if key.lower() not in {"ref", "from", "fbclid", "gclid"}
+            and not key.lower().startswith("utm_")
+        ], doseq=True)
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, ""))
+
+    def _parse_html_time(self, value: Optional[str], fetched_at: datetime) -> Optional[datetime]:
+        if not value:
+            return None
+        fetched_at = _as_utc(fetched_at)
+        fetched_at_ict = fetched_at.astimezone(ICT)
+        text = " ".join(value.strip().lower().split())
+        relative = re.search(r"(\d+)\s*(phút|giờ)\s+trước", text)
+        if relative:
+            return fetched_at - timedelta(**{"minutes" if relative.group(2) == "phút" else "hours": int(relative.group(1))})
+        try:
+            return _as_utc(datetime.fromisoformat(text.replace("z", "+00:00")))
+        except ValueError:
+            pass
+        for pattern in ("%d/%m/%Y %H:%M", "%d/%m/%Y", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+            try:
+                return _as_utc(datetime.strptime(text, pattern))
+            except ValueError:
+                continue
+        short = re.search(r"(\d{1,2}/\d{1,2})\s+(\d{1,2}:\d{2})", text)
+        if short:
+            try:
+                timestamp = datetime.strptime(f"{short.group(1)}/{fetched_at_ict.year} {short.group(2)}", "%d/%m/%Y %H:%M")
+                if _as_utc(timestamp) > fetched_at:
+                    timestamp = timestamp.replace(year=timestamp.year - 1)
+                return _as_utc(timestamp)
+            except ValueError:
+                return None
+        return None
+
+    def _scrape_html_source(self, source: str, page_url: str, domain: str, as_of_time: datetime, hours_back: int, fetched_at: Optional[datetime] = None) -> List[SentimentInput]:
+        fetched_at = _as_utc(fetched_at or datetime.now(timezone.utc))
+        soup = self._fetch_html(page_url, domain)
+        if soup is None:
+            return []
+        payload_sha256 = self._payload_sha256(str(soup))
+        cutoff = _as_utc(as_of_time) - timedelta(hours=hours_back)
+        results, seen = [], set()
+        for link in soup.select("article a[href], h1 a[href], h2 a[href], h3 a[href], h4 a[href], .item a[href], .news-item a[href]"):
+            if len(results) >= self.max_articles_per_source:
+                break
+            headline = (link.get("title") or link.get_text(" ", strip=True)).strip()
+            container = link.find_parent(["article", "li", "div"])
+            time_tag = container.find("time") if container else None
+            time_text = (time_tag.get("datetime") or time_tag.get_text(" ", strip=True)) if time_tag else ""
+            if not time_text and container:
+                date_node = container.select_one(".time, .date, .publish-time, .news-time")
+                time_text = date_node.get_text(" ", strip=True) if date_node else ""
+            timestamp = self._parse_html_time(time_text, fetched_at)
+            url = self._canonical_url(page_url, link.get("href"))
+            if not headline or timestamp is None or url is None or timestamp >= _as_utc(as_of_time) or timestamp <= cutoff:
+                continue
+            key = (url, headline.casefold())
+            if key in seen:
+                continue
+            seen.add(key)
+            results.append(SentimentInput(
+                text=headline, source=source, timestamp=timestamp,
+                ticker=(infer_tickers_from_text(headline) or [None])[0], url=url,
+                fetched_at=fetched_at, raw_timestamp=time_text, payload_sha256=payload_sha256,
+            ))
+        return results
+
+    def _scrape_cafef(self, as_of_time: datetime, hours_back: int = 24, fetched_at: Optional[datetime] = None) -> List[SentimentInput]:
+        return self._scrape_html_source("CafeF", CAFEF_HTML_URL, "cafef.vn", as_of_time, hours_back, fetched_at)
+
+    def _scrape_tinnhanhck(self, as_of_time: datetime, hours_back: int = 24, fetched_at: Optional[datetime] = None) -> List[SentimentInput]:
+        return self._scrape_html_source("TinNhanhChungKhoan", TINNHANHCK_HTML_URL, "tinnhanhchungkhoan.vn", as_of_time, hours_back, fetched_at)
+
+    def _scrape_vneconomy(self, as_of_time: datetime, hours_back: int = 24, fetched_at: Optional[datetime] = None) -> List[SentimentInput]:
+        return self._scrape_html_source("VnEconomy", VNECONOMY_HTML_URL, "vneconomy.vn", as_of_time, hours_back, fetched_at)
+
     # ── Vnstock ─────────────────────────────────────────────────────
 
     def _load_universe_tickers(self) -> List[str]:
@@ -139,10 +285,30 @@ class NewsAggregator:
             logger.warning("Invalid vnstock public_date: %s", public_date)
             return None
 
+    @staticmethod
+    def _validate_vnstock_schema(frame: object) -> None:
+        required = {"news_title", "public_date"}
+        columns = set(getattr(frame, "columns", []))
+        missing = required.difference(columns)
+        if missing:
+            raise ValueError(f"vnstock schema missing required columns: {sorted(missing)}")
+
+    @staticmethod
+    def _fetch_vnstock_page(company: object, cursor: Optional[str]) -> tuple[object, Optional[str]]:
+        try:
+            frame = company.news(cursor=cursor, limit=VNSTOCK_PAGE_SIZE, sort="public_date_desc")
+        except TypeError as exc:
+            raise ValueError("vnstock endpoint does not expose required server-side cursor pagination") from exc
+        attrs = getattr(frame, "attrs", {})
+        metadata = attrs.get("pagination") if isinstance(attrs, dict) else None
+        next_cursor = metadata.get("next_cursor") if isinstance(metadata, dict) else None
+        return frame, next_cursor
+
     def _scrape_vnstock_news(self, as_of_time: datetime, hours_back: int = 24) -> List[SentimentInput]:
         if as_of_time is None:
             raise ValueError("as_of_time is mandatory for PIT safety")
 
+        as_of_time = _as_utc(as_of_time)
         cutoff = as_of_time - timedelta(hours=hours_back)
         results: List[SentimentInput] = []
 
@@ -153,58 +319,161 @@ class NewsAggregator:
             return results
 
         for ticker in self._load_universe_tickers():
-            if len(results) >= MAX_ARTICLES_PER_SOURCE:
+            if len(results) >= self.max_articles_per_source:
                 break
             try:
                 self._rate_limit("vnstock")
-                frame = Company(symbol=ticker, source="VCI").news()
+                company = Company(symbol=ticker, source="VCI")
+                frame, next_cursor = self._fetch_vnstock_page(company, cursor=None)
             except Exception as exc:
                 logger.warning("vnstock news fetch failed for %s: %s", ticker, exc)
                 continue
             if frame is None or frame.empty:
                 continue
+            self._validate_vnstock_schema(frame)
+            seen_cursors = set()
 
-            for row in frame.to_dict(orient="records"):
-                if len(results) >= MAX_ARTICLES_PER_SOURCE:
+            while True:
+                reached_cutoff = False
+                for row in frame.to_dict(orient="records"):
+                    if len(results) >= self.max_articles_per_source:
+                        break
+                    timestamp = self._parse_public_date(row.get("public_date"))
+                    if timestamp is None:
+                        continue
+                    timestamp = _as_utc(timestamp)
+                    if timestamp <= cutoff:
+                        reached_cutoff = True
+                        break
+                    if timestamp >= as_of_time:
+                        continue
+                    title = row.get("news_title")
+                    summary = row.get("news_short_content")
+                    if not self._matches_sentiment_keywords(title, summary):
+                        continue
+                    text = " ".join(part.strip() for part in [title or "", summary or ""] if part and part.strip())
+                    if not text:
+                        continue
+                    results.append(SentimentInput(
+                        text=text,
+                        source="vnstock",
+                        timestamp=timestamp,
+                        ticker=ticker,
+                        fetched_at=as_of_time,
+                        raw_timestamp=str(row.get("public_date")),
+                        payload_sha256=self._payload_sha256(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)),
+                    ))
+                if len(results) >= self.max_articles_per_source:
                     break
-                timestamp = self._parse_public_date(row.get("public_date"))
-                if timestamp is None or timestamp >= as_of_time or timestamp <= cutoff:
+                if reached_cutoff:
+                    break
+                if next_cursor is None:
+                    break
+                if next_cursor in seen_cursors:
+                    raise ValueError(f"vnstock pagination repeated cursor for {ticker}: {next_cursor}")
+                seen_cursors.add(next_cursor)
+                try:
+                    frame, next_cursor = self._fetch_vnstock_page(company, cursor=next_cursor)
+                except Exception as exc:
+                    logger.warning("vnstock cursor fetch failed for %s: %s", ticker, exc)
+                    break
+                if frame is None or frame.empty:
+                    break
+                self._validate_vnstock_schema(frame)
+        return results
+
+    @staticmethod
+    def _validate_vietcap_schema(payload: object) -> tuple[list[dict], Optional[str]]:
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+            raise ValueError("Vietcap response missing data list")
+        pagination = payload.get("pagination", {})
+        if not isinstance(pagination, dict) or "next_cursor" not in pagination:
+            raise ValueError("Vietcap response missing cursor pagination metadata")
+        if any(not isinstance(row, dict) or "title" not in row or "published_at" not in row for row in payload["data"]):
+            raise ValueError("Vietcap response missing title or published_at")
+        return payload["data"], pagination["next_cursor"]
+
+    def _fetch_vietcap_page(self, start: datetime, end: datetime, cursor: Optional[str]) -> tuple[list[dict], Optional[str], str]:
+        self._rate_limit("api.vietcap.com.vn")
+        response = requests.get(
+            VIETCAP_NEWS_API_URL,
+            headers={**self.headers, "Accept": "application/json"},
+            params={
+                "from": start.date().isoformat(), "to": end.date().isoformat(),
+                "cursor": cursor, "limit": VIETCAP_PAGE_SIZE, "sort": "published_at_desc",
+            },
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        rows, next_cursor = self._validate_vietcap_schema(response.json())
+        return rows, next_cursor, self._payload_sha256(response.content)
+
+    def _scrape_vietcap_news(self, as_of_time: datetime, hours_back: int = 24) -> List[SentimentInput]:
+        """Read every server-side cursor page in the requested historical window."""
+        if as_of_time is None:
+            raise ValueError("as_of_time is mandatory for PIT safety")
+        as_of_time = _as_utc(as_of_time)
+        cutoff = max(as_of_time - timedelta(hours=hours_back), VIETCAP_HISTORICAL_START)
+        cursor, seen_cursors, results = None, set(), []
+        while True:
+            rows, next_cursor, payload_sha256 = self._fetch_vietcap_page(cutoff, as_of_time, cursor)
+            oldest = None
+            for row in rows:
+                timestamp = self._parse_public_date(row["published_at"])
+                if timestamp is None:
                     continue
-                title = row.get("news_title")
-                summary = row.get("news_short_content")
-                if not self._matches_sentiment_keywords(title, summary):
+                timestamp = _as_utc(timestamp)
+                oldest = timestamp if oldest is None else min(oldest, timestamp)
+                if not cutoff <= timestamp < as_of_time:
                     continue
-                text = " ".join(part.strip() for part in [title or "", summary or ""] if part and part.strip())
-                if not text:
+                title = str(row["title"]).strip()
+                if not title:
                     continue
                 results.append(SentimentInput(
-                    text=text,
-                    source="vnstock",
-                    timestamp=timestamp,
-                    ticker=ticker,
+                    text=title, source="Vietcap", timestamp=timestamp,
+                    ticker=(infer_tickers_from_text(title) or [None])[0],
+                    url=row.get("url"), fetched_at=as_of_time,
+                    raw_timestamp=str(row["published_at"]), payload_sha256=payload_sha256,
                 ))
+                if len(results) >= self.max_articles_per_source:
+                    break
+            if len(results) >= self.max_articles_per_source:
+                break
+            if next_cursor is None or oldest is not None and oldest <= cutoff:
+                break
+            if next_cursor in seen_cursors:
+                raise ValueError("Vietcap cursor pagination repeated a cursor")
+            seen_cursors.add(next_cursor)
+            cursor = next_cursor
         return results
 
     # ── Vietstock ──────────────────────────────────────────────────
 
-    def _scrape_vietstock(self, as_of_time: datetime, hours_back: int = 24) -> List[SentimentInput]:
+    def _scrape_vietstock(
+        self, as_of_time: datetime, hours_back: int = 24, fetched_at: Optional[datetime] = None
+    ) -> List[SentimentInput]:
         if as_of_time is None:
             raise ValueError("as_of_time is mandatory for PIT safety")
 
+        as_of_time = _as_utc(as_of_time)
+        fetched_at = _as_utc(fetched_at or as_of_time)
         results = []
-        soup = self._fetch_html(VIETSTOCK_HTML_URL, "vietstock.vn")
-        if soup is None:
+        response = self._fetch_raw(VIETSTOCK_HTML_URL, "vietstock.vn")
+        if response is None:
             return results
+        soup = BeautifulSoup(response.content, "html.parser")
+        payload_sha256 = self._payload_sha256(response.content)
 
         cutoff = as_of_time - timedelta(hours=hours_back)
 
         for article in soup.find_all("div", class_="channelContent"):
-            if len(results) >= MAX_ARTICLES_PER_SOURCE:
+            if len(results) >= self.max_articles_per_source:
                 break
             try:
-                headline, timestamp = self._extract_vietstock_article(article, as_of_time)
+                headline, timestamp = self._extract_vietstock_article(article, fetched_at)
                 if not headline:
                     continue
+                timestamp = _as_utc(timestamp)
                 if timestamp >= as_of_time or timestamp <= cutoff:
                     continue
 
@@ -212,6 +481,9 @@ class NewsAggregator:
                     text=headline,
                     source="Vietstock",
                     timestamp=timestamp,
+                    fetched_at=fetched_at,
+                    raw_timestamp=timestamp.isoformat(),
+                    payload_sha256=payload_sha256,
                 ))
             except Exception as exc:
                 logger.warning("Vietstock article parse error: %s", exc)
@@ -265,8 +537,11 @@ class NewsAggregator:
             try:
                 day_month = short_match.group(1)
                 hhmm = short_match.group(2)
-                year = reference.year
-                return datetime.strptime(f"{day_month}/{year} {hhmm}", "%d/%m/%Y %H:%M")
+                year = _as_utc(reference).astimezone(ICT).year
+                timestamp = datetime.strptime(f"{day_month}/{year} {hhmm}", "%d/%m/%Y %H:%M")
+                if _as_utc(timestamp) > _as_utc(reference):
+                    timestamp = timestamp.replace(year=timestamp.year - 1)
+                return timestamp
             except ValueError:
                 pass
 
@@ -286,6 +561,11 @@ class NewsAggregator:
         if as_of_time is None:
             raise ValueError("as_of_time is mandatory for PIT safety")
 
+        as_of_time = _as_utc(as_of_time)
+        fetched_at = datetime.now(timezone.utc)
+        if as_of_time < fetched_at - timedelta(hours=1):
+            raise ValueError("as_of_time is stale relative to fetched_at; PIT fetch refused")
+
         all_news = []
         logger.info("Fetching news from last %d hours as of %s...", hours_back, as_of_time)
 
@@ -297,11 +577,62 @@ class NewsAggregator:
             logger.error("vnstock scraping failed: %s", exc)
 
         try:
-            vietstock_news = self._scrape_vietstock(as_of_time, hours_back)
+            vietstock_news = self._scrape_vietstock(as_of_time, hours_back, fetched_at)
             all_news.extend(vietstock_news)
             logger.info("Vietstock: %d articles", len(vietstock_news))
         except Exception as exc:
             logger.error("Vietstock scraping failed: %s", exc)
 
-        all_news.sort(key=lambda x: x.timestamp, reverse=True)
-        return all_news
+        try:
+            vietcap_news = self._scrape_vietcap_news(as_of_time, hours_back)
+            all_news.extend(vietcap_news)
+            logger.info("Vietcap: %d articles", len(vietcap_news))
+        except Exception as exc:
+            logger.warning("Vietcap scraping failed; continuing without Vietcap articles: %s", exc)
+
+        for scraper in (self._scrape_cafef, self._scrape_tinnhanhck, self._scrape_vneconomy):
+            try:
+                all_news.extend(scraper(as_of_time, hours_back, fetched_at))
+            except Exception as exc:
+                logger.error("HTML news scraping failed: %s", exc)
+
+        deduplicated = []
+        seen = set()
+        for item in all_news:
+            if item.timestamp is None or item.timestamp >= as_of_time or item.timestamp <= as_of_time - timedelta(hours=hours_back):
+                continue
+            key = self._dedupe_key(item)
+            if key in seen:
+                continue
+            normalized_title = key[2]
+            if any(
+                not (item.ticker and existing.ticker and item.ticker != existing.ticker)
+                and
+                abs((item.timestamp - existing.timestamp).total_seconds()) <= timedelta(hours=48).total_seconds()
+                and self._levenshtein_similarity(normalized_title, self._dedupe_key(existing)[2]) > 0.88
+                for existing in deduplicated
+            ):
+                continue
+            seen.add(key)
+            deduplicated.append(item)
+        return sorted(deduplicated, key=lambda x: (x.timestamp, self._dedupe_key(x)), reverse=True)
+
+    @staticmethod
+    def _levenshtein_similarity(left: str, right: str) -> float:
+        if left == right:
+            return 1.0
+        if not left or not right:
+            return 0.0
+        if len(left) < len(right):
+            left, right = right, left
+        previous = list(range(len(right) + 1))
+        for left_index, left_character in enumerate(left, start=1):
+            current = [left_index]
+            for right_index, right_character in enumerate(right, start=1):
+                current.append(min(
+                    current[-1] + 1,
+                    previous[right_index] + 1,
+                    previous[right_index - 1] + (left_character != right_character),
+                ))
+            previous = current
+        return 1 - previous[-1] / len(left)

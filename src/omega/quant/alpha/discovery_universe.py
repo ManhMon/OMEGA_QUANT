@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import json
 import itertools
+import keyword
+import ast
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
@@ -15,6 +17,58 @@ import pandas as pd
 
 from omega.quant.alpha.discovery_alchemist import AlphaAlchemist, generate_all_candidate_expressions
 from omega.quant.alpha.discovery_judge import AlphaJudge, OrthogonalityChecker, correlation_based_clustering
+
+
+def _is_valid_symbol_name(value: str) -> bool:
+    return bool(value) and value.isidentifier() and not keyword.iskeyword(value) and not value.startswith("__")
+
+
+def _series_expr_to_code(expression: str) -> str:
+    tree = ast.parse(expression, mode="eval")
+
+    def _render(node: ast.AST) -> str:
+        if isinstance(node, ast.Expression):
+            return _render(node.body)
+        if isinstance(node, ast.Name):
+            if not _is_valid_symbol_name(node.id):
+                raise ValueError(f"Invalid symbol in promoted expression: {node.id}")
+            return node.id
+        if isinstance(node, ast.Constant):
+            if isinstance(node.value, (int, float)):
+                return repr(node.value)
+            raise ValueError("Only numeric constants supported in promoted expressions")
+        if isinstance(node, ast.UnaryOp):
+            op = "-" if isinstance(node.op, ast.USub) else "+"
+            return f"({op}{_render(node.operand)})"
+        if isinstance(node, ast.BinOp):
+            op_map = {ast.Add: "+", ast.Sub: "-", ast.Mult: "*", ast.Div: "/"}
+            op = op_map.get(type(node.op))
+            if op is None:
+                raise ValueError(f"Unsupported operator: {type(node.op).__name__}")
+            return f"({_render(node.left)} {op} {_render(node.right)})"
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            fn = node.func.id
+            args = [_render(arg) for arg in node.args]
+            if fn == "rank" and len(args) == 1:
+                return f"rank({args[0]})"
+            if fn == "delay" and len(args) == 2:
+                return f"delay({args[0]}, {args[1]})"
+            if fn == "delta" and len(args) == 2:
+                return f"delta({args[0]}, {args[1]})"
+            if fn == "ma" and len(args) == 2:
+                return f"ma({args[0]}, {args[1]})"
+            if fn == "ts_min" and len(args) == 2:
+                return f"ts_min({args[0]}, {args[1]})"
+            if fn == "ts_max" and len(args) == 2:
+                return f"ts_max({args[0]}, {args[1]})"
+            if fn == "ts_std" and len(args) == 2:
+                return f"ts_std({args[0]}, {args[1]})"
+            if fn == "abs" and len(args) == 1:
+                return f"abs({args[0]})"
+            raise ValueError(f"Unsupported function in promoted expression: {fn}")
+        raise ValueError(f"Unsupported node in promoted expression: {type(node).__name__}")
+
+    return _render(tree)
 
 
 @dataclass
@@ -72,6 +126,8 @@ class FeatureUniverseManager:
         Returns:
             True if added, False if rejected (too correlated with existing).
         """
+        if not _is_valid_symbol_name(name):
+            raise ValueError(f"Invalid feature name: {name}")
         # Check for duplicates
         if name in self._universe:
             # Update if better IC
@@ -306,6 +362,13 @@ class AlphaPromoter:
             '    # Step 1: Create lagged environment to prevent leakage',
             '    symbol_level = panel.index.names[1]',
             '    lagged = panel.groupby(level=symbol_level).shift(1)',
+            '    close = lagged["close"] if "close" in lagged.columns else None',
+            '    volume = lagged["volume"] if "volume" in lagged.columns else None',
+            '    open = lagged["open"] if "open" in lagged.columns else None',
+            '    high = lagged["high"] if "high" in lagged.columns else None',
+            '    low = lagged["low"] if "low" in lagged.columns else None',
+            '    returns = lagged["returns"] if "returns" in lagged.columns else None',
+            '    vwap = lagged["vwap"] if "vwap" in lagged.columns else None',
             '',
             '    # Primitives (safe, no eval needed)',
             '    def rank(x): return x.groupby(level=0).rank(pct=True)',
@@ -326,7 +389,8 @@ class AlphaPromoter:
             '    # Safe function mapping for promoted alphas',
             '    safe_funcs = {',
             '        "rank": rank, "delay": delay, "delta": delta, "ma": ma, "rsi": rsi,',
-            '        "close": lagged["close"], "volume": lagged["volume"] if "volume" in lagged.columns else None',
+            '        "close": close, "volume": volume, "open": open, "high": high,',
+            '        "low": low, "returns": returns, "vwap": vwap',
             '    }',
             '',
         ]
@@ -337,12 +401,13 @@ class AlphaPromoter:
             expr = meta.get("expression", "")
             if not expr:
                 return []
-            # Remove .shift(1) from expression since AlphaPromoter already shifts inputs
-            clean_expr = expr.replace(".shift(1)", "")
+            if not _is_valid_symbol_name(name):
+                raise ValueError(f"Invalid promoted alpha name: {name}")
+            clean_expr = _series_expr_to_code(expr)
             return [
                 f'    # IC: {meta.get("ic_score"):.4f}, Category: {meta.get("category")}',
                 f'    try:',
-                f'        out["{name}"] = eval("{clean_expr}", {{"__builtins__": {{}}}}, safe_funcs)',
+                f'        out["{name}"] = {clean_expr}',
                 f'    except Exception as e:',
                 f'        print(f"Failed to compute promoted alpha {name}: {{e}}")',
                 '',

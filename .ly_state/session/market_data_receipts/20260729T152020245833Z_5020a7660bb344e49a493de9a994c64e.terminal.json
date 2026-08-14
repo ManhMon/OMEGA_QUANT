@@ -1,0 +1,19 @@
+{
+  "as_of_date": null,
+  "attempt_id": "20260729T152020245833Z_5020a7660bb344e49a493de9a994c64e",
+  "calendar_status": "unknown",
+  "completed_at": "2026-07-29T15:20:20+00:00",
+  "execution_allowed": false,
+  "expected_session_date": null,
+  "provenance": {
+    "projection_error": null,
+    "publication_run_id": null,
+    "result_status": "official_watermark_blocked"
+  },
+  "published": false,
+  "reason": "official_watermark_blocked",
+  "schema_version": 1,
+  "stale": true,
+  "started_at": "2026-07-29T15:20:20+00:00",
+  "state": "terminal"
+}

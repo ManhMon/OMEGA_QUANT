@@ -329,12 +329,8 @@ def _analyze_guard(folds: List[Dict[str, Any]]) -> Dict[str, Any]:
         else:
             guard_rejected += 1
 
-        # Post-fallback positive outcome detection:
-        # Guard rejected the RA selection and fell back to baseline, but the
-        # resulting fold portfolio (baseline) had positive Sharpe/IC. This does
-        # NOT indicate a guard error — it reflects the post-fallback outcome.
-        # Without the rejected RA basket's OOS outcome, we cannot determine
-        # whether the guard decision was correct or incorrect.
+        # The fold portfolio is the realized post-fallback portfolio. Guard
+        # validation metrics are separate and are not treated as OOS outcomes.
         fold_sharpe = fold.get("portfolio_sharpe", 0.0)
         fold_ic = fold.get("portfolio_ic", 0.0)
         if status == "FALLBACK_TO_BASELINE" and fold_sharpe > 1.0 and fold_ic > 0:
@@ -346,6 +342,8 @@ def _analyze_guard(folds: List[Dict[str, Any]]) -> Dict[str, Any]:
                 "status": status,
                 "selected_basket_ic": pge.get("selected_basket_validation_ic"),
                 "baseline_basket_ic": pge.get("baseline_basket_validation_ic"),
+                "realized_portfolio_ic": fold_ic,
+                "realized_portfolio_sharpe": fold_sharpe,
                 "guard_reason": pge.get("guard_reason", ""),
                 "selected_alphas": pge.get("selected_alphas", []),
             }
@@ -356,6 +354,10 @@ def _analyze_guard(folds: List[Dict[str, Any]]) -> Dict[str, Any]:
         "guard_accepted": guard_accepted,
         "guard_rejected": guard_rejected,
         "guard_fallback_to_baseline": guard_fallback_to_baseline,
+        "guard_fallback_to_baseline_rate": (
+            guard_fallback_to_baseline / guard_enabled_folds
+            if guard_enabled_folds else 0.0
+        ),
         "post_fallback_positive_count": post_fallback_positive_count,
         "guard_details": guard_details,
     }
@@ -591,20 +593,23 @@ def generate_report(
         lines.append(f"- **Guard enabled folds**: {ga['guard_enabled_folds']}/{v['n_folds']}")
         lines.append(f"- **Guard accepted (RA basket used)**: {ga['guard_accepted']}")
         lines.append(f"- **Guard rejected (fallback to baseline)**: {ga['guard_rejected']}")
-        lines.append(f"- **Post-fallback positive outcomes** (guard rejected, baseline fold "
-                      f"Sharpe > 1.0 and IC > 0 — does not indicate guard error): "
+        lines.append(f"- **Post-fallback positive realized portfolios** (guard rejected, "
+                      f"realized portfolio Sharpe > 1.0 and IC > 0; not a guard correctness metric): "
                       f"{ga['post_fallback_positive_count']}")
         lines.append("")
 
         if ga["guard_details"]:
-            lines.append("| Fold | Status | Selected Basket IC | Baseline IC | Reason |")
-            lines.append("|------|--------|-------------------|-------------|--------|")
+            lines.append("| Fold | Status | Selected RA Validation IC | Baseline Validation IC | Realized Portfolio IC | Realized Portfolio Sharpe | Reason |")
+            lines.append("|------|--------|---------------------------|------------------------|-----------------------|---------------------------|--------|")
             for gd in ga["guard_details"]:
                 sel_ic = _fmt(gd["selected_basket_ic"]) if gd["selected_basket_ic"] is not None else "N/A"
                 base_ic = _fmt(gd["baseline_basket_ic"]) if gd["baseline_basket_ic"] is not None else "N/A"
+                realized_ic = _fmt(gd["realized_portfolio_ic"])
+                realized_sharpe = _fmt(gd["realized_portfolio_sharpe"])
                 reason = gd["guard_reason"][:80] if gd["guard_reason"] else ""
                 lines.append(
-                    f"| {gd['fold_id']} | {gd['status']} | {sel_ic} | {base_ic} | {reason} |"
+                    f"| {gd['fold_id']} | {gd['status']} | {sel_ic} | {base_ic} | "
+                    f"{realized_ic} | {realized_sharpe} | {reason} |"
                 )
             lines.append("")
 
@@ -764,19 +769,18 @@ def generate_report(
         # Guard analysis
         ga = v["guard_analysis"]
         if ga["guard_enabled_folds"] > 0:
-            reject_rate = ga["guard_rejected"] / ga["guard_enabled_folds"]
+            reject_rate = ga["guard_fallback_to_baseline_rate"]
             if reject_rate > 0.5:
                 lines.append(
-                    f"- **GUARD REJECTION RATE HIGH** ({_fmt_pct(reject_rate)}): "
+                    f"- **GUARD FALLBACK-TO-BASELINE RATE HIGH** ({_fmt_pct(reject_rate)}): "
                     f"Portfolio guard is aggressively falling back to baseline. "
                     f"Review guard tolerance ({v['config'].get('portfolio_guard_tolerance', 'N/A')})."
                 )
             if ga["post_fallback_positive_count"] > 0:
                 lines.append(
-                    f"- **POST-FALLBACK POSITIVE OUTCOMES**: {ga['post_fallback_positive_count']} "
-                    f"fold(s) where guard rejected and the resulting baseline fold had "
-                    f"Sharpe > 1.0 and IC > 0. This reflects the post-fallback outcome, "
-                    f"not guard correctness (rejected RA basket OOS outcome unknown)."
+                    f"- **POST-FALLBACK POSITIVE REALIZED PORTFOLIOS**: {ga['post_fallback_positive_count']} "
+                    f"fold(s) where the realized post-fallback portfolio had Sharpe > 1.0 "
+                    f"and IC > 0. This is not a guard correctness metric."
                 )
 
         # IC quality
@@ -797,12 +801,29 @@ def generate_report(
 
     lines.append("### 9.3 System-Level Recommendations")
     lines.append("")
-    lines.append("1. **All 7 alphas have mean OOS IC below 0.02** across all variants. "
-                  "The alpha pool lacks sufficient predictive power for standalone deployment.")
-    lines.append("2. **Only `close_auction_drift_10` approaches the IC gate** "
-                  "(mean IC ~0.02 in baseline). It should be the primary alpha candidate.")
-    lines.append("3. **`volatility_compression_5` is consistently the weakest alpha** "
-                  "(mean IC ~ -0.03). Recommend immediate retirement from the ensemble.")
+    alpha_count = len(primary["alpha_stats"])
+    below_gate_count = sum(1 for stats in primary["alpha_stats"].values() if stats["mean_ic"] < 0.02)
+    best_alpha, best_stats = max(
+        primary["alpha_stats"].items(), key=lambda item: item[1]["mean_ic"], default=(None, {})
+    )
+    weakest_alpha, weakest_stats = min(
+        primary["alpha_stats"].items(), key=lambda item: item[1]["mean_ic"], default=(None, {})
+    )
+    lines.append(
+        f"1. **{below_gate_count}/{alpha_count} alphas have mean OOS IC below 0.02** "
+        "in the primary variant. The alpha pool lacks sufficient predictive power "
+        "for standalone deployment."
+    )
+    if best_alpha:
+        lines.append(
+            f"2. **`{best_alpha.replace('alpha_p34_', '')}` is the strongest primary alpha** "
+            f"(mean IC {_fmt(best_stats['mean_ic'])}). Retain as a research candidate."
+        )
+    if weakest_alpha:
+        lines.append(
+            f"3. **`{weakest_alpha.replace('alpha_p34_', '')}` is the weakest primary alpha** "
+            f"(mean IC {_fmt(weakest_stats['mean_ic'])}). Review for retirement."
+        )
 
     # Computed fallback rates per variant
     fallback_parts: List[str] = []
@@ -829,10 +850,9 @@ def generate_report(
             ga = v["guard_analysis"]
             enabled = ga["guard_enabled_folds"]
             fb_baseline = ga["guard_fallback_to_baseline"]
-            fb_rate = fb_baseline / enabled if enabled else 0.0
             lines.append(
                 f"5. **Portfolio guard** ({VARIANT_LABELS.get(vname, vname)}): "
-                f"{fb_baseline}/{enabled} ({_fmt_pct(fb_rate)}) folds fell back to baseline. "
+                f"{fb_baseline}/{enabled} ({_fmt_pct(ga['guard_fallback_to_baseline_rate'])}) folds fell back to baseline. "
                 f"Guard tolerance is {v['config'].get('portfolio_guard_tolerance', 'N/A')}. "
                 f"Consider increasing tolerance to 0.01 or disabling guard for this alpha generation."
             )

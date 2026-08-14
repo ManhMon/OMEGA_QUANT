@@ -1,0 +1,1 @@
+TaskName=OMEGA_QUANT_PaperTrading State=Disabled Enabled=False

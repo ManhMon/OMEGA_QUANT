@@ -7,11 +7,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 sys.path.insert(0, str(PROJECT_ROOT / "scripts"))
 
+import json
 import tracemalloc
 import numpy as np
 import pandas as pd
 import pytest
 from omega.quant.alpha.vn import compute_all_vn_alphas
+from omega.quant.evolution.alternative_data_fetcher import AlternativeDataFetcher
 import run_weekly_evolution as rwe
 
 def test_vn_alphas_computation():
@@ -67,6 +69,45 @@ def test_prepare_features_pit_safety():
         assert col in res.columns, f"Missing column {col}"
         # Since prepare_features drops NaNs, we check that no NaNs exist
         assert not res[col].isna().any(), f"NaN found in prepared {col}"
+
+
+def test_alternative_proxy_rolling_paths_match_transform_reference():
+    dates = pd.date_range("2026-01-01", periods=6)
+    index = pd.MultiIndex.from_product([["AAA", "BBB"], dates], names=["symbol", "date"])
+    panel = pd.DataFrame(
+        {
+            "open": 10.0,
+            "high": 11.0,
+            "low": 9.0,
+            "close": np.arange(len(index), dtype=float) + 10.0,
+            "volume": np.arange(len(index), dtype=float) + 100.0,
+        },
+        index=index,
+    )
+    fetcher = AlternativeDataFetcher()
+
+    volume = panel["volume"]
+    expected_ma = volume.groupby(level="symbol").transform(
+        lambda values: values.rolling(20, min_periods=5).mean()
+    )
+    expected_std = volume.groupby(level="symbol").transform(
+        lambda values: values.rolling(20, min_periods=5).std()
+    )
+    actual_flow = fetcher.get_foreign_flow_proxy(panel)
+    expected_flow = (
+        (volume - expected_ma) / expected_std.replace(0, 1)
+        * panel.groupby(level="symbol")["close"].pct_change().map(np.sign)
+    ).fillna(0)
+
+    pd.testing.assert_series_equal(actual_flow, expected_flow, check_names=False)
+
+    flow = volume * panel.groupby(level="symbol")["close"].pct_change()
+    expected_margin = flow.groupby(level="symbol").transform(
+        lambda values: values.rolling(10, min_periods=3).sum()
+    ).fillna(0)
+    pd.testing.assert_series_equal(
+        fetcher.get_margin_proxy(panel), expected_margin, check_names=False
+    )
 
 
 def test_walk_forward_split_regimes():
@@ -298,3 +339,73 @@ def test_prepare_features_downcasts_numeric_features_to_float32(monkeypatch):
     assert res["alt_stub_feat"].dtype == np.float32
     assert res["target"].dtype == np.float32
 
+
+def test_extract_promoted_baseline_entries_prefers_root_alphas():
+    payload = {
+        "alphas": [{"alpha_id": "root", "formula": "close"}],
+        "risk_adjusted_selection_evidence": {
+            "promoted": [{"alpha_id": "nested", "formula": "open"}],
+        },
+    }
+
+    assert rwe._extract_promoted_baseline_entries(payload) == [{"alpha_id": "root", "formula": "close"}]
+
+
+def test_extract_promoted_baseline_entries_falls_back_to_nested_promoted():
+    payload = {
+        "alphas": [],
+        "risk_adjusted_selection_evidence": {
+            "promoted": [{"alpha_id": "nested", "formula": "open"}],
+        },
+    }
+
+    assert rwe._extract_promoted_baseline_entries(payload) == [{"alpha_id": "nested", "formula": "open"}]
+
+
+def test_build_ortho_baseline_set_uses_nested_promoted_fallback(tmp_path, monkeypatch):
+    frame = pd.DataFrame(
+        {
+            "ticker": ["AAA", "AAA", "AAA"],
+            "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
+            "open": [1.0, 2.0, 3.0],
+            "high": [1.0, 2.0, 3.0],
+            "low": [1.0, 2.0, 3.0],
+            "close": [1.0, 2.0, 3.0],
+            "volume": [10.0, 11.0, 12.0],
+        }
+    )
+    payload = {
+        "alphas": [],
+        "risk_adjusted_selection_evidence": {
+            "promoted": [{"alpha_id": "nested_alpha", "formula": "close"}],
+        },
+    }
+    baseline_path = tmp_path / "evolved_alphas.json"
+    baseline_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    monkeypatch.setattr(rwe, "ORTHO_BASELINE_PATH", baseline_path)
+    monkeypatch.setattr(rwe, "_evaluate_formula_string", lambda formula, features: features[formula])
+
+    baseline_set = rwe._build_ortho_baseline_set(frame, baseline_source="promoted")
+
+    assert list(baseline_set) == ["nested_alpha"]
+    assert baseline_set["nested_alpha"].tolist() == [1.0, 2.0, 3.0]
+
+
+def test_main_fails_fast_when_orthogonalization_enabled_without_baselines(monkeypatch):
+    frame = pd.DataFrame(
+        {
+            "ticker": ["AAA"] * 3,
+            "date": pd.to_datetime(["2026-01-01", "2026-01-02", "2026-01-03"]),
+            "target": [0.1, 0.2, 0.3],
+        }
+    )
+
+    monkeypatch.setattr(rwe, "_install_v4_optimizations", lambda: None)
+    monkeypatch.setattr(rwe, "load_market_data", lambda **_kwargs: frame.copy())
+    monkeypatch.setattr(rwe, "prepare_features", lambda df: df.copy())
+    monkeypatch.setattr(rwe, "walk_forward_split", lambda *args, **kwargs: (frame.copy(), frame.copy(), frame.copy()))
+    monkeypatch.setattr(rwe, "_build_ortho_baseline_set", lambda **_kwargs: {})
+
+    with pytest.raises(ValueError, match="Orthogonalization enabled"):
+        rwe.main(["--orthogonalize", "promoted", "--workers", "1"])

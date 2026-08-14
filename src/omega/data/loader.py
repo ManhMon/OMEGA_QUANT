@@ -10,7 +10,7 @@ Architecture Reference: OMEGA_SYSTEM_ARCHITECTURE_V1.md Section 4 (Data Governan
 import os
 import hashlib
 import logging
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
 import pandas as pd
@@ -615,13 +615,26 @@ class DataLoader:
         if not ticker_actions:
             return df, []
         
-        # PIT Safety: Only apply actions where ex_date <= as_of_time.date()
-        # This ensures we don't apply future corporate actions that weren't known at query time
-        as_of_date = as_of_time.date()
-        ticker_actions = [
-            a for a in ticker_actions 
-            if pd.to_datetime(a.ex_date).date() <= as_of_date
-        ]
+        if as_of_time.tzinfo is None or as_of_time.utcoffset() is None:
+            as_of_time = as_of_time.replace(tzinfo=UTC)
+
+        verified_actions = []
+        for action in ticker_actions:
+            if pd.Timestamp(action.ex_date).date() > as_of_time.date():
+                continue
+            if getattr(action, "is_quarantined", False):
+                logger.warning(
+                    "Quarantined unverified corporate action for %s on %s: %s",
+                    ticker,
+                    action.ex_date,
+                    getattr(action, "quarantine_reason", "unknown provenance failure"),
+                )
+                continue
+            if not action.is_available_at(as_of_time):
+                continue
+            verified_actions.append(action)
+
+        ticker_actions = verified_actions
         if not ticker_actions:
             return df, []
         

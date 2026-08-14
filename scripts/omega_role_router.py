@@ -135,6 +135,8 @@ def build_prompt(
             - Final verdict must be exactly [APPROVED] or [NEEDS_FIX].
             - Include l3_session_id, l3_session_key, audit_report_path,
               final_verdict.
+            - Recommended early feedback: run `python scripts/lint_sod_report_evidence.py <report> --gate <gate>`.
+              This is advisory and does not replace the final `python scripts/sod_gate_enforcer.py` hard gate.
             """
         ).strip()
     elif tier == "L2":
@@ -145,6 +147,10 @@ def build_prompt(
             - Run relevant tests and validation.
             - Do NOT self-approve.
             - Produce implementation summary and handoff for L3 audit.
+            - Use headings `## Repo-Local Files Read` and `## Forbidden Path Scan`.
+            - Put each forbidden path on its own line with `non-authoritative scan evidence only; no reliance.`
+            - Recommended early feedback: run `python scripts/lint_sod_report_evidence.py <report> --gate <gate>`.
+              This is advisory and does not replace the final `python scripts/sod_gate_enforcer.py` hard gate.
             """
         ).strip()
     else:

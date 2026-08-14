@@ -26,6 +26,15 @@ import argparse
 from pathlib import Path
 from typing import List, Tuple, Optional
 
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
+_configure_utf8_stdio()
+
 # ANSI colors for terminal output
 class Colors:
     HEADER = '\033[95m'

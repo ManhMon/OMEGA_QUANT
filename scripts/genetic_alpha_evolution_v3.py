@@ -559,6 +559,10 @@ def evaluate_ensemble(
 
 
 def build_split_windows(dates: list[pd.Timestamp]) -> dict[str, tuple[pd.Timestamp, pd.Timestamp]]:
+    if not dates:
+        raise ValueError("Not enough trading days for PIT train/val/oos/lockbox split")
+    trading_calendar = build_vn_trading_days(dates[0], dates[-1])
+    dates = [pd.Timestamp(date) for date in dates if pd.Timestamp(date) in trading_calendar]
     if len(dates) <= UNIVERSE_LOOKBACK_TRADING_DAYS + (3 * EMBARGO_TRADING_DAYS) + 30:
         raise ValueError("Not enough trading days for PIT train/val/oos/lockbox split")
     usable = len(dates) - UNIVERSE_LOOKBACK_TRADING_DAYS - (3 * EMBARGO_TRADING_DAYS)
@@ -569,7 +573,6 @@ def build_split_windows(dates: list[pd.Timestamp]) -> dict[str, tuple[pd.Timesta
     if lockbox_len <= 0:
         raise ValueError("Lockbox window collapsed; increase data range")
 
-    trading_calendar = build_vn_trading_days(dates[0], dates[-1])
     idx = UNIVERSE_LOOKBACK_TRADING_DAYS
     train = (dates[idx], dates[idx + train_len - 1])
     val_start = advance_trading_days(train[1], trading_calendar, EMBARGO_TRADING_DAYS + 1)

@@ -425,6 +425,15 @@ class TestNoHardcodedFallbackRates:
         assert "6/8" in report
         assert "75.0%" in report
 
+    def test_guard_fallback_ratio_is_computed_and_zero_when_disabled(self):
+        data_rg = _make_minimal_variant(n_folds=4, with_guard=True)
+        data_rg["fold_details"][0]["portfolio_guard_evidence"]["portfolio_guard_status"] = "ACCEPTED"
+        result = analyze_variant("ra_guard", data_rg)
+        assert result["guard_analysis"]["guard_fallback_to_baseline_rate"] == pytest.approx(0.75)
+
+        result = analyze_variant("baseline", _make_minimal_variant(n_folds=2))
+        assert result["guard_analysis"]["guard_fallback_to_baseline_rate"] == 0.0
+
     def test_report_no_guard_enabled(self):
         """When no guard variant is present, report says guard not enabled."""
         data_bl = _make_minimal_variant(n_folds=3)
@@ -506,8 +515,24 @@ class TestPostFallbackPositiveMetric:
         # Selected basket IC is from guard evidence, not realized fold
         assert detail["selected_basket_ic"] == -0.05
         assert detail["baseline_basket_ic"] == 0.02
+        assert detail["realized_portfolio_ic"] == 0.03
+        assert detail["realized_portfolio_sharpe"] == fold["portfolio_sharpe"]
         # Realized fold IC is separate and not used in guard detail
         assert fold["portfolio_ic"] == 0.03
+
+    def test_post_fallback_metric_is_realized_portfolio_not_guard_error(self):
+        data = _make_minimal_variant(n_folds=1, with_guard=True)
+        fold = data["fold_details"][0]
+        fold["portfolio_sharpe"] = 1.5
+        fold["portfolio_ic"] = 0.05
+        result = analyze_variant("ra_guard", data)
+        detail = result["guard_analysis"]["guard_details"][0]
+        assert detail["selected_basket_ic"] == -0.01
+        assert detail["baseline_basket_ic"] == 0.02
+        assert detail["realized_portfolio_ic"] == 0.05
+        report = generate_report({"ra_guard": result})
+        assert "POST-FALLBACK POSITIVE REALIZED PORTFOLIOS" in report
+        assert "guard correctness metric" in report
 
 
 # ---------------------------------------------------------------------------

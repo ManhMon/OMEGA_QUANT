@@ -483,7 +483,6 @@ class TestCLI:
             call_kwargs = mock_run.call_args[1]
             assert call_kwargs["skip_refetch"] is True
 
-
 # ---------------------------------------------------------------------------
 # 6. Constants sanity
 # ---------------------------------------------------------------------------

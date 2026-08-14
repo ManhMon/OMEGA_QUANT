@@ -1,0 +1,10 @@
+{
+  "data": "data/market_2015_now.parquet",
+  "start_date": "2015-01-01",
+  "end_date": "2026-06-13",
+  "rows": 1771502,
+  "tickers": 30,
+  "feature_rows": 80539,
+  "feature_columns": 203,
+  "profile_top": "         59387111 function calls (58310158 primitive calls) in 41.416 seconds\n\n   Ordered by: cumulative time\n   List reduced from 16136 to 10 due to restriction <10>\n\n   ncalls  tottime  percall  cumtime  percall filename:lineno(function)\n        1    0.060    0.060   33.793   33.793 C:\\Users\\GHC\\repos\\OMEGA_QUANT\\src\\omega\\quant\\evolution\\unified_feature_adapter.py:49(generate_all)\n        1    0.015    0.015   21.676   21.676 C:\\Users\\GHC\\repos\\OMEGA_QUANT\\src\\omega\\quant\\evolution\\alternative_data_fetcher.py:200(generate_all)\n        1    0.080    0.080   21.392   21.392 C:\\Users\\GHC\\repos\\OMEGA_QUANT\\src\\omega\\quant\\evolution\\alternative_data_fetcher.py:114(_derive_sentiment_indicators)\n     2854    0.027    0.000   17.351    0.006 C:\\Users\\GHC\\repos\\OMEGA_QUANT\\src\\omega\\quant\\sentiment\\vsi_engine.py:227(calculate_sentiment)\n     2854    0.212    0.000   14.285    0.005 C:\\Users\\GHC\\repos\\OMEGA_QUANT\\src\\omega\\quant\\sentiment\\vsi_engine.py:326(_calculate_sentiment_frame)\n        1    0.088    0.088   10.521   10.521 C:\\Users\\GHC\\repos\\OMEGA_QUANT\\src\\omega\\quant\\alpha\\arsenal.py:34(compute_ultimate_alphas)\n     2854    0.109    0.000    7.895    0.003 C:\\Users\\GHC\\repos\\OMEGA_QUANT\\src\\omega\\quant\\sentiment\\vsi_engine.py:292(_resolve_source_weights)\n84503/81448    0.069    0.000    6.755    0.000 <frozen importlib._bootstrap>:1409(_handle_fromlist)\n  2841/23    0.010    0.000    6.680    0.290 <frozen importlib._bootstrap>:1360(_find_and_load)\n  2793/21    0.012    0.000    6.679    0.318 <frozen importlib._bootstrap>:1308(_find_and_load_unlocked)\n\n\n"
+}

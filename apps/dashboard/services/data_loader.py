@@ -421,7 +421,7 @@ class DataLoaderService:
     @staticmethod
     @st.cache_data(ttl=CACHE_TTL_MEDIUM)
     def load_update_market_data_result() -> Dict[str, Any]:
-        """Load the last update_market_data result JSON."""
+        """Load the display-only update projection; it never authorizes execution."""
         result: Dict[str, Any] = {"exists": MARKET_UPDATE_RESULT_FILE.exists()}
         if not MARKET_UPDATE_RESULT_FILE.exists():
             return result
@@ -433,6 +433,31 @@ class DataLoaderService:
             ).strftime("%Y-%m-%d %H:%M:%S")
         except Exception as e:
             result["error"] = str(e)
+        return result
+
+    @staticmethod
+    @st.cache_data(ttl=CACHE_TTL_MEDIUM)
+    def load_market_data_attempt_ledger() -> Dict[str, Any]:
+        """Read ledger state for display only; malformed state remains blocked."""
+        receipt_dir = SESSION_DIR / "market_data_receipts"
+        result: Dict[str, Any] = {"exists": receipt_dir.is_dir(), "state": "BLOCKED"}
+        if not receipt_dir.is_dir():
+            return result
+        entries = sorted(receipt_dir.glob("*.json"))
+        if not entries:
+            return result
+        latest = entries[-1]
+        result["path"] = str(latest.relative_to(REPO_ROOT))
+        try:
+            record = json.loads(latest.read_text(encoding="utf-8"))
+            result.update({"attempt_id": record.get("attempt_id"), "record_state": record.get("state")})
+            if latest.name.endswith(".terminal.json"):
+                result["execution_allowed"] = record.get("execution_allowed") is True
+                result["state"] = "ELIGIBLE" if result["execution_allowed"] else "BLOCKED"
+            else:
+                result["reason"] = "newest attempt is in progress"
+        except Exception as exc:
+            result["error"] = str(exc)
         return result
 
     # ── Run Market Data Update (subprocess) ───────────────────────────────
@@ -531,6 +556,7 @@ class DataLoaderService:
             for _clear_fn in (
                 DataLoaderService.load_canonical_market_summary,
                 DataLoaderService.load_update_market_data_result,
+                DataLoaderService.load_market_data_attempt_ledger,
             ):
                 try:
                     _clear_fn.clear()

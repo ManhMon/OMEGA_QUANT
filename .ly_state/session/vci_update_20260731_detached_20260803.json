@@ -1,0 +1,21 @@
+{
+  "schema_version": 1,
+  "task": "VCI canonical update through 2026-07-31",
+  "pid": 10440,
+  "launcher": "cmd.exe",
+  "working_directory": "C:\\Users\\GHC\\repos\\OMEGA_QUANT",
+  "command": "python scripts/update_market_data.py --end 2026-07-31",
+  "stdout_stderr_log": ".ly_state/session/vci_update_20260731_detached_20260803.log",
+  "launch_at_utc": "2026-08-03T14:20:00.9310264Z",
+  "observed_at_utc": "2026-08-03T14:20:10.5844957Z",
+  "launcher_running_at_observation": true,
+  "signing_environment": "Inherited by child process; values were not read, logged, or persisted.",
+  "preflight": {
+    "canonical_path": "data/market_2015_now.parquet",
+    "canonical_sha256": "3446ab3edf79908c6d2b13a0aa16f6d8ab9c4319e83d4838209cf9d1bcac99ad",
+    "pointer_path": "data/market_current.json",
+    "pointer_exists": false,
+    "pointer_sha256": null,
+    "recorded_at_utc": "2026-08-03T14:19:29.6907746Z"
+  }
+}

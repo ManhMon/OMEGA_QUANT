@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import datetime
 
 import numpy as np
 import pandas as pd
@@ -7,11 +8,13 @@ import pandas as pd
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'scripts')))
 
 from genetic_alpha_evolution_v3 import (
+    build_vn_trading_days,
     build_split_windows,
     compute_daily_cs_ic,
     evaluate_ensemble,
     select_ensemble,
 )
+from omega.data.calendar import VNTradingCalendar
 
 
 def test_compute_daily_cs_ic_uses_daily_cross_sections():
@@ -27,6 +30,25 @@ def test_build_split_windows_preserves_embargo_and_lockbox():
     assert windows['train'][1] < windows['val'][0]
     assert windows['val'][1] < windows['oos'][0]
     assert windows['oos'][1] < windows['lockbox'][0]
+
+
+def test_gate4_split_boundaries_are_trading_session_dates():
+    dates = list(pd.date_range('2020-01-01', periods=900, freq='B'))
+    windows = build_split_windows(dates)
+    calendar = build_vn_trading_days(dates[0], dates[-1])
+
+    assert all(boundary in calendar for window in windows.values() for boundary in window)
+    assert VNTradingCalendar.is_valid_trading_timestamp(datetime(2020, 1, 2, 14, 45))
+    assert not VNTradingCalendar.is_valid_trading_timestamp(datetime(2020, 1, 2, 14, 46))
+
+
+def test_gate4_calendar_excludes_vietnam_holiday_from_split_calendar():
+    calendar = build_vn_trading_days(pd.Timestamp('2024-04-29'), pd.Timestamp('2024-05-02'))
+
+    assert pd.Timestamp('2024-04-29') in calendar
+    assert pd.Timestamp('2024-04-30') not in calendar
+    assert pd.Timestamp('2024-05-01') not in calendar
+    assert pd.Timestamp('2024-05-02') in calendar
 
 
 def test_select_ensemble_filters_high_corr_and_shrinks_weights_to_equal():

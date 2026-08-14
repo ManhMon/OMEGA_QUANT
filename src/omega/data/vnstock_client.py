@@ -155,7 +155,7 @@ class VnstockClient:
         normalize_vnd: bool = True,
     ) -> pd.DataFrame:
         """
-        Fetch OHLCV history for *symbol* from VCI via ``Quote.history()``.
+        Fetch OHLCV history for *symbol* from this client's configured provider.
 
         Args:
             symbol: Ticker (e.g. "VCB").

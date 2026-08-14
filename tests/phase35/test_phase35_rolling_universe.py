@@ -264,6 +264,31 @@ class TestFilters(unittest.TestCase):
         self.assertTrue((window_df['date'] <= end_date).all())
         self.assertEqual(evidence['history_end_exclusive'], str(start_date.date()))
 
+    def test_select_pit_universe_ignores_future_only_symbol(self):
+        loader = self._make_loader(min_history=5)
+        baseline = _make_synthetic_df(n_dates=320, n_tickers=10, seed=42)
+        start_date = baseline['date'].sort_values().iloc[260]
+        end_date = baseline['date'].sort_values().iloc[300]
+        future_rows = baseline[baseline['date'] >= start_date].copy()
+        future_rows['ticker'] = 'FUTURE_ONLY'
+        future_rows[['open', 'high', 'low', 'close', 'volume']] = [1e9, 1e9, 1e9, 1e9, 1e12]
+        perturbed = pd.concat([baseline, future_rows], ignore_index=True)
+
+        baseline_window, baseline_evidence = loader.select_pit_universe_for_window(
+            baseline, start_date, end_date, top_n=5, lookback_trading_days=60
+        )
+        perturbed_window, perturbed_evidence = loader.select_pit_universe_for_window(
+            perturbed, start_date, end_date, top_n=5, lookback_trading_days=60
+        )
+
+        assert baseline_evidence['selected_symbols'] == perturbed_evidence['selected_symbols']
+        assert 'FUTURE_ONLY' not in set(perturbed_window['ticker'])
+        pd.testing.assert_frame_equal(
+            baseline_window.sort_values(['date', 'ticker']).reset_index(drop=True),
+            perturbed_window.sort_values(['date', 'ticker']).reset_index(drop=True),
+            check_dtype=False,
+        )
+
 
 # ---------------------------------------------------------------------------
 # Tests: Static behavior preserved (default disabled)

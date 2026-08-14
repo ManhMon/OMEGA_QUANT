@@ -12,6 +12,7 @@ Memory Optimization: 2026-07-07 - Narrow copy calculation, vectorized date mappi
 from __future__ import annotations
 
 import logging
+from dataclasses import replace
 from typing import Optional, Tuple
 
 import numpy as np
@@ -44,8 +45,9 @@ class AlternativeDataFetcher:
         PIT Safety: Uses only past data (rolling stats).
         """
         vol = panel['volume']
-        vol_ma = vol.groupby(level='symbol').transform(lambda x: x.rolling(20, min_periods=5).mean())
-        vol_std = vol.groupby(level='symbol').transform(lambda x: x.rolling(20, min_periods=5).std())
+        grouped_volume = vol.groupby(level='symbol')
+        vol_ma = grouped_volume.rolling(20, min_periods=5).mean().droplevel(0)
+        vol_std = grouped_volume.rolling(20, min_periods=5).std().droplevel(0)
         vol_zscore = (vol - vol_ma) / vol_std.replace(0, 1)
 
         ret_sign = panel.groupby(level='symbol')['close'].pct_change().map(np.sign)
@@ -63,7 +65,7 @@ class AlternativeDataFetcher:
         """
         ret = panel.groupby(level='symbol')['close'].pct_change()
         flow = panel['volume'] * ret
-        margin_proxy = flow.groupby(level='symbol').transform(lambda x: x.rolling(10, min_periods=3).sum())
+        margin_proxy = flow.groupby(level='symbol').rolling(10, min_periods=3).sum().droplevel(0)
 
         return margin_proxy.fillna(0)
 
@@ -103,7 +105,7 @@ class AlternativeDataFetcher:
         PIT Safety: Rolling stats only.
         """
         vol = panel['volume']
-        vol_ma = vol.groupby(level='symbol').transform(lambda x: x.rolling(20, min_periods=5).mean())
+        vol_ma = vol.groupby(level='symbol').rolling(20, min_periods=5).mean().droplevel(0)
         vol_spike = vol / vol_ma.replace(0, 1)
 
         abs_ret = panel.groupby(level='symbol')['close'].pct_change().abs()
@@ -143,6 +145,7 @@ class AlternativeDataFetcher:
         # Build date -> score mappings (vectorized assignment at the end)
         vsi_map = {dates[0]: 50.0}  # Default for first date
         fss_map = {dates[0]: 20.0}
+        sentiment_cache = {}
         
         # Calculate daily market returns and foreign flows
         daily_returns = panel.groupby(level='symbol')['close'].pct_change().groupby(level='date').mean()
@@ -176,7 +179,16 @@ class AlternativeDataFetcher:
                 news_items.append(SentimentData(text="Thị trường bình thường", source="VNEXPRESS", published_at=prev_datetime, as_of_time=prev_datetime))
                 
             # 2. Compute VSI
-            sentiment_scores = self.vsi_engine.calculate_sentiment(news_items)
+            sentiment_key = tuple((item.text, item.source) for item in news_items)
+            sentiment_scores = sentiment_cache.get(sentiment_key)
+            if sentiment_scores is None:
+                sentiment_scores = self.vsi_engine.calculate_sentiment(news_items)
+                sentiment_cache[sentiment_key] = sentiment_scores
+            else:
+                sentiment_scores = [
+                    replace(score, timestamp=prev_datetime, published_at=prev_datetime)
+                    for score in sentiment_scores
+                ]
             vsi_score_obj = self.vsi_engine.calculate_vsi(sentiment_scores, as_of_time=prev_datetime)
             vsi_val = vsi_score_obj.score
             
@@ -232,9 +244,14 @@ class AlternativeDataFetcher:
         features['liquidity_shock'] = self.get_liquidity_shock_proxy(narrow)
 
         # Rolling aggregates for signal smoothing
-        features['foreign_flow_ma5'] = features.groupby(level='symbol')['foreign_flow'].transform(lambda x: x.rolling(5, min_periods=2).mean())
-        features['margin_trend'] = features.groupby(level='symbol')['margin_proxy'].transform(lambda x: x.rolling(5).mean() / x.rolling(20).mean().replace(0, 1))
-        features['rotation_momentum'] = features.groupby(level='symbol')['sector_rotation'].transform(lambda x: x.rolling(5, min_periods=2).mean())
+        grouped_features = features.groupby(level='symbol')
+        features['foreign_flow_ma5'] = grouped_features['foreign_flow'].rolling(5, min_periods=2).mean().droplevel(0)
+        margin_rolling = grouped_features['margin_proxy'].rolling
+        features['margin_trend'] = (
+            margin_rolling(5).mean()
+            / margin_rolling(20).mean().replace(0, 1)
+        ).droplevel(0)
+        features['rotation_momentum'] = grouped_features['sector_rotation'].rolling(5, min_periods=2).mean().droplevel(0)
 
         # Combine narrow panel with calculated features for sentiment indicators
         # (margin_proxy is required by _derive_sentiment_indicators)

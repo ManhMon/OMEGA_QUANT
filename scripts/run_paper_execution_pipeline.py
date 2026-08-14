@@ -23,9 +23,14 @@ if str(_REPO_ROOT / "src") not in sys.path:
 
 import json
 import logging
+import hashlib
+import re
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+from scripts.update_market_data import _load_strict_json, verify_market_data_receipt, validate_gate_evidence
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,12 +40,15 @@ logger = logging.getLogger("PaperExecutionPipeline")
 
 # Repo-relative paths
 SESSION_DIR = _REPO_ROOT / ".ly_state" / "session"
+MARKET_DATA_RECEIPT_DIR = SESSION_DIR / "market_data_receipts"
 SIGNAL_DIR = _REPO_ROOT / "data" / "paper_trading"
 RISK_STATUS_FILE = SESSION_DIR / "risk_status.json"
 PNL_LATEST_FILE = SESSION_DIR / "pnl_latest.json"
 BOARD_LOT = 100
 DEFAULT_CAPITAL = 2_000_000_000.0
 DEFAULT_ADV_20D = 5_000_000.0
+VN_TZ = ZoneInfo("Asia/Ho_Chi_Minh")
+MAX_RECEIPT_FUTURE_SKEW = timedelta(minutes=5)
 
 
 # ------------------------------------------------------------------ #
@@ -69,6 +77,115 @@ def _save_json(path: Path, data: Dict[str, Any]) -> bool:
     except Exception as exc:
         logger.error("Failed to save %s: %s", path, exc)
         return False
+
+
+def _sha256(path: Path) -> Optional[str]:
+    if not path.is_file():
+        return None
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _parse_receipt_timestamp(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return parsed if parsed.tzinfo is not None else None
+
+
+def _receipt_is_future(record: Dict[str, Any], attempt_id: str, now: datetime) -> bool:
+    try:
+        attempt_time = datetime.strptime(attempt_id.split("_", 1)[0], "%Y%m%dT%H%M%S%fZ").replace(tzinfo=timezone.utc)
+    except ValueError:
+        return True
+    timestamps = [attempt_time, _parse_receipt_timestamp(record.get("started_at"))]
+    if record.get("state") == "terminal":
+        timestamps.append(_parse_receipt_timestamp(record.get("completed_at")))
+    return any(value is None or value > now + MAX_RECEIPT_FUTURE_SKEW for value in timestamps)
+
+
+def _market_data_decision(receipt_dir: Optional[Path] = None, now: Optional[datetime] = None) -> Dict[str, Any]:
+    """Authorize only the newest complete, signed, fresh publication attempt."""
+    receipt_dir = receipt_dir or MARKET_DATA_RECEIPT_DIR
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "clock_invalid"}
+    if not receipt_dir.is_dir():
+        return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "ledger_missing"}
+    attempts: Dict[str, Dict[str, Dict[str, Any]]] = {}
+    for path in receipt_dir.glob("*.json"):
+        match = re.fullmatch(r"(\d{8}T\d{12}Z_[0-9a-f]{32})\.(in_progress|terminal)\.json", path.name)
+        if not match:
+            return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "ledger_filename_invalid"}
+        try:
+            record = _load_strict_json(path)
+        except ValueError:
+            return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "ledger_record_malformed"}
+        attempt_id, state = match.group(1), match.group(2)
+        if record.get("schema_version") != 2 or record.get("attempt_id") != attempt_id or record.get("state") != state or not verify_market_data_receipt(record):
+            return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "ledger_record_invalid"}
+        if _receipt_is_future(record, attempt_id, now):
+            return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "ledger_timestamp_future"}
+        if state in attempts.setdefault(attempt_id, {}):
+            return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "ledger_ambiguous"}
+        attempts.setdefault(attempt_id, {})[state] = {"path": path, "record": record}
+    if not attempts:
+        return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "ledger_empty"}
+    try:
+        attempt_id = max(attempts, key=lambda value: datetime.strptime(value.split("_", 1)[0], "%Y%m%dT%H%M%S%fZ"))
+    except ValueError:
+        return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "ledger_timestamp_invalid"}
+    newest = attempts[attempt_id]
+    if "in_progress" not in newest or "terminal" not in newest:
+        return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "attempt_orphaned", "attempt_id": attempt_id}
+    receipt = newest["terminal"]["record"]
+    terminal_session = receipt.get("terminal_session")
+    publication = receipt.get("publication")
+    gate_evidence = receipt.get("gate_evidence")
+    projection_path = receipt.get("projection_path")
+    projection_sha256 = receipt.get("projection_sha256")
+    projection_attempt_id = receipt.get("projection_attempt_id")
+    projection_error = receipt.get("provenance", {}).get("projection_error") if isinstance(receipt.get("provenance"), dict) else None
+    if not (
+        isinstance(projection_path, str)
+        and isinstance(projection_sha256, str)
+        and isinstance(projection_attempt_id, str)
+        and isinstance(publication, dict)
+        and isinstance(publication.get("candidate_path"), str)
+        and isinstance(publication.get("pointer_path"), str)
+        and isinstance(publication.get("sha256"), str)
+    ):
+        return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "latest_attempt_ineligible", "attempt_id": attempt_id, "receipt_path": str(newest["terminal"]["path"])}
+    projection = Path(projection_path)
+    candidate_path = Path(publication["candidate_path"])
+    pointer_path = Path(publication["pointer_path"])
+    try:
+        eligible = (
+            receipt.get("published") is True
+            and receipt.get("stale") is False
+            and isinstance(terminal_session, str)
+            and receipt.get("execution_allowed") is True
+            and not projection_error
+            and projection_attempt_id == attempt_id
+            and _sha256(projection) == projection_sha256
+            and _load_strict_json(projection).get("market_data_attempt_id") == attempt_id
+            and _sha256(candidate_path) == publication["sha256"]
+            and pointer_path.is_file()
+            and _load_strict_json(pointer_path).get("sha256") == publication["sha256"]
+            and validate_gate_evidence(gate_evidence, attempt_id, receipt["completed_at"])
+            and gate_evidence["terminal_session"] == terminal_session
+            and gate_evidence["candidate_path"] == publication["candidate_path"]
+            and gate_evidence["candidate_sha256"] == publication["sha256"]
+            and gate_evidence["projection_path"] == projection_path
+            and gate_evidence["projection_sha256"] == projection_sha256
+        )
+    except (OSError, ValueError, TypeError):
+        eligible = False
+    if not eligible:
+        return {"code": "MARKET_DATA_NOT_EXECUTABLE", "reason": "latest_attempt_ineligible", "attempt_id": attempt_id, "receipt_path": str(newest["terminal"]["path"])}
+    return {"code": "MARKET_DATA_EXECUTABLE", "attempt_id": attempt_id, "receipt_path": str(newest["terminal"]["path"])}
 
 
 # ------------------------------------------------------------------ #
@@ -306,6 +423,7 @@ def update_dashboard(
     signal: Dict[str, Any],
     execution_results: List[Dict[str, Any]],
     session_dir: Optional[Path] = None,
+    market_data: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Update risk_status.json and pnl_latest.json with execution results.
@@ -377,6 +495,7 @@ def update_dashboard(
             "failed": sum(1 for r in execution_results if r["pipeline_state"] != "COMPLETED"),
             "timestamp": now,
         },
+        "market_data_provenance": market_data or {},
         "breached": existing.get("breached", False),
         "breached_reasons": existing.get("breached_reasons", []),
     }
@@ -413,6 +532,7 @@ def save_execution_results(
     signal: Dict[str, Any],
     diffs: List[OrderDiff],
     session_dir: Optional[Path] = None,
+    market_data: Optional[Dict[str, Any]] = None,
 ) -> Path:
     """Persist execution results to session directory."""
     if session_dir is None:
@@ -428,6 +548,7 @@ def save_execution_results(
         "completed": sum(1 for r in results if r["pipeline_state"] == "COMPLETED"),
         "failed": sum(1 for r in results if r["pipeline_state"] != "COMPLETED"),
         "results": results,
+        "market_data_provenance": market_data or {},
     }
     out_path = session_dir / f"paper_exec_{signal.get('date', 'unknown')}.json"
     _save_json(out_path, output)
@@ -443,6 +564,7 @@ def run_paper_execution_pipeline(
     signal: Optional[Dict[str, Any]] = None,
     current_positions: Optional[Dict[str, Dict[str, Any]]] = None,
     dry_run: bool = False,
+    market_data_receipt_dir: Optional[Path] = None,
 ) -> Dict[str, Any]:
     """
     Full paper execution pipeline:
@@ -468,6 +590,10 @@ def run_paper_execution_pipeline(
         logger.error("No signal available — aborting pipeline")
         return {"error": "No signal available", "total_diffs": 0}
 
+    market_data = _market_data_decision(market_data_receipt_dir)
+    if market_data["code"] != "MARKET_DATA_EXECUTABLE":
+        return {"error": "MARKET_DATA_NOT_EXECUTABLE", "total_diffs": 0, "dry_run": dry_run, "market_data_provenance": market_data}
+
     # Step 2: Load current positions
     if current_positions is None:
         current_positions = load_current_positions()
@@ -485,6 +611,7 @@ def run_paper_execution_pipeline(
             "total_executed": 0,
             "completed": 0,
             "failed": 0,
+            "market_data_provenance": market_data,
         }
 
     if dry_run:
@@ -497,6 +624,7 @@ def run_paper_execution_pipeline(
                 {"symbol": d.symbol, "side": d.side, "quantity": d.quantity, "price": d.price}
                 for d in diffs
             ],
+            "market_data_provenance": market_data,
         }
 
     # Step 4: Build pipeline and execute
@@ -504,10 +632,10 @@ def run_paper_execution_pipeline(
     results = execute_diffs(pipeline, diffs)
 
     # Step 5: Update dashboard
-    update_dashboard(signal, results)
+    update_dashboard(signal, results, market_data=market_data)
 
     # Step 6: Save results
-    result_path = save_execution_results(results, signal, diffs)
+    result_path = save_execution_results(results, signal, diffs, market_data=market_data)
 
     completed = sum(1 for r in results if r["pipeline_state"] == "COMPLETED")
     failed = len(results) - completed
@@ -519,6 +647,7 @@ def run_paper_execution_pipeline(
         "completed": completed,
         "failed": failed,
         "result_path": str(result_path),
+        "market_data_provenance": market_data,
     }
 
 

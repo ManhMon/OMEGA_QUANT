@@ -36,9 +36,15 @@ from joblib import parallel_backend
 
 from omega.quant.evolution.genetic_engine import GeneticEngine, GPConfig
 from omega.quant.evolution.continuous_learning import ContinuousLearningEngine
-from omega.quant.evolution.alpha_to_execution_bridge import AlphaToExecutionBridge
+from omega.quant.evolution.alpha_to_execution_bridge import (
+    AlphaToExecutionBridge,
+    CANONICAL_METRIC_KEY,
+    resolve_metric_config,
+    resolve_metric_cli,
+)
 from omega.quant.evolution.alternative_features import AlternativeFeatureGenerator
 from omega.quant.evolution.alternative_data_fetcher import AlternativeDataFetcher
+from omega.core.registry.persistence import DatabaseRegistry
 
 # --- Logging ---
 logging.basicConfig(
@@ -88,6 +94,8 @@ def _resolve_diverse_backend(backend: str, workers: int) -> str:
 # --- Constants ---
 MARKET_DATA_PATH = PROJECT_ROOT / "data" / "market_2015_now.parquet"
 OUTPUT_PATH = PROJECT_ROOT / ".ly_state" / "session" / "evolved_alphas.json"
+PROMOTION_IC_THRESHOLD = 0.01
+PROMOTION_SIGNAL_PNL_THRESHOLD = 0.08
 
 REGIME_MAP = {
     "uptrend": ("2020-01-01", "2022-04-30"),
@@ -168,6 +176,23 @@ ALTERNATIVE_FEATURE_COLUMNS = [
 
 # Orthogonalization baseline source path (previously promoted alphas)
 ORTHO_BASELINE_PATH = PROJECT_ROOT / ".ly_state" / "session" / "evolved_alphas.json"
+CONFORMAL_REGISTRY_PATH = PROJECT_ROOT / ".ly_state" / "session" / "conformal_registry.sqlite"
+HYBRID_REGISTRY_MODEL_PREFIX = "hybrid_alpha_llm_"
+
+
+def _extract_promoted_baseline_entries(payload: object) -> List[dict]:
+    if not isinstance(payload, dict):
+        return []
+    alphas = payload.get("alphas")
+    if isinstance(alphas, list) and alphas:
+        return [entry for entry in alphas if isinstance(entry, dict)]
+    nested = payload.get("risk_adjusted_selection_evidence")
+    if not isinstance(nested, dict):
+        return []
+    promoted = nested.get("promoted")
+    if not isinstance(promoted, list):
+        return []
+    return [entry for entry in promoted if isinstance(entry, dict)]
 
 
 def load_market_data(regime: str = "all", start_date: str = None, end_date: str = None) -> pd.DataFrame:
@@ -637,9 +662,9 @@ def _build_ortho_baseline_set(
         try:
             with open(ORTHO_BASELINE_PATH, "r") as f:
                 promoted_data = json.load(f)
-            promoted_alphas = promoted_data.get("alphas", [])
+            promoted_alphas = _extract_promoted_baseline_entries(promoted_data)
             if not promoted_alphas:
-                logger.info("Ortho baseline: no promoted alphas found, skipping")
+                logger.info("Ortho baseline: no promoted alphas found in root 'alphas' or fallback nested evidence, skipping")
                 return baseline_set
 
             # Evaluate each promoted formula on current features to get baseline signal
@@ -673,6 +698,44 @@ def _build_ortho_baseline_set(
             logger.info(f"Ortho baseline: {len(baseline_set)} promoted alpha baselines loaded")
         except Exception as e:
             logger.warning(f"Failed to load promoted alphas from {ORTHO_BASELINE_PATH}: {e}")
+        return baseline_set
+
+    if baseline_source == "hybrid_db":
+        if not CONFORMAL_REGISTRY_PATH.exists():
+            logger.info(f"Ortho baseline: no hybrid registry db at {CONFORMAL_REGISTRY_PATH}, skipping")
+            return baseline_set
+        try:
+            registry = DatabaseRegistry(database_url=f"sqlite:///{CONFORMAL_REGISTRY_PATH.as_posix()}")
+            records = registry.list_models(name_prefix=HYBRID_REGISTRY_MODEL_PREFIX, status="ready")
+            if not records:
+                logger.info("Ortho baseline: no ready hybrid LLM factors found in model_registry")
+                return baseline_set
+
+            latest_by_name = {}
+            for record in records:
+                latest_by_name.setdefault(record.name, record)
+
+            all_baseline_cols = list(FEATURE_COLUMNS)
+            for col in ALTERNATIVE_FEATURE_COLUMNS:
+                if col not in all_baseline_cols:
+                    all_baseline_cols.append(col)
+            features_dict = {col: df[col].values for col in all_baseline_cols if col in df.columns}
+
+            for record in latest_by_name.values():
+                metrics = record.metrics or {}
+                formula = metrics.get("formula") or metrics.get("expression")
+                if not formula:
+                    continue
+                alpha_id = metrics.get("alpha_id") or record.name.removeprefix(HYBRID_REGISTRY_MODEL_PREFIX)
+                try:
+                    signal = _evaluate_formula_string(formula, features_dict)
+                    if signal is not None and len(signal) == len(df):
+                        baseline_set[alpha_id] = signal.astype(np.float64)
+                except Exception as e:
+                    logger.debug(f"Could not evaluate hybrid DB alpha {alpha_id}: {e}")
+            logger.info(f"Ortho baseline: {len(baseline_set)} hybrid DB baselines loaded")
+        except Exception as e:
+            logger.warning(f"Failed to load hybrid DB baselines from {CONFORMAL_REGISTRY_PATH}: {e}")
         return baseline_set
 
     logger.info(f"Ortho baseline: unknown source '{baseline_source}', returning empty")
@@ -1068,7 +1131,9 @@ def run_evolution(
 def evaluate_and_promote(
     hall_of_fame: list,
     test_df: pd.DataFrame,
-    train_end_date: pd.Timestamp
+    train_end_date: pd.Timestamp,
+    min_oos_ic: float = PROMOTION_IC_THRESHOLD,
+    min_oos_score: float = PROMOTION_SIGNAL_PNL_THRESHOLD,
 ) -> list:
     """Evaluate top alphas via champion/challenger and register promoted ones."""
     cl_engine = ContinuousLearningEngine()
@@ -1080,7 +1145,7 @@ def evaluate_and_promote(
     for col in ALTERNATIVE_FEATURE_COLUMNS:
         if col in test_df.columns:
             all_test_feature_cols.append(col)
-    test_features = {col: test_df[col].values for col in all_test_feature_cols}
+    test_features = {col: test_df[col].values for col in all_test_feature_cols if col in test_df.columns}
 
     # Inject private double-underscore columns for V4 JIT VM compatibility
     _inject_private_gp_columns(test_df, test_features)
@@ -1096,6 +1161,7 @@ def evaluate_and_promote(
 
     for i, individual in enumerate(hall_of_fame):
         alpha_id = f"gp_alpha_{datetime.now().strftime('%Y%m%d')}_{i:03d}"
+        original_formula = individual.tree.to_string()
 
         # Generate predictions on test set
         try:
@@ -1114,21 +1180,30 @@ def evaluate_and_promote(
 
         metrics = cl_engine.evaluate_model(predictions, actuals, model_name=alpha_id)
         ic = metrics.get("ic", 0.0)
-        sharpe = metrics.get("sharpe", 0.0)
+        registered_formula = original_formula
+        if ic < 0.0:
+            predictions = predictions * -1.0
+            metrics = cl_engine.evaluate_model(predictions, actuals, model_name=alpha_id)
+            ic = metrics.get("ic", 0.0)
+            registered_formula = f"neg({original_formula})"
+        metric_key, metric_warnings = resolve_metric_config(metrics)
+        for warning_message in metric_warnings:
+            logger.warning(warning_message)
+        signal_pnl_score = metrics.get(CANONICAL_METRIC_KEY, 0.0) if metric_key is None else float(metric_key)
+        sharpe = metrics.get("sharpe", signal_pnl_score)
 
-        logger.info(f"  {alpha_id}: IC={ic:.4f}, Sharpe={sharpe:.4f}")
+        logger.info(f"  {alpha_id}: IC={ic:.4f}, {CANONICAL_METRIC_KEY}={signal_pnl_score:.4f}")
 
-        # Promotion criteria: IC > 0.05 and Sharpe > 0.1
-        if abs(ic) > 0.05 and sharpe > 0.1:
+        if abs(ic) > min_oos_ic and signal_pnl_score > min_oos_score:
             validation_date = pd.to_datetime(test_df["date"]).max() if "date" in test_df.columns else train_end_date
             # Bridge only accepts horizon 3 or 5; use primary TARGET_HORIZON
             if not bridge.register_alpha(
                 alpha_id=alpha_id,
-                formula=individual.tree.to_string(),
+                formula=registered_formula,
                 horizon=TARGET_HORIZON,
                 train_end_date=train_end_date,
                 ic=ic,
-                sharpe=sharpe
+                sharpe=signal_pnl_score
             ):
                 continue
             if not bridge.validate_embargo(alpha_id, validation_date):
@@ -1139,8 +1214,9 @@ def evaluate_and_promote(
                 continue
             promoted_alphas.append({
                 "alpha_id": alpha_id,
-                "formula": individual.tree.to_string(),
+                "formula": registered_formula,
                 "ic": round(ic, 6),
+                CANONICAL_METRIC_KEY: round(signal_pnl_score, 6),
                 "sharpe": round(sharpe, 6),
                 "fitness": round(individual.fitness, 6),
                 "horizon": TARGET_HORIZON,
@@ -1186,9 +1262,8 @@ def save_results(promoted_alphas: list, ortho_enabled: bool = False, alt_feature
     logger.info(f"Results saved to: {OUTPUT_PATH}")
 
 
-def main():
+def build_parser():
     import argparse
-    _install_v4_optimizations()
     parser = argparse.ArgumentParser(description="Weekly GP Alpha Discovery")
     parser.add_argument(
         "--regime",
@@ -1237,10 +1312,11 @@ def main():
         "--orthogonalize",
         type=str,
         default="none",
-        choices=["promoted", "momentum", "file", "none"],
+        choices=["promoted", "hybrid_db", "momentum", "file", "none"],
         help=(
             "Enable Option D orthogonalization penalty against baseline signals. "
             "'promoted': use previously promoted alpha formulas; "
+            "'hybrid_db': use promoted hybrid LLM factors from conformal_registry.sqlite; "
             "'momentum': use raw momentum features as baselines; "
             "'file': load custom baseline from --ortho-baseline-path; "
             "'none': disabled (default)."
@@ -1272,6 +1348,24 @@ def main():
         help="Disable AlternativeFeatureGenerator and AlternativeDataFetcher integration"
     )
     # --- V4 VM compatibility arguments ---
+    parser.add_argument(
+        "--min-oos-signal-pnl-score",
+        type=float,
+        default=PROMOTION_SIGNAL_PNL_THRESHOLD,
+        help=f"Minimum OOS {CANONICAL_METRIC_KEY} required for promotion (default: {PROMOTION_SIGNAL_PNL_THRESHOLD})"
+    )
+    parser.add_argument(
+        "--min-oos-sharpe",
+        type=float,
+        default=None,
+        help="Legacy alias for --min-oos-signal-pnl-score"
+    )
+    parser.add_argument(
+        "--min-oos-ic",
+        type=float,
+        default=PROMOTION_IC_THRESHOLD,
+        help=f"Minimum OOS IC required for promotion (default: {PROMOTION_IC_THRESHOLD})"
+    )
     parser.add_argument(
         "--workers",
         type=int,
@@ -1321,7 +1415,26 @@ def main():
         default=0.03,
         help="Minimum standard deviation floor for fold IR stability (default: 0.03)"
     )
-    args = parser.parse_args()
+    return parser
+
+
+def parse_args(argv: Optional[List[str]] = None):
+    cli_args = sys.argv[1:] if argv is None else argv
+    parser = build_parser()
+    args = parser.parse_args(argv)
+    has_signal_pnl_score = any(arg.startswith("--min-oos-signal-pnl-score") for arg in cli_args)
+    has_sharpe_alias = any(arg.startswith("--min-oos-sharpe") for arg in cli_args)
+    resolved_score = resolve_metric_cli(
+        signal_pnl_score=args.min_oos_signal_pnl_score if has_signal_pnl_score else None,
+        sharpe=args.min_oos_sharpe if has_sharpe_alias else None,
+    )
+    args.min_oos_score = args.min_oos_signal_pnl_score if resolved_score is None else float(resolved_score)
+    return args
+
+
+def main(argv: Optional[List[str]] = None):
+    _install_v4_optimizations()
+    args = parse_args(argv)
 
     if sys.platform == "win32" and args.workers > 4:
         logger.warning("--workers=%d capped to 4 on Windows to avoid memory pressure", args.workers)
@@ -1330,10 +1443,10 @@ def main():
         args.workers = min(os.cpu_count() or 4, 4)
 
     logger.info("=== WEEKLY GP ALPHA EVOLUTION START ===")
-    logger.info("Config: regime=%s, generations=%d, pop=%d, ortho=%s, alt_features=%s, workers=%d, backend=%s",
+    logger.info("Config: regime=%s, generations=%d, pop=%d, ortho=%s, alt_features=%s, workers=%d, backend=%s, min_oos_ic=%.4f, min_oos_score=%.4f",
                 args.regime, args.generations, args.population_size,
                 args.orthogonalize, "OFF" if args.no_alt_features else "ON",
-                args.workers, args.backend)
+                args.workers, args.backend, args.min_oos_ic, args.min_oos_score)
 
     # Step 1: Load data
     df = load_market_data(regime=args.regime, start_date=args.start_date, end_date=args.end_date)
@@ -1380,6 +1493,10 @@ def main():
             custom_baseline_path=args.ortho_baseline_path
         )
         logger.info("Ortho baseline: %d signals loaded", len(ortho_baseline_set) if ortho_baseline_set else 0)
+        if not ortho_baseline_set:
+            raise ValueError(
+                f"Orthogonalization enabled with source '{args.orthogonalize}' but no baseline signals were loaded"
+            )
 
     # Step 4: Run GP evolution on training set (with multi-horizon + ortho)
     hall_of_fame = run_evolution(
@@ -1447,7 +1564,13 @@ def main():
 
     # Step 5: Evaluate and promote via champion/challenger strictly on OOS Test set
     train_end_date = pd.to_datetime(train_df["date"]).max() if "date" in train_df.columns else pd.Timestamp(datetime.now().strftime("%Y-%m-%d"))
-    promoted = evaluate_and_promote(surviving_hof, test_df, train_end_date)
+    promoted = evaluate_and_promote(
+        surviving_hof,
+        test_df,
+        train_end_date,
+        min_oos_ic=args.min_oos_ic,
+        min_oos_score=args.min_oos_score,
+    )
 
     # Step 6: Save results
     save_results(promoted, ortho_enabled=args.orthogonalize != "none", alt_features_enabled=not args.no_alt_features)

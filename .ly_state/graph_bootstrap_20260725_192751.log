@@ -1,0 +1,284 @@
+2026-07-25 19:27:51,650 INFO start total_symbols=3 log_path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_bootstrap_20260725_192751.log
+2026-07-25 19:27:53,170 INFO endpoint result symbol=INDUSTRY endpoint=list rows=177
+2026-07-25 19:27:53,190 INFO snapshot saved entity=industry_list path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\industry_list\2026-07-25\snapshot.parquet
+2026-07-25 19:28:00,921 INFO endpoint result symbol=INDUSTRY endpoint=sectors rows=695
+2026-07-25 19:28:00,930 INFO snapshot saved entity=industry_sectors path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\industry_sectors\2026-07-25\snapshot.parquet
+2026-07-25 19:28:01,525 INFO endpoint result symbol=INDUSTRY endpoint=list_by_industry rows=7809
+2026-07-25 19:28:01,535 INFO snapshot saved entity=industry_list_by_industry path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\industry_list_by_industry\2026-07-25\snapshot.parquet
+2026-07-25 19:28:01,535 INFO symbol start symbol=AAA
+2026-07-25 19:28:01,536 WARNING endpoint error symbol=AAA endpoint=info
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,537 WARNING endpoint error symbol=AAA endpoint=shareholders
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,537 WARNING endpoint error symbol=AAA endpoint=subsidiaries
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,538 WARNING endpoint error symbol=AAA endpoint=ownership
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,538 WARNING endpoint error symbol=AAA endpoint=officers
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,538 WARNING endpoint error symbol=AAA endpoint=news
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,539 WARNING endpoint error symbol=AAA endpoint=income_statement
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 96, in fetch_endpoint
+    return fetcher.financial(symbol, endpoint)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 60, in financial
+    fundamental = self._fundamental_factory(symbol)
+TypeError: Fundamental() takes no arguments
+2026-07-25 19:28:01,539 WARNING endpoint error symbol=AAA endpoint=cash_flow
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 96, in fetch_endpoint
+    return fetcher.financial(symbol, endpoint)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 60, in financial
+    fundamental = self._fundamental_factory(symbol)
+TypeError: Fundamental() takes no arguments
+2026-07-25 19:28:01,539 WARNING endpoint error symbol=AAA endpoint=ratios
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 96, in fetch_endpoint
+    return fetcher.financial(symbol, endpoint)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 60, in financial
+    fundamental = self._fundamental_factory(symbol)
+TypeError: Fundamental() takes no arguments
+2026-07-25 19:28:01,540 INFO symbol done symbol=AAA errors=9
+2026-07-25 19:28:01,540 INFO symbol start symbol=AAM
+2026-07-25 19:28:01,540 WARNING endpoint error symbol=AAM endpoint=info
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,540 WARNING endpoint error symbol=AAM endpoint=shareholders
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,541 WARNING endpoint error symbol=AAM endpoint=subsidiaries
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,541 WARNING endpoint error symbol=AAM endpoint=ownership
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,541 WARNING endpoint error symbol=AAM endpoint=officers
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,542 WARNING endpoint error symbol=AAM endpoint=news
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,542 WARNING endpoint error symbol=AAM endpoint=income_statement
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 96, in fetch_endpoint
+    return fetcher.financial(symbol, endpoint)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 60, in financial
+    fundamental = self._fundamental_factory(symbol)
+TypeError: Fundamental() takes no arguments
+2026-07-25 19:28:01,542 WARNING endpoint error symbol=AAM endpoint=cash_flow
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 96, in fetch_endpoint
+    return fetcher.financial(symbol, endpoint)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 60, in financial
+    fundamental = self._fundamental_factory(symbol)
+TypeError: Fundamental() takes no arguments
+2026-07-25 19:28:01,543 WARNING endpoint error symbol=AAM endpoint=ratios
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 96, in fetch_endpoint
+    return fetcher.financial(symbol, endpoint)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 60, in financial
+    fundamental = self._fundamental_factory(symbol)
+TypeError: Fundamental() takes no arguments
+2026-07-25 19:28:01,543 INFO symbol done symbol=AAM errors=9
+2026-07-25 19:28:01,543 INFO symbol start symbol=AAN
+2026-07-25 19:28:01,543 WARNING endpoint error symbol=AAN endpoint=info
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,544 WARNING endpoint error symbol=AAN endpoint=shareholders
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,544 WARNING endpoint error symbol=AAN endpoint=subsidiaries
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,544 WARNING endpoint error symbol=AAN endpoint=ownership
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,545 WARNING endpoint error symbol=AAN endpoint=officers
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,545 WARNING endpoint error symbol=AAN endpoint=news
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 95, in fetch_endpoint
+    return fetcher.company(symbol, endpoint)
+           ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 52, in company
+    reference = self._reference_factory(symbol)
+TypeError: Reference() takes no arguments
+2026-07-25 19:28:01,546 WARNING endpoint error symbol=AAN endpoint=income_statement
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 96, in fetch_endpoint
+    return fetcher.financial(symbol, endpoint)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 60, in financial
+    fundamental = self._fundamental_factory(symbol)
+TypeError: Fundamental() takes no arguments
+2026-07-25 19:28:01,546 WARNING endpoint error symbol=AAN endpoint=cash_flow
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 96, in fetch_endpoint
+    return fetcher.financial(symbol, endpoint)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 60, in financial
+    fundamental = self._fundamental_factory(symbol)
+TypeError: Fundamental() takes no arguments
+2026-07-25 19:28:01,546 WARNING endpoint error symbol=AAN endpoint=ratios
+Traceback (most recent call last):
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 121, in fetch_symbol
+    value = fetch_endpoint(fetcher, symbol, endpoint)
+  File "C:\Users\GHC\repos\OMEGA_QUANT\scripts\run_graph_bootstrap.py", line 96, in fetch_endpoint
+    return fetcher.financial(symbol, endpoint)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^
+  File "C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\graph\fetcher.py", line 60, in financial
+    fundamental = self._fundamental_factory(symbol)
+TypeError: Fundamental() takes no arguments
+2026-07-25 19:28:01,547 INFO symbol done symbol=AAN errors=9
+2026-07-25 19:28:01,547 INFO summary total_symbols_attempted=3 success_count=0 error_count=3 skipped=0 total_time=9.90s snapshot_root=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots

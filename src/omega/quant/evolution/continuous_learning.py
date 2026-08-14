@@ -10,6 +10,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 import logging
 
+from omega.quant.evolution.alpha_to_execution_bridge import CANONICAL_METRIC_KEY, resolve_metric_config
+
 logger = logging.getLogger("OmegaContinuousLearning")
 
 @dataclass
@@ -60,6 +62,7 @@ class ContinuousLearningEngine:
         return {
             "model_name": model_name,
             "ic": float(ic) if not pd.isna(ic) else 0.0,
+            CANONICAL_METRIC_KEY: float(sharpe),
             "sharpe": float(sharpe),
             "timestamp": datetime.now(timezone.utc).isoformat()
         }
@@ -81,8 +84,8 @@ class ContinuousLearningEngine:
             logger.warning(f"Challenger IC {challenger_ic:.4f} below absolute minimum {self.config.min_absolute_ic}")
             return False, "IC below minimum threshold"
             
-        champion_sharpe = champion_metrics.get("sharpe", 0.0)
-        challenger_sharpe = challenger_metrics.get("sharpe", 0.0)
+        champion_sharpe = resolve_metric_config(champion_metrics)[0] or champion_metrics.get("sharpe", 0.0)
+        challenger_sharpe = resolve_metric_config(challenger_metrics)[0] or challenger_metrics.get("sharpe", 0.0)
         
         sharpe_ratio = challenger_sharpe / (champion_sharpe + 1e-8) if champion_sharpe > 0 else 1.0
         

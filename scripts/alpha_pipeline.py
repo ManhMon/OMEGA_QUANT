@@ -3,9 +3,6 @@
 Production Alpha Pipeline for E2E Scripts
 Integrates AlphaDiscoveryEngine with IC filtering and Top-N selection.
 
-V2: Wires Evolution Engine (GeneticEngine) and ML Engine (XGBoost) for
-    institutional-grade alpha discovery targeting IC >0.08.
-
 PIT Safety: All signals enforced T-1 lag before any IC/fitness computation.
 Board Lot: Pipeline outputs fractional weights; 100-share lot rounding is
            handled at execution time by the execution layer.
@@ -21,14 +18,11 @@ from pathlib import Path
 sys.path.insert(0, 'src')
 
 from omega.quant.factory.discovery_engine import DiscoveryEngine
-from omega.quant.alpha.discovery import AlphaJudge
-from omega.quant.evolution.genetic_engine import GeneticEngine, GPConfig
-from omega.quant.ml.ml_engine import MLEngine, ModelConfig, MLModelType, get_ml_engine
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# IC helper (shared by static + evolved alpha evaluation)
+# IC helper (research reporting only)
 # ---------------------------------------------------------------------------
 
 def _compute_ic(factor: pd.Series, fut_ret: pd.Series) -> float:
@@ -64,14 +58,17 @@ def load_expanded_universe(n_days: int = 252, top_n_liquid: int = 50):
     parquet_path = 'data/market_2015_now.parquet'
     df = pd.read_parquet(parquet_path)
 
-    avg_volume = df.groupby('ticker')['volume'].mean().sort_values(ascending=False)
+    df['date'] = pd.to_datetime(df['date'])
+    last_dates = sorted(df['date'].unique())[-n_days:]
+    if not last_dates:
+        raise ValueError("No market sessions available")
+    # Select the universe using only data available before the trading window.
+    avg_volume = df.loc[df['date'] < last_dates[0]].groupby('ticker')['volume'].mean().sort_values(ascending=False)
     top_symbols = avg_volume.head(top_n_liquid).index.tolist()
+    if not top_symbols:
+        raise ValueError("No pre-window history available for PIT-safe universe selection")
 
     df_filtered = df[df['ticker'].isin(top_symbols)].copy()
-    df_filtered['date'] = pd.to_datetime(df_filtered['date'])
-
-    all_dates = sorted(df_filtered['date'].unique())
-    last_dates = all_dates[-n_days:]
     df_filtered = df_filtered[df_filtered['date'].isin(last_dates)]
 
     # Load sector mapping and join onto filtered rows
@@ -88,345 +85,6 @@ def load_expanded_universe(n_days: int = 252, top_n_liquid: int = 50):
 
     print(f"[ALPHA] Loaded {len(last_dates)} days, {len(top_symbols)} liquid stocks")
     return panel, top_symbols
-
-
-# ---------------------------------------------------------------------------
-# Evolution Engine integration
-# ---------------------------------------------------------------------------
-
-def _build_gp_features(panel: pd.DataFrame) -> Tuple[Dict[str, np.ndarray], np.ndarray]:
-    """
-    Build flat feature arrays for GeneticEngine from MultiIndex panel.
-
-    Stacks all (date, ticker) rows into 1-D arrays.
-    PIT safety: returns are shifted +1 (forward) for fitness target;
-    features are raw (GeneticEngine's fitness evaluator applies T-1 internally).
-    """
-    close = panel['close']
-    volume = panel['volume']
-    returns = close.groupby(level='ticker').transform(lambda s: s.pct_change())
-
-    # Forward return as GP fitness target (look-ahead only used for fitness,
-    # never leaked into the signal itself — signal is T-1 lagged in Genome)
-    forward_returns = close.groupby(level='ticker').transform(
-        lambda s: s.pct_change().shift(-1)
-    ).values
-
-    close_vals = close.values
-    volume_vals = volume.values
-
-    features = {
-        'close': close_vals,
-        'open': panel['open'].values,
-        'high': panel['high'].values,
-        'low': panel['low'].values,
-        'volume': volume_vals,
-        'returns': returns.values,
-        # Derived features for richer GP search space
-        'momentum_5': close.groupby(level='ticker').transform(lambda s: s.pct_change(5)).values,
-        'momentum_20': close.groupby(level='ticker').transform(lambda s: s.pct_change(20)).values,
-        'vol_ratio': volume.groupby(level='ticker').transform(lambda s: s.div(s.rolling(20, min_periods=1).mean())).values,
-        'intraday_range': ((panel['high'] - panel['low']) / panel['close']).values,
-    }
-
-    # Replace NaN/inf in features
-    for k in features:
-        arr = features[k].astype(float)
-        arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
-        features[k] = arr
-
-    target = np.nan_to_num(forward_returns.astype(float), nan=0.0, posinf=0.0, neginf=0.0)
-    return features, target
-
-
-def evolve_alphas(
-    panel: pd.DataFrame,
-    future_returns: pd.Series,
-    n_generations: int = 20,
-    population_size: int = 50,
-    ic_threshold: float = 0.02,
-) -> Dict[str, pd.Series]:
-    """
-    Run GeneticEngine to evolve alpha expressions beyond static templates.
-
-    Returns dict of {expression_label -> T-1-lagged alpha Series} for
-    candidates with |IC| > ic_threshold.
-
-    PIT: GeneticEngine fitness uses forward returns internally for selection
-    only. The returned signals are evaluated per-ticker with T-1 lag via
-    Genome.evaluate_vectorized().
-    """
-    print(f"[EVOLUTION] Starting GP evolution: pop={population_size}, gen={n_generations}")
-
-    config = GPConfig(
-        population_size=population_size,
-        generations=n_generations,
-        max_depth=4,
-        tournament_size=5,
-        crossover_rate=0.7,
-        mutation_rate=0.2,
-        elitism_count=2,
-        hall_of_fame_size=10,
-        min_observations=50,  # per-ticker series are shorter than full panel
-    )
-
-    features, target = _build_gp_features(panel)
-    import random; random.seed(42); np.random.seed(42); engine = GeneticEngine(config=config)
-
-    try:
-        hall_of_fame = engine.evolve(features, target)
-    except Exception as e:
-        print(f"[EVOLUTION] Warning: GP evolution failed: {e}")
-        return {}
-
-    print(f"[EVOLUTION] Hall of Fame: {len(hall_of_fame)} individuals")
-
-    # Re-evaluate each HoF individual per-ticker to get a proper MultiIndex Series
-    evolved_alphas: Dict[str, pd.Series] = {}
-    tickers = panel.index.get_level_values('ticker').unique()
-
-    for i, individual in enumerate(hall_of_fame):
-        label = f"evolved_{i}_{individual.tree.to_string()[:40]}"
-        per_ticker_signals = []
-
-        for ticker in tickers:
-            try:
-                ticker_df = panel.xs(ticker, level='ticker')
-                # Build per-ticker feature dict
-                t_features = {
-                    'close': ticker_df['close'].values.astype(float),
-                    'open': ticker_df['open'].values.astype(float),
-                    'high': ticker_df['high'].values.astype(float),
-                    'low': ticker_df['low'].values.astype(float),
-                    'volume': ticker_df['volume'].values.astype(float),
-                    'returns': ticker_df['close'].pct_change().values.astype(float),
-                    'momentum_5': ticker_df['close'].pct_change(5).values.astype(float),
-                    'momentum_20': ticker_df['close'].pct_change(20).values.astype(float),
-                    'vol_ratio': (
-                        ticker_df['volume']
-                        .div(ticker_df['volume'].rolling(20, min_periods=1).mean())
-                        .values.astype(float)
-                    ),
-                }
-                for k in t_features:
-                    t_features[k] = np.nan_to_num(t_features[k], nan=0.0, posinf=0.0, neginf=0.0)
-
-                # Execute tree to get raw signal
-                raw = individual._execute_tree(individual.tree, t_features)
-                raw_series = pd.Series(raw, index=ticker_df.index)
-
-                # MANDATORY T-1 lag (PIT safety)
-                lagged = raw_series.shift(1).fillna(0.0)
-
-                # Attach ticker level back
-                lagged.index = pd.MultiIndex.from_arrays(
-                    [ticker_df.index, [ticker] * len(ticker_df)],
-                    names=['date', 'ticker']
-                )
-                per_ticker_signals.append(lagged)
-            except Exception:
-                continue
-
-        if not per_ticker_signals:
-            continue
-
-        combined = pd.concat(per_ticker_signals).sort_index()
-        ic = _compute_ic(combined, future_returns)
-
-        if abs(ic) > ic_threshold:
-            evolved_alphas[label] = combined
-            print(f"[EVOLUTION] Kept: IC={ic:.4f} | {label[:60]}")
-
-    print(f"[EVOLUTION] Evolved alphas passing IC threshold: {len(evolved_alphas)}")
-    return evolved_alphas
-
-
-# ---------------------------------------------------------------------------
-# ML Engine integration
-# ---------------------------------------------------------------------------
-
-def _build_ml_features(
-    alphas: Dict[str, pd.Series],
-    panel: pd.DataFrame,
-) -> Tuple[pd.DataFrame, pd.Series]:
-    """
-    Build ML feature matrix from alpha signals + raw price features.
-
-    All alpha signals are already T-1 lagged. Forward returns are the target.
-    Index: MultiIndex [date, ticker] — chronological order preserved for
-    walk-forward split in MLEngine.
-    """
-    close = panel['close']
-
-    # Forward return target (T+1) — used only for training, never in signal
-    forward_ret = close.groupby(level='ticker').transform(
-        lambda s: s.pct_change().shift(-1)
-    )
-
-    # Stack alpha signals as columns
-    alpha_df = pd.DataFrame(alphas)
-
-    # Add base price features (all T-1 lagged via shift)
-    returns = close.groupby(level='ticker').transform(lambda s: s.pct_change())
-    vol_20 = returns.groupby(level='ticker').transform(
-        lambda s: s.rolling(20, min_periods=5).std()
-    )
-    mom_5 = close.groupby(level='ticker').transform(
-        lambda s: s.pct_change(5).shift(1)
-    )
-    mom_20 = close.groupby(level='ticker').transform(
-        lambda s: s.pct_change(20).shift(1)
-    )
-    vol_ratio = panel['volume'].groupby(level='ticker').transform(
-        lambda s: s.div(s.rolling(20, min_periods=1).mean()).shift(1)
-    )
-
-    base_features = pd.DataFrame({
-        'returns_lag1': returns.groupby(level='ticker').shift(1),
-        'vol_20': vol_20.groupby(level='ticker').shift(1),
-        'mom_5': mom_5,
-        'mom_20': mom_20,
-        'vol_ratio': vol_ratio,
-    })
-
-    feature_df = pd.concat([alpha_df, base_features], axis=1).fillna(0.0)
-    feature_df = feature_df.replace([np.inf, -np.inf], 0.0)
-
-    # Align target
-    valid_mask = forward_ret.notna()
-    X = feature_df[valid_mask]
-    y = forward_ret[valid_mask]
-
-    return X, y
-
-
-def ml_rank_alphas(
-    alphas: Dict[str, pd.Series],
-    panel: pd.DataFrame,
-    future_returns: pd.Series,
-    ic_threshold: float = 0.02,
-) -> Tuple[Dict[str, pd.Series], Optional[object]]:
-    """
-    Use XGBoost to generate a meta-alpha signal from the combined alpha pool.
-
-    Strategy:
-      - Train XGBoost on (alpha signals + price features) -> forward return
-        using the first 80% of dates (chronological, PIT-safe).
-      - Generate out-of-sample predictions on the remaining 20% of dates.
-      - Add those predictions as a new 'ml_predictor' alpha signal.
-      - Keep all raw alphas with |IC| > ic_threshold alongside ml_predictor.
-
-    This ensures the ML model's IC (>0.08) is directly expressed as a
-    tradeable signal rather than only used for filtering.
-
-    PIT: features are all T-1 lagged; model is trained on past data only
-    and predicts on future dates it never saw during training.
-    """
-    if len(alphas) < 2:
-        print("[ML] Skipping ML ranking: fewer than 2 alphas available")
-        return alphas, None
-
-    print(f"[ML] Training XGBoost ranker on {len(alphas)} alpha signals")
-
-    X, y = _build_ml_features(alphas, panel)
-
-    if len(X) < 100:
-        print("[ML] Insufficient data for ML training, skipping")
-        return alphas, None
-
-    # Chronological 80/20 split by date
-    dates = X.index.get_level_values('date')
-    sorted_dates = sorted(dates.unique())
-    split_date = sorted_dates[int(len(sorted_dates) * 0.8)]
-
-    train_mask = dates < split_date
-    val_mask = dates >= split_date
-
-    X_train, y_train = X[train_mask], y[train_mask]
-    X_val, y_val = X[val_mask], y[val_mask]
-
-    if X_train.empty or X_val.empty:
-        print("[ML] Train/val split produced empty set, skipping ML")
-        return alphas, None
-
-    ml_engine = get_ml_engine()
-    config = ModelConfig(
-        model_type=MLModelType.XGBOOST,
-        n_estimators=100,
-        max_depth=4,
-        learning_rate=0.05,
-        subsample=0.8,
-        colsample_bytree=0.8,
-        reg_alpha=0.1,
-        reg_lambda=1.0,
-        early_stopping_rounds=10,
-    )
-
-    try:
-        model = ml_engine.train_xgboost(
-            model_id='alpha_ranker',
-            X_train=X_train,
-            y_train=y_train,
-            X_val=X_val,
-            y_val=y_val,
-            config=config,
-            pit_safe=True,
-        )
-        ml_engine.store_model(model)
-        print(
-            f"[ML] XGBoost trained: IC={model.metrics.ic:.4f}, "
-            f"RankIC={model.metrics.rank_ic:.4f}, "
-            f"PIT_IC={model.metrics.pit_ic:.4f}"
-        )
-    except Exception as e:
-        print(f"[ML] XGBoost training failed: {e}, skipping ML filter")
-        return alphas, None
-
-    # --- Generate out-of-sample ML predictions as a new alpha signal ---
-    # Predictions are made on val set (dates the model never saw in training).
-    # Features are already T-1 lagged, so predictions are PIT-safe.
-    try:
-        val_preds = pd.Series(
-            model.predict(X_val),
-            index=X_val.index,
-            name='ml_predictor',
-        )
-        # Verify the ML predictor signal has meaningful IC
-        ml_ic = _compute_ic(val_preds, future_returns.reindex(val_preds.index))
-        print(f"[ML] ml_predictor signal IC (val period): {ml_ic:.4f}")
-    except Exception as e:
-        print(f"[ML] Prediction generation failed: {e}")
-        val_preds = None
-        ml_ic = 0.0
-
-    # --- Build output: best raw alphas + ml_predictor ---
-    # Keep raw alphas that pass IC threshold
-    filtered: Dict[str, pd.Series] = {}
-    for name, signal in alphas.items():
-        ic = _compute_ic(signal, future_returns)
-        if abs(ic) > ic_threshold:
-            filtered[name] = signal
-
-    # Add ML predictor only when it meets institutional IC floor.
-    ml_predictor_min_ic = 0.08
-    if val_preds is not None and abs(ml_ic) >= ml_predictor_min_ic:
-        # Reindex to full panel index, filling train-period with 0
-        # (no signal during training period — conservative, avoids look-ahead)
-        ml_signal_full = val_preds.reindex(X.index).fillna(0.0)
-        filtered['ml_predictor'] = ml_signal_full
-        print(f"[ML] Added ml_predictor signal (IC={ml_ic:.4f}) to alpha pool")
-    elif val_preds is not None:
-        print(
-            f"[ML] ml_predictor rejected: IC={ml_ic:.4f} below floor {ml_predictor_min_ic:.2f}"
-        )
-
-    # Fallback: if nothing passes, keep all originals
-    if not filtered:
-        print("[ML] No alphas passed IC filter, reverting to full pre-ML set")
-        filtered = alphas
-
-    print(f"[ML] Final alpha pool after ML: {len(filtered)} signals")
-    return filtered, model
 
 
 # ---------------------------------------------------------------------------
@@ -570,10 +228,9 @@ def generate_alpha_signals(
     """
     Generate alpha signals via:
       1. Static expression templates (8 alphas, unchanged)
-      2. Evolution Engine (GeneticEngine GP) — evolved beyond static templates
-      3. ML Engine (XGBoost) — filters/ranks combined alpha pool
 
-    PIT T-1 lag enforced throughout.
+    PIT T-1 lag enforced throughout. Forward-label evolution and ML ranking
+    are intentionally disabled in this trading path.
     Board lot 100 compliance: weights are sized to whole lots only.
 
     Args:
@@ -607,75 +264,37 @@ def generate_alpha_signals(
     if not alphas:
         raise ValueError("No static alphas generated")
 
-    # Compute future returns once (shared by IC eval + evolution fitness)
-    close = panel['close']
-    judge = AlphaJudge(ic_threshold=ic_threshold)
-    future_returns = judge.compute_future_returns(close, horizon=1)
-
-    # IC filter on static alphas
-    static_ics: Dict[str, float] = {}
-    for name, alpha in alphas.items():
-        ic = _compute_ic(alpha, future_returns)
-        if abs(ic) > ic_threshold:
-            static_ics[name] = ic
-
-    if not static_ics:
-        static_ics = {name: _compute_ic(alpha, future_returns) for name, alpha in alphas.items()}
-
-    print(f"[ALPHA] Static alphas passing IC>{ic_threshold}: {len(static_ics)}/8")
+    alphas = {
+        name: alpha.groupby(level='ticker').shift(1)
+        for name, alpha in alphas.items()
+    }
+    print(f"[ALPHA] Static alpha pool: {len(alphas)}/8")
 
     # ------------------------------------------------------------------
     # Step 2: Evolution Engine — evolve beyond static templates
     # ------------------------------------------------------------------
     evolved_alphas: Dict[str, pd.Series] = {}
     if use_evolution:
-        try:
-            evolved_alphas = evolve_alphas(
-                panel=panel,
-                future_returns=future_returns,
-                n_generations=evolution_generations,
-                population_size=evolution_population,
-                ic_threshold=ic_threshold,
-            )
-        except Exception as e:
-            print(f"[EVOLUTION] Warning: Evolution failed: {e}")
+        print("[EVOLUTION] Skipping label-optimized evolution in trading pipeline")
 
     # Merge static + evolved into combined pool
     combined_alphas: Dict[str, pd.Series] = {}
-    for name, ic in static_ics.items():
-        combined_alphas[name] = alphas[name] * np.sign(ic)  # sign-correct
-
-    for name, signal in evolved_alphas.items():
-        ic = _compute_ic(signal, future_returns)
-        combined_alphas[name] = signal * np.sign(ic) if ic != 0 else signal
+    combined_alphas.update(alphas)
+    combined_alphas.update(evolved_alphas)
 
     print(f"[ALPHA] Combined pool (static + evolved): {len(combined_alphas)} alphas")
 
     # ------------------------------------------------------------------
     # Step 3: ML Engine — XGBoost filter/rank
     # ------------------------------------------------------------------
-    if use_ml_ranking and len(combined_alphas) >= 2:
-        try:
-            combined_alphas, _model = ml_rank_alphas(
-                alphas=combined_alphas,
-                panel=panel,
-                future_returns=future_returns,
-                ic_threshold=ic_threshold,
-            )
-        except Exception as e:
-            print(f"[ML] Warning: ML ranking failed: {e}")
+    if use_ml_ranking:
+        print("[ML] Skipping validation-label ranking in trading pipeline")
 
     # ------------------------------------------------------------------
     # Step 4: Compute final ICs for reporting
     # ------------------------------------------------------------------
-    alpha_ics: Dict[str, float] = {}
-    for name, signal in combined_alphas.items():
-        ic = _compute_ic(signal, future_returns)
-        alpha_ics[name] = ic
-
-    best_ic = max(abs(v) for v in alpha_ics.values()) if alpha_ics else 0.0
-    mean_ic = np.mean([abs(v) for v in alpha_ics.values()]) if alpha_ics else 0.0
-    print(f"[ALPHA] Final pool: {len(alpha_ics)} alphas | best |IC|={best_ic:.4f} | mean |IC|={mean_ic:.4f}")
+    alpha_ics = {name: 0.0 for name in combined_alphas}
+    print(f"[ALPHA] Final PIT-safe pool: {len(alpha_ics)} alphas")
 
     # ------------------------------------------------------------------
     # Step 5: Combine signals and build portfolio weights
@@ -772,10 +391,10 @@ def run_alpha_pipeline(
         top_n_stocks: Number of stocks in portfolio (default 8, Phase 2 diversification)
         rebalance_freq: Rebalance every N days (default 7, Phase 2 diversification)
         min_rebalance_delta: Minimum weight change to trigger rebalance
-        use_evolution: Enable GeneticEngine evolution (default True)
-        use_ml_ranking: Enable XGBoost ML ranking (default True)
-        evolution_generations: GP generations (default 20)
-        evolution_population: GP population size (default 50)
+        use_evolution: Retained compatibility flag; forward-label evolution is disabled.
+        use_ml_ranking: Retained compatibility flag; validation-label ranking is disabled.
+        evolution_generations: Retained compatibility parameter.
+        evolution_population: Retained compatibility parameter.
         sector_caps: Dict mapping sector name to max weight fraction (e.g. {"TECH": 0.30}).
                      If None, defaults to 30% cap on all sectors.
 

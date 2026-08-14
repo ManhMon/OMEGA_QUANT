@@ -1,0 +1,29 @@
+1352:         _orig_gen = globals().get("_generate_alternative_features")
+1353: 
+1354:         def _noop_alt(df_in):
+1355:             return df_in
+1356: 
+1357:         globals()["_generate_alternative_features"] = _noop_alt
+1358: 
+1359:     df_prepared = prepare_features(df)
+1360: 
+1361:     if args.no_alt_features and _orig_gen is not None:
+1362:         globals()["_generate_alternative_features"] = _orig_gen
+1363: 
+1364:     logger.info(f"Prepared data: {len(df_prepared)} rows after lag/dropna")
+1365: 
+1366:     # Log available alternative feature columns
+1367:     available_alt = [c for c in ALTERNATIVE_FEATURE_COLUMNS if c in df_prepared.columns]
+1368:     logger.info(f"Alternative features available: {len(available_alt)} / {len(ALTERNATIVE_FEATURE_COLUMNS)}")
+1369: 
+1370:     # Step 3: Walk-forward split (3-way)
+1371:     train_df, val_df, test_df = walk_forward_split(
+1372:         df_prepared,
+1373:         horizon=TARGET_HORIZON,
+1374:         regime=args.regime,
+1375:         start_date=args.start_date,
+1376:         end_date=args.end_date
+1377:     )
+1378: 
+1379:     # Step 3b: Build orthogonalization baseline set (if enabled)
+1380:     ortho_baseline_set = None

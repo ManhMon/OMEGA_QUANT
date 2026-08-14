@@ -23,7 +23,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -248,22 +248,24 @@ def blend_signals(
 
     # Build PIT timestamps for SentimentAlphaEngine._validate_pit
     sentiment_date = datetime.strptime(sentiment_date_str, "%Y-%m-%d")
-    as_of = sentiment_date.replace(hour=16, minute=0)
+    target_dt = datetime.strptime(target_date, "%Y-%m-%d").replace(
+        hour=9, minute=0, tzinfo=timezone.utc,
+    )
     generated_at_str = sentiment_data.get("generated_at", "")
     if generated_at_str:
         available_at = datetime.fromisoformat(generated_at_str)
-        if available_at.tzinfo is not None:
-            available_at = available_at.replace(tzinfo=None)
+        if available_at.tzinfo is None:
+            available_at = available_at.replace(tzinfo=timezone.utc)
+        else:
+            available_at = available_at.astimezone(timezone.utc)
     else:
-        available_at = sentiment_date.replace(hour=18, minute=0)
-
-    target_dt = datetime.strptime(target_date, "%Y-%m-%d").replace(hour=9, minute=0)
+        available_at = sentiment_date.replace(hour=18, minute=0, tzinfo=timezone.utc)
 
     engine = SentimentAlphaEngine(sentiment_scale=sentiment_scale)
     combined = engine.combine_sentiment_alpha(
         base_signals=base_signals,
         sentiment_scores=sentiment_series,
-        as_of=as_of,
+        as_of=target_dt,
         available_at=available_at,
         timestamp=target_dt,
     )

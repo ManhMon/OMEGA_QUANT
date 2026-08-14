@@ -23,6 +23,25 @@ def test_main_has_zero_lesson_artifact_access(monkeypatch):
     assert not hasattr(sod_gate_enforcer, "extract_lessons")
 
 
+def test_malformed_gate_json_blocks_compliance(monkeypatch):
+    monkeypatch.setattr(sod_gate_enforcer, "validate_task_graph", lambda: (True, "ok"))
+    monkeypatch.setattr(sod_gate_enforcer, "load_gates", lambda: None)
+
+    assert not sod_gate_enforcer.check_sod_compliance()
+
+
+@pytest.mark.parametrize("member", [None, [], 1, "gate"])
+def test_dict_shaped_gates_reject_non_object_members(monkeypatch, tmp_path, member):
+    gates_path = tmp_path / "phase_gates.json"
+    gates_path.write_text(__import__("json").dumps({"VALID": {"phase_name": "VALID"}, "INVALID": member}), encoding="utf-8")
+    monkeypatch.setattr(sod_gate_enforcer, "GATES_FILE", gates_path)
+
+    with pytest.raises(SystemExit) as exc_info:
+        sod_gate_enforcer.load_gates()
+
+    assert exc_info.value.code == 1
+
+
 def test_enforcer_accepts_current_reaudit_for_historic_gate():
     valid, message = sod_gate_enforcer.check_report_evidence_wording(
         "ALPHA_WEAKNESS_DIAGNOSTICS_20260614",
@@ -95,3 +114,68 @@ def test_enforcer_passes_explicit_resolved_date(monkeypatch, tmp_path):
     )
     assert valid
     assert captured["resolved_gate_date"].isoformat() == "2026-07-24"
+
+
+def test_role_26_is_valid_for_plan_gate_only():
+    role_specs = {
+        26: {
+            "name": "planning-architect",
+            "tier": 3,
+            "platform": "Codex",
+            "sod_boundary": "planning-only, non-audit, no production code",
+        }
+    }
+
+    assert sod_gate_enforcer.validate_l2_role(
+        26, "planning-architect", role_specs, "macro_micro_data_v8_detailed_plan"
+    ) == (True, "")
+    valid, message = sod_gate_enforcer.validate_l2_role(
+        26, "planning-architect", role_specs, "macro_micro_data_v8_implementation"
+    )
+    assert not valid
+    assert message == "l2_role_id must be 6-16, got: 26"
+
+
+@pytest.mark.parametrize(
+    ("role_name", "spec_update"),
+    [
+        (None, {}),
+        ("wrong-role", {}),
+        ("planning-architect", {"name": "wrong-role"}),
+        ("planning-architect", {"sod_boundary": "planning-only"}),
+        ("planning-architect", {"sod_boundary": "planning-only, non-audit"}),
+        ("planning-architect", {"sod_boundary": ""}),
+        ("planning-architect", {"sod_boundary": "  "}),
+        ("planning-architect", {"sod_boundary": True}),
+        ("planning-architect", {"tier": 2}),
+        ("planning-architect", {"platform": "OpenCode"}),
+    ],
+)
+def test_role_26_plan_gate_requires_exact_identity_and_boundary(role_name, spec_update):
+    spec = {
+        "name": "planning-architect",
+        "tier": 3,
+        "platform": "Codex",
+        "sod_boundary": "planning-only, non-audit, no production code",
+    }
+    spec.update(spec_update)
+
+    valid, message = sod_gate_enforcer.validate_l2_role(
+        26, role_name, {26: spec}, "macro_micro_data_v8_detailed_plan"
+    )
+
+    assert not valid
+    assert message == (
+        "l2_role_id 26 plan exception requires planning-architect, tier=3, platform=Codex, and sod_boundary"
+    )
+
+
+def test_regular_l2_role_allows_missing_name_for_grandfathered_gate():
+    valid, message = sod_gate_enforcer.validate_l2_role(
+        6,
+        None,
+        {6: {"name": "system-architect", "tier": 2, "platform": "OpenCode"}},
+    )
+
+    assert valid
+    assert message == ""

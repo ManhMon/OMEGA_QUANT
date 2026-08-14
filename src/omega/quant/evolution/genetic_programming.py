@@ -22,7 +22,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
-from scipy.stats import rankdata, spearmanr
+from scipy.stats import rankdata
+
+from omega.quant.evolution.alpha_to_execution_bridge import CANONICAL_METRIC_KEY
 
 try:
     import bottleneck as bn
@@ -75,13 +77,18 @@ def _rank_transform(x: np.ndarray) -> np.ndarray:
     return ranks
 
 
-def _ts_rank(x: np.ndarray, window: int = 10) -> np.ndarray:
-    """Time-series rank within rolling window."""
+def _ts_rank(x: np.ndarray, window: int = 5) -> np.ndarray:
+    """Rolling rank percentile (vectorized, no pandas rolling apply)."""
     if len(x) < window:
-        return np.zeros_like(x)
-    return pd.Series(x).rolling(window).apply(
-        lambda w: pd.Series(w).rank(pct=True).iloc[-1] if len(w) == window else np.nan
-    ).fillna(0).values
+        return np.zeros_like(x, dtype=float)
+    windows = np.stack([x[k:len(x) - window + 1 + k] for k in range(window)])
+    target = windows[-1]
+    ranks = (1.0 + np.sum(windows < target, axis=0) +
+             0.5 * (np.sum(windows == target, axis=0) - 1)) / window
+    valid = ~np.any(np.isnan(windows), axis=0)
+    result = np.zeros(len(x), dtype=float)
+    result[window - 1:] = np.where(valid, ranks, 0.0)
+    return result
 
 
 def _ts_std(x: np.ndarray, window: int = 10) -> np.ndarray:
@@ -135,13 +142,18 @@ def _precompute_target_ranks(target: np.ndarray) -> tuple[np.ndarray, np.ndarray
 
 
 def _decay_linear(x: np.ndarray, window: int = 10) -> np.ndarray:
-    """Linear decay weighted average."""
+    """Linear decay weighted average (vectorized, no pandas rolling apply)."""
     if len(x) < window:
-        return np.zeros_like(x)
-    weights = np.arange(1, window + 1)
-    return pd.Series(x).rolling(window).apply(
-        lambda w: np.dot(w, weights) / weights.sum() if len(w) == window else np.nan
-    ).fillna(0).values
+        return np.zeros_like(x, dtype=float)
+    weights = np.arange(1, window + 1, dtype=float)
+    x_clean = np.where(np.isnan(x), 0.0, x)
+    conv = np.convolve(x_clean, weights[::-1], mode='full')[:len(x)]
+    nan_counts = np.concatenate(([0], np.cumsum(np.isnan(x), dtype=int)))
+    valid = np.zeros(len(x), dtype=bool)
+    valid[window - 1:] = (
+        nan_counts[window:] - nan_counts[:-window] == 0
+    )
+    return np.where(valid, conv / weights.sum(), 0.0)
 
 
 # =============================================================================
@@ -232,6 +244,7 @@ class GPIndividual:
     diversity_penalty: float = 0.0
     transaction_cost_penalty: float = 0.0
     turnover_rate: float = 0.0
+    signal_pnl_score: float = 0.0
     
     def evaluate(
         self,
@@ -298,6 +311,7 @@ class GPIndividual:
                 # Scale to IC units (typical IC ~0.01-0.10)
                 # High turnover (e.g., 50% = 0.5 trades/obs) → penalty ~0.125
                 self.transaction_cost_penalty = 0.0025 * self.turnover_rate
+            self.signal_pnl_score = self.ic_score - self.transaction_cost_penalty
             
             # Progressive complexity penalty
             depth = self.tree.depth()
@@ -316,9 +330,10 @@ class GPIndividual:
                         hof_alpha = self._execute_tree(hof_individual.tree, features)
                         hof_alpha = np.nan_to_num(hof_alpha, nan=0.0, posinf=0.0, neginf=0.0)
                         
-                        corr_df = pd.DataFrame({'a': alpha_series, 'b': hof_alpha}).dropna()
-                        if len(corr_df) > 100:
-                            corr, _ = spearmanr(corr_df['a'], corr_df['b'])
+                        mask = ~(np.isnan(alpha_series) | np.isnan(hof_alpha))
+                        if mask.sum() > 100:
+                            a_clean, b_clean = alpha_series[mask], hof_alpha[mask]
+                            corr = np.corrcoef(rankdata(a_clean), rankdata(b_clean))[0, 1]
                             if not np.isnan(corr) and abs(corr) > config.diversity_threshold:
                                 self.diversity_penalty = max(self.diversity_penalty, 0.02)
                     except Exception as e:

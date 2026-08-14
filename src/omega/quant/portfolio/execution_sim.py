@@ -13,15 +13,187 @@ Reference: Almgren-Chriss (1999), VN broker fee schedule (SSI/VPS 2024).
 """
 from __future__ import annotations
 from dataclasses import dataclass
+from datetime import date
 import numpy as np
 import pandas as pd
+
+from omega.data.calendar import get_futures_expiry_date
+from omega.quant.regime.hmm_model import GaussianHMM4State, HMMModelConfig
+from omega.quant.portfolio.barra_factor_model import build_barra_exposure_matrix
+from omega.quant.portfolio.hrp_optimizer import HRPOptimizationConfig, optimize_hrp_barra_long_short
 
 __all__ = [
     "VNCostModel", "apply_realistic_tc", "DEFAULT_VN_COSTS",
     "adv_tiered_half_spread", "adv_tiered_half_spread_vectorized",
     "clamp_half_spread", "ADV_TIERED_SPREAD_TIERS",
     "HALF_SPREAD_BPS_FLOOR", "HALF_SPREAD_BPS_CEIL",
+    "InsolvencyError", "resolve_margin_rates", "estimate_futures_trade_cost",
+    "run_joint_ledger_step",
+    "build_hrp_barra_portfolio",
+    "compute_hmm_regimes_t1",
 ]
+
+
+def compute_hmm_regimes_t1(
+    market_features: pd.DataFrame,
+    config: HMMModelConfig | None = None,
+) -> pd.Series:
+    """Fit 4-state Gaussian regime model, return PIT-safe locked regimes.
+
+    Output at bar T is inferred from features available at T-1.
+    """
+    model = GaussianHMM4State(config=config)
+    return model.fit_predict(market_features)
+
+
+def build_hrp_barra_portfolio(
+    alpha_scores: pd.Series,
+    returns_window: pd.DataFrame,
+    market_data: pd.DataFrame,
+    as_of_date: pd.Timestamp | str,
+    config: HRPOptimizationConfig | None = None,
+) -> tuple[pd.Series, dict[str, object]]:
+    snapshot_date = pd.Timestamp(as_of_date) - pd.Timedelta(days=1)
+    exposures = build_barra_exposure_matrix(market_data=market_data, as_of_date=as_of_date)
+    weights, diagnostics = optimize_hrp_barra_long_short(
+        alpha_scores=alpha_scores,
+        returns_window=returns_window.loc[returns_window.index <= snapshot_date],
+        factor_exposures=exposures,
+        config=config,
+    )
+    diagnostics["exposures"] = exposures.reindex(weights.index).fillna(0.0)
+    return weights, diagnostics
+
+
+
+class InsolvencyError(RuntimeError):
+    pass
+
+
+MARGIN_SCHEDULE = (("1900-01-01", {"initial": 0.13, "maintenance": 0.10}),)
+
+
+def resolve_margin_rates(trade_date: pd.Timestamp | date, schedule=MARGIN_SCHEDULE) -> dict[str, float]:
+    resolved = schedule[0][1]
+    trade_day = pd.Timestamp(trade_date).date()
+    for effective_date, rates in schedule:
+        if pd.Timestamp(effective_date).date() <= trade_day:
+            resolved = rates
+        else:
+            break
+    return {"initial": float(resolved["initial"]), "maintenance": float(resolved["maintenance"])}
+
+
+def estimate_futures_trade_cost(contracts: float, price: float, contract_multiplier: float, per_side_bps: float = 1.0) -> float:
+    return abs(float(contracts)) * float(price) * float(contract_multiplier) * (float(per_side_bps) / 10000.0)
+
+
+def run_joint_ledger_step(
+    *,
+    nav_t_minus_1: float,
+    realized_stock_weights_t_minus_1: np.ndarray,
+    stock_returns_t: np.ndarray,
+    cash_free_t_minus_1: float,
+    margin_locked_t_minus_1: float,
+    futures_vm_receivable_t_minus_1: float,
+    futures_contracts_t_minus_1: float = 0.0,
+    futures_close_t_minus_1: float = 0.0,
+    futures_close_t: float = 0.0,
+    contract_multiplier: float = 1.0,
+    trade_date: pd.Timestamp | date | None = None,
+    target_futures_contracts: float | None = None,
+    stock_trade_cost_t: float = 0.0,
+    futures_trade_cost_t: float = 0.0,
+    stock_liquidation_order: list[tuple[str, float, float]] | None = None,
+    contract_round_lot: int = 1,
+) -> dict[str, float | bool | str | date]:
+    def _round_contracts(value: float) -> float:
+        if contract_round_lot > 1:
+            return float(np.trunc(value / contract_round_lot) * contract_round_lot)
+        return float(np.trunc(value)) if float(value).is_integer() is False and contract_round_lot == 1 else float(value)
+
+    def _required_cash_for_target(contracts: float) -> float:
+        target_margin = abs(float(contracts)) * futures_close_t * contract_multiplier * rates["initial"]
+        incremental_initial_margin = max(0.0, target_margin - float(margin_locked_t_minus_1))
+        return float(incremental_initial_margin + futures_trade_cost_t)
+
+    stock_pnl_t = float(nav_t_minus_1 * np.dot(realized_stock_weights_t_minus_1, stock_returns_t))
+    futures_pnl_t = float(
+        futures_contracts_t_minus_1 * contract_multiplier * (futures_close_t - futures_close_t_minus_1)
+    )
+    cash_after_mtm = float(cash_free_t_minus_1 + stock_pnl_t + futures_pnl_t)
+    nav_before_trades = float(
+        nav_t_minus_1 + stock_pnl_t + futures_pnl_t
+    )
+    rates = resolve_margin_rates(trade_date or pd.Timestamp("1900-01-01"))
+    futures_trade = float(target_futures_contracts if target_futures_contracts is not None else futures_contracts_t_minus_1)
+    futures_trade = _round_contracts(futures_trade)
+    incremental_contracts = futures_trade - float(futures_contracts_t_minus_1)
+    forced_futures_contracts = 0.0
+    forced_stock_sales = 0.0
+    insolvency = False
+    if cash_after_mtm < 0:
+        deficit = -cash_after_mtm
+        per_contract_margin = max(futures_close_t * contract_multiplier * rates["initial"], 1e-9)
+        reducible_contracts = min(abs(futures_contracts_t_minus_1), np.ceil(deficit / per_contract_margin))
+        forced_futures_contracts = float(reducible_contracts)
+        cash_after_mtm += reducible_contracts * per_contract_margin
+        futures_trade = float(np.sign(futures_contracts_t_minus_1) * (abs(futures_contracts_t_minus_1) - reducible_contracts))
+        if cash_after_mtm < 0 and stock_liquidation_order:
+            for _, notional, _ in stock_liquidation_order:
+                if cash_after_mtm >= 0:
+                    break
+                liquidation_value = float(notional)
+                forced_stock_sales += liquidation_value
+                cash_after_mtm += liquidation_value
+        if cash_after_mtm < 0:
+            insolvency = True
+            raise InsolvencyError("Forced liquidation exhausted assets")
+    if target_futures_contracts is not None:
+        while True:
+            required_cash = _required_cash_for_target(futures_trade)
+            if cash_after_mtm >= required_cash or futures_trade == float(futures_contracts_t_minus_1):
+                break
+            next_abs_trade = max(0.0, abs(futures_trade) - max(contract_round_lot, 1))
+            next_trade = _round_contracts(np.sign(futures_trade) * next_abs_trade)
+            if abs(next_trade) >= abs(futures_trade):
+                futures_trade = float(futures_contracts_t_minus_1)
+                break
+            futures_trade = float(next_trade)
+    incremental_contracts = futures_trade - float(futures_contracts_t_minus_1)
+    target_margin = abs(futures_trade) * futures_close_t * contract_multiplier * rates["initial"]
+    incremental_initial_margin = max(0.0, target_margin - float(margin_locked_t_minus_1))
+    required_cash = float(incremental_initial_margin + futures_trade_cost_t)
+    margin_locked_t = abs(futures_trade) * futures_close_t * contract_multiplier * rates["initial"]
+    futures_vm_receivable_t = 0.0
+    stock_notional_t_minus_1 = float(nav_t_minus_1 - cash_free_t_minus_1 - margin_locked_t_minus_1 - futures_vm_receivable_t_minus_1)
+    stock_notional_t = float(stock_notional_t_minus_1 + stock_pnl_t - forced_stock_sales)
+    nav_after_trades = float(nav_before_trades - stock_trade_cost_t - futures_trade_cost_t)
+    cash_free_t = float(nav_after_trades - stock_notional_t - margin_locked_t - futures_vm_receivable_t)
+    margin_equity_t = float(margin_locked_t + futures_vm_receivable_t)
+    bucket_sum_t = float(stock_notional_t + cash_free_t + margin_equity_t)
+    expiry_date = get_futures_expiry_date((trade_date or pd.Timestamp("1900-01-01")).year, (trade_date or pd.Timestamp("1900-01-01")).month)
+    return {
+        "stock_pnl_t": stock_pnl_t,
+        "futures_pnl_t": futures_pnl_t,
+        "nav_t_before_trades": nav_before_trades,
+        "nav_t_after_trades": nav_after_trades,
+        "stock_notional_t": stock_notional_t,
+        "cash_free_t": cash_free_t,
+        "margin_locked_t": float(margin_locked_t),
+        "futures_vm_receivable_t": futures_vm_receivable_t,
+        "margin_equity_t": margin_equity_t,
+        "bucket_sum_t": bucket_sum_t,
+        "required_cash_t": required_cash,
+        "forced_futures_contracts": forced_futures_contracts,
+        "forced_stock_sales": forced_stock_sales,
+        "maintenance_margin_rate": rates["maintenance"],
+        "initial_margin_rate": rates["initial"],
+        "trade_date": pd.Timestamp(trade_date).date() if trade_date is not None else None,
+        "expiry_date": expiry_date,
+        "expiry_day": bool(trade_date is not None and pd.Timestamp(trade_date).date() == expiry_date),
+        "insolvency": insolvency,
+    }
 
 
 @dataclass
@@ -135,6 +307,10 @@ def apply_realistic_tc(
     use_adv_tiered_spread: bool = False,
     active_dates_mask: np.ndarray | None = None,
     dynamic_capital_tracking: bool = True,
+    futures_contracts: np.ndarray | None = None,
+    futures_prices: np.ndarray | None = None,
+    contract_multiplier: float = 1.0,
+    hedge_enabled: bool = True,
 ) -> tuple[pd.DataFrame, np.ndarray, dict]:
     """Subtract realistic VN costs from gross returns bar-by-bar.
 
@@ -226,27 +402,18 @@ def apply_realistic_tc(
             spread_t = turnover * cost_model.half_spread_bps
         bar_spread[t] = spread_t
 
-        # Slippage: participation-rate impact (linear or sub-linear), only if ADV provided
+        # Slippage: participation-rate impact using the T-1 ADV snapshot.
         slippage_t = 0.0
         if daily_adv is not None:
             adv_row = daily_adv[t]  # VND
-            # Trade VND value per name = |delta_w| * running_capital (if tracking NAV)
             trade_capital = running_capital if dynamic_capital_tracking else portfolio_capital_vnd
             trade_vnd = np.abs(delta_w) * trade_capital
-            with np.errstate(divide='ignore', invalid='ignore'):
-                participation = np.where(adv_row > 0, trade_vnd / adv_row, 0)
-            # Phase 11: optional nonlinear (sub-linear) Almgren-Chriss-style
-            # impact. For participation p < 1 (always true in practice),
-            # p^exp with exp < 1 gives p^exp > p (AMPLIFIES cost per unit).
-            # To preserve cost level at a reference participation p_ref,
-            # we apply calibration: effective_k = k * p_ref^(1-exp).
-            # This ensures cost(p_ref) is identical between linear and
-            # nonlinear regimes. Above p_ref, nonlinear is LESS punishing;
-            # below p_ref, nonlinear is MORE punishing (correct AC behavior).
+            with np.errstate(divide="ignore", invalid="ignore"):
+                participation = np.where(adv_row > 0, trade_vnd / adv_row, 0.0)
             if cost_model.slippage_nonlinear_exp != 1.0:
                 p_ref = cost_model.slippage_k_ref_participation
                 calibration = p_ref ** (1.0 - cost_model.slippage_nonlinear_exp)
-                with np.errstate(invalid='ignore'):
+                with np.errstate(invalid="ignore"):
                     participation_eff = np.where(
                         participation > 0,
                         np.power(participation, cost_model.slippage_nonlinear_exp) * calibration,
@@ -255,7 +422,6 @@ def apply_realistic_tc(
             else:
                 participation_eff = participation
             slippage_per_name = cost_model.slippage_k * participation_eff
-            # Slippage cost = participation_impact * |delta_w| (proportional to trade size)
             slippage_t = float(np.sum(slippage_per_name * np.abs(delta_w)))
             bar_slippage[t] = slippage_t
 
@@ -342,4 +508,12 @@ def apply_realistic_tc(
         "n_active_bars": n_active,
         "bar_costs": bar_costs.copy(),
     }
+    if futures_contracts is not None and futures_prices is not None and len(futures_prices) == T:
+        futures_contracts = np.asarray(futures_contracts, dtype=float)
+        futures_prices = np.asarray(futures_prices, dtype=float)
+        futures_pnl = np.zeros(T, dtype=float)
+        if hedge_enabled and T > 1:
+            futures_pnl[1:] = futures_contracts[:-1] * contract_multiplier * np.diff(futures_prices)
+        breakdown["futures_pnl"] = futures_pnl
+        breakdown["hedge_enabled"] = bool(hedge_enabled)
     return daily_weights, net_returns, breakdown

@@ -1193,6 +1193,26 @@ def _numba_batch_daily_ics(
     return out
 
 
+def _align_fold_liquidity_mask(
+    liquidity_mask: np.ndarray,
+    fold_mask: np.ndarray,
+    row_count: int,
+    full_liquidity_mask: np.ndarray | None = None,
+) -> np.ndarray:
+    mask_arr = np.asarray(liquidity_mask, dtype=bool).ravel()
+    if mask_arr.size == row_count:
+        return mask_arr
+    if mask_arr.size == fold_mask.size:
+        return mask_arr[np.asarray(fold_mask, dtype=bool)]
+    if full_liquidity_mask is not None:
+        full_mask_arr = np.asarray(full_liquidity_mask, dtype=bool).ravel()
+        if full_mask_arr.size == fold_mask.size:
+            return full_mask_arr[np.asarray(fold_mask, dtype=bool)]
+    raise ValueError(
+        f"Liquidity mask shape mismatch: got {mask_arr.size}, expected {row_count} or {fold_mask.size}"
+    )
+
+
 def _batch_fold_ir_scores(
     alpha_matrix: np.ndarray,
     target: np.ndarray,
@@ -1230,7 +1250,7 @@ def _batch_fold_ir_scores(
                 alpha_fold = ge._batch_neutralize_cross_section(
                     alpha_fold,
                     np.asarray(fold_features["__date__"]),
-                    fold_features[ge.NEUTRALIZATION_CACHE_KEY],
+                    fold_features.get(ge.NEUTRALIZATION_CACHE_KEY),
                 )
             target_fold = _neutralize_target_once(
                 target_fold,
@@ -1240,11 +1260,17 @@ def _batch_fold_ir_scores(
             )
         # Vectorized eval_mask_matrix computation using numpy broadcasting
         alpha_finite_mask = np.isfinite(alpha_fold)
-        target_finite_mask = np.isfinite(target_fold)
+        target_finite_mask = np.isfinite(target_fold).ravel()
         eval_mask_matrix = alpha_finite_mask & target_finite_mask[:, np.newaxis]
         liquidity_mask = fold_features.get('__liquidity_mask__')
         if liquidity_mask is not None:
-            eval_mask_matrix &= np.asarray(liquidity_mask, dtype=bool)[:, np.newaxis]
+            aligned_mask = _align_fold_liquidity_mask(
+                liquidity_mask,
+                fold_mask,
+                alpha_fold.shape[0],
+                features.get('__liquidity_mask__'),
+            )
+            eval_mask_matrix &= aligned_mask[:, np.newaxis]
         
         date_flat_indices, date_group_offsets = _ensure_date_group_index(fold_features)
         

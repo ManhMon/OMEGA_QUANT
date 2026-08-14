@@ -788,6 +788,16 @@ def test_hybrid_no_outer_test_label_leakage():
                 f"Inner train and val overlap: {overlap_tv}"
             )
 
+            if inner_train_set:
+                assert max(inner_train_set) + 5 < min(inner_val_set), (
+                    "Expected 5-session purge/embargo gap between inner train and val"
+                )
+
+        if set(outer_split["train"]) and set(outer_split["test"]):
+            assert max(outer_split["train"]) + 5 < min(outer_split["test"]), (
+                "Expected 5-session purge/embargo gap between outer train and test"
+            )
+
 
 def test_hybrid_inner_only_validation():
     """Test that HybridAlphaMiner scores candidates using only inner validation

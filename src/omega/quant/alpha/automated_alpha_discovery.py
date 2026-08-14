@@ -22,16 +22,82 @@ COMPLIANCE:
 """
 from __future__ import annotations
 
+import ast
 import logging
 import hashlib
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from enum import StrEnum
+from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 
 logger = logging.getLogger(__name__)
+
+
+class UnsafeExpressionError(ValueError):
+    """Raised when an alpha expression violates the security contract."""
+
+
+class CandidateStatus(StrEnum):
+    ACTIVE = "active"
+    REJECTED_UNSAFE_EXPRESSION = "rejected_unsafe_expression"
+
+
+_ALLOWED_AST_NODE_TYPES = {
+    ast.Expression,
+    ast.BinOp,
+    ast.UnaryOp,
+    ast.Call,
+    ast.Name,
+    ast.Constant,
+    ast.Load,
+    ast.Compare,
+    ast.IfExp,
+    ast.Eq,
+    ast.NotEq,
+    ast.Lt,
+    ast.LtE,
+    ast.Gt,
+    ast.GtE,
+    ast.And,
+    ast.Or,
+    ast.Not,
+    ast.BoolOp,
+    ast.Add,
+    ast.Sub,
+    ast.Mult,
+    ast.Div,
+    ast.USub,
+    ast.UAdd,
+}
+_LEGACY_NUM = getattr(ast, "Num", None)
+if _LEGACY_NUM is not None:
+    _ALLOWED_AST_NODE_TYPES.add(_LEGACY_NUM)
+
+_ALLOWED_FUNCTION_ARITY = {
+    "abs": 1,
+    "neg": 1,
+    "rank": 1,
+    "sign": 1,
+    "log": 1,
+    "add": 2,
+    "sub": 2,
+    "mul": 2,
+    "div": 2,
+    "ts_mean": 2,
+    "ts_std": 2,
+    "ts_min": 2,
+    "ts_max": 2,
+    "ts_delta": 2,
+    "ts_delay": 2,
+    "where": 3,
+    "correlation": 3,
+}
+_EXPR_MAX_DEPTH = 10
+_EXPR_MAX_NODES = 50
+_EXPR_LITERAL_BOUND = 1e6
 
 # ---------------------------------------------------------------------------
 # GATE: AUTOMATED_ALPHA_DISCOVERY_DYNAMIC_20260615
@@ -198,6 +264,7 @@ class AlphaCandidate:
     train_icir: float = 0.0
     corr_cluster_id: int = -1
     selected: bool = False
+    status: str = CandidateStatus.ACTIVE
     metadata: Dict = field(default_factory=dict)
 
 
@@ -331,6 +398,14 @@ class AutomatedAlphaDiscoveryFactory:
         for name, expr_str in self._templates[:self.candidate_cap]:
             try:
                 signal = self._evaluate_expression(df, expr_str)
+            except UnsafeExpressionError as exc:
+                candidates.append(AlphaCandidate(
+                    name=f"auto_{name}",
+                    expression_id=hashlib.md5(f"{name}:{expr_str}".encode()).hexdigest()[:12],
+                    status=CandidateStatus.REJECTED_UNSAFE_EXPRESSION,
+                    metadata={"expression": expr_str, "template": name, "rejection_reason": str(exc)},
+                ))
+                continue
             except Exception as exc:
                 logger.debug(f"Expression '{name}' failed: {exc}")
                 continue
@@ -383,6 +458,8 @@ class AutomatedAlphaDiscoveryFactory:
 
         passed: List[AlphaCandidate] = []
         for candidate in candidates:
+            if candidate.status != CandidateStatus.ACTIVE:
+                continue
             try:
                 signal = self._evaluate_expression(
                     df, candidate.metadata.get("expression", "")
@@ -446,6 +523,8 @@ class AutomatedAlphaDiscoveryFactory:
         # Build signal matrix
         signals = {}
         for c in candidates:
+            if c.status != CandidateStatus.ACTIVE:
+                continue
             try:
                 sig = self._evaluate_expression(
                     df, c.metadata.get("expression", "")
@@ -624,6 +703,8 @@ class AutomatedAlphaDiscoveryFactory:
         """
         result = df.copy()
         for c in candidates:
+            if c.status != CandidateStatus.ACTIVE:
+                continue
             expr = c.metadata.get("expression", "")
             if not expr:
                 continue
@@ -639,11 +720,7 @@ class AutomatedAlphaDiscoveryFactory:
     def _evaluate_expression(
         self, df: pd.DataFrame, expr_str: str
     ) -> Optional[pd.Series]:
-        """Safely evaluate an expression template.
-
-        Only allows a restricted set of operations for safety.
-        Helper functions are dispatched by regex or via eval namespace.
-        """
+        """Safely evaluate an expression template."""
         if not expr_str:
             return None
 
@@ -676,23 +753,203 @@ class AutomatedAlphaDiscoveryFactory:
                 return _compute_vol_zscore(df, int(match.group(1)))
             return None
 
-        # For simple expressions, use eval with restricted namespace.
-        # Helper functions for price-action templates are injected.
+        match = re.fullmatch(
+            r"df\.groupby\('ticker'\)\['close'\]\.shift\(1\)\.pct_change\((\d+)\)",
+            expr_str,
+        )
+        if match:
+            return df.groupby("ticker", sort=False)["close"].transform(
+                lambda x: x.shift(1).pct_change(int(match.group(1)))
+            )
+
+        match = re.fullmatch(
+            r"df\.groupby\('ticker'\)\['close'\]\.transform\(lambda x: x\.shift\(1\)\.pct_change\((\d+)\)\)",
+            expr_str,
+        )
+        if match:
+            return df.groupby("ticker", sort=False)["close"].transform(
+                lambda x: x.shift(1).pct_change(int(match.group(1)))
+            )
+
+        if expr_str == "(df['volume'] - df.groupby('ticker')['volume'].shift(1).transform(lambda x: x.rolling(20).mean())) / df.groupby('ticker')['volume'].shift(1).transform(lambda x: x.rolling(20).std())":
+            shifted_volume = df.groupby("ticker", sort=False)["volume"].shift(1)
+            rolling_mean = shifted_volume.groupby(df["ticker"]).transform(lambda x: x.rolling(20).mean())
+            rolling_std = shifted_volume.groupby(df["ticker"]).transform(lambda x: x.rolling(20).std())
+            return (df["volume"] - rolling_mean) / rolling_std
+
+        if expr_str == "df.groupby('ticker')['close'].transform(lambda x: x.shift(1).pct_change().rolling(10).std()) / (df.groupby('ticker')['close'].transform(lambda x: x.shift(1).pct_change().rolling(30).std()) + 1e-9)":
+            pct_change = df.groupby("ticker", sort=False)["close"].transform(
+                lambda x: x.shift(1).pct_change()
+            )
+            short_std = pct_change.groupby(df["ticker"]).transform(lambda x: x.rolling(10).std())
+            long_std = pct_change.groupby(df["ticker"]).transform(lambda x: x.rolling(30).std())
+            return short_std / (long_std + 1e-9)
+
+        tree = self._parse_safe_expression(expr_str)
+        result = self._eval_ast_node(tree.body, self._expression_env(df))
+        if isinstance(result, pd.Series):
+            return result
+        if np.isscalar(result):
+            return pd.Series(result, index=df.index, dtype=float)
+        raise UnsafeExpressionError("expression must evaluate to a pandas Series or scalar")
+
+    def _parse_safe_expression(self, expr_str: str) -> ast.Expression:
         try:
-            local_ns = {
-                "df": df,
-                "np": np,
-                "pd": pd,
-                "_compute_body_pct": _compute_body_pct,
-                "_compute_upper_shadow": _compute_upper_shadow,
-                "_compute_lower_shadow": _compute_lower_shadow,
-            }
-            result = eval(expr_str, {"__builtins__": {}}, local_ns)
-            if isinstance(result, pd.Series):
-                return result
-            return None
-        except Exception:
-            return None
+            tree = ast.parse(expr_str, mode="eval")
+        except SyntaxError as exc:
+            raise UnsafeExpressionError(f"invalid expression syntax: {exc}") from exc
+
+        node_count = 0
+
+        def _walk(node: ast.AST, depth: int) -> None:
+            nonlocal node_count
+            if depth > _EXPR_MAX_DEPTH:
+                raise UnsafeExpressionError(f"expression depth exceeds {_EXPR_MAX_DEPTH}")
+            node_count += 1
+            if node_count > _EXPR_MAX_NODES:
+                raise UnsafeExpressionError(f"expression node count exceeds {_EXPR_MAX_NODES}")
+            if type(node) not in _ALLOWED_AST_NODE_TYPES:
+                raise UnsafeExpressionError(f"disallowed AST node: {type(node).__name__}")
+            if isinstance(node, ast.Call):
+                if not isinstance(node.func, ast.Name):
+                    raise UnsafeExpressionError("only direct function calls are allowed")
+                expected_arity = _ALLOWED_FUNCTION_ARITY.get(node.func.id)
+                if expected_arity is None:
+                    raise UnsafeExpressionError(f"disallowed function: {node.func.id}")
+                if len(node.args) != expected_arity or node.keywords:
+                    raise UnsafeExpressionError(
+                        f"function {node.func.id} requires exactly {expected_arity} positional args"
+                    )
+            if isinstance(node, ast.Name) and node.id.startswith("__"):
+                raise UnsafeExpressionError("dunder names are forbidden")
+            if isinstance(node, ast.Constant):
+                if isinstance(node.value, (int, float)) and abs(float(node.value)) > _EXPR_LITERAL_BOUND:
+                    raise UnsafeExpressionError(f"literal exceeds bound {_EXPR_LITERAL_BOUND}")
+                if not isinstance(node.value, (int, float, bool)):
+                    raise UnsafeExpressionError("only numeric and boolean literals are allowed")
+            for child in ast.iter_child_nodes(node):
+                _walk(child, depth + 1)
+
+        _walk(tree, 0)
+        return tree
+
+    def _expression_env(self, df: pd.DataFrame) -> Dict[str, object]:
+        def _ensure_series(value: object) -> pd.Series:
+            return value if isinstance(value, pd.Series) else pd.Series(value, index=df.index)
+
+        def _wrap_unary(fn: Callable[[pd.Series], pd.Series]) -> Callable[[object], object]:
+            return lambda x: fn(_ensure_series(x))
+
+        def _wrap_binary(fn: Callable[[pd.Series, int], pd.Series]) -> Callable[[object, object], pd.Series]:
+            def _inner(x: object, n: object) -> pd.Series:
+                if not isinstance(n, (int, float)):
+                    raise UnsafeExpressionError("window/lag arguments must be numeric")
+                return fn(_ensure_series(x), int(n))
+            return _inner
+
+        return {
+            "close": df.groupby("ticker", sort=False)["close"].shift(1),
+            "volume": df.groupby("ticker", sort=False)["volume"].shift(1),
+            "abs": _wrap_unary(lambda x: x.abs()),
+            "neg": _wrap_unary(lambda x: -x),
+            "rank": _wrap_unary(lambda x: x.groupby(df["date"]).rank(pct=True)),
+            "sign": _wrap_unary(lambda x: pd.Series(np.sign(x), index=x.index)),
+            "log": _wrap_unary(lambda x: pd.Series(np.log(x.clip(lower=1e-9)), index=x.index)),
+            "add": lambda a, b: _ensure_series(a) + _ensure_series(b),
+            "sub": lambda a, b: _ensure_series(a) - _ensure_series(b),
+            "mul": lambda a, b: _ensure_series(a) * _ensure_series(b),
+            "div": lambda a, b: _ensure_series(a) / (_ensure_series(b) + 1e-9),
+            "ts_mean": _wrap_binary(lambda x, n: x.groupby(df["ticker"]).transform(lambda s: s.rolling(n).mean())),
+            "ts_std": _wrap_binary(lambda x, n: x.groupby(df["ticker"]).transform(lambda s: s.rolling(n).std())),
+            "ts_min": _wrap_binary(lambda x, n: x.groupby(df["ticker"]).transform(lambda s: s.rolling(n).min())),
+            "ts_max": _wrap_binary(lambda x, n: x.groupby(df["ticker"]).transform(lambda s: s.rolling(n).max())),
+            "ts_delta": _wrap_binary(lambda x, n: x - x.groupby(df["ticker"]).shift(n)),
+            "ts_delay": _wrap_binary(lambda x, n: x.groupby(df["ticker"]).shift(n)),
+            "where": lambda cond, a, b: pd.Series(
+                np.where(self._coerce_bool_series(cond), _ensure_series(a), _ensure_series(b)),
+                index=df.index,
+            ),
+            "correlation": lambda a, b, n: _ensure_series(a).groupby(df["ticker"]).transform(
+                lambda s: s.rolling(int(n)).corr(_ensure_series(b).loc[s.index])
+            ),
+        }
+
+    def _eval_ast_node(self, node: ast.AST, env: Dict[str, object]) -> object:
+        if isinstance(node, ast.Constant):
+            return node.value
+        if _LEGACY_NUM is not None and isinstance(node, _LEGACY_NUM):
+            return node.n
+        if isinstance(node, ast.Name):
+            if node.id not in env:
+                raise UnsafeExpressionError(f"unknown name: {node.id}")
+            return env[node.id]
+        if isinstance(node, ast.Call):
+            fn = env[node.func.id]
+            return fn(*[self._eval_ast_node(arg, env) for arg in node.args])
+        if isinstance(node, ast.UnaryOp):
+            operand = self._eval_ast_node(node.operand, env)
+            if isinstance(node.op, ast.USub):
+                return -operand
+            if isinstance(node.op, ast.UAdd):
+                return operand
+            if isinstance(node.op, ast.Not):
+                return ~self._coerce_bool_series(operand)
+        if isinstance(node, ast.BinOp):
+            left = self._eval_ast_node(node.left, env)
+            right = self._eval_ast_node(node.right, env)
+            if isinstance(node.op, ast.Add):
+                return left + right
+            if isinstance(node.op, ast.Sub):
+                return left - right
+            if isinstance(node.op, ast.Mult):
+                return left * right
+            if isinstance(node.op, ast.Div):
+                return left / (right + 1e-9 if np.isscalar(right) else right + 1e-9)
+        if isinstance(node, ast.BoolOp):
+            values = [self._coerce_bool_series(self._eval_ast_node(value, env)) for value in node.values]
+            result = values[0]
+            for value in values[1:]:
+                result = result & value if isinstance(node.op, ast.And) else result | value
+            return result
+        if isinstance(node, ast.Compare):
+            left = self._eval_ast_node(node.left, env)
+            result = None
+            for op, comparator_node in zip(node.ops, node.comparators):
+                right = self._eval_ast_node(comparator_node, env)
+                current = self._apply_compare(op, left, right)
+                result = current if result is None else (result & current)
+                left = right
+            return result
+        if isinstance(node, ast.IfExp):
+            cond = self._coerce_bool_series(self._eval_ast_node(node.test, env))
+            body = self._eval_ast_node(node.body, env)
+            other = self._eval_ast_node(node.orelse, env)
+            body_series = body if isinstance(body, pd.Series) else pd.Series(body, index=cond.index)
+            other_series = other if isinstance(other, pd.Series) else pd.Series(other, index=cond.index)
+            return pd.Series(np.where(cond, body_series, other_series), index=cond.index)
+        raise UnsafeExpressionError(f"unsupported expression node: {type(node).__name__}")
+
+    @staticmethod
+    def _coerce_bool_series(value: object) -> pd.Series:
+        if isinstance(value, pd.Series):
+            return value.astype(bool)
+        return pd.Series(bool(value))
+
+    @staticmethod
+    def _apply_compare(op: ast.AST, left: object, right: object) -> pd.Series | bool:
+        if isinstance(op, ast.Eq):
+            return left == right
+        if isinstance(op, ast.NotEq):
+            return left != right
+        if isinstance(op, ast.Lt):
+            return left < right
+        if isinstance(op, ast.LtE):
+            return left <= right
+        if isinstance(op, ast.Gt):
+            return left > right
+        if isinstance(op, ast.GtE):
+            return left >= right
+        raise UnsafeExpressionError(f"unsupported comparison operator: {type(op).__name__}")
 
     @staticmethod
     def _compute_daily_cs_ic(

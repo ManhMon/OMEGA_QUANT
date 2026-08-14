@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 import pandas as pd
-from scipy.stats import spearmanr
+from scipy.stats import rankdata
 
 from omega.quant.evolution.genetic_programming import (
     GPIndividual,
@@ -34,6 +34,20 @@ from omega.quant.evolution.genetic_programming import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _spearman_corr_via_ranks(a: np.ndarray, b: np.ndarray) -> float:
+    """Compute Spearman correlation from average ranks for finite arrays."""
+    if len(a) != len(b):
+        raise ValueError("Array shapes are incompatible for broadcasting.")
+    if len(a) < 2:
+        return float("nan")
+
+    a_ranks = rankdata(a, method="average")
+    b_ranks = rankdata(b, method="average")
+    if np.all(a_ranks == a_ranks[0]) or np.all(b_ranks == b_ranks[0]):
+        return float("nan")
+    return float(np.corrcoef(a_ranks, b_ranks)[0, 1])
 
 
 # =============================================================================
@@ -169,6 +183,15 @@ class CandidateRecord:
     _fold_metrics: Dict[int, Dict[str, float]] = field(
         default_factory=dict, repr=False, compare=False,
     )
+    _alpha_values: np.ndarray = field(
+        default_factory=lambda: np.array([]), repr=False, compare=False,
+    )
+
+    def clear_signals(self) -> None:
+        """Release cached arrays for candidates excluded from selection."""
+        self._fold_values.clear()
+        self._fold_metrics.clear()
+        self._alpha_values = np.array([])
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -251,6 +274,8 @@ class NestedCVSplitter:
     - Inner validation only uses indices within outer train.
     """
 
+    _PURGE_SESSIONS = 5
+
     def __init__(self, n_outer_folds: int = 3, n_inner_folds: int = 3):
         self.n_outer_folds = n_outer_folds
         self.n_inner_folds = n_inner_folds
@@ -269,7 +294,7 @@ class NestedCVSplitter:
             # Expanding window: train = [0, (fold_idx+1)*fold_size)
             # Test = [(fold_idx+1)*fold_size, (fold_idx+2)*fold_size)
             train_end = (fold_idx + 1) * fold_size
-            test_start = train_end
+            test_start = train_end + self._PURGE_SESSIONS
             test_end = min(test_start + fold_size, n_samples)
 
             if test_end <= test_start:
@@ -299,7 +324,7 @@ class NestedCVSplitter:
 
         for inner_fold in range(self.n_inner_folds):
             inner_train_end = (inner_fold + 1) * inner_fold_size
-            inner_val_start = inner_train_end
+            inner_val_start = inner_train_end + self._PURGE_SESSIONS
             inner_val_end = min(inner_val_start + inner_fold_size, n_inner)
 
             if inner_val_end <= inner_val_start:
@@ -577,6 +602,7 @@ class NestedCVObjective:
         ticker_col: str = "ticker",
         date_col: str = "date",
         outer_fold_idx: int = 0,
+        synth: Optional[Any] = None,
     ) -> CandidateRecord:
         """Score a candidate on inner validation folds only.
 
@@ -597,11 +623,12 @@ class NestedCVObjective:
             date_col: Date column name.
             outer_fold_idx: Outer fold index for storing per-fold values.
         """
-        from omega.quant.evolution.llm_symbolic_synthesizer import (
-            LLMSymbolicSynthesizer,
-        )
+        if synth is None:
+            from omega.quant.evolution.llm_symbolic_synthesizer import (
+                LLMSymbolicSynthesizer,
+            )
 
-        synth = LLMSymbolicSynthesizer(provider="mock")
+            synth = LLMSymbolicSynthesizer(provider="mock")
 
         # Execute candidate on the outer-train-sliced panel (PIT-safe)
         try:
@@ -639,7 +666,9 @@ class NestedCVObjective:
             if np.sum(valid_mask) < 5:
                 continue
 
-            ic, _ = spearmanr(val_values[valid_mask], val_labels[valid_mask])
+            ic = _spearman_corr_via_ranks(
+                val_values[valid_mask], val_labels[valid_mask],
+            )
             if np.isfinite(ic):
                 fold_ics.append(float(ic))
 
@@ -676,7 +705,9 @@ class NestedCVObjective:
             for sel_vals in selected_values:
                 common = finite_mask & np.isfinite(sel_vals)
                 if np.sum(common) >= 10:
-                    corr, _ = spearmanr(values[common], sel_vals[common])
+                    corr = _spearman_corr_via_ranks(
+                        values[common], sel_vals[common],
+                    )
                     if np.isfinite(corr):
                         max_corr = max(max_corr, abs(float(corr)))
 
@@ -940,7 +971,7 @@ class HybridAlphaMiner:
                 for sel_vals in fold_vals_list:
                     common = cand_finite & np.isfinite(sel_vals)
                     if np.sum(common) >= 10:
-                        corr, _p = spearmanr(
+                        corr = _spearman_corr_via_ranks(
                             cand_vals[common], sel_vals[common],
                         )
                         if np.isfinite(corr):
@@ -985,6 +1016,10 @@ class HybridAlphaMiner:
 
         # Re-sort selected by updated objective (correlation may change order)
         selected.sort(key=lambda c: c.objective_score, reverse=True)
+        selected_hashes = {candidate.formula_hash for candidate in selected}
+        for candidate in all_candidates:
+            if candidate.formula_hash not in selected_hashes:
+                candidate.clear_signals()
 
         # Step 5: Correlation gate – computed FIRST (P0 fix3)
         # Worst-case max_pairwise_correlation across selected candidates/folds.

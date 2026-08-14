@@ -1,0 +1,3 @@
+/mnt/c/Users/GHC/repos/OMEGA_QUANT/src/omega/quant/evolution/diverse_alpha_evolution.py:302:    features["__grouped_ts_structure__"] = ge.precompute_grouped_ts_structure(
+/mnt/c/Users/GHC/repos/OMEGA_QUANT/src/omega/quant/evolution/diverse_alpha_evolution.py:608:        ge.set_active_grouped_ts_structure(train_features.get("__grouped_ts_structure__") if train_features else None)
+/mnt/c/Users/GHC/repos/OMEGA_QUANT/src/omega/quant/evolution/diverse_alpha_evolution.py:637:        ge.set_active_grouped_ts_structure(val_features.get("__grouped_ts_structure__") if val_features else None)

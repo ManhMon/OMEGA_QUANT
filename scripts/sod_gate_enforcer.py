@@ -240,6 +240,20 @@ def _safe_repo_path(value: str, required_prefix: str = ".ly_state/session/") -> 
     return path
 
 
+def validate_post_cutoff_gate_fields(gate: dict, timestamp: float | None) -> tuple[bool, str]:
+    """Enforce implementation-gate fields independently of strict-gate discovery."""
+    if timestamp is None or timestamp < CUTOFF_TIMESTAMP:
+        return True, ""
+    if gate.get("l2_completed") is not True:
+        return False, "l2_completed must be literal true"
+    key = gate.get("l3_session_key")
+    if not isinstance(key, str) or key.strip().lower() in {"", "pending", "unknown", "todo", "tbd"}:
+        return False, "l3_session_key must be concrete and nonempty"
+    required = ("l2_session_id", "l2_role_id", "l2_role_name", "l3_session_id", "l3_role_id", "l3_role_name", "audit_report_path", "timestamp")
+    missing = [field for field in required if gate.get(field) in (None, "")]
+    return (not missing, "" if not missing else f"missing post-cutoff fields: {missing}")
+
+
 def _immutable_gate_record(gate: dict) -> dict:
     return {key: value for key, value in gate.items() if key not in LEGACY_MUTABLE_FIELDS}
 
@@ -280,7 +294,7 @@ def load_canonical_gate_map() -> dict[str, dict]:
         gates = {}
         for key, gate in data.items():
             if not isinstance(key, str) or not isinstance(gate, dict):
-                continue
+                return {}
             phase_name = gate.get("phase_name")
             if phase_name is None:
                 gate = {**gate, "phase_name": key}
@@ -1427,8 +1441,8 @@ def validate_l3_role(role_id, role_name, role_specs: dict) -> tuple[bool, str]:
     return True, ""
 
 
-def validate_l2_role(role_id, role_name, role_specs: dict) -> tuple[bool, str]:
-    """Validate L2 role: must be 6-16, tier=2, platform=OpenCode, name matches spec.
+def validate_l2_role(role_id, role_name, role_specs: dict, gate_name: str = "") -> tuple[bool, str]:
+    """Validate an OpenCode L2 role, except Role 26 for `_plan` gates.
     
     Args:
         role_id: Role ID to validate
@@ -1443,8 +1457,8 @@ def validate_l2_role(role_id, role_name, role_specs: dict) -> tuple[bool, str]:
     except (ValueError, TypeError):
         return False, f"l2_role_id must be integer, got: {role_id}"
     
-    # Check range 6-16
-    if not (6 <= role_id_int <= 16):
+    is_planning_role = role_id_int == 26 and gate_name.endswith("_plan")
+    if not (6 <= role_id_int <= 16 or is_planning_role):
         return False, f"l2_role_id must be 6-16, got: {role_id_int}"
     
     # Check role spec exists
@@ -1453,13 +1467,19 @@ def validate_l2_role(role_id, role_name, role_specs: dict) -> tuple[bool, str]:
     
     spec = role_specs[role_id_int]
     
-    # Validate tier=2
-    if spec.get('tier') != 2:
-        return False, f"l2_role_id {role_id_int} must have tier=2, got: {spec.get('tier')}"
-    
-    # Validate platform=OpenCode
-    if spec.get('platform') != 'OpenCode':
-        return False, f"l2_role_id {role_id_int} must have platform=OpenCode, got: {spec.get('platform')}"
+    if is_planning_role:
+        if (spec.get('name') != 'planning-architect' or role_name != 'planning-architect' or
+                spec.get('tier') != 3 or spec.get('platform') != 'Codex' or
+                spec.get('sod_boundary') != 'planning-only, non-audit, no production code'):
+            return False, "l2_role_id 26 plan exception requires planning-architect, tier=3, platform=Codex, and sod_boundary"
+    else:
+        # Validate tier=2
+        if spec.get('tier') != 2:
+            return False, f"l2_role_id {role_id_int} must have tier=2, got: {spec.get('tier')}"
+
+        # Validate platform=OpenCode
+        if spec.get('platform') != 'OpenCode':
+            return False, f"l2_role_id {role_id_int} must have platform=OpenCode, got: {spec.get('platform')}"
     
     # Validate role_name matches spec name (if provided)
     if role_name and role_name != spec.get('name'):
@@ -1784,7 +1804,7 @@ def normalize_timestamp(ts) -> float | None:
     return None
 
 
-def load_gates() -> list:
+def load_gates() -> list | None:
     """Load gates from GATES_FILE.
 
     Supports three JSON shapes:
@@ -1794,36 +1814,60 @@ def load_gates() -> list:
        where top-level keys are gate names and values are gate objects.
 
     Returns:
-        list: List of gate dicts, or empty list if file missing/invalid.
+        list: List of gate dicts, empty when the file is absent.
     """
     if not GATES_FILE.exists():
         return []
 
     try:
-        with open(GATES_FILE, 'r', encoding='utf-8') as f:
+        with open(GATES_FILE, 'r', encoding='utf-8-sig') as f:
             data = json.load(f)
 
         if isinstance(data, list):
-            return data
+            gates = data
         elif isinstance(data, dict):
             # Wrapper with explicit 'gates' key
             if 'gates' in data:
-                return data['gates'] if isinstance(data['gates'], list) else []
-            # Dict-shaped: top-level keys are gate names, values are gate objects
-            gates = []
-            for key, value in data.items():
-                if isinstance(value, dict):
+                if not isinstance(data['gates'], list):
+                    print("FAIL: gates wrapper must contain a list", file=sys.stderr)
+                    sys.exit(1)
+                gates = data['gates']
+            else:
+                # Dict-shaped: top-level keys are gate names, values are gate objects
+                gates = []
+                for key, value in data.items():
+                    if not isinstance(value, dict):
+                        print("FAIL: every dict-shaped gate member must be an object", file=sys.stderr)
+                        sys.exit(1)
                     phase_name = value.get('phase_name')
                     if phase_name is None:
+                        if not isinstance(key, str) or not key.strip():
+                            print("FAIL: dict-shaped gate keys must be non-empty phase names", file=sys.stderr)
+                            sys.exit(1)
                         gates.append({**value, 'phase_name': key})
+                    elif not isinstance(phase_name, str) or not phase_name.strip():
+                        print("FAIL: dict-shaped gates must have a non-empty phase_name", file=sys.stderr)
+                        sys.exit(1)
                     elif phase_name != key:
-                        return []
+                        print(f"FAIL: gate key {key!r} does not match phase_name {phase_name!r}", file=sys.stderr)
+                        sys.exit(1)
                     else:
                         gates.append(value)
-            return gates
-        return []
-    except (json.JSONDecodeError, OSError):
-        return []
+        else:
+            print("FAIL: gate JSON root must be a list or object", file=sys.stderr)
+            sys.exit(1)
+
+        for gate in gates:
+            if not isinstance(gate, dict) or not isinstance(gate.get('phase_name'), str) or not gate['phase_name'].strip():
+                print("FAIL: every gate list member must be an object with a non-empty phase_name", file=sys.stderr)
+                sys.exit(1)
+        return gates
+    except json.JSONDecodeError as exc:
+        print(f"FAIL: invalid gate JSON: {exc}", file=sys.stderr)
+        sys.exit(1)
+    except OSError as exc:
+        print(f"FAIL: gate file unreadable: {exc}", file=sys.stderr)
+        return None
 
 
 def validate_forbidden_path_usage(text) -> tuple:
@@ -2542,9 +2586,14 @@ def check_sod_compliance() -> bool:
         print(f"FAIL: {task_graph_msg}")
 
     gates_list = load_gates()
+    if gates_list is None:
+        print("FAIL: gate loading failed; compliance blocked")
+        compliance_result = False
+        return compliance_result
     
     if not gates_list:
-        return task_graph_valid  # No gates to check beyond task graph
+        print("FAIL: no gates loaded; compliance blocked")
+        return False
 
     gate_names = {gate.get("phase_name") for gate in gates_list if isinstance(gate, dict)}
     residual_present = gate_names & LEGACY_RESIDUAL_KEYS
@@ -2621,6 +2670,11 @@ def check_sod_compliance() -> bool:
         phase_name = gate.get("phase_name", gate_name)
         verdict = gate.get("final_verdict", "")
         ts = normalize_timestamp(gate.get("timestamp"))
+        fields_valid, fields_msg = validate_post_cutoff_gate_fields(gate, ts)
+        if not fields_valid:
+            print(f"FAIL: Gate {gate_name} {fields_msg}")
+            all_pass = False
+            continue
         
         # Skip gates that are not approved (unless they're pending)
         # Skip gates that are not approved (unless they're pending)
@@ -2637,7 +2691,7 @@ def check_sod_compliance() -> bool:
         l2_completed = gate.get("l2_completed", False)
         
         if l2_completed and l2_role_id is not None:
-            l2_valid, l2_msg = validate_l2_role(l2_role_id, l2_role_name, role_specs)
+            l2_valid, l2_msg = validate_l2_role(l2_role_id, l2_role_name, role_specs, gate_name)
             if not l2_valid:
                 print(f"FAIL: Gate {gate_name} L2 role invalid: {l2_msg}")
                 all_pass = False

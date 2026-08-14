@@ -3,11 +3,17 @@ Genetic Programming Alpha Discovery - OMEGA_QUANT Phase 3.4
 Strict PIT Safety, Vectorized Evaluation, Deterministic Genome Operations.
 """
 
-import numpy as np
-import pandas as pd
-from typing import List, Optional, Tuple
 import random
 from copy import deepcopy
+from typing import List, Optional, Tuple
+
+import numpy as np
+import pandas as pd
+
+try:
+    import bottleneck as bn
+except ImportError:  # pragma: no cover - optional fast path
+    bn = None
 
 
 def enforce_t_minus_1_lag(signal: pd.Series) -> pd.Series:
@@ -30,9 +36,18 @@ class Node:
             value: Terminal or Operator
             children: List of child nodes (for operators)
         """
-        if value not in self.TERMINALS + self.OPERATORS:
+        numeric_value = None
+        if isinstance(value, (int, float, np.integer, np.floating)):
+            numeric_value = float(value)
+        elif isinstance(value, str) and value not in self.TERMINALS + self.OPERATORS:
+            try:
+                numeric_value = float(value)
+            except ValueError:
+                pass
+
+        if numeric_value is None and value not in self.TERMINALS + self.OPERATORS:
             raise ValueError(f"Unknown node value: {value}")
-        self.value = value
+        self.value = numeric_value if numeric_value is not None else value
         self.children = children or []
         self._validate_arity()
     
@@ -47,6 +62,33 @@ class Node:
         elif self.value == 'delay':
             if len(self.children) != 1:
                 raise ValueError(f"Operator delay requires exactly 1 child, got {len(self.children)}")
+
+    @staticmethod
+    def _rolling_op(child_signal: pd.Series, window: int, op: str) -> pd.Series:
+        values = child_signal.to_numpy(dtype=float, copy=False)
+        if bn is not None:
+            if op == 'std':
+                result = bn.move_std(values, window=window, min_count=1, ddof=1)
+            elif op == 'mean':
+                result = bn.move_mean(values, window=window, min_count=1)
+            elif op == 'max':
+                result = bn.move_max(values, window=window, min_count=1)
+            elif op == 'min':
+                result = bn.move_min(values, window=window, min_count=1)
+            else:
+                raise ValueError(f"Unsupported rolling op: {op}")
+            return pd.Series(result, index=child_signal.index)
+
+        rolling = child_signal.rolling(window=window, min_periods=1)
+        if op == 'std':
+            return rolling.std()
+        if op == 'mean':
+            return rolling.mean()
+        if op == 'max':
+            return rolling.max()
+        if op == 'min':
+            return rolling.min()
+        raise ValueError(f"Unsupported rolling op: {op}")
     
     def evaluate(self, df: pd.DataFrame, window: int = 14) -> pd.Series:
         """
@@ -59,9 +101,12 @@ class Node:
         Returns:
             pd.Series: Evaluated signal
         """
-        # Terminals
-        if self.value in df.columns:
-            return df[self.value].copy()
+        # Terminal fallback for malformed or legacy leaf nodes.
+        if not self.children:
+            if isinstance(self.value, (int, float, np.integer, np.floating)):
+                return pd.Series(float(self.value), index=df.index, dtype=float)
+            if self.value in df.columns:
+                return df[self.value].copy()
         if self.value == 'close':
             return df['close'].copy()
         if self.value == 'open':
@@ -78,6 +123,8 @@ class Node:
             return df.get('rsi', pd.Series(0.0, index=df.index))
         if self.value == 'macd':
             return df.get('macd', pd.Series(0.0, index=df.index))
+        if not self.children:
+            return pd.Series(0.0, index=df.index, dtype=float)
         
         # Unary operators
         if self.value in ['std', 'mean', 'max', 'min', 'rank', 'delay', 'abs', 'sign', 'neg']:
@@ -86,13 +133,13 @@ class Node:
             child_signal = self.children[0].evaluate(df, window)
             
             if self.value == 'std':
-                return child_signal.rolling(window=window, min_periods=1).std()
+                return self._rolling_op(child_signal, window, 'std')
             if self.value == 'mean':
-                return child_signal.rolling(window=window, min_periods=1).mean()
+                return self._rolling_op(child_signal, window, 'mean')
             if self.value == 'max':
-                return child_signal.rolling(window=window, min_periods=1).max()
+                return self._rolling_op(child_signal, window, 'max')
             if self.value == 'min':
-                return child_signal.rolling(window=window, min_periods=1).min()
+                return self._rolling_op(child_signal, window, 'min')
             if self.value == 'rank':
                 return child_signal.rolling(window=window, min_periods=1).rank()
             if self.value == 'delay':
@@ -142,7 +189,7 @@ class Node:
     
     def __repr__(self) -> str:
         if not self.children:
-            return self.value
+            return str(self.value)
         child_reprs = []
         for c in self.children:
             child_reprs.append(repr(c))
@@ -191,7 +238,8 @@ class Genome:
         """
         raw_signal = self.tree.evaluate(df)
         safe_signal = enforce_t_minus_1_lag(raw_signal)
-        return safe_signal.fillna(0.0)
+        cleaned = np.nan_to_num(safe_signal.to_numpy(dtype=float, copy=False), nan=0.0, posinf=0.0, neginf=0.0)
+        return pd.Series(cleaned, index=safe_signal.index)
     
     def mutate(self) -> 'Genome':
         """

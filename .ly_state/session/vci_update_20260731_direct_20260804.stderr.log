@@ -1,0 +1,10 @@
+2026-08-04 11:16:04,122 [INFO] update_market_data: ======================================================================
+2026-08-04 11:16:04,123 [INFO] update_market_data: Canonical VCI Updater / Backfill
+2026-08-04 11:16:04,125 [INFO] update_market_data: Gate: CANONICAL_UPDATER_FULL_OVERLAP_RELOAD_20260626
+2026-08-04 11:16:04,126 [INFO] update_market_data: Canonical: C:\Users\GHC\repos\OMEGA_QUANT\data\market_2015_now.parquet
+2026-08-04 11:16:04,128 [INFO] update_market_data: Output: C:\Users\GHC\repos\OMEGA_QUANT\data\market_2015_now.parquet
+2026-08-04 11:16:04,128 [INFO] update_market_data: Dry-run: False
+2026-08-04 11:16:04,129 [INFO] update_market_data: ======================================================================
+2026-08-04 11:16:04,129 [INFO] update_market_data: Universe loaded from vci_universe_hsx_hnx.json: 403 HSX + 300 HNX = 703 total
+2026-08-04 11:16:04,129 [INFO] update_market_data: Universe: 703 symbols
+2026-08-04 11:16:04,269 [INFO] update_market_data: Fetch window: 2026-07-01 to 2026-07-31

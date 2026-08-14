@@ -85,15 +85,16 @@ class UnifiedFeatureAdapter:
             except Exception as e:
                 logger.warning("AlternativeDataFetcher failed: %s", e)
 
+        flat = result.reset_index()
+        flat.columns = ['date', 'ticker'] + list(flat.columns[2:])
+        required = ['date', 'ticker', 'open', 'high', 'low', 'close', 'volume']
+
         # 3. Ultimate Alpha Arsenal (130 institutional alphas)
         if self.use_arsenal:
             try:
                 from omega.quant.alpha.arsenal import compute_ultimate_alphas
                 # Arsenal expects flat DataFrame with ticker/date columns
-                flat = result.reset_index()
-                flat.columns = ['date', 'ticker'] + list(flat.columns[2:])
                 # Ensure required columns
-                required = ['date', 'ticker', 'open', 'high', 'low', 'close', 'volume']
                 if all(c in flat.columns for c in required):
                     arsenal_df = compute_ultimate_alphas(
                         flat[required], symbol_col='ticker')
@@ -119,9 +120,6 @@ class UnifiedFeatureAdapter:
             from omega.quant.strategy.market_microstructure import (
                 compute_microstructure_alphas,
             )
-            flat = result.reset_index()
-            flat.columns = ['date', 'ticker'] + list(flat.columns[2:])
-            required = ['date', 'ticker', 'open', 'high', 'low', 'close', 'volume']
             if all(c in flat.columns for c in required):
                 micro_df = compute_microstructure_alphas(
                     flat[required], symbol_col='ticker')
@@ -144,9 +142,6 @@ class UnifiedFeatureAdapter:
         # 5. Macro alphas (P2 wire)
         try:
             from omega.quant.alpha.macro import compute_macro_alphas
-            flat = result.reset_index()
-            flat.columns = ['date', 'ticker'] + list(flat.columns[2:])
-            required = ['date', 'ticker', 'open', 'high', 'low', 'close', 'volume']
             if all(c in flat.columns for c in required):
                 macro_df = compute_macro_alphas(flat[required], symbol_col='ticker')
                 macro_cols = [c for c in macro_df.columns if c.startswith(

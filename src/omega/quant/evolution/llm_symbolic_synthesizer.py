@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import re
+import ast
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -102,7 +103,7 @@ class OpenAICompatibleProvider(LLMProvider):
                 f"{self.base_url}/chat/completions",
                 headers=headers,
                 json=payload,
-                timeout=30
+                timeout=180
             )
             response.raise_for_status()
             
@@ -254,6 +255,26 @@ class FormulaSafetyParser:
         self.min_lookback = min_lookback
         self.max_lookback = max_lookback
         self.max_formulas = max_formulas
+        self.token_pattern = re.compile(
+            r'[a-zA-Z_]\w*|\d+(?:\.\d+)?|[(),\[\].:+\-*/;]'
+        )
+        self.disallowed_ast_nodes = {
+            ast.Attribute,
+            ast.Subscript,
+            ast.Lambda,
+            ast.List,
+            ast.Tuple,
+            ast.Dict,
+            ast.Set,
+            ast.ListComp,
+            ast.SetComp,
+            ast.DictComp,
+            ast.GeneratorExp,
+            ast.NamedExpr,
+            ast.Await,
+            ast.Yield,
+            ast.YieldFrom,
+        }
     
     def validate_formula(self, formula: str) -> Tuple[bool, str]:
         """
@@ -265,17 +286,31 @@ class FormulaSafetyParser:
         Returns:
             (is_valid, error_message) tuple
         """
-        # Check for infix operators (not in function call context)
-        # Infix pattern: token operator token (not inside function parens)
-        if re.search(r'\w+\s*[\+\-\*/]\s*\w+', formula):
+        # Preserve explicit infix rejection for bare `a + b` style payloads.
+        if re.search(r'^\s*\w+\s*[\+\-\*/]\s*\w+\s*$', formula):
             return False, "Infix operators not allowed (use prefix syntax)"
-        
-        # Tokenize
+
         tokens = self._tokenize(formula)
-        
+
         if not tokens:
             return False, "Empty formula"
-        
+
+        compact_formula = re.sub(r'\s+', '', formula)
+        if ''.join(tokens) != compact_formula:
+            return False, "Formula contains invalid or unmatched characters"
+
+        try:
+            parsed = ast.parse(formula, mode='eval')
+        except SyntaxError as exc:
+            trailing_error = self._classify_syntax_error(tokens)
+            if trailing_error is not None:
+                return False, trailing_error
+            return False, f"Invalid formula syntax: {exc.msg}"
+
+        for node in ast.walk(parsed):
+            if type(node) in self.disallowed_ast_nodes:
+                return False, f"Disallowed syntax node: {type(node).__name__}"
+
         # Parse and validate tree
         try:
             consumed_idx, depth, lookbacks = self._validate_tree(tokens, 0, 0)
@@ -300,8 +335,20 @@ class FormulaSafetyParser:
     
     def _tokenize(self, formula: str) -> List[str]:
         """Tokenize formula string."""
-        pattern = r'[a-zA-Z_]\w*|\d+(?:\.\d+)?|[(),]'
-        return re.findall(pattern, formula.replace(" ", ""))
+        return self.token_pattern.findall(re.sub(r'\s+', '', formula))
+
+    def _classify_syntax_error(self, tokens: List[str]) -> Optional[str]:
+        """Classify syntax errors after a valid prefix expression."""
+        try:
+            consumed_idx, _depth, _lookbacks = self._validate_tree(tokens, 0, 0)
+        except ValueError:
+            return None
+        if consumed_idx < len(tokens):
+            trailing_tokens = tokens[consumed_idx:]
+            if all(token in {';'} for token in trailing_tokens):
+                return "Formula contains invalid or unmatched characters"
+            return "Unexpected trailing tokens"
+        return None
     
     def _validate_tree(
         self, 
@@ -365,6 +412,8 @@ class FormulaSafetyParser:
                     lookbacks.extend(arg_lookbacks)
                     # Move to the next token after this arg
                     curr_idx = consumed
+
+            self._validate_operator_arity(func_name, len(args), lookbacks)
             
             if curr_idx >= len(tokens) or tokens[curr_idx] != ')':
                 raise ValueError(f"Expected ')' for function {func_name}")
@@ -383,6 +432,21 @@ class FormulaSafetyParser:
             return index + 1, depth, []
         
         raise ValueError(f"Unknown terminal: {token}")
+
+    def _validate_operator_arity(
+        self,
+        func_name: str,
+        expr_arg_count: int,
+        lookbacks: List[int],
+    ) -> None:
+        if func_name in self.allowed_unary and expr_arg_count != 1:
+            raise ValueError(f"Unary operator {func_name} requires exactly 1 argument")
+        if func_name in self.allowed_binary and expr_arg_count != 2:
+            raise ValueError(f"Binary operator {func_name} requires exactly 2 arguments")
+        if func_name in self.allowed_ts and (expr_arg_count != 1 or len(lookbacks) != 1):
+            raise ValueError(
+                f"Time-series operator {func_name} requires exactly 2 arguments: expression and lookback"
+            )
     
     def _skip_subtree(self, tokens: List[str], index: int) -> int:
         """Skip over a subtree and return index after it."""
@@ -449,6 +513,7 @@ class LLMSymbolicSynthesizer:
         use_mock: bool = True, 
         provider: Optional[str] = None,
         api_key: Optional[str] = None,
+        effective_alpha_config: Optional[Dict[str, Optional[str]]] = None,
         prompt_version: str = "vn_alpha_search_v2",
         max_candidates: Optional[int] = None
     ):
@@ -493,9 +558,19 @@ class LLMSymbolicSynthesizer:
         
         # Initialize cache
         self.cache = FormulaCache()
+        self._subtree_cache: Dict[Tuple[str, int], np.ndarray] = {}
+        self._last_panel_id: Optional[Tuple[int, int, int, str, str, str]] = None
         
         # Initialize provider based on configuration
-        self.provider = self._init_provider(use_mock, provider, api_key)
+        if effective_alpha_config is None:
+            effective_alpha_config = {
+                "provider": provider or os.environ.get("OMEGA_LLM_PROVIDER", "mock" if use_mock else "mock"),
+                "api_key": api_key or os.environ.get("OMEGA_LLM_API_KEY"),
+                "base_url": os.environ.get("OMEGA_LLM_BASE_URL"),
+                "model": os.environ.get("OMEGA_LLM_MODEL", "gpt-4"),
+            }
+        self.effective_alpha_config = effective_alpha_config
+        self.provider = self._init_provider(effective_alpha_config)
         
         logger.info(
             "LLMSymbolicSynthesizer initialized: prompt_version=%s max_candidates=%d",
@@ -503,12 +578,7 @@ class LLMSymbolicSynthesizer:
             self.max_candidates
         )
     
-    def _init_provider(
-        self, 
-        use_mock: bool, 
-        provider: Optional[str],
-        api_key: Optional[str]
-    ) -> LLMProvider:
+    def _init_provider(self, effective_alpha_config: Dict[str, Optional[str]]) -> LLMProvider:
         """
         Initialize LLM provider with security controls.
         
@@ -523,7 +593,7 @@ class LLMSymbolicSynthesizer:
         - Never log API keys
         """
         # Determine provider type
-        provider_type = provider or os.environ.get('OMEGA_LLM_PROVIDER', 'mock' if use_mock else 'mock')
+        provider_type = effective_alpha_config["provider"]
         
         if provider_type == 'mock':
             logger.info("Using MockProvider (offline mode)")
@@ -531,29 +601,18 @@ class LLMSymbolicSynthesizer:
         
         if provider_type == 'openai-compatible':
             # Real provider requires explicit env configuration
-            env_api_key = os.environ.get('OMEGA_LLM_API_KEY')
-            
-            if not env_api_key:
-                logger.warning(
-                    "OpenAI provider requested but OMEGA_LLM_API_KEY not set. "
-                    "Falling back to MockProvider."
-                )
-                return MockProvider()
-            
-            # Warn if api_key passed directly (deprecated)
-            if api_key is not None:
-                logger.warning(
-                    "Passing api_key directly is deprecated and ignored. "
-                    "Use OMEGA_LLM_API_KEY env var."
+            api_key = effective_alpha_config.get("api_key")
+            if not api_key:
+                raise ValueError(
+                    'OpenAI provider requested but OMEGA_LLM_API_KEY is not set.'
                 )
             
-            # Get model and base_url from env
-            model = os.environ.get('OMEGA_LLM_MODEL', 'gpt-4')
-            base_url = os.environ.get('OMEGA_LLM_BASE_URL')
+            model = effective_alpha_config.get("model") or "gpt-4"
+            base_url = effective_alpha_config.get("base_url")
             
             logger.info("Using OpenAICompatibleProvider with model=%s", model)
             return OpenAICompatibleProvider(
-                api_key=env_api_key,
+                api_key=api_key,
                 model=model,
                 base_url=base_url
             )
@@ -1078,7 +1137,31 @@ mul(rank(volume), sub(close, ts_mean(close, 20)))
             raise ValueError(
                 f"panel must have {ticker_col} and {date_col} columns"
             )
-        
+
+        feat_cols_tuple = tuple(feat_cols)
+
+        def _row_fingerprint(row_idx: int) -> str:
+            if len(panel) == 0:
+                return "empty"
+            row_hash = pd.util.hash_pandas_object(
+                panel.loc[:, feat_cols_tuple].iloc[[row_idx]],
+                index=False,
+            )
+            return hashlib.sha256(row_hash.to_numpy().tobytes()).hexdigest()
+
+        middle_idx = len(panel) // 2 if len(panel) else 0
+        panel_fingerprint = (
+            id(panel),
+            len(panel),
+            hash(feat_cols_tuple),
+            _row_fingerprint(0),
+            _row_fingerprint(middle_idx),
+            _row_fingerprint(len(panel) - 1),
+        )
+        if self._last_panel_id is not None and self._last_panel_id != panel_fingerprint:
+            self.clear_execution_cache()
+        self._last_panel_id = panel_fingerprint
+
         # Store original index to reindex results at the end
         original_index = panel.index.copy()
         work = panel[[ticker_col, date_col] + feat_cols].copy()
@@ -1088,6 +1171,14 @@ mul(rank(volume), sub(close, ts_mean(close, 20)))
         for ticker, grp in work.groupby(ticker_col, sort=False):
             # Sort by date within this ticker to ensure time-series ops are causal
             grp_sorted = grp.sort_values(date_col).copy()
+            cache_key = hash(
+                (
+                    str(ticker),
+                    len(grp_sorted),
+                    int(grp_sorted["_original_idx"].iloc[0]),
+                    int(grp_sorted["_original_idx"].iloc[-1]),
+                )
+            )
             
             # Build feature dict for this ticker only
             feat_dict_ticker = {
@@ -1095,9 +1186,12 @@ mul(rank(volume), sub(close, ts_mean(close, 20)))
             }
             
             # Execute tree on this ticker's data
-            ind = GPIndividual(tree=node)
             try:
-                values = ind._execute_tree(node, feat_dict_ticker)
+                values = self._execute_tree_cached(
+                    node,
+                    feat_dict_ticker,
+                    cache_key=cache_key,
+                )
             except Exception as e:
                 logger.warning(
                     f"Tree execution failed for ticker {ticker}: {e}, "
@@ -1116,8 +1210,96 @@ mul(rank(volume), sub(close, ts_mean(close, 20)))
         # Concatenate all ticker results and reindex to original panel order
         result_df = pd.concat(results, ignore_index=True)
         result_df = result_df.set_index("_original_idx").reindex(original_index)
-        
+
         return result_df["value"].to_numpy()
+
+    def clear_execution_cache(self) -> None:
+        """Release in-memory subtree execution cache."""
+        self._subtree_cache.clear()
+
+    def _execute_tree_cached(
+        self,
+        node: GPNode,
+        features: Dict[str, np.ndarray],
+        cache_key: int,
+    ) -> np.ndarray:
+        from omega.quant.evolution.genetic_programming import (
+            _decay_linear,
+            _protected_div,
+            _protected_exp,
+            _protected_log,
+            _protected_sqrt,
+            _rank_transform,
+            _sigmoid,
+            _ts_mean,
+            _ts_rank,
+            _ts_std,
+        )
+
+        key = (node.to_string(), cache_key)
+        cached = self._subtree_cache.get(key)
+        if cached is not None:
+            return cached.copy()
+
+        if not node.children:
+            if node.value in features:
+                value = features[node.value].copy()
+            else:
+                try:
+                    scalar = float(node.value)
+                    value = np.full(len(next(iter(features.values()))), scalar)
+                except ValueError:
+                    value = np.zeros(len(next(iter(features.values()))))
+        elif len(node.children) == 1:
+            child_val = self._execute_tree_cached(node.children[0], features, cache_key)
+            if node.operator == 'abs':
+                value = np.abs(child_val)
+            elif node.operator == 'log':
+                value = _protected_log(child_val)
+            elif node.operator == 'sqrt':
+                value = _protected_sqrt(child_val)
+            elif node.operator == 'exp':
+                value = _protected_exp(child_val)
+            elif node.operator == 'sigmoid':
+                value = _sigmoid(child_val)
+            elif node.operator == 'rank':
+                value = _rank_transform(child_val)
+            elif node.operator == 'neg':
+                value = -child_val
+            else:
+                value = child_val
+        elif len(node.children) == 2 and node.operator in ['+', '-', '*', '/', 'max', 'min']:
+            left_val = self._execute_tree_cached(node.children[0], features, cache_key)
+            right_val = self._execute_tree_cached(node.children[1], features, cache_key)
+            if node.operator == '+':
+                value = left_val + right_val
+            elif node.operator == '-':
+                value = left_val - right_val
+            elif node.operator == '*':
+                value = left_val * right_val
+            elif node.operator == '/':
+                value = _protected_div(left_val, right_val)
+            elif node.operator == 'max':
+                value = np.maximum(left_val, right_val)
+            else:
+                value = np.minimum(left_val, right_val)
+        elif len(node.children) == 2 and node.operator in ['ts_std', 'ts_mean', 'ts_rank', 'decay_linear']:
+            child_val = self._execute_tree_cached(node.children[0], features, cache_key)
+            window_values = self._execute_tree_cached(node.children[1], features, cache_key)
+            window = max(2, min(int(window_values[0]), 60))
+            if node.operator == 'ts_std':
+                value = _ts_std(child_val, window)
+            elif node.operator == 'ts_mean':
+                value = _ts_mean(child_val, window)
+            elif node.operator == 'ts_rank':
+                value = _ts_rank(child_val, window)
+            else:
+                value = _decay_linear(child_val, window)
+        else:
+            value = np.zeros(len(next(iter(features.values()))))
+
+        self._subtree_cache[key] = value.copy()
+        return value.copy()
 
     def _generate_mock_nodes(self, features: Dict[str, np.ndarray]) -> List[GPNode]:
         """

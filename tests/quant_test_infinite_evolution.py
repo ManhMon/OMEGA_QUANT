@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import shutil
+import json
+import os
+import importlib.util
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -10,6 +14,107 @@ import pytest
 import torch
 
 from omega.quant.evolution.llm_symbolic_synthesizer import LLMSymbolicSynthesizer
+
+
+_ALPHA_SCRIPT = Path(__file__).parents[1] / "scripts" / "run_hybrid_alpha_evolution.py"
+_ALPHA_SPEC = importlib.util.spec_from_file_location("run_hybrid_alpha_evolution", _ALPHA_SCRIPT)
+alpha_runtime = importlib.util.module_from_spec(_ALPHA_SPEC)
+sys.modules[_ALPHA_SPEC.name] = alpha_runtime
+_ALPHA_SPEC.loader.exec_module(alpha_runtime)
+
+
+def test_alpha_effective_config_handoff_uses_provider_arguments(monkeypatch):
+    monkeypatch.delenv("OMEGA_LLM_API_KEY", raising=False)
+    config = {
+        "provider": "openai-compatible",
+        "api_key": "file-key",
+        "base_url": "https://file.example/v1",
+        "model": "file-model",
+    }
+    synth = LLMSymbolicSynthesizer(effective_alpha_config=config)
+    assert synth.effective_alpha_config == config
+    assert synth.provider._api_key == "file-key"
+    assert synth.provider.base_url == "https://file.example/v1"
+    assert synth.provider.model == "file-model"
+
+
+@pytest.mark.parametrize(
+    ("provider_arg", "file_data", "env", "expected"),
+    [
+        ("mock", {"provider": "openai-compatible", "api_key": "file-key"}, {"OMEGA_LLM_API_KEY": "env-key"}, "mock"),
+        (None, {"provider": "openai-compatible", "api_key": "file-key"}, {}, "openai-compatible"),
+        (None, {}, {"OMEGA_LLM_PROVIDER": "openai-compatible", "OMEGA_LLM_API_KEY": "env-key"}, "openai-compatible"),
+        (None, {"api_key": "file-key"}, {}, "openai-compatible"),
+        (None, {}, {"OMEGA_LLM_API_KEY": "env-key"}, "openai-compatible"),
+        (None, {"provider": "mock", "model": "partial-model"}, {"OMEGA_LLM_API_KEY": "env-key"}, "mock"),
+        (None, None, {"OMEGA_LLM_API_KEY": "env-key"}, "openai-compatible"),
+        (None, "invalid-path", {}, "mock"),
+        (None, {}, {}, "mock"),
+    ],
+)
+def test_alpha_config_precedence_table(tmp_path, monkeypatch, provider_arg, file_data, env, expected):
+    monkeypatch.setattr(alpha_runtime, "REPO_ROOT", tmp_path / "repo")
+    for name in ("OMEGA_ALPHA_LLM_CONFIG_PATH", "OMEGA_LLM_PROVIDER", "OMEGA_LLM_API_KEY", "OMEGA_LLM_BASE_URL", "OMEGA_LLM_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    if file_data is None:
+        config_path = tmp_path / "malformed.json"
+        config_path.write_text("{", encoding="utf-8")
+    elif file_data == "invalid-path":
+        config_path = tmp_path / "inside.json"
+        config_path.write_text(json.dumps({"provider": "openai-compatible"}), encoding="utf-8")
+        monkeypatch.setenv("OMEGA_ALPHA_LLM_CONFIG_PATH", str(config_path))
+        monkeypatch.setattr(alpha_runtime, "REPO_ROOT", tmp_path)
+        return_value = alpha_runtime.resolve_alpha_config(provider_arg)
+        assert return_value["provider"] == "mock"
+        return
+    else:
+        config_path = tmp_path / "alpha.json"
+        config_path.write_text(json.dumps(file_data), encoding="utf-8")
+    monkeypatch.setenv("OMEGA_ALPHA_LLM_CONFIG_PATH", str(config_path))
+    assert alpha_runtime.resolve_alpha_config(provider_arg)["provider"] == expected
+
+
+def test_alpha_external_config_rejects_noncanonical_paths(tmp_path, monkeypatch):
+    config_file = tmp_path / "alpha.json"
+    config_file.write_text(json.dumps({"provider": "openai-compatible", "api_key": "file-key"}), encoding="utf-8")
+    monkeypatch.setattr(alpha_runtime, "REPO_ROOT", tmp_path / "repo")
+    monkeypatch.setenv("OMEGA_LLM_API_KEY", "env-key")
+
+    (tmp_path / "nested").mkdir()
+    traversal = tmp_path / "nested" / ".." / "alpha.json"
+    monkeypatch.setenv("OMEGA_ALPHA_LLM_CONFIG_PATH", str(traversal))
+    assert alpha_runtime.resolve_alpha_config()["api_key"] == "env-key"
+
+    if os.name == "nt":
+        monkeypatch.setenv("OMEGA_ALPHA_LLM_CONFIG_PATH", str(config_file).upper())
+        assert alpha_runtime.resolve_alpha_config()["api_key"] == "env-key"
+
+    symlink = tmp_path / "alpha-link.json"
+    try:
+        symlink.symlink_to(config_file)
+    except (OSError, NotImplementedError):
+        return
+    monkeypatch.setenv("OMEGA_ALPHA_LLM_CONFIG_PATH", str(symlink))
+    assert alpha_runtime.resolve_alpha_config()["api_key"] == "env-key"
+
+    repo_config = tmp_path / "repo" / "alpha.json"
+    repo_config.parent.mkdir()
+    repo_config.write_text(json.dumps({"provider": "openai-compatible", "api_key": "repo-key"}), encoding="utf-8")
+    repo_link = tmp_path / "repo-link.json"
+    try:
+        repo_link.symlink_to(repo_config)
+    except (OSError, NotImplementedError):
+        return
+    monkeypatch.setenv("OMEGA_ALPHA_LLM_CONFIG_PATH", str(repo_link))
+    assert alpha_runtime.resolve_alpha_config()["api_key"] == "env-key"
+
+
+def test_resolve_llm_provider_uses_supplied_effective_config(monkeypatch):
+    monkeypatch.setenv("OMEGA_LLM_PROVIDER", "mock")
+    config = {"provider": "openai-compatible"}
+    assert alpha_runtime.resolve_llm_provider(effective_alpha_config=config) == "openai-compatible"
 from omega.quant.models.latent_encoder import (
     LatentEncoderConfig,
     UnsupervisedLatentEncoder,
@@ -266,13 +371,7 @@ def test_execute_node_grouped_preserves_row_order():
 
 
 def test_llm_synthesizer_use_mock_false_fallback_no_recursion():
-    """Regression test: provider='openai-compatible' without env should fall back to mock without recursion.
-    
-    Before fix: synthesize() with real provider but no API key would cause recursion.
-    
-    After fix: provider initialization falls back to MockProvider when env vars not set,
-    returning mock nodes without recursion.
-    """
+    """Regression test: requested real provider must fail closed without credentials."""
     import os
     
     # Save original env
@@ -286,34 +385,11 @@ def test_llm_synthesizer_use_mock_false_fallback_no_recursion():
         if 'OMEGA_LLM_PROVIDER' in os.environ:
             del os.environ['OMEGA_LLM_PROVIDER']
         
-        # Request real provider without API key (should fall back to mock)
-        synth = LLMSymbolicSynthesizer(provider='openai-compatible')
-        features = {
-            "close": np.random.randn(100) + 100,
-            "open": np.random.randn(100) + 100,
-            "volume": np.abs(np.random.randn(100)) * 1000,
-            "ret_1d": np.random.randn(100) * 0.02,
-        }
-        
-        # This should return mock nodes without recursion error - new API returns tuple
-        nodes, stats = synth.synthesize(features)
-        
-        # Verify we got nodes back
-        assert len(nodes) > 0, "Should return fallback mock nodes"
-        
-        # Verify all nodes are valid GPNode objects
-        from omega.quant.evolution.genetic_programming import GPNode
-        for node in nodes:
-            assert isinstance(node, GPNode)
-        
-        # Verify nodes are executable (no recursion means they were properly generated)
-        from omega.quant.evolution.genetic_programming import GPIndividual
-        for node in nodes:
-            ind = GPIndividual(tree=node)
-            result = ind._execute_tree(node, features)
-            assert len(result) == 100
-            # Some values may be NaN due to warmup periods in time-series ops, that's expected
-            assert not np.isnan(result).all(), "Should have some valid computed values"
+        with pytest.raises(
+            ValueError,
+            match="OpenAI provider requested but OMEGA_LLM_API_KEY is not set\\.",
+        ):
+            LLMSymbolicSynthesizer(provider='openai-compatible')
     
     finally:
         # Restore env
@@ -324,7 +400,7 @@ def test_llm_synthesizer_use_mock_false_fallback_no_recursion():
 
 
 def test_llm_provider_disabled_without_env():
-    """Test that openai-compatible provider falls back to mock when OMEGA_LLM_API_KEY not set."""
+    """Test that openai-compatible provider fails closed when OMEGA_LLM_API_KEY is missing."""
     import os
     
     # Save original env
@@ -338,22 +414,11 @@ def test_llm_provider_disabled_without_env():
         if 'OMEGA_LLM_PROVIDER' in os.environ:
             del os.environ['OMEGA_LLM_PROVIDER']
         
-        # Request openai-compatible provider without API key
-        synth = LLMSymbolicSynthesizer(provider='openai-compatible')
-        
-        # Should fall back to MockProvider
-        from omega.quant.evolution.llm_symbolic_synthesizer import MockProvider
-        assert isinstance(synth.provider, MockProvider), (
-            "Should fall back to MockProvider when OMEGA_LLM_API_KEY not set"
-        )
-        
-        # Synthesize should work (using mock)
-        features = {
-            "close": np.random.randn(100) + 100,
-            "volume": np.abs(np.random.randn(100)) * 1000,
-        }
-        nodes = synth.synthesize(features)
-        assert len(nodes) > 0, "Mock fallback should return nodes"
+        with pytest.raises(
+            ValueError,
+            match="OpenAI provider requested but OMEGA_LLM_API_KEY is not set\\.",
+        ):
+            LLMSymbolicSynthesizer(provider='openai-compatible')
         
     finally:
         # Restore env
@@ -448,6 +513,34 @@ def test_formula_safety_parser_rejects_bad_lookback():
     assert "lookback" in error.lower()
 
 
+def test_formula_safety_parser_enforces_exact_operator_arity():
+    from omega.quant.evolution.llm_symbolic_synthesizer import FormulaSafetyParser
+
+    parser = FormulaSafetyParser(
+        allowed_terminals=['close', 'volume'],
+        allowed_unary=['abs'],
+        allowed_binary=['max'],
+        allowed_ts=['ts_mean'],
+        max_depth=5,
+        min_lookback=2,
+        max_lookback=60,
+    )
+
+    invalid_formulas = [
+        'abs()',
+        'abs(close, volume)',
+        'max(close)',
+        'max(close, volume, close)',
+        'ts_mean(close)',
+        'ts_mean(close, 5, volume)',
+    ]
+
+    for formula in invalid_formulas:
+        is_valid, error = parser.validate_formula(formula)
+        assert not is_valid, formula
+        assert 'requires exactly' in error.lower()
+
+
 def test_formula_safety_parser_accepts_valid():
     """Test that safety parser accepts valid formulas."""
     from omega.quant.evolution.llm_symbolic_synthesizer import FormulaSafetyParser
@@ -508,6 +601,52 @@ def test_formula_safety_parser_rejects_trailing_tokens():
         assert "trailing" in error.lower(), (
             f"Error message should mention trailing tokens: {error}"
         )
+
+
+def test_formula_safety_parser_rejects_unmatched_characters():
+    """Reject formulas where tokenization would silently drop bytes."""
+    from omega.quant.evolution.llm_symbolic_synthesizer import FormulaSafetyParser
+
+    parser = FormulaSafetyParser(
+        allowed_terminals=['close', 'volume'],
+        allowed_unary=['abs'],
+        allowed_binary=['+', 'div'],
+        allowed_ts=['ts_mean'],
+        max_depth=5,
+        min_lookback=2,
+        max_lookback=60,
+    )
+
+    for formula in ["ts_mean(close, 20)$", "abs(close);", "div(close, volume)#"]:
+        is_valid, error = parser.validate_formula(formula)
+        assert not is_valid, f"Formula with dropped characters should be rejected: {formula}"
+        assert "invalid or unmatched" in error.lower()
+
+
+def test_formula_safety_parser_rejects_disallowed_ast_nodes():
+    """Reject attribute, subscript, and lambda syntax before tree validation."""
+    from omega.quant.evolution.llm_symbolic_synthesizer import FormulaSafetyParser
+
+    parser = FormulaSafetyParser(
+        allowed_terminals=['close', 'volume'],
+        allowed_unary=['abs'],
+        allowed_binary=['+', 'div'],
+        allowed_ts=['ts_mean'],
+        max_depth=5,
+        min_lookback=2,
+        max_lookback=60,
+    )
+
+    invalid_formulas = [
+        "close.real",
+        "close[0]",
+        "(lambda x: x)(close)",
+    ]
+
+    for formula in invalid_formulas:
+        is_valid, error = parser.validate_formula(formula)
+        assert not is_valid, f"Disallowed AST syntax should be rejected: {formula}"
+        assert "disallowed syntax node" in error.lower()
 
 
 def test_formula_cache_deterministic():

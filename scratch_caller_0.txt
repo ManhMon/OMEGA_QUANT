@@ -1,0 +1,26 @@
+1326:         type=float,
+1327:         default=0.03,
+1328:         help="Minimum standard deviation floor for fold IR stability (default: 0.03)"
+1329:     )
+1330:     args = parser.parse_args()
+1331: 
+1332:     if sys.platform == "win32" and args.workers > 4:
+1333:         logger.warning("--workers=%d capped to 4 on Windows to avoid memory pressure", args.workers)
+1334:         args.workers = 4
+1335:     elif sys.platform == "win32" and args.workers <= 0:
+1336:         args.workers = min(os.cpu_count() or 4, 4)
+1337: 
+1338:     logger.info("=== WEEKLY GP ALPHA EVOLUTION START ===")
+1339:     logger.info("Config: regime=%s, generations=%d, pop=%d, ortho=%s, alt_features=%s, workers=%d, backend=%s",
+1340:                 args.regime, args.generations, args.population_size,
+1341:                 args.orthogonalize, "OFF" if args.no_alt_features else "ON",
+1342:                 args.workers, args.backend)
+1343: 
+1344:     # Step 1: Load data
+1345:     df = load_market_data(regime=args.regime, start_date=args.start_date, end_date=args.end_date)
+1346: 
+1347:     # Step 2: Prepare features with T-1 lag
+1348:     #   - If --no-alt-features, temporarily skip alternative feature generation
+1349:     _orig_gen = None
+1350:     if args.no_alt_features:
+1351:         # Monkey-patch: skip the _generate_alternative_features call

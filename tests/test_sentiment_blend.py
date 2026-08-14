@@ -194,6 +194,35 @@ class TestBlendSignals:
         # VNM: 0.05 + 0.5 * 0.05 = 0.075
         assert abs(result["signals"]["VNM"] - 0.075) < 1e-6
 
+    def test_blend_normalizes_positive_utc_offset(self, sample_ensemble_data):
+        """An offset-aware timestamp before the UTC target remains PIT-valid."""
+        result = blend_signals(
+            sample_ensemble_data,
+            {
+                "date": "2026-06-18",
+                "generated_at": "2026-06-19T10:00:00+07:00",
+                "scores": {"VNM": 1.0},
+            },
+            target_date="2026-06-19",
+            sentiment_scale=0.1,
+        )
+
+        assert result["signals"]["VNM"] == pytest.approx(0.15)
+
+    def test_blend_normalizes_negative_utc_offset(self, sample_ensemble_data):
+        """An offset-aware timestamp after the UTC target remains PIT-invalid."""
+        with pytest.raises(ValueError, match="available_at must not exceed as_of"):
+            blend_signals(
+                sample_ensemble_data,
+                {
+                    "date": "2026-06-18",
+                    "generated_at": "2026-06-19T05:00:00-07:00",
+                    "scores": {"VNM": 1.0},
+                },
+                target_date="2026-06-19",
+                sentiment_scale=0.1,
+            )
+
 
 # ---------------------------------------------------------------------------
 # Integration-style Tests (mocked I/O)

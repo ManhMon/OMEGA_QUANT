@@ -1,0 +1,121 @@
+﻿=== RELEVANT LESSONS LEARNED FROM PAST FAILURES ===
+Lesson 1: [Gate: REMAINING_FOLLOWUPS_COMPLETION_20260613]
+  - Root Cause: 1. BLOCKER - Required quick mode does not work with default worker selection.
+   - Evidence: `python scripts/run_backtest.py evolution-multiseed --quick` fails on this machine.
+   - Root cause evidence: `scripts/backtest_evolution_multiseed.py:145-146` defaults to `compute_safe_workers()`, producing `GP n_jobs=9`; `src/omega/quant/evolution/genetic_engine.py:583-584` then enters joblib parallel evaluation; every seed fails with `[WinError 5] Access is denied`.
+   - Impact: L2's claimed verification that quick mode completes is not reproducible under the required command.
+
+2. BLOCKER - No-results path crashes instead of returning a controlled failure.
+   - Evidence: after all seeds fail, `scripts/backtest_evolution_multiseed.py:278` divides by `len(results)` when `results == []`, causing `ZeroDivisionError`.
+   - Impact: failures are converted into an unhandled traceback, and CI/operator output cannot distinguish infrastructure failure from strategy failure.
+
+3. HIGH - Explicit `--workers` is not safely capped.
+   - Evidence: `scripts/backtest_evolution_multiseed.py:141-142` uses `n_jobs = max(1, args.workers)` for user input. This bypasses `compute_safe_workers()` and accepts arbitrarily large values.
+   - Impact: the `--workers safe` requirement is not met. Even `--workers 2` fails here; larger values can oversubscribe the machine.
+  - Recommended Fix Pattern: See subsequent fix gates.
+
+Lesson 2: [Gate: GP_PRODUCTION_RUN_PLAN_REVIEW_V2]
+  - Root Cause: 1. **BLOCKING - requested GP fixes are not implemented in current code.**
+   Plan requires stable two-pass export sort, validate-before-register, p-value hard failure, `searchsorted` split lookup, and unrounded `val_IC_daily` tie-break at `.ly_state/session/gp_production_plan.md:20`, `:25`, `:26`, `:27`, `:28`. Current code still has old behavior:
+   - `scripts/genetic_alpha_evolution_v3.py:643` sorts `(rank, version)` ascending, so older versions win inside rank.
+   - `scripts/genetic_alpha_evolution_v3.py:805` sorts on rounded `val_IC_daily` stored at `:783`.
+   - `scripts/genetic_alpha_evolution_v3.py:862` registers models before Gate 6 validation starts at `:880`.
+   - `scripts/genetic_alpha_evolution_v3.py:898` only prints p-value warning.
+   - `scripts/genetic_alpha_evolution_v3.py:566`, `:569`, `:572` still call `dates.index(...)`.
+
+2. **BLOCKING - backtest command registry semantics are wrong.**
+   Plan command at `.ly_state/session/gp_production_plan.md:42` passes `--conformal-registry-key genetic_alpha_v3_rank_01` without `--fast-global-embargo`. In `scripts/backtest_hybrid_regime.py:2814`, the registry is loaded only when `--fast-global-embargo` is true, so the key is ignored in the planned command. If that flag is added, `load_conformal_predictor()` calls `joblib.load(record.path)` at `scripts/backtest_hybrid_regime.py:302`, but the current `genetic_alpha_v3_rank_01` registry row points to `data/stable/genetic_alpha_v3_models/...json`, created by `scripts/genetic_alpha_evolution_v3.py:598`, not a joblib `ConformalTrendPredictor`.
+
+3. **BLOCKING - verification plan names tests not yet covering the new fixes.**
+   `.ly_state/session/gp_production_plan.md:54` says to add sort/searchsorted unit coverage, but current tests only cover a basic split ordering case at `tests/test_genetic_alpha_evolution_v3.py:24` and do not assert missing-trading-day `searchsorted`, export version tie-break, validate-before-register, p-value exception, or unrounded tie-break behavior.
+  - Recommended Fix Pattern: See subsequent fix gates.
+
+Lesson 3: [Gate: GP_ZERO_ALLOCATION_KERNELS_IMPL]
+  - Root Cause: ﻿# Code Review Audit Report: GP Zero-Allocation Kernels Implementation
+
+**Role**: Code Reviewer (Role 21, Tier 3, Codex)
+**Date**: 2026-07-07
+**Gate**: GP_ZERO_ALLOCATION_KERNELS_IMPL
+**L2 Session**: l2_role16_gp_zero_allocation_kernels_20260707, l2_role16_gp_test_tolerance_fix_20260707
+**L2 Role**: 16 machine-learning-engineer
+**L3 Session**: l3_role21_gp_zero_allocation_kernels_impl_review_20260707
+**L3 Role**: 21 code-reviewer
+
+---
+
+## SoD Boundary Verification
+
+- **Writer != Auditor**: CONFIRMED. l2_role_id=16 != l3_role_id=21
+- **L3 read-only**: CONFIRMED. No production code modifications made by L3.
+- **Platform isolation**: CONFIRMED. L3 (Codex) did not invoke OpenCode or modify source files.
+
+---
+
+## Repo-Local Skill Source Evidence
+
+### Role Specification
+- **File read**: `.agents/agent/code-reviewer.md`
+- **Frontmatter validated**: role_id=21, tier=3, platform=Codex, sod_boundary=READ-ONLY audit
+
+### Skills Loaded (Repo-Local Only)
+1. `.agents/skills/code-review-checklist/SKILL.md` (2811 bytes)
+2. `.agents/skills/clean-code/SKILL.md` (verified, exists)
+3. `.agents/skills/testing-patterns/SKILL.md` (verified, exists)
+4. `.agents/skills/audit-cycle/SKILL.md` (verified, exists)
+5. `.agents/skills/omega-sod/SKILL.md` (12527 bytes)
+
+### Forbidden Path Scan
+- `.gemini\antigravity-ide\scratch\ag-kit` -> confirmed NOT PRESENT, no reliance
+- `.openclaw\skills` -> confirmed NOT PRESENT, no reliance
+- `C:\Users\GHC\.agents` -> EXISTS but confirmed NOT USED as authoritative source, no reliance
+- `.codex\memories` -> confirmed NOT PRESENT, no reliance
+
+---
+
+## Scope Compliance
+
+### Files in Scope (Approved)
+1. `src/omega/quant/evolution/genetic_programming.py` - GPNode string caching
+2. `scripts/genetic_alpha_evolution_v4.py` - VM program cache, thread-local stack, date index cache, vectorized eval_mask, workspace pre-allocation
+3. `tests/test_genetic_alpha_evolution_v4.py` - Test tolerance fix (atol=1e-3)
+4. `tests/quant_test_genetic_engine_optimizations.py` - New optimization tests + restore block
+
+### Scope Verdict: APPROVED
+All modifications are within the approved scope boundary.
+
+---
+
+## Code Quality Checks
+
+### Optimization 1: GPNode to_string() Caching
+- [x] `_string_cached` field added with `field(default=None, init=False, repr=False)`
+- [x] `to_string()` returns cached value when available
+- [x] `replace_subtree()` invalidates `_string_cached = None` on current node and recurses
+- [x] `copy()` creates new GPNode without passing `_string_cached` (defaults to None)
+- [x] `crossover()` and `mutate()` both call `copy()` then `replace_subtree()`
+- **Verdict**: APPROVED. Cache invalidation is correct at all mutation points.
+
+### Optimization 2: Thread-Safe Global VM Program Cache
+- [x] `_GLOBAL_VM_PROGRAM_CACHE` is a module-level dict
+- [x] `_GLOBAL_VM_PROGRAM_CACHE_LOCK` is a `threading.Lock()`
+- [x] Fast path: lock-free `dict.get()` (safe under GIL for CPython)
+- [x] Write path: `with _GLOBAL_VM_PROGRAM_CACHE_LOCK` for synchronization
+- [x] Cache key is `(tuple(feature_names), node.to_string())` - deterministic, immutable
+- [x] Values are numpy array tuples (immutable once compiled)
+- **Verdict**: APPROVED. Double-checked locking is safe under CPython GIL.
+
+### Optimization 3: Thread-Local Stack Allocation
+- [x] Uses `threading.local()` via `_THREAD_LOCAL_STACK`
+- [x] Per-thread, per-row_count stack allocation
+- [x] Stack shape `(MAX_VM_STACK_DEPTH, row_count)` prevents overflow
+- [x] Each thread gets its own buffer, no cross-thread contamination
+- **Verdict**: APPROVED. Thread safety correctly implemented.
+
+### Optimization 4: Workspace Pre-Allocation in _numba_batch_ridge_neutralize
+- [x] Workspaces allocated per date group outside prange loop
+- [x] Shape `(candidate_count, ...)` with per-candidate indexing inside prange
+- [x] `workspace_row_buffer`, `workspace_gram`, `workspace_rhs`, `workspace_beta` all pre-allocated
+- [x] Each candidate_idx gets exclusive slice - no race conditions
+- **Verdict**: APPROVED. Zero-allocat
+  - Recommended Fix Pattern: Review the audit report markdown and apply the required fix before rerunning the gate.
+

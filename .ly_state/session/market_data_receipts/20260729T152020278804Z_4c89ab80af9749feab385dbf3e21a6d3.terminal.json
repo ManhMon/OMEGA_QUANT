@@ -1,0 +1,19 @@
+{
+  "as_of_date": null,
+  "attempt_id": "20260729T152020278804Z_4c89ab80af9749feab385dbf3e21a6d3",
+  "calendar_status": "unknown",
+  "completed_at": "2026-07-29T15:20:20+00:00",
+  "execution_allowed": false,
+  "expected_session_date": null,
+  "provenance": {
+    "projection_error": null,
+    "publication_run_id": null,
+    "result_status": "gates_failed"
+  },
+  "published": false,
+  "reason": "gates_failed",
+  "schema_version": 1,
+  "stale": true,
+  "started_at": "2026-07-29T15:20:20+00:00",
+  "state": "terminal"
+}

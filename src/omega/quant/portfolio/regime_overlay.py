@@ -277,6 +277,9 @@ def apply_regime_overlay(
     Returns:
         Regime-adjusted weights (same shape).
     """
+    if daily_weights.empty:
+        return daily_weights.copy()
+
     if strategy == RegimeStrategy.RULE_BASED:
         # Rule-based strategy
         exposures = compute_regime_exposure(
@@ -312,6 +315,10 @@ def apply_regime_overlay(
     else:
         raise ValueError(f"Unknown regime strategy: {strategy}")
 
+    gross_exposure = adjusted.clip(lower=0.0).sum(axis=1)
+    over_cap = gross_exposure > 1.0
+    if over_cap.any():
+        adjusted.loc[over_cap] = adjusted.loc[over_cap].div(gross_exposure.loc[over_cap], axis=0)
     return adjusted
 
 

@@ -99,28 +99,44 @@ def test_v4_subtree_cache_features_remain_picklable():
     pickle.dumps(features)
 
 
-def test_v4_target_neutralized_cache_persists_on_main_features(monkeypatch):
+def test_v4_target_neutralized_cache_persists_on_main_features():
     features = _make_features()
-    features[ge.FOLD_STRUCTURE_CACHE_KEY] = ge._build_time_fold_structure(features["__date__"], 3)
-    signal = np.array([1, 2, 3, 4, 5, 6, 6, 5, 4, 3, 2, 1], dtype=float)
+    fold_structure = ge._build_time_fold_structure(features["__date__"], 3)
+    features[ge.FOLD_STRUCTURE_CACHE_KEY] = fold_structure
+    features[ge.NEUTRALIZATION_CACHE_KEY] = ge._build_neutralization_cache(
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+    )
+    alpha = np.array([1, 2, 3, 4, 5, 6, 6, 5, 4, 3, 2, 1], dtype=float)
     target = np.array([1, 2, 3, 4, 5, 6, 1, 2, 3, 4, 5, 6], dtype=float)
-    config = ge.GPConfig(use_time_fold_ir=True, time_folds=3, fold_ir_std_floor=0.03, neutralize_size_sector=True)
-    calls = 0
-    original = ge._neutralize_cross_section
+    config = ge.GPConfig(
+        use_time_fold_ir=True,
+        time_folds=3,
+        fold_ir_std_floor=0.03,
+        neutralize_size_sector=True,
+    )
 
-    def counting_neutralize(*args, **kwargs):
-        nonlocal calls
-        calls += 1
-        return original(*args, **kwargs)
+    first = v4._compute_time_fold_ir_v4(alpha, target, features, config, pre_neutralized=True)
+    cache = features[v4.TARGET_NEUTRALIZED_CACHE_KEY]
+    expected_keys = {(id(target), fold_idx) for fold_idx, _ in enumerate(fold_structure)}
 
-    monkeypatch.setattr(ge, "_neutralize_cross_section", counting_neutralize)
+    assert set(cache) == expected_keys
 
-    first = v4._compute_time_fold_ir_v4(signal, target, features, config, pre_neutralized=True)
-    second = v4._compute_time_fold_ir_v4(signal, target, features, config, pre_neutralized=True)
+    second = v4._compute_time_fold_ir_v4(alpha, target, features, config, pre_neutralized=True)
 
     assert first == second
-    assert calls == len(features[ge.FOLD_STRUCTURE_CACHE_KEY])
-    assert set(key[0] for key in features[v4.TARGET_NEUTRALIZED_CACHE_KEY]) == set(range(len(features[ge.FOLD_STRUCTURE_CACHE_KEY])))
+    for fold_idx, (fold_mask, _fold_dates) in enumerate(fold_structure):
+        cached_value = cache[(id(target), fold_idx)]
+        expected = ge._neutralize_cross_section(
+            target[fold_mask],
+            features["__log_market_cap__"][fold_mask],
+            features["__sector__"][fold_mask],
+            features["__date__"][fold_mask],
+            neutralization_cache=v4._build_cached_fold_features(features, fold_structure)[fold_idx][ge.NEUTRALIZATION_CACHE_KEY],
+        )
+        assert cache[(id(target), fold_idx)] is cached_value
+        np.testing.assert_allclose(cached_value, expected, equal_nan=True)
 
 
 def test_optimized_neutralize_cross_section_matches_original():
@@ -213,70 +229,53 @@ def test_neutralization_cache_stores_shared_date_groups():
         features["__date__"],
         cache,
     )
-    shared = cache["__date_groups__"]["value"]
+    shared = cache["__date_groups__"]
 
     v4._optimized_batch_neutralize_cross_section(alpha_matrix, features["__date__"], cache)
 
-    assert cache["__date_groups__"]["value"] is shared
+    assert cache["__date_groups__"] is shared
 
 
-def test_date_groups_cache_clone_hits_and_forced_collision_rebuilds(monkeypatch):
+def test_date_groups_cache_uses_array_identity_keys():
     features = _make_features()
     clone = features["__date__"].copy()
     v4._DATE_GROUPS_CACHE.clear()
 
     first = v4._group_row_indices_by_date(features["__date__"])
+    first_again = v4._group_row_indices_by_date(features["__date__"])
     second = v4._group_row_indices_by_date(clone)
 
-    assert first is second
-
-    original_digest = v4._array_content_digest
-    call_state = {"count": 0}
-
-    def forced_digest(_arr):
-        call_state["count"] += 1
-        return 12345
-
-    monkeypatch.setattr(v4, "_array_content_digest", forced_digest)
-    try:
-        a = v4._group_row_indices_by_date(np.array([1, 1, 2, 2], dtype=np.int64))
-        b = v4._group_row_indices_by_date(np.array([1, 2, 1, 2], dtype=np.int64))
-    finally:
-        monkeypatch.setattr(v4, "_array_content_digest", original_digest)
-
-    assert a is not b
+    assert first_again is first
+    assert second is not first
+    assert first.keys() == second.keys()
+    for key in first:
+        np.testing.assert_array_equal(first[key], second[key])
+    assert (id(features["__date__"]), len(features["__date__"]), features["__date__"][0], features["__date__"][-1]) in v4._DATE_GROUPS_CACHE
+    assert (id(clone), len(clone), clone[0], clone[-1]) in v4._DATE_GROUPS_CACHE
 
 
-def test_fold_features_cache_clone_hits_and_forced_collision_rebuilds(monkeypatch):
+def test_fold_features_cache_uses_date_array_identity_keys():
     features = _make_features()
     fold_structure = ge._build_time_fold_structure(features["__date__"], 3)
     v4._GLOBAL_FOLD_FEATURES_CACHE.clear()
 
-    first = v4._set_cached_fold_views(features, 3, v4._build_cached_fold_features(features, fold_structure))
+    first = v4._build_cached_fold_features(features, fold_structure)
+    v4._GLOBAL_FOLD_FEATURES_CACHE[(id(features["__date__"]), 3)] = first
     clone_features = dict(features)
     clone_features["__date__"] = features["__date__"].copy()
-    second = v4._get_cached_fold_views(clone_features, 3)
+    second = v4._GLOBAL_FOLD_FEATURES_CACHE.get((id(clone_features["__date__"]), 3))
 
-    assert first is second
+    assert v4._GLOBAL_FOLD_FEATURES_CACHE[(id(features["__date__"]), 3)] is first
+    assert second is None
 
-    original_digest = v4._array_content_digest
-
-    def forced_digest(_arr):
-        return 54321
-
-    monkeypatch.setattr(v4, "_array_content_digest", forced_digest)
-    try:
-        features_a = {"__date__": np.array([1, 1, 2, 2])}
-        features_b = {"__date__": np.array([1, 2, 1, 2])}
-        fold_a = v4._set_cached_fold_views(features_a, 2, [{"__date__": features_a["__date__"]}])
-        fold_b = v4._set_cached_fold_views(features_b, 2, [{"__date__": features_b["__date__"]}])
-    finally:
-        monkeypatch.setattr(v4, "_array_content_digest", original_digest)
-
-    assert fold_a is not fold_b
+    rebuilt = v4._build_cached_fold_features(clone_features, fold_structure)
+    assert rebuilt is not first
+    assert len(rebuilt) == len(first)
+    for fold_idx in range(len(first)):
+        np.testing.assert_array_equal(rebuilt[fold_idx]["__date__"], first[fold_idx]["__date__"])
 
 
-def test_target_neutralization_cache_nan_payload_collision_rebuilds(monkeypatch):
+def test_target_neutralization_cache_uses_target_identity_keys():
     features = _make_features()
     fold_structure = ge._build_time_fold_structure(features["__date__"], 3)
     fold_mask, _ = fold_structure[0]
@@ -288,19 +287,14 @@ def test_target_neutralization_cache_nan_payload_collision_rebuilds(monkeypatch)
     target_b[1] = np.nan
     target_b[2] = 99.0
 
-    original_digest = v4._array_content_digest
+    out_a = v4._neutralize_target_once(target_a, features, fold_features, (id(target_a), 0))
+    out_b = v4._neutralize_target_once(target_b, features, fold_features, (id(target_b), 0))
 
-    def forced_digest(_arr):
-        return 999
-
-    monkeypatch.setattr(v4, "_array_content_digest", forced_digest)
-    try:
-        out_a = v4._neutralize_target_once(target_a, features, fold_features, (0, 0))
-        out_b = v4._neutralize_target_once(target_b, features, fold_features, (0, 0))
-    finally:
-        monkeypatch.setattr(v4, "_array_content_digest", original_digest)
-
+    assert (id(target_a), 0) in features[v4.TARGET_NEUTRALIZED_CACHE_KEY]
+    assert (id(target_b), 0) in features[v4.TARGET_NEUTRALIZED_CACHE_KEY]
     assert not np.array_equal(out_a, out_b, equal_nan=True)
+    assert features[v4.TARGET_NEUTRALIZED_CACHE_KEY][(id(target_a), 0)] is out_a
+    assert features[v4.TARGET_NEUTRALIZED_CACHE_KEY][(id(target_b), 0)] is out_b
 
 
 def test_build_feature_bank_matches_v3_feature_logic():
@@ -416,6 +410,8 @@ def test_rule5_batch_fold_ir_matches_scalar_within_tolerance():
 
 
 def test_rule5_batch_fold_ir_matches_scalar_random_probe():
+    v4._DATE_GROUPS_CACHE.clear()
+    v4._GLOBAL_FOLD_FEATURES_CACHE.clear()
     rng = np.random.default_rng(42)
     row_count = 72
     dates = pd.to_datetime(["2024-01-02"] * 12 + ["2024-01-03"] * 12 + ["2024-01-04"] * 12 + ["2024-01-05"] * 12 + ["2024-01-08"] * 12 + ["2024-01-09"] * 12).to_numpy()
@@ -798,8 +794,14 @@ def test_float32_storage_adversarial_rank_correlation_regression():
     alpha64 = alpha32.astype(np.float64)
     target64 = target32.astype(np.float64)
 
-    ic32 = v4._numba_daily_rank_corr(alpha32.astype(np.float64), target32.astype(np.float64))
-    ic64 = v4._numba_daily_rank_corr(alpha64, target64)
+    ic32 = v4._numba_pearson_corr(
+        v4._numba_rank_average_ties(alpha32.astype(np.float64)),
+        v4._numba_rank_average_ties(target32.astype(np.float64)),
+    )
+    ic64 = v4._numba_pearson_corr(
+        v4._numba_rank_average_ties(alpha64),
+        v4._numba_rank_average_ties(target64),
+    )
 
     assert np.isfinite(ic32)
     assert np.isfinite(ic64)
