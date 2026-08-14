@@ -7,6 +7,11 @@ from extract_lessons import normalize_lesson_text, search_similar_lessons
 WORKSPACE = Path(__file__).resolve().parent.parent
 LESSONS_FILE = WORKSPACE / ".agents" / "knowledge" / "lessons.jsonl"
 
+def _truncate(text, max_len=200):
+    text = str(text).strip().replace("\n", " ").replace("\r", "")
+    return text[:max_len] + "..." if len(text) > max_len else text
+
+
 def _format_lessons(lessons):
     if not lessons:
         return ""
@@ -14,8 +19,8 @@ def _format_lessons(lessons):
     output = ["=== RELEVANT LESSONS LEARNED FROM PAST FAILURES ==="]
     for idx, lesson in enumerate(lessons[:3], 1):
         output.append(f"Lesson {idx}: [Gate: {lesson.get('gate')}]")
-        output.append(f"  - Root Cause: {str(lesson.get('root_cause', '')).strip()}")
-        output.append(f"  - Recommended Fix Pattern: {str(lesson.get('fix_pattern', '')).strip()}")
+        output.append(f"  - Root Cause: {_truncate(lesson.get('root_cause', ''))}")
+        output.append(f"  - Recommended Fix Pattern: {_truncate(lesson.get('fix_pattern', ''))}")
         output.append("")
     return "\n".join(output)
 
