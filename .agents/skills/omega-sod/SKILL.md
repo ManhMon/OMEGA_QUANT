@@ -387,3 +387,36 @@ Mentions of forbidden paths are allowed ONLY when:
 - L2 reports list exact repo-local files read
 - No authoritative reliance on forbidden paths
 - Forbidden path scan result is documented
+
+---
+
+## Pre-L3 Validation Gate (TOKEN SAVER — MANDATORY)
+
+**Effective**: 2026-08-14. Prevents expensive L3 retry cycles from L2 report format errors.
+
+### Why This Exists
+
+Each L3 Codex audit costs ~400K tokens. Recurring L2 report format failures (missing heading, wrong wording, wrong filename) caused 5+ retry cycles in a single gate, wasting millions of tokens.
+
+### L1 MUST Run Before Every L3 Dispatch
+
+```powershell
+python scripts/validate_l2_report.py <l2_session_id> <role_id> <role_name>
+```
+
+- **Exit 0** → safe to dispatch L3
+- **Exit 1** → fix L2 report first (retry L2 only, do NOT dispatch L3)
+
+### What It Checks
+
+| Check | Requirement |
+|-------|-------------|
+| Filename | Must end `_YYYYMMDD.md` — no `_retry` suffix |
+| `## Repo-Local Files Read` | Must exist with ≥1 file from REPO_AGENT_ROOT |
+| Forbidden path scan wording | Each line must end: `non-authoritative scan evidence only; no reliance.` |
+| Authoritative forbidden path usage | Must be zero |
+
+### L2 Report Template
+
+L2 agents MUST use the template at `.agents/skills/omega-sod/l2_report_template.md`.
+Copy it exactly, fill in `[PLACEHOLDER]` values only. Do not invent structure.

@@ -2,3 +2,5 @@
 *.py text eol=lf
 *.md text eol=lf
 *.json text eol=lf
+tests/fixtures/macro/*.pdf binary
+tests/fixtures/macro/*.pdf -eol

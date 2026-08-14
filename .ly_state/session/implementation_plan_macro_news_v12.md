@@ -2,12 +2,12 @@
 
 ## 1. Planning Boundary
 
-- Date: `2026-08-13`.
+- Date: `2026-08-14`.
 - Artifact: `.ly_state/session/implementation_plan_macro_news_v12.md`.
 - Parsed role frontmatter: `name=planning-architect`, `role_id=26`, `tier=3`, `platform=Codex`.
 - Declared repo-local skills: `plan-writing`, `architecture`, `database-design`, `api-patterns`.
 - SoD boundary: L3 planning only; no production implementation, test implementation, audit, approval, verdict, or gate decision.
-- This revision addresses only the corrupted SBV tenor-label blocker in `.ly_state/session/audit_reports/role21_macro_news_pipeline_plan_v11_reaudit_20260813.md`; every unaffected v11 contract remains binding and is restated here.
+- This revision retains the corrupted SBV tenor-label correction from `.ly_state/session/audit_reports/role21_macro_news_pipeline_plan_v11_reaudit_20260813.md` and adds the `2026-08-14` fixture-recovery amendment plus the role-25 re-audit correction: the original production SBV article/PDF bytes are unavailable, and the current `102`-byte HTML placeholder plus `36`-byte UTF-16LE non-PDF placeholder are invalid positive fixtures. L2 must generate valid synthetic positive fixtures and overwrite the existing fixture paths before parser/transport tests. Reconstruction of or equality to lost live bytes, fixed fixture byte counts, and expected fixture hashes remain forbidden. Every other v11 contract remains binding and is restated here.
 - Only this plan is written. Existing unrelated worktree changes remain untouched.
 - Runtime remains a bounded one-shot CLI. No timer, scheduler, daemon, queue, service, or background poller.
 
@@ -21,13 +21,14 @@
 6. Hash the exact serialized LLM HTTP body into mandatory `request_sha256`; semantic duplicates share extraction while retaining distinct provenance links.
 7. Exclude receipt time from revision identity; preserve the immutable first receipt for PIT availability.
 
-## 3. v11 Audit Blocker Remediation Matrix
+## 3. Audit Blocker Remediation Matrix
 
 | Blocker | Binding v12 contract | Acceptance evidence |
 |---|---|---|
 | The binding SBV overnight tenor in v11 was mojibake (`U+00C4 U+2018 U+00C3 U+00AA`) instead of the exact Vietnamese source label. | Bind the literal exactly as `Qua đêm`, whose UTF-8 bytes are `51 75 61 20 C4 91 C3 AA 6D` (`Qua` + `U+0111` + `U+00EA` + `m`). Preserve the existing contract that validates all reviewed tenor anchors but emits only the overnight value. | Strict UTF-8 decode succeeds; the extracted tenor literal has code points `U+0051 U+0075 U+0061 U+0020 U+0111 U+00EA U+006D` and exact bytes `51 75 61 20 C4 91 C3 AA 6D`. Fixture/table agreement still requires overnight `2.65`, the reviewed non-output tenor anchors, and overnight-only emission. |
+| The original production SBV article-fragment HTML and PDF bytes were lost. The files currently at the reviewed fixture paths are only invalid placeholders: `102` bytes of HTML without the selector/link/date/table contract and `36` bytes of UTF-16LE text without a PDF signature or parser contract. | L2 is explicitly permitted and required to generate valid synthetic positive fixtures and overwrite `tests/fixtures/macro/sbv_interbank_article_fragment_20260805.html` and `tests/fixtures/macro/sbv_interbank_20260727_20260731.pdf`. Do not preserve the placeholder bytes as positive fixtures, add parser exemptions, or weaken transport/parser safety bounds to accept them. Do not reconstruct or claim equality to lost live bytes. Retain selector, URL/host, MIME/signature, safety-bound, attachment, table-anchor, PIT, revision, and cleanup validation without fixed byte-count/hash constants. | Both existing paths contain regenerated synthetic fixtures. The HTML passes UTF-8, selector, attachment, publication/range, table-anchor, and `1 KiB..512 KiB` checks. The PDF passes `%PDF-`, `1 KiB..8 MiB`, unencrypted/page/text bounds, parser, and reviewed tenor-table checks. Tests read the committed fixtures without mutating them. No registry, runtime, test, or smoke assertion pins an exact fixture length, digest, PDF version, or equality to lost live bytes. |
 
-The correction is limited to the exact SBV tenor literal and its version/evidence wording. The renderer drain remains transport synchronization only, never a second payload channel, parser, identity input, cache input, or persistence source. Every v11 contract not changed by this literal correction remains retained in this self-contained plan.
+The corrections are limited to the exact SBV tenor literal, its version/evidence wording, removal of fixed SBV fixture byte-count/expected-hash requirements because the production fixtures are unavailable, and mandatory regeneration/overwrite of the two invalid placeholders with valid synthetic positive fixtures. The renderer drain remains transport synchronization only, never a second payload channel, parser, identity input, cache input, or persistence source. Every v11 contract not changed by these corrections remains retained in this self-contained plan.
 
 ## 4. Non-Negotiable Runtime Boundaries
 
@@ -109,12 +110,12 @@ data/macro_news_llm_links.parquet
 - Add durable `config/sbv_interbank_sources.json` with strict schema and explicit reviewed documents only.
 - Initial article: `https://www.sbv.gov.vn/vi/w/di%E1%BB%85n-bi%E1%BA%BFn-th%E1%BB%8B-tr%C6%B0%E1%BB%9Dng-ngo%E1%BA%A1i-t%E1%BB%87-v%C3%A0-th%E1%BB%8B-tr%C6%B0%E1%BB%9Dng-li%C3%AAn-ng%C3%A2n-h%C3%A0ng-tu%E1%BA%A7n-t%E1%BB%AB-27-31.7.2026`.
 - Initial PDF: `https://www.sbv.gov.vn/documents/20117/0/27-31.7.2026.pdf/b1920a14-5195-3d01-e326-af8ac4ee2d80?t=1785916376970`.
-- Registry evidence: publication date `2026-08-05`; observation range `2026-07-27..2026-07-31`; allowed hosts; expected document type; canonical article-fragment and PDF fixture byte counts/SHA-256 values. Full response bytes are never hashed or registered.
+- Registry evidence: publication date `2026-08-05`; observation range `2026-07-27..2026-07-31`; allowed hosts; expected document type; exact article/PDF URLs; selector; and semantic table anchors. Do not register expected fixture byte counts or expected fixture hashes. Full response bytes are never hashed or registered.
 - Runtime performs no web search, listing discovery, `.ly_state` lookup, or session-state fallback. New documents require reviewed registry entries and fixtures.
 
 ### 8.2 WAF-Capable Browser Transport
 
-- Bare HTTP and `BrowserContext.request` are not viable for these protected payloads. The observed failure is HTTP `200`, HTML MIME, and a `244/246`-byte `Request Rejected` body. The SBV adapters must not use `requests.get`, `urllib`, `context.request`, direct API navigation, or a generic fallback for the article, PDF, bootstrap, or structured-content API.
+- Bare HTTP and `BrowserContext.request` are not viable for these protected payloads. The observed failure is HTTP `200`, HTML MIME, and a small `Request Rejected` body. The SBV adapters must not use `requests.get`, `urllib`, `context.request`, direct API navigation, or a generic fallback for the article, PDF, bootstrap, or structured-content API.
 - One macro fetch launches at most one pinned headless Chromium process and one clean non-persistent Playwright `BrowserContext` for both official SBV sources. Create it with `accept_downloads=False`. Persist no profile, cookies, cache, download, storage state, or intercepted payload outside the existing atomic raw/fixture flow.
 - Browser identity is binding:
   1. Pin `playwright==1.62.0`; provision its bundled Chromium during deployment, never at runtime.
@@ -125,15 +126,15 @@ data/macro_news_llm_links.parquet
   1. Open a fresh page in that context and navigate to the exact registry article URL with `page.goto(..., wait_until='domcontentloaded')`.
   2. Require a non-null navigation response, HTTP `200`, allowed final HTTPS host/path, at most `3` redirects, expected HTML MIME, completion within `30` seconds, and full navigation body bounds of `1 KiB..2 MiB`.
   3. Read `full_response_bytes = navigation_response.body()` only to detect empty/truncated bodies, `Request Rejected`, challenge/interstitial markers, invalid MIME, and transport bounds. Record at most status, final URL, MIME, redirect count, and byte count as sanitized diagnostics. Never hash, fixture, persist, parse, cache, or bind identity/revision to `full_response_bytes`.
-  4. Wait for the exact `article_fragment_selector` declared by the registry. Require exactly one match. Obtain that element's `outerHTML` string, encode it exactly once with UTF-8 as `article_fragment_bytes`, enforce `1 KiB..512 KiB`, and compare its byte count/SHA-256 with `article_fragment_byte_count` and `article_fragment_sha256`.
+  4. Wait for the exact `article_fragment_selector` declared by the registry. Require exactly one match. Obtain that element's `outerHTML` string, encode it exactly once with UTF-8 as `article_fragment_bytes`, enforce `1 KiB..512 KiB`, and validate the required structure. Any content digest is runtime-derived revision evidence only; do not compare byte count or digest with registry/fixture constants.
   5. Parse only `article_fragment_bytes` for canonical article fields and the attachment link. Do not parse/hash `full_response_bytes`; do not use `page.content()`; do not silently switch selectors.
   6. Resolve exactly one `a[download]` from the validated fragment. Require its absolute URL to equal the reviewed registry PDF URL before any click; duplicate, missing, cross-host, alternate-query, or rewritten links fail closed.
   7. Create one Chromium CDP session for the article page. Register one bounded future-backed `Fetch.requestPaused` handler, then call `Fetch.enable` with an exact reviewed-PDF `urlPattern`, `requestStage=Response`, and `resourceType=Document`; filter the event again by exact reviewed PDF URL and fail on a duplicate match.
   8. Trigger the browser's real navigation request with that exact `locator.click()` under a `30`-second capture deadline. The renderer must supply its own article `Referer`, same-context cookies, and navigation headers. No programmatic request client or second page URL fetch is allowed.
   9. Accept exactly one paused terminal PDF response. Require exact URL, method `GET`, resource type `Document`, no redirect, HTTP `200`, case-insensitive MIME `application/pdf`, expected attachment disposition when supplied, content length consistent with captured bytes, and body size `1 KiB..8 MiB`.
-  10. Read bytes only with `Fetch.getResponseBody`, decode exactly according to `base64Encoded`, then require `%PDF-`, exact registry `pdf_byte_count`, and exact `pdf_sha256` before parsing. The initial contract is `215439` bytes, `%PDF-1.5`, SHA-256 `b003b92e4795cbd70da5d7eb8ae4a089b1436e2df14c575765f1fb442380f475`.
+  10. Read bytes only with `Fetch.getResponseBody`, decode exactly according to `base64Encoded`, then require the `%PDF-` signature, safety bounds, and parser validity. Any content digest is runtime-derived revision evidence only; do not require a registry/fixture byte count, fixed PDF version, or expected SHA-256.
   11. After capture, call `Fetch.failRequest` with `errorReason=Aborted` for that request ID so Chromium cannot persist or render the PDF. In `finally`, abort any still-paused matching request, call `Fetch.disable`, remove the event handler, detach the CDP session, then close the page. Cleanup failure is source failure with bounded diagnostics.
-- Full-page shell variance is expected and non-semantic. Equal `article_fragment_bytes` plus equal PDF/source fields reuse the same revision even when `full_response_bytes` differs. Selected-fragment drift fails closed before parsing or persistence.
+- Full-page shell variance is expected and non-semantic. Equal canonical parsed article/PDF/source evidence reuses the same revision even when `full_response_bytes` differs. Malformed selected-fragment structure fails closed; valid semantic article/PDF/table drift creates a new revision rather than failing against a lost fixture digest.
 - Perform one article navigation and one clicked-PDF acquisition attempt per registry entry. No unbounded retry, alternate host, search, mirror, `context.request`, direct-HTTP downgrade, `expect_download` persistence path, stale-byte fallback, or raw-response hash fallback.
 - Run SBV interest and SBV central-rate acquisition in separate source-scoped `try` blocks inside the shared context. Interest failure must not suppress a central-rate attempt; central-rate failure must not discard valid interest rows.
 - Close every page and CDP session in its source `finally`; close the context, browser, and Playwright runtime in the outer `finally`. Browser launch/version/context failure yields zero rows for both SBV sources while independent providers continue; all-provider-empty still fails.
@@ -141,15 +142,16 @@ data/macro_news_llm_links.parquet
 ### 8.3 Canonical Article Fragment/PDF Parser
 
 - Initial `article_fragment_selector`: `div.journal-content-article[data-analytics-asset-type=web-content]`.
-- `#print-content` is not a silent runtime fallback. It may be used only by a future separately reviewed registry entry with its own selector, exact fragment fixture, byte count, and SHA-256.
+- `#print-content` is not a silent runtime fallback. It may be used only by a future separately reviewed registry entry with its own selector and valid synthetic parser fixture; no fixed fixture byte count or expected hash is allowed.
 - Page-level title selector `h1.title-page.detail` and publication selector `time.author-time[datetime]` may be checked as transport metadata, but full-page DOM/shell bytes never become canonical article content.
 - Attachment selector inside the parsed fragment: `a[download]`; resolve exactly one allowed-host HTTPS URL agreeing with the registry.
-  - Frozen canonical fragment fixture: `sbv_interbank_article_fragment_20260805.html`. *[L1 Orchestrator Note: original exact fixtures lost; L2 OpenCode MUST generate a valid synthetic stub fixture that passes parser tests without enforcing exact byte size/hash.]*
-  - Frozen PDF fixture: *[L1 Orchestrator Note: original exact fixtures lost; L2 OpenCode MUST generate a valid synthetic PDF stub fixture that passes PDF parser tests without enforcing exact byte size/hash.]*
-- Registry field names must be unambiguous: `article_fragment_selector`, `article_fragment_byte_count`, `article_fragment_sha256`, `pdf_byte_count`, and `pdf_sha256`. Reject ambiguous legacy names such as `article_byte_count` or `article_sha256`; no full-response hash may be computed or stored.
+  - Positive synthetic fragment fixture path: `tests/fixtures/macro/sbv_interbank_article_fragment_20260805.html`. The current `102`-byte placeholder is unusable and L2 must overwrite it. The committed replacement must be valid UTF-8, remain within `1 KiB..512 KiB`, contain exactly one `div.journal-content-article[data-analytics-asset-type=web-content]`, contain exactly one reviewed-host `a[download]` attachment URL, and carry publication `2026-08-05`, period `2026-07-27..2026-07-31`, and all reviewed tenor-table semantics.
+  - Positive synthetic PDF fixture path: `tests/fixtures/macro/sbv_interbank_20260727_20260731.pdf`. The current `36`-byte UTF-16LE text placeholder is not a PDF and L2 must overwrite it with a genuinely generated synthetic PDF. The committed replacement must start with `%PDF-`, remain within `1 KiB..8 MiB`, be unencrypted and parseable within the `32`-page/`1 MiB` extracted-text bounds, and carry the reviewed tenor-table semantics.
+  - Fixture regeneration is an L2 implementation step, not a runtime or test-time fallback. L2 may use a one-off repo-local generation method or already-pinned tooling, must not add a runtime dependency solely for fixture creation, must commit the regenerated bytes at the existing paths, and must keep tests read-only against those files. Reconstruction of lost production bytes remains forbidden.
+- Registry fields remain unambiguous and limited to reviewed source metadata such as `article_fragment_selector`, exact URLs, dates/range, hosts, and document type. Do not store expected `article_fragment_byte_count`, `article_fragment_sha256`, `pdf_byte_count`, or `pdf_sha256` values. Runtime-derived content digests may remain revision evidence, but they are never compared with fixture constants; no full-response hash may be computed or stored.
 - Pin `pypdf==6.15.0`; allow at most `32` PDF pages and `1 MiB` extracted text; reject encrypted, malformed, empty, or excessive documents.
 - Validate expected tenors: overnight `2.65`, 1 week `4.53`, 2 weeks `5.72`, 1 month `6.70`, 3 months `7.53`, 6 months `7.59`, 9 months null. Emit only overnight.
-- Require registry publication date, covered observation range, tenor labels, numeric format, canonical fragment attachment identity, and PDF identity to agree with fixtures.
+- Require registry publication date, covered observation range, tenor labels, numeric format, canonical fragment attachment URL, PDF signature, and parsed table to agree semantically with the regenerated valid synthetic fixtures. Do not require production-byte equality or an expected fixture digest.
 
 ### 8.4 PIT, Revision, Failure
 
@@ -157,9 +159,9 @@ data/macro_news_llm_links.parquet
 - Persist `source_published_on` and immutable `first_receipt_at` when the exact revision is first acquired.
 - Define conservative `published_at = first_receipt_at` when SBV supplies only a publication date. Validate that the receipt is not earlier than `source_published_on`; never invent a provider time.
 - Define `available_at` as the first tradable session strictly after `published_at + configured_source_delay`; never use the publication session.
-- Revision identity includes canonical article URL, canonical attachment URL, source publication date, observation range, canonical parsed table, `article_fragment_sha256`, and `pdf_sha256`. Exclude full-response byte count and receipt/ingestion time; no full-response hash exists.
+- Revision identity includes canonical article URL, canonical attachment URL, source publication date, observation range, canonical parsed table, and runtime-derived canonical article/PDF content digests. Exclude fixture constants, full-response byte count, and receipt/ingestion time; no full-response hash exists.
 - The same revision reuses its immutable first receipt. Dynamic full-page shell changes alone do not change the revision; changed canonical fragment bytes, PDF bytes, or parsed table create a new revision.
-- URL-only acquisition/cache keys are forbidden. SBV-interest source identity uses canonical URL plus canonical fragment/PDF SHA-256, never full navigation response SHA-256; any request body must additionally contribute its exact `request_sha256`.
+- URL-only acquisition/cache keys are forbidden. SBV-interest source identity uses canonical URL plus runtime-derived canonical fragment/PDF digests, never expected fixture digests or full navigation response SHA-256; any request body must additionally contribute its exact `request_sha256`.
 - `_sbv_records(...)` returns `list[dict]`, never `None`; `fetch()` calls `records.extend(self._sbv_records(...))`.
 - SBV-interest failure returns zero rows with bounded sanitized logging. No substitute source. Independent providers continue. Whole fetch fails only when every configured provider yields zero rows.
 ## 9. Official SBV Central Exchange-Rate Contract
@@ -267,8 +269,8 @@ request_sha256 = hashlib.sha256(body_bytes).hexdigest()
 
 ### `config/sbv_interbank_sources.json` (new)
 
-- Store strict versioned reviewed article-fragment/PDF records, observation range, publication date, allowed hosts, `article_fragment_selector`, exact attachment URL, explicit fragment/PDF byte counts and hashes, expected PDF MIME/disposition contract, parser/transport contract versions, and enabled state. Forbid every full-response hash field.
-- Reject unknown keys, duplicate source identity, invalid HTTPS hosts, missing hashes, reversed ranges, or unreviewed discovery fields.
+- Store strict versioned reviewed article-fragment/PDF metadata, observation range, publication date, allowed hosts, `article_fragment_selector`, exact attachment URL, expected PDF MIME/disposition contract, parser/transport contract versions, and enabled state. Store no expected fixture byte-count or expected fixture-hash fields; forbid every full-response hash field.
+- Reject unknown keys, duplicate source identity, invalid HTTPS hosts, fixture byte-count/expected-hash keys, missing required metadata, reversed ranges, or unreviewed discovery fields.
 
 ### `config/macro_news_sources.json`
 
@@ -324,12 +326,13 @@ request_sha256 = hashlib.sha256(body_bytes).hexdigest()
 
 - Extend only if needed to prove the existing alpha resolver contract. Otherwise leave unchanged.
 
-### `tests/fixtures/macro/` (new minimal fixtures)
+### `tests/fixtures/macro/` (existing positive-fixture replacements plus new minimal fixtures)
 
-- `sbv_interbank_article_fragment_20260805.html`: exact reviewed selected-container `outerHTML` UTF-8 bytes.
+- `sbv_interbank_article_fragment_20260805.html`: overwrite the invalid current placeholder with a valid synthetic selected-container HTML positive fixture carrying the required selector, attachment, publication, period, and tenor-table semantics; exact live bytes, exact byte count, and expected hash are not binding.
 - `sbv_interbank_response_shell_a.html` and `sbv_interbank_response_shell_b.html`: minimal transport fixtures with different shell bytes and the identical canonical article fragment. Do not hash these full-response fixtures.
-- `sbv_interbank_20260727_20260731.pdf`: exact reviewed attachment bytes.
-- `sbv_request_rejected_246.html`: exact bounded WAF-rejection body used by default-UA and `context.request` negative transport tests.
+- `sbv_interbank_20260727_20260731.pdf`: overwrite the invalid current placeholder with a genuinely generated, parseable synthetic PDF positive fixture carrying the required tenor-table semantics; exact live bytes, exact byte count, fixed PDF version, and expected hash are not binding.
+- Both existing positive-fixture paths must be modified in the L2 change. The legacy placeholder bytes must not remain, and neither runtime nor tests may generate, repair, or weaken validation around fixtures on demand.
+- `sbv_request_rejected_246.html`: dummy bounded WAF-rejection HTML stub used by default-UA and `context.request` negative transport tests; the legacy filename does not make its byte count binding.
 - `sbv_central_rate_bootstrap.html`: minimal sanitized bootstrap contract fixture.
 - `sbv_central_rate_page_1.json`: structured-content envelope containing the verified `25566` item and `NgayBatDau=2026-08-12T17:00:00Z` regression value.
 - `sbv_central_rate_page_2.json`: minimal continuous second-page envelope for exact renderer-fetch pagination tests.
@@ -340,7 +343,7 @@ No production file outside this list is planned.
 
 ### Stage 1 - Freeze Contracts
 
-1. Add dependency pins, the strict fragment/PDF registry, and immutable canonical fixtures with asserted fragment/PDF byte counts and SHA-256; define full-response evidence as non-canonical.
+1. Generate valid synthetic fragment/PDF positive fixtures, overwrite the two existing placeholder paths, then add the strict reviewed-source registry and semantic parser assertions. Preserve safety ranges, signature/parser checks, selector/link/date/table contracts, and read-only fixture use; do not assert exact fixture byte counts or expected hashes, and define full-response evidence as non-canonical.
 2. Add failing macro tests for pinned browser version, derived desktop UA, default-`HeadlessChrome` rejection, exact SBV lifecycle, two different navigation bodies with one identical selected fragment, selected-fragment drift rejection, clicked-PDF CDP capture/cleanup, renderer FX fetch/`arrayBuffer()` drain, canonical Playwright body capture, one-deadline timeout/cleanup, Vietnam civil-date normalization, PIT, revision identity, first receipt, failure isolation, and no substitution.
 3. Add failing VCI tests proving the exact zero-argument `news()` call, one call per ticker, deterministic local bounds, and per-ticker provenance.
 4. Add failing macro-news LLM tests proving exact posted-byte SHA-256 and provenance-only extraction reuse.
@@ -348,7 +351,7 @@ No production file outside this list is planned.
 ### Stage 2 - Implement Official SBV Sources
 
 5. Extend macro evidence schema and write fail-closed staged migration/merge logic before changing providers.
-6. Implement the single bounded SBV browser lifecycle, reviewed registry loader, pinned-version/derived-UA validation, navigation-response transport validation, exact selected-fragment extraction/hash/parser, clicked-PDF CDP capture/parser/cleanup, overnight-only record builder, and `records.extend(...)` integration.
+6. Implement the single bounded SBV browser lifecycle, reviewed registry loader, pinned-version/derived-UA validation, navigation-response transport validation, exact selected-fragment extraction/parser with runtime-derived revision digest, clicked-PDF CDP capture/parser/cleanup with runtime-derived revision digest, overnight-only record builder, and `records.extend(...)` integration. Do not compare either payload with fixture length/hash constants.
 7. Reuse that context for the exact central-rate bootstrap. For every page, enter exact `page.expect_response`, run the same-origin renderer fetch, await and discard `response.arrayBuffer()`, require a `null` renderer result, acquire canonical bytes only through matched Playwright `Response.body()`, and complete validation/parsing under one outer `asyncio.wait_for(..., timeout=30.0)` boundary; then implement bounded pagination, strict `Asia/Ho_Chi_Minh` civil-date normalization, central-rate parsing, and official `usd_vnd` records.
 8. Remove Yahoo/VCB substitution paths and add source-scoped failure handling.
 
@@ -370,17 +373,18 @@ No production file outside this list is planned.
 
 ### SBV Interbank
 
-- Strict registry accepts only the reviewed article-fragment/PDF identity and exact attachment URL; unknown keys, ambiguous article hash fields, bad host/scheme/hash/date/range fail before browser launch or network.
-- A baseline fixture proves the default Playwright UA contains `HeadlessChrome` and the protected payload path rejects it with the exact `246`-byte HTML fixture. A success contract proves the context UA is derived from validated `browser.version`, contains `Chrome/151.0.7922.34`, omits `HeadlessChrome`, and uses no storage state, persistent context, injected cookies, stealth script, proxy, or second context.
-- Browser transport navigates the exact article URL and validates `navigation_response.body()` only for status/MIME/bounds/rejection evidence. It selects exactly one registry-declared container, obtains `outerHTML`, UTF-8 encodes once, and reproduces the `53401`-byte fragment SHA-256.
-- Repeat-fetch regression supplies two distinct full navigation bodies with byte-identical selected fragments. The test computes no full-response hash. Both produce the same `article_fragment_sha256`, parsed record, and revision ID; full-response diagnostics do not enter identity.
-- Drift regression changes one selected-fragment byte while keeping URL/PDF/shell valid. Registry validation fails closed before parse/persist. A shell-only change remains accepted without a false revision.
+- Strict registry accepts only reviewed source metadata, selector, document type, dates/range, hosts, and exact attachment URL; unknown keys, fixture length/hash keys, bad host/scheme/date/range fail before browser launch or network.
+- Positive-fixture replacement gate reads the exact two existing paths after L2 overwrites them. The HTML must be valid UTF-8 within `1 KiB..512 KiB`, expose the exact selector, attachment, publication/range, and tenor anchors, and no longer contain the legacy placeholder body. The PDF must begin `%PDF-`, remain within `1 KiB..8 MiB`, be unencrypted/parseable within page/text bounds, expose the reviewed tenor table, and no longer be UTF-16LE placeholder text. These are semantic and safety-range assertions, never exact byte-count/hash/version assertions.
+- A baseline dummy fixture proves the default Playwright UA contains `HeadlessChrome` and the protected payload path rejects a bounded HTML `Request Rejected` stub without asserting its exact byte count. A success contract proves the context UA is derived from validated `browser.version`, contains `Chrome/151.0.7922.34`, omits `HeadlessChrome`, and uses no storage state, persistent context, injected cookies, stealth script, proxy, or second context.
+- Browser transport navigates the exact article URL and validates `navigation_response.body()` only for status/MIME/bounds/rejection evidence. It selects exactly one registry-declared container, obtains `outerHTML`, UTF-8 encodes once, validates required structure, and computes any revision digest dynamically without a fixed expected fixture count/hash.
+- Repeat-fetch regression supplies two distinct full navigation bodies with byte-identical selected fragments. The test computes no full-response hash. Both produce the same runtime-derived fragment digest, parsed record, and revision ID; full-response diagnostics do not enter identity.
+- Drift regression changes a parsed article/table field while keeping URL/PDF/shell valid and produces a new revision. Malformed selected-fragment structure fails closed before persistence. A shell-only change remains accepted without a false revision.
 - A fake/stub CDP contract proves the exact `a[download]` locator is clicked, `Fetch.enable` is response-stage/`Document` scoped, exactly one matching `Fetch.requestPaused` event is accepted, and the event has exact URL, `GET`, `Document`, no redirect, HTTP `200`, PDF MIME, disposition/length agreement, and bounded body.
-- `Fetch.getResponseBody` base64 and non-base64 paths reproduce the exact `215439` bytes, `%PDF-1.5`, and SHA-256. The request is aborted after capture; `Fetch.disable`, handler removal, session detach, page close, and outer resource closure execute in `finally` on success and every failure.
-- Missing/duplicate selector, link mismatch, cross-host URL, duplicate/missing paused event, timeout, `Request Rejected`, redirect, bad method/resource type/status/MIME/disposition/length/signature/hash, encrypted/oversized/excessive-page/empty PDF, or cleanup failure fails closed before persistence.
+- `Fetch.getResponseBody` base64 and non-base64 paths decode the regenerated synthetic PDF fixture into equivalent parseable content, validate signature/bounds/table semantics, and produce the same runtime-derived revision digest without asserting a fixed byte count, PDF version, or expected hash. The request is aborted after capture; `Fetch.disable`, handler removal, session detach, page close, and outer resource closure execute in `finally` on success and every failure.
+- Missing/duplicate selector, link mismatch, cross-host URL, duplicate/missing paused event, timeout, `Request Rejected`, redirect, bad method/resource type/status/MIME/disposition/length/signature, encrypted/oversized/excessive-page/empty PDF, or cleanup failure fails closed before persistence.
 - Parser consumes only canonical fragment bytes, validates all expected tenor anchors, emits only overnight `2.65`, and records observation period `2026-07-27..2026-07-31` without invented daily rows.
 - Date-only publication uses immutable first receipt as `published_at`; availability starts only on the strictly following tradable session after delay.
-- Same source revision with a later rerun receipt keeps the first receipt and same revision ID; fragment/PDF/table drift creates a new reviewed revision, while full-page shell drift does not.
+- Same source revision with a later rerun receipt keeps the first receipt and same revision ID; semantic fragment/PDF/table drift creates a new revision, while full-page shell drift does not.
 - `_sbv_records()` always returns a list; `fetch()` extends it. Interest acquisition/parser failure yields zero rows, never substitutes another source, still attempts central rate in the shared context, and other providers continue.
 
 ### SBV Central Rate
@@ -414,7 +418,7 @@ No production file outside this list is planned.
 
 - Macro revision formula excludes receipt/ingestion time and validates all stored source-invariant evidence.
 - Merge selects earliest valid receipt for a repeated revision, recomputes receipt-derived times, rejects conflicting source evidence, and preserves destination on failure.
-- URL-only cache identity is absent. Any HTTP cache test proves exact request SHA-256 or stable provider identity plus source-specific canonical payload SHA-256; SBV-interest tests explicitly reject full-navigation-body hashing.
+- URL-only cache identity is absent. Any HTTP cache test proves exact request SHA-256 or stable provider identity plus a runtime-derived source-specific canonical payload SHA-256; SBV-interest tests explicitly reject fixed fixture length/hash enforcement and full-navigation-body hashing.
 - Captured LLM HTTP bytes hash to persisted mandatory `request_sha256`; `data=body_bytes` sends those identical bytes.
 - Semantic input/provider/model/prompt/endpoint changes extraction ID; ticker/exchange/universe/URL/raw ID alone reuses extraction and creates distinct valid links.
 - Corrupt or unverifiable legacy rows fail before network/replacement; LLM failure leaves raw stores valid and unchanged.
@@ -442,7 +446,8 @@ rg -n 'requests\.get|urllib|page\.content\(' src/omega/data/macro_pipeline.py te
 rg -n 'context\.request|APIRequestContext|expect_download|launch_persistent_context|storage_state\s*=|page\.goto\([^)]*(headless-delivery|structured-contents)' src/omega/data/macro_pipeline.py tests/test_macro_pipeline.py
 rg -n 'browser\.version|HeadlessChrome|new_cdp_session|Fetch\.(enable|getResponseBody|failRequest|disable)|locator\.click|playwright\.async_api|asyncio\.wait_for|expect_response|timeout=0|page\.evaluate|arrayBuffer|same-origin|application/json' src/omega/data/macro_pipeline.py tests/test_macro_pipeline.py
 rg -n 'response\.(json|text|clone)\(|return[^\n]*(arrayBuffer|JSON\.stringify|body|bytes|digest)|evaluate[^\n]*(json|text)' src/omega/data/macro_pipeline.py
-rg -n 'article_fragment_(selector|byte_count|sha256)|outerHTML|full_response_bytes' src/omega/data/macro_pipeline.py tests/test_macro_pipeline.py config/sbv_interbank_sources.json
+rg -n 'article_fragment_selector|article_fragment_sha256|pdf_sha256|outerHTML|full_response_bytes' src/omega/data/macro_pipeline.py tests/test_macro_pipeline.py config/sbv_interbank_sources.json
+rg -n 'article_fragment_byte_count|pdf_byte_count|expected[^\n]*(sha256|hash)|fixture[^\n]*(byte_count|sha256|hash)' src/omega/data/macro_pipeline.py tests/test_macro_pipeline.py config/sbv_interbank_sources.json
 rg -n 'sha256\([^)]*full_response|hashlib[^\n]*full_response|full_response[^\n]*sha256' src/omega/data/macro_pipeline.py tests/test_macro_pipeline.py config/sbv_interbank_sources.json
 rg -n 'Asia/Ho_Chi_Minh|ZoneInfo|NgayBatDau|NgayKetThuc|NgayBanHanh' src/omega/data/macro_pipeline.py tests/test_macro_pipeline.py
 git diff --check -- requirements.txt config/sbv_interbank_sources.json config/macro_news_sources.json src/omega/data/macro_pipeline.py src/omega/data/macro_news_pipeline.py scripts/run_macro_news_pipeline.py src/omega/data/macro_news_llm.py src/omega/core/llm_config.py tests/test_macro_pipeline.py tests/test_macro_news_pipeline.py tests/test_macro_news_llm.py tests/quant_test_infinite_evolution.py tests/fixtures/macro
@@ -451,7 +456,7 @@ git diff --check -- requirements.txt config/sbv_interbank_sources.json config/ma
 - Negative scans for unsupported VCI arguments, Yahoo/VCB substitution, second LLM serialization, bare HTTP, `page.content()`, `context.request`, direct API navigation, JavaScript-returned FX payloads, renderer JSON/text/clone consumption, download persistence, persistent profiles, and storage-state import must return no production matches. Explicit negative test names/messages are allowed.
 - The positive transport scan must show validated `browser.version`, derived desktop UA/`HeadlessChrome` rejection, CDP response interception/body capture/abort/cleanup, exact locator click, `playwright.async_api`, one outer `asyncio.wait_for`, exact renderer `expect_response`, same-origin `page.evaluate`, one `arrayBuffer()` drain, and JSON `Accept` coverage.
 - Review `Response.body()` matches manually. Article navigation bytes remain bounded rejection evidence only; FX Playwright response bytes are the sole canonical API transport bytes for JSON parsing. The renderer buffer is discarded synchronization state. Neither FX page bodies nor article navigation bytes are revision hashes or registry identity. `Fetch.getResponseBody` is the sole PDF-byte acquisition path.
-- The fragment scan must show explicit canonical-fragment fields and tests proving shell-only variance is revision-invariant. The full-response-hash scan must return no matches. The timezone scan must show `ZoneInfo('Asia/Ho_Chi_Minh')` conversion before `.date()` plus the `2026-08-12T17:00:00Z` regression.
+- The fragment scan must show the selector, runtime-derived canonical digest evidence, and tests proving shell-only variance is revision-invariant. The fixed-fixture scan must return no production/config enforcement matches; explicit negative test names/messages are allowed. The full-response-hash scan must return no matches. The timezone scan must show `ZoneInfo('Asia/Ho_Chi_Minh')` conversion before `.date()` plus the `2026-08-12T17:00:00Z` regression.
 - Review any `.ly_state` code match manually: rejection/output-manifest logic is allowed; opening it as runtime input is not.
 - After all fixture tests pass, run the mandatory live transport smoke on the deployment runtime:
 
@@ -464,7 +469,7 @@ if ($smokeExit -ne 0) { exit $smokeExit }
 ```
 
 - The smoke uses one fresh non-persistent desktop-UA context, `tmp_path` only, no canonical Parquet, no registry mutation, no downloaded file, a `120`-second whole-test ceiling, and the same per-action limits as production.
-- The PDF smoke requires exact article/PDF URLs, article fragment hash, HTTP `200`, PDF MIME, `%PDF-1.5`, exact `215439` bytes, and SHA-256 `b003b92e4795cbd70da5d7eb8ae4a089b1436e2df14c575765f1fb442380f475`.
+- The PDF smoke requires exact article/PDF URLs, HTTP `200`, PDF MIME, `%PDF-` signature, safety bounds, expected attachment relationship, successful parser output, and reviewed tenor-table semantics. It may record runtime byte count/digest as diagnostics or revision evidence but must not compare them with fixture/live constants.
 - The FX smoke requires explicit pages `1` and `2` through the exact production sequence: pre-registered exact `expect_response`; same-origin renderer fetch; one awaited/discarded `arrayBuffer()`; `null` renderer result; one matched Playwright `Response.body()`; canonical-byte validation and envelope parse. Each page must complete the full sequence inside its own outer `30`-second deadline with exact query/resource type, HTTP `200`, JSON MIME, continuous page numbers, `pageSize=100`, and non-empty reviewed-structure items. Record elapsed time and bounded counts only as sanitized diagnostics; do not bind mutable duration, page count, total count, byte count, or JSON hash to source identity.
 - A skipped, rejected, XML/HTML, timed-out, or failed smoke blocks L2 implementation handoff to independent review. It never triggers fallback, registry rewriting, or canonical-output writes.
 
@@ -472,14 +477,14 @@ if ($smokeExit -ne 0) { exit $smokeExit }
 
 - Plan identity is v11 in both title and artifact path.
 - Official SBV interest and central-rate contracts share one bounded clean non-persistent Playwright context with validated pinned Chromium version and derived desktop UA; no `HeadlessChrome`, persistent profile, imported storage state, injected cookie/token, stealth script, proxy, or second context exists.
-- SBV interest full navigation bytes are transport evidence only. Canonical article identity, fixture, parser, and revision use the exact selected-container `outerHTML` UTF-8 bytes. The exact clicked PDF is captured only through response-stage CDP `Fetch`, validated, then aborted without download persistence.
+- SBV interest full navigation bytes are transport evidence only. The parser consumes the exact selected-container `outerHTML` UTF-8 bytes and clicked PDF captured through response-stage CDP `Fetch`; regenerated valid synthetic positive fixtures at the existing paths validate structure and semantics without fixed byte-count/hash expectations. Captured PDFs are validated, then aborted without download persistence.
 - SBV FX pages are issued only by same-origin renderer `fetch` after exact bootstrap navigation. Renderer `response.arrayBuffer()` drains each response exactly once and returns no payload; exact `page.expect_response` plus Playwright `Response.body()` supplies the sole canonical Python bytes. One outer `30`-second deadline covers the full per-page sequence. Direct API navigation, `context.request`, bare HTTP, synthesized browser headers, JavaScript JSON/text payloads, and timeout resets are absent.
 - `usd_vnd` means official SBV central rate; no Yahoo or Vietcombank substitution remains. `NgayBatDau`, `NgayKetThuc`, and `NgayBanHanh` normalize through `Asia/Ho_Chi_Minh` before civil-date extraction.
 - Pinned VCI integration calls only supported `vnstock==4.0.4` API and makes one bounded call per ticker.
 - Local VCI filtering/sorting/cap is deterministic and retains ticker/exchange provenance.
 - `.ly_state` remains output-only; L2 session state is never a runtime input.
 - Receipt time is excluded from revision identity; reruns retain immutable first receipt.
-- No URL-only cache identity exists; exact request SHA-256 or source-invariant canonical fragment/PDF identity is mandatory. Dynamic full-page shell bytes never create a source revision.
+- No URL-only cache identity exists; exact request SHA-256 or runtime-derived canonical SBV fragment/PDF identity is mandatory. No fixed fixture byte count or expected digest participates in acceptance. Dynamic full-page shell bytes never create a source revision.
 - LLM serializer uses valid `separators=(',', ':')` and `.encode('utf-8')`; `request_sha256` equals the exact `body_bytes` sent; provenance-only duplicates share extraction and retain distinct links.
 - Raw persistence precedes LLM work; migration/cache/source failures preserve existing destinations.
 - Focused tests, compile checks, CLI help, pattern scans, diff checks, and the mandatory bounded live PDF/FX transport smoke pass.
@@ -506,22 +511,26 @@ Role and authoritative instructions, in loading order:
 
 Task evidence and plan inputs:
 
-- `.ly_state/session/audit_reports/role21_macro_news_pipeline_plan_v11_reaudit_20260813.md`
-- `.ly_state/session/implementation_plan_macro_news_v11.md` - read as the complete self-contained baseline and checked for the blocking tenor literal plus the existing overnight-only fixture/table agreement contract.
-- `.ly_state/session/implementation_plan_macro_news_v12.md` - authored, then reread for exact UTF-8 bytes, code points, scope, version, evidence, and diff validation.
+- `.ly_state/session/audit_reports/role25_plan_audit_20260814.md` - authoritative `[NEEDS_FIX]` blocker requiring valid synthetic fixture regeneration or separate positive fixtures.
+- `.ly_state/session/implementation_plan_macro_news_v12.md` - read completely, revised in place, then reread for blocker wording and contract consistency.
+- `tests/fixtures/macro/sbv_interbank_article_fragment_20260805.html` - read directly; confirmed the current file is a `102`-byte placeholder without required semantics.
+- `tests/fixtures/macro/sbv_interbank_20260727_20260731.pdf` - read directly; confirmed the current file is `36` bytes of UTF-16LE text, lacks `%PDF-`, and is not a PDF.
+- `.ly_state/session/audit_reports/role21_macro_news_pipeline_plan_v12_reaudit_20260814.md` - read to distinguish the earlier approval from the newer role-25 blocker.
+- `.ly_state/session/audit_reports/role26_plan_revision_20260814.md` - read as prior revision evidence.
+- `.ly_state/session/audit_reports/role26_plan_revision2_20260814.md` - pre-created empty target report read before completion-report writing.
 
-The repository-root `AGENTS.md` redirect was supplied verbatim in the task context; it was not reopened from disk. `.ly_state/AGENTS.md` and `.ly_state/session/AGENTS.md` were existence-checked and absent; no content was read. Repo status/diff commands exposed metadata and plan-artifact differences only. No other repo-local file content was opened or used for this revision.
+The repository-root `AGENTS.md` redirect was supplied verbatim in the task context; it was not reopened from disk. A repo-local filename scan found only `.ly_state/session/tmp/vnstock-agent-guide/AGENTS.md` below the target tree; it does not scope the target plan/report and its content was not read. Repo status/diff commands exposed metadata and plan-artifact differences only. No other repo-local file content was opened or used for this revision.
 
 ## 20. Forbidden Path Scan Result
 
-Metadata-only `Test-Path` scan:
+Textual token scan over the exact repo-local content files listed above; no forbidden root was traversed:
 
-- `C:\Users\GHC\repos\OMEGA_QUANT\.gemini\antigravity-ide\scratch\ag-kit`: absent.
-- `C:\Users\GHC\.openclaw\skills`: exists; content not opened.
-- `C:\Users\GHC\.agents`: exists; content not opened.
-- `C:\Users\GHC\.codex\memories`: exists; content not opened.
-- Role authority came only from `C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent`.
-- Skill authority came only from `C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills`.
+- `.gemini\antigravity-ide\scratch\ag-kit`: matches only repo policy or explicit forbidden-path evidence.
+- `.openclaw\skills`: matches only repo policy or explicit forbidden-path evidence.
+- `C:\Users\GHC\.agents`: matches only repo policy or explicit forbidden-path evidence.
+- `.codex\memories`: matches only repo policy or explicit forbidden-path evidence.
+- Role authority came only from `.agents/agent/planning-architect.md`.
+- Skill authority came only from the four declared `.agents/skills/*/SKILL.md` files.
 - Result: zero forbidden filesystem content reads, zero forbidden authoritative reliance, zero forbidden writes. No Antigravity scratch, OpenClaw skill, user-level `.agents`, or Codex memory file supplied role/skill authority or plan content.
 
 ## 21. Non-Audit Handoff

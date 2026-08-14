@@ -130,7 +130,7 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 
 ### Verdict Handling
 
-- **[APPROVED]**: L1 records gate metadata, then dispatches a final deep audit to Codex CLI model `cx/gpt-5.6-sol(max)` after L3 approval and before the final enforcer. The audit is advisory only, read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. L3's `[APPROVED]` verdict remains the sole approval authority. L1 runs enforcer and proceeds if exit 0.
+- **[APPROVED]**: L1 records gate metadata, then dispatches a final deep audit to Codex CLI model `cx/gpt-5.6-sol(max)` after L3 approval and before the final enforcer. The audit is advisory only, read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. L3's `[APPROVED]` verdict remains the sole approval authority. L1 runs enforcer and proceeds if exit 0. **TOKEN SAVER**: L1 MAY skip the final deep audit for low-risk gates where scope is limited to test fixtures, documentation, or static config files with no production logic changes. L1 MUST record the skip decision and reason in file-backed session evidence before running the enforcer.
 - **[NEEDS_FIX]**: L1 MUST complete the lesson extraction hard gate below before creating or dispatching any remediation L2 session; after extraction succeeds, L1 creates a new L2 session with fix scope, L3 re-audits after fix, cycle repeats until [APPROVED]
 - **No verdict or partial verdict**: Gate remains `PENDING_L3_AUDIT`, no progression
 - **Manual override**: Forbidden. All approvals require valid L3 audit + enforcer exit 0
@@ -160,18 +160,33 @@ The extraction evidence MUST include gate name `lessons_extraction_hard_gate_202
 5. Use extracted `role_id` and `name` in prompt (never hand-type role names)
 
 ```powershell
-echo "" | opencode run --pure --dangerously-skip-permissions --dir "C:\Users\GHC\repos\OMEGA_QUANT" "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. TASK: [TASK]. GATE: [GATE_NAME]. LESSONS: [APPENDED_LESSONS_LEARNED]. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result. SCOPE: [FILES]. REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; write L2 report to .ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md. Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing."
+echo "" | opencode run --pure --dangerously-skip-permissions --dir "C:\Users\GHC\repos\OMEGA_QUANT" "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. TASK: [TASK]. GATE: [GATE_NAME]. LESSONS: [APPENDED_LESSONS_LEARNED]. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result. SCOPE: [FILES]. REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; write L2 report to .ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md. Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing. L2 REPORT FORMAT (MANDATORY - copy exactly): The report MUST contain these sections in order: (1) Header with Role, Gate, Session, Date fields. (2) '## Repo-Local Files Read' heading followed by bullet list of every file actually read from REPO_AGENT_ROOT and REPO_SKILL_ROOT (e.g. '- .agents/agent/{role_name}.md', '- .agents/skills/{skill}/SKILL.md'). (3) '## Changes Made' listing modified files. (4) '## Verification' with test results. (5) '## Forbidden Path Scan' with EXACTLY four lines, one per forbidden path, each line ending with the EXACT phrase: 'non-authoritative scan evidence only; no reliance.' — The four lines must mention: '.gemini\antigravity-ide\scratch\ag-kit', '.openclaw\skills', 'C:\Users\GHC\.agents', '.codex\memories'. FILENAME must be l2_role{role_id}_{task_slug}_{YYYYMMDD}.md with NO _retry suffix."
 ```
 
 **Platform lock protocol:** OpenCode L2 sessions MUST NOT call Codex or any L3 platform directly. L1 controls all cross-platform delegation.
 
 **Strict report naming:** L2 reports MUST follow format: `.ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md`
 
+**L2 report template:** L2 agents MUST use `.agents/skills/omega-sod/l2_report_template.md`. Copy it exactly, fill in `[PLACEHOLDER]` values only.
+
 **Windows requirements:** always use `echo "" |`, `--pure`, `--dangerously-skip-permissions`, and `--dir "C:\Users\GHC\repos\OMEGA_QUANT"`. Prompts must define `REPO_ROOT`; workers must not resolve `.agents` through Antigravity scratch paths.
 
 **Repo-local skill source contract:** L2 prompts MUST include `REPO_AGENT_ROOT`, `REPO_SKILL_ROOT`, instruction to read repo-local role spec first, parse skills, read only repo-local SKILL.md files, and report exact files read. Global/scratch/OpenClaw/Codex memory sources are non-authoritative.
 
-## Call L3 Codex Independent Review
+### Pre-L3 Validation Gate (TOKEN SAVER — MANDATORY)
+
+> [!IMPORTANT]
+> After L2 completes, L1 MUST run this BEFORE dispatching L3 Codex. Catches format errors cheaply without spending L3 tokens.
+
+```powershell
+python scripts/validate_l2_report.py {l2_session_id} {role_id} {role_name}
+```
+
+- **Exit 0** → safe to dispatch L3
+- **Exit 1** → retry L2 only (do NOT dispatch L3)
+
+This check validates: filename format (`_YYYYMMDD.md` only, no `_retry`), `## Repo-Local Files Read` heading, forbidden path scan wording (exact suffix required), authoritative forbidden path usage (must be zero).
+
 
 **Pre-dispatch requirements:**
 1. Read `.agents/agent/<role_name>.md` and extract frontmatter: `role_id`, `tier`, `platform`, `name`, `sod_boundary`

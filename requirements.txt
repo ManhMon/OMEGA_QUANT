@@ -2,7 +2,8 @@ joblib
 numpy
 pandas
 pyarrow
-pypdf
+pypdf==6.15.0
+playwright==1.62.0
 vnstock==4.0.4
 pytest
 scipy

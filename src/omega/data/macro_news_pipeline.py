@@ -152,10 +152,10 @@ def _safe_response(response: Any, original_url: str, settings: Mapping[str, Any]
     return bytes(content)
 
 
-def _vnstock_news_worker(connection: Any, ticker: str, cursor: str | None, limit: int) -> None:
+def _vnstock_news_worker(connection: Any, ticker: str) -> None:
     try:
         from vnstock import Company
-        connection.send((True, Company(symbol=ticker, source="VCI").news(cursor=cursor, limit=limit, sort="public_date_desc")))
+        connection.send((True, Company(symbol=ticker, source="VCI").news()))
     except Exception as exc:
         connection.send((False, f"{type(exc).__name__}: {exc}"))
     finally:
@@ -228,11 +228,11 @@ def load_source_registry(path: Path | str) -> list[dict[str, Any]]:
         raise ValueError("macro source registry must be an array")
     seen: set[str] = set()
     for entry in entries:
-        required = {"source_id", "display_name", "tier", "kind", "enabled", "required", "discovery_url", "allowed_hosts", "adapter", "source_delay_minutes", "timestamp_policy", "max_pages", "max_items", "request_interval_seconds", "timeout_seconds", "max_response_bytes", "allow_pdf", "allow_browser_fallback", "disabled_reason"}
+        required = {"source_id", "display_name", "tier", "kind", "enabled", "required", "discovery_url", "allowed_hosts", "adapter", "source_delay_minutes", "timestamp_policy", "max_items", "request_interval_seconds", "timeout_seconds", "max_response_bytes", "allow_pdf", "allow_browser_fallback", "disabled_reason"}
         if not isinstance(entry, dict) or set(entry) != required or not isinstance(entry["source_id"], str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", entry["source_id"]) or entry["source_id"] in seen or not isinstance(entry["display_name"], str) or not entry["display_name"].strip() or entry["tier"] not in SOURCE_TIERS or entry["kind"] not in SOURCE_KINDS or entry["adapter"] not in ADAPTERS or not all(isinstance(entry[key], bool) for key in ("enabled", "required", "allow_pdf", "allow_browser_fallback")) or not isinstance(entry["allowed_hosts"], list) or not entry["allowed_hosts"] or not all(isinstance(host, str) and HOST_TOKEN.fullmatch(host) for host in entry["allowed_hosts"]) or (entry["required"] and not entry["enabled"]):
             raise ValueError("invalid macro source registry entry")
         seen.add(entry["source_id"])
-        if entry["timestamp_policy"] != "utc" or not isinstance(entry["source_delay_minutes"], int) or entry["source_delay_minutes"] < 0 or not isinstance(entry["max_pages"], int) or entry["max_pages"] < 1 or not isinstance(entry["max_items"], int) or entry["max_items"] < 1 or not isinstance(entry["request_interval_seconds"], (int, float)) or entry["request_interval_seconds"] < 0 or not isinstance(entry["timeout_seconds"], (int, float)) or entry["timeout_seconds"] <= 0 or not isinstance(entry["max_response_bytes"], int) or entry["max_response_bytes"] < 1 or (entry["enabled"] and not entry["discovery_url"] and (entry["kind"], entry["adapter"]) != ("vnstock", "vnstock")) or (not entry["enabled"] and not isinstance(entry["disabled_reason"], str)):
+        if entry["timestamp_policy"] != "utc" or not isinstance(entry["source_delay_minutes"], int) or entry["source_delay_minutes"] < 0 or not isinstance(entry["max_items"], int) or entry["max_items"] < 1 or not isinstance(entry["request_interval_seconds"], (int, float)) or entry["request_interval_seconds"] < 0 or not isinstance(entry["timeout_seconds"], (int, float)) or entry["timeout_seconds"] <= 0 or not isinstance(entry["max_response_bytes"], int) or entry["max_response_bytes"] < 1 or (entry["enabled"] and not entry["discovery_url"] and (entry["kind"], entry["adapter"]) != ("vnstock", "vnstock")) or (not entry["enabled"] and not isinstance(entry["disabled_reason"], str)):
             raise ValueError("invalid macro source registry controls")
         url = _canonical_url(entry["discovery_url"]) if entry["discovery_url"] else None
         host = urlsplit(url or "").hostname
@@ -308,7 +308,7 @@ class VCBSAdapter(ScraperAdapter):
 
 
 class VnstockNewsAdapter:
-    def __init__(self, universe: UniverseSnapshot, max_pages: int = 20, max_items: int = 1000, request_interval_seconds: float = 0, timeout_seconds: float = 15, max_response_bytes: int = 5_000_000, source_delay_minutes: int = 15) -> None: self.universe, self.max_pages, self.max_items, self.request_interval_seconds, self.timeout_seconds, self.max_response_bytes, self.source_delay_minutes = universe, max_pages, max_items, request_interval_seconds, timeout_seconds, max_response_bytes, source_delay_minutes
+    def __init__(self, universe: UniverseSnapshot, max_items: int = 1000, request_interval_seconds: float = 0, timeout_seconds: float = 15, max_response_bytes: int = 5_000_000, source_delay_minutes: int = 15) -> None: self.universe, self.max_items, self.request_interval_seconds, self.timeout_seconds, self.max_response_bytes, self.source_delay_minutes = universe, max_items, request_interval_seconds, timeout_seconds, max_response_bytes, source_delay_minutes
     def fetch(self, cutoff: datetime, as_of: datetime, ingested_at: datetime) -> tuple[list[dict[str, Any]], list[str]]:
         cutoff, as_of = _utc(cutoff), _utc(as_of)
         if cutoff > as_of: raise ValueError("cutoff must not exceed as_of")
@@ -316,38 +316,25 @@ class VnstockNewsAdapter:
         except ImportError as exc: return [], [f"vnstock dependency unavailable: {exc}"]
         records: list[dict[str, Any]] = []; errors: list[str] = []
         for ticker, exchange in self.universe.members:
-            if len(records) >= self.max_items:
-                break
             try:
-                cursor = None; seen: set[str] = set()
-                for _ in range(self.max_pages):
-                    time.sleep(self.request_interval_seconds)
-                    frame = self._fetch_page(ticker, cursor)
-                    if frame.memory_usage(deep=True).sum() > self.max_response_bytes: raise ValueError("vnstock response exceeds byte cap")
-                    if not {"news_title", "public_date"}.issubset(frame.columns): raise ValueError("vnstock news missing required columns")
-                    reached_cutoff = False
-                    for _, item in frame.iterrows():
-                        if len(records) >= self.max_items:
-                            break
-                        published = _parse_published_at(str(item["public_date"]))
-                        if not published: continue
-                        if published < cutoff:
-                            reached_cutoff = True
-                            break
-                        if published > as_of or published + timedelta(minutes=self.source_delay_minutes) > as_of: continue
-                        source_url = item.get("url") or item.get("news_url"); source_id = item.get("id") or item.get("news_id")
-                        records.append(_record("vnstock_vci", "vnstock VCI", "vnstock", str(item["news_title"]), item.get("news_short_content"), source_url, published, ingested_at, source_tier="aggregator", source_record_id=str(source_id) if pd.notna(source_id) else None, origin_ticker=ticker, origin_exchange=exchange, universe=self.universe, raw_timestamp=str(item["public_date"]), payload=_canonical(item.to_dict()), source_delay_minutes=self.source_delay_minutes))
-                        if len(records) >= self.max_items: break
-                    next_cursor = frame.attrs.get("pagination", {}).get("next_cursor")
-                    if reached_cutoff or not next_cursor or next_cursor in seen or len(records) >= self.max_items: break
-                    seen.add(next_cursor); cursor = next_cursor
+                time.sleep(self.request_interval_seconds)
+                frame = self._fetch_page(ticker)
+                if not isinstance(frame, pd.DataFrame): raise ValueError("vnstock news must be a DataFrame")
+                if frame.memory_usage(deep=True).sum() > self.max_response_bytes: raise ValueError("vnstock response exceeds byte cap")
+                if not {"news_title", "public_date"}.issubset(frame.columns): raise ValueError("vnstock news missing required columns")
+                for _, item in frame.iterrows():
+                    published = _parse_published_at(str(item["public_date"]))
+                    if not published or not cutoff <= published <= as_of or published + timedelta(minutes=self.source_delay_minutes) > as_of: continue
+                    source_url = item.get("url") or item.get("news_url"); source_id = item.get("id") or item.get("news_id")
+                    records.append(_record("vnstock_vci", "vnstock VCI", "vnstock", str(item["news_title"]), item.get("news_short_content"), source_url, published, ingested_at, source_tier="aggregator", source_record_id=str(source_id) if pd.notna(source_id) else None, origin_ticker=ticker, origin_exchange=exchange, universe=self.universe, raw_timestamp=str(item["public_date"]), payload=_canonical(item.to_dict()), source_delay_minutes=self.source_delay_minutes))
             except Exception as exc: errors.append(f"{ticker}: {exc}")
-        return records, errors
+        records = sorted({record["raw_record_id"]: record for record in records}.values(), key=lambda record: (-record["published_at"].timestamp(), str(record["source_record_id"] or ""), str(record["canonical_url"] or ""), str(record["origin_ticker"]), str(record["origin_exchange"])))
+        return records[:self.max_items], errors
 
-    def _fetch_page(self, ticker: str, cursor: str | None) -> pd.DataFrame:
+    def _fetch_page(self, ticker: str) -> pd.DataFrame:
         context = multiprocessing.get_context()
         parent, child = context.Pipe(duplex=False)
-        process = context.Process(target=_vnstock_news_worker, args=(child, ticker, cursor, min(100, self.max_items)))
+        process = context.Process(target=_vnstock_news_worker, args=(child, ticker))
         process.daemon = True
         process.start()
         child.close()

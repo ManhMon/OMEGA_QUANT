@@ -80,7 +80,7 @@ def main() -> int:
     from omega.data.macro_news_pipeline import SCHEMA, MacroNewsPipeline, VnstockNewsAdapter
     cutoff = args.as_of - timedelta(hours=args.hours_back)
     vnstock_entry = next(entry for entry in registry if entry["source_id"] == "vnstock_vci")
-    vnstock_records, vnstock_errors = VnstockNewsAdapter(universe, max_pages=vnstock_entry["max_pages"], max_items=min(args.max_articles, vnstock_entry["max_items"]), request_interval_seconds=vnstock_entry["request_interval_seconds"], timeout_seconds=vnstock_entry["timeout_seconds"], max_response_bytes=vnstock_entry["max_response_bytes"], source_delay_minutes=vnstock_entry["source_delay_minutes"]).fetch(cutoff, args.as_of, datetime.now(timezone.utc))
+    vnstock_records, vnstock_errors = VnstockNewsAdapter(universe, max_items=min(args.max_articles, vnstock_entry["max_items"]), request_interval_seconds=vnstock_entry["request_interval_seconds"], timeout_seconds=vnstock_entry["timeout_seconds"], max_response_bytes=vnstock_entry["max_response_bytes"], source_delay_minutes=vnstock_entry["source_delay_minutes"]).fetch(cutoff, args.as_of, datetime.now(timezone.utc))
     static_entries = [entry for entry in registry if entry["enabled"] and entry["kind"] in {"rss", "html"}]
     static_pipeline = MacroNewsPipeline(sources={entry["source_id"]: (entry["kind"], entry["discovery_url"]) for entry in static_entries}, source_settings={entry["source_id"]: entry for entry in static_entries})
     static_records = static_pipeline.fetch(cutoff, args.as_of)
