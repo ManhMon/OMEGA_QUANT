@@ -147,14 +147,25 @@ def main():
     l3_cmd = l3_cmd_lines[1].strip()
 
     rc = run(l3_cmd, f"L3 Codex Audit: {l3_role} (model: {l3_meta.get('MODEL', risk)})")
-    # L3 exit code 0 doesn't mean APPROVED — check verdict
+    # L3 exit code 0 doesn't mean APPROVED - check verdict
     report_path = l3_meta.get("REPORT", "")
     if report_path and Path(report_path).exists():
         content = Path(report_path).read_text(encoding="utf-8")
         if "[NEEDS_FIX]" in content:
             print(f"\n[NEEDS_FIX] L3 audit returned NEEDS_FIX.")
             print(f"  Report: {report_path}")
-            print(f"  Next: Run extract_lessons.py, fix, re-run pipeline.")
+            # Auto-run lesson extraction hard gate before exit
+            print(f"\n[AUTO] Running extract_lessons.py (lessons_extraction_hard_gate_20260726)...")
+            rc_lessons = run(
+                f'{sys.executable} scripts/extract_lessons.py',
+                "Lesson Extraction Hard Gate",
+                check=False
+            )
+            if rc_lessons == 0:
+                print(f"  [OK] Lessons extracted. Review .agents/knowledge/lessons.jsonl")
+            else:
+                print(f"  [WARN] extract_lessons.py failed (rc={rc_lessons}). Review manually.")
+            print(f"\n  Next: Fix scope, re-run pipeline.")
             sys.exit(2)
         elif "[APPROVED]" not in content:
             print(f"\n[WARN] No clear verdict found in {report_path}")
@@ -167,11 +178,13 @@ def main():
         sys.exit(3)
 
     print(f"\n{'='*60}")
-    print(f"  ✅ PIPELINE COMPLETE: {gate}")
+    print(f"  PIPELINE COMPLETE: {gate}")
     print(f"  L2: {session_id}")
     print(f"  L3: {l3_meta.get('L3_SESSION_ID', 'unknown')}")
     print(f"  Verdict: [APPROVED]")
     print(f"  Enforcer: [PASS]")
+    if risk == "low":
+        print(f"  TOKEN SAVER: Final deep audit SKIPPED (low-risk gate).")
     print(f"{'='*60}")
 
 
