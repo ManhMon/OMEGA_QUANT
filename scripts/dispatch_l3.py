@@ -47,6 +47,35 @@ def parse_frontmatter(content: str) -> dict:
     return result
 
 
+HIGH_RISK_PATTERNS = [
+    "src/", ".py",          # production source
+    "macro_pipeline", "macro_news_pipeline",  # complex data pipelines
+    "playwright", "sbv", "transport",         # WAF/browser/network
+    "migration", "merge", "parquet",          # data persistence
+    "llm", "alpha",                           # LLM/alpha logic
+]
+LOW_RISK_PATTERNS = [
+    "tests/fixtures/", "fixture",             # test fixtures only
+    ".md", ".json", ".txt",                   # docs/config
+    "requirements.txt", ".gitattributes",     # build config
+]
+
+
+def infer_risk(scope: str) -> tuple[str, str]:
+    """Return (risk, reason) based on scope content."""
+    scope_lower = scope.lower()
+    high_matches = [p for p in HIGH_RISK_PATTERNS if p in scope_lower]
+    low_matches = [p for p in LOW_RISK_PATTERNS if p in scope_lower]
+
+    # If any high-risk pattern matches → high (safety default)
+    if high_matches:
+        return "high", f"high-risk patterns: {high_matches[:2]}"
+    # Only low-risk patterns → low
+    if low_matches:
+        return "low", f"low-risk patterns: {low_matches[:2]}"
+    return "high", "no pattern match, defaulting to high"
+
+
 def main():
     if len(sys.argv) < 6:
         print("Usage: python scripts/dispatch_l3.py <l3_role_name> <gate_name> <l2_session_id> <l2_role_name> <scope> [--risk low|high]")
@@ -57,17 +86,24 @@ def main():
     l2_session_id = sys.argv[3]
     l2_role_name = sys.argv[4]
     scope = sys.argv[5]
-    risk = "high"
+    explicit_risk = None
 
     for i, arg in enumerate(sys.argv):
         if arg == "--risk" and i + 1 < len(sys.argv):
-            risk = sys.argv[i + 1]
+            explicit_risk = sys.argv[i + 1]
 
-    if risk not in MODELS:
-        print(f"[ERROR] Invalid risk level: {risk}. Use 'low' or 'high'.")
-        sys.exit(1)
+    if explicit_risk:
+        if explicit_risk not in MODELS:
+            print(f"[ERROR] Invalid risk level: {explicit_risk}. Use 'low' or 'high'.")
+            sys.exit(1)
+        risk = explicit_risk
+        risk_reason = "explicit --risk flag"
+    else:
+        risk, risk_reason = infer_risk(scope)
+        print(f"[AUTO-RISK] Inferred: {risk} ({risk_reason})")
 
     model = MODELS[risk]
+
     today = datetime.now().strftime("%Y%m%d")
 
     # 1. Validate L3 role
