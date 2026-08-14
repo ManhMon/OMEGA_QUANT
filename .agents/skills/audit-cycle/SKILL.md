@@ -23,39 +23,79 @@ The audit cycle implements the mandatory segregation of duties workflow:
 
 ---
 
+## Automation Scripts (TOKEN SAVER)
+
+All scripts live in `scripts/`. Use them instead of manual prompt construction:
+
+| Script | Purpose | Saves |
+|--------|---------|-------|
+| `dispatch_l2.py` | Generate L2 OpenCode dispatch command | ~5K L1 context |
+| `validate_l2_report.py` | Pre-L3 validation of L2 report format | ~400K/retry avoided |
+| `dispatch_l3.py` | Generate L3 Codex dispatch command + model tiering | ~5K L1 + 50% cost (low) |
+| `update_gate.py` | Scoped phase_gates.json update (no corruption) | ~400K/retry avoided |
+| `sod_pipeline.py` | Full L2→validate→L3→enforcer in 1 command | ~80K L1 context |
+| `sod_gate_enforcer.py` | Final compliance check | Required |
+
+### One-Command Pipeline (Recommended)
+
+```powershell
+python scripts/sod_pipeline.py <l2_role> <l3_role> <gate> <slug> "<task>" "<scope>" [--risk low|high] [--dry-run]
+```
+
+### Individual Script Usage
+
+```powershell
+# Step 1: Dispatch L2
+python scripts/dispatch_l2.py <role> <gate> <slug> "<task>" "<scope>"
+
+# Step 2: Validate L2 report (MANDATORY before L3)
+python scripts/validate_l2_report.py <l2_session_id> <role_id> <role_name>
+
+# Step 3: Dispatch L3
+python scripts/dispatch_l3.py <l3_role> <gate> <l2_session_id> <l2_role> "<scope>" [--risk low|high]
+
+# Step 4: Enforcer
+python scripts/sod_gate_enforcer.py
+```
+
+---
+
 ## Audit Cycle Phases
 
 ### Phase 1: L2 Submission
 
-**Pre-conditions:**
-- L2 role spec loaded from `REPO_AGENT_ROOT/<role>.md`
-- L2 skills loaded from `REPO_SKILL_ROOT/<skill>/SKILL.md`
-- Implementation complete with tests passing
+**Dispatch:** `python scripts/dispatch_l2.py <role> <gate> <slug> "<task>" "<scope>"`
 
 **L2 deliverables:**
 - Code changes in scope
 - Tests passing
-- L2 report at `.ly_state/session/l2_role{id}_{slug}_{YYYYMMDD}.md`
-- Report MUST list exact repo-local files read
+- L2 report using template `.agents/skills/omega-sod/l2_report_template.md`
+- Report MUST have `## Repo-Local Files Read` heading
+- Report filename: `l2_role{id}_{slug}_{YYYYMMDD}.md` (no `_retry` suffix)
+
+### Phase 1.5: Pre-L3 Validation (MANDATORY)
+
+**Run:** `python scripts/validate_l2_report.py <session_id> <role_id> <role_name>`
+
+- Exit 0 → proceed to Phase 2
+- Exit 1 → fix L2 report, re-dispatch L2 (do NOT dispatch L3)
 
 ### Phase 2: L3 Independent Audit
 
-**Pre-conditions:**
-- L2 session complete and saved
-- L3 role_id != L2 role_id (writer != auditor)
-- L3 role spec loaded from `REPO_AGENT_ROOT/<role>.md`
+**Dispatch:** `python scripts/dispatch_l3.py <l3_role> <gate> <l2_session_id> <l2_role> "<scope>" [--risk low|high]`
 
-**L3 deliverables:**
-- Audit report at `.ly_state/session/audit_reports/role{id}_{slug}_{YYYYMMDD}.md`
-- Verdict: `[APPROVED]` or `[NEEDS_FIX]`
-- Gate metadata update in `phase_gates.json`
+**Model tiering:**
+- `--risk low`: test fixtures, docs, config → `cx/gpt-5.6-sol` (~50% cheaper)
+- `--risk high` (default): production logic, security → `cx/gpt-5.6-sol(max)`
+
+**L3 gate update:** L3 MUST use `python scripts/update_gate.py <gate> <field>=<value> ...` instead of editing phase_gates.json manually.
 
 ### Phase 3: Gate Recording
 
 **L1 responsibilities:**
-- Record gate metadata with all required fields
 - Run `python scripts/sod_gate_enforcer.py`
 - Exit 0 = safe to push; Exit 1 = blocked
+- For low-risk gates with [APPROVED]: MAY skip final deep audit (record skip reason)
 
 ---
 
@@ -128,12 +168,34 @@ The audit cycle implements the mandatory segregation of duties workflow:
 
 ---
 
+## L2 Optimization Tips
+
+1. **Use l2_report_template.md** — copy exact format, don't invent structure
+2. **Keep scope minimal** — smaller diff = faster audit, fewer issues
+3. **Run tests before report** — include actual output in Verification section
+4. **Forbidden path scan** — 4 lines, each ending exactly: `non-authoritative scan evidence only; no reliance.`
+
+## L3 Optimization Tips
+
+1. **Use update_gate.py** — never edit phase_gates.json manually (prevents corruption)
+2. **Use --risk low** for fixture/doc/config gates — halves model cost
+3. **Scoped checks only** — don't re-audit files outside scope
+4. **Include line references** — cite exact line numbers for findings
+
+---
+
 ## Integration
 
 This skill coordinates with:
 - **omega-sod**: Defines the SOD framework and platform hierarchy
 - **code-review-checklist**: L3 uses for review standards
 - **testing-patterns**: L2 uses for test quality
+
+Automation scripts:
+- `scripts/dispatch_l2.py`, `scripts/dispatch_l3.py`: Command builders
+- `scripts/validate_l2_report.py`: Pre-L3 format validation
+- `scripts/update_gate.py`: Safe scoped gate updates
+- `scripts/sod_pipeline.py`: Full pipeline orchestration
 
 ---
 

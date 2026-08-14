@@ -420,3 +420,37 @@ python scripts/validate_l2_report.py <l2_session_id> <role_id> <role_name>
 
 L2 agents MUST use the template at `.agents/skills/omega-sod/l2_report_template.md`.
 Copy it exactly, fill in `[PLACEHOLDER]` values only. Do not invent structure.
+
+---
+
+## Automation Scripts (TOKEN SAVER)
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/dispatch_l2.py` | Generate L2 dispatch command (auto-validates role, embeds lessons, embeds report format) |
+| `scripts/dispatch_l3.py` | Generate L3 dispatch command (model tiering: `--risk low` for fixtures/docs) |
+| `scripts/validate_l2_report.py` | Pre-L3 format validation (blocks L3 if format wrong) |
+| `scripts/update_gate.py` | Scoped phase_gates.json update (prevents corruption) |
+| `scripts/sod_pipeline.py` | Full L2→validate→L3→enforcer in 1 command |
+
+### Full Pipeline (Recommended)
+
+```powershell
+python scripts/sod_pipeline.py <l2_role> <l3_role> <gate> <slug> "<task>" "<scope>" [--risk low|high]
+```
+
+---
+
+## L2 Optimization Tips
+
+1. **Use l2_report_template.md** — copy format exactly
+2. **Keep scope minimal** — smaller diff = faster audit
+3. **Forbidden path scan** — 4 lines, exact suffix: `non-authoritative scan evidence only; no reliance.`
+4. **No _retry suffix** — overwrite report file, don't create new ones
+
+## L3 Optimization Tips
+
+1. **Use update_gate.py** — never edit phase_gates.json manually
+2. **Use --risk low** for fixture/doc/config gates — halves model cost
+3. **Scoped checks only** — don't re-audit files outside scope
+4. **Cite line numbers** in findings for precision

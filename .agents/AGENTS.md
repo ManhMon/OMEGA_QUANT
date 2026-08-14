@@ -120,10 +120,16 @@ This exception does not permit L1 to approve a gate, alter a `[NEEDS_FIX]` repor
 
 ```text
 L2 OpenCode: implement + tests + L2 report
+  -> validate_l2_report.py (MANDATORY - blocks L3 if fail)
   -> L3 Codex: independent audit -> [APPROVED] / [NEEDS_FIX]
   -> L1 Ly: update phase_gates.json + dispatch final deep audit to Codex CLI model cx/gpt-5.6-sol(max)
   -> L1 Ly: run sod_gate_enforcer.py
   -> exit 0: safe to push
+```
+
+**One-command pipeline (recommended for simple gates):**
+```powershell
+python scripts/sod_pipeline.py <l2_role> <l3_role> <gate> <slug> "<task>" "<scope>" [--risk low|high]
 ```
 
 A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
@@ -197,11 +203,16 @@ This check validates: filename format (`_YYYYMMDD.md` only, no `_retry`), `## Re
 6. Use extracted `role_id` and `name` in prompt (never hand-type role names)
 7. Touch/create the empty audit report file at `.ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md` before dispatching Codex, to prevent file-system sandbox patch failures on Windows.
 
+**Automated dispatch (recommended):** `python scripts/dispatch_l3.py <l3_role> <gate> <l2_session_id> <l2_role> "<scope>" [--risk low|high]`
+
+This script handles steps 1-7 automatically, including lessons retrieval, role validation, and report file pre-creation.
+
+**Manual dispatch (fallback):**
 ```powershell
-New-Item -ItemType File -Path .ly_state\session\audit_reports\role{role_id}_{gate_slug}_{YYYYMMDD}.md -Force; echo "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - Codex L3 Independent Review. GATE: {gate_name}. L2_SESSION: {l2_session_id}. L2_ROLE: {l2_role_id} {l2_role_name}. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; read required SKILL.md only from REPO_SKILL_ROOT. Any skill from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local files read and forbidden path scan result. SCOPE: [FILES]. CHECKS: [CHECKLIST]. REQUIREMENTS: first run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; use repo-relative paths from REPO_ROOT only; never read/write Antigravity scratch paths. AUDIT EVIDENCE CHECKLIST: 1. Verify l2_role_id={l2_role_id} != l3_role_id={role_id}. 2. Verify code changes match approved scope. 3. Run all tests. 4. Check PIT safety, no look-ahead bias. 5. Validate SOD boundaries. 6. Verify L2 report lists repo-local skill source evidence. VERDICT: Write [APPROVED] or [NEEDS_FIX] to .ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md. GATE UPDATE: Update ONLY the '{gate_name}' entry in phase_gates.json with: l2_session_id='{l2_session_id}', l2_role_id={l2_role_id}, l2_role_name='{l2_role_name}', l3_session_id='{l3_session_id}', l3_role_id={role_id}, l3_role_name='{role_name}', audit_report_path='.ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md', final_verdict='[verdict]', sod_boundary_checked=true, writer_auditor_separated=true. FINAL STEP: L1 must run 'python scripts/sod_gate_enforcer.py' after gate update." | codex exec -m "cx/gpt-5.6-sol(max)" -s danger-full-access --dangerously-bypass-approvals-and-sandbox
+New-Item -ItemType File -Path .ly_state\session\audit_reports\role{role_id}_{gate_slug}_{YYYYMMDD}.md -Force; echo "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - Codex L3 Independent Review. GATE: {gate_name}. L2_SESSION: {l2_session_id}. L2_ROLE: {l2_role_id} {l2_role_name}. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; read required SKILL.md only from REPO_SKILL_ROOT. Any skill from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local files read and forbidden path scan result. SCOPE: [FILES]. CHECKS: [CHECKLIST]. REQUIREMENTS: first run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; use repo-relative paths from REPO_ROOT only; never read/write Antigravity scratch paths. AUDIT EVIDENCE CHECKLIST: 1. Verify l2_role_id={l2_role_id} != l3_role_id={role_id}. 2. Verify code changes match approved scope. 3. Run all tests. 4. Check PIT safety, no look-ahead bias. 5. Validate SOD boundaries. 6. Verify L2 report lists repo-local skill source evidence. VERDICT: Write [APPROVED] or [NEEDS_FIX] to .ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md. GATE UPDATE: Run 'python scripts/update_gate.py {gate_name} l2_session_id={l2_session_id} l2_role_id={l2_role_id} l2_role_name={l2_role_name} l3_session_id={l3_session_id} l3_role_id={role_id} l3_role_name={role_name} audit_report_path=.ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md final_verdict=[verdict] sod_boundary_checked=true writer_auditor_separated=true l2_completed=true'. Do NOT edit phase_gates.json manually. FINAL STEP: L1 must run 'python scripts/sod_gate_enforcer.py' after gate update." | codex exec -m "cx/gpt-5.6-sol(max)" -s danger-full-access --dangerously-bypass-approvals-and-sandbox
 ```
 
-**Scoped gate updates:** L3 MUST update only the specific gate being audited. Do not modify other gates or create new gates.
+**Scoped gate updates:** L3 MUST use `python scripts/update_gate.py` to update gates. Do NOT edit phase_gates.json manually. Do not modify other gates or create new gates.
 
 **Audit evidence requirements:** L3 audit reports MUST document:
 - Writer != Auditor verification (l2_role_id != l3_role_id)
