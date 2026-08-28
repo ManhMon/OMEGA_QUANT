@@ -247,11 +247,79 @@ def validate_post_cutoff_gate_fields(gate: dict, timestamp: float | None) -> tup
     if gate.get("l2_completed") is not True:
         return False, "l2_completed must be literal true"
     key = gate.get("l3_session_key")
-    if not isinstance(key, str) or key.strip().lower() in {"", "pending", "unknown", "todo", "tbd"}:
+    if not isinstance(key, str) or key.strip().lower() in _PLACEHOLDER_FIELD_VALUES:
         return False, "l3_session_key must be concrete and nonempty"
     required = ("l2_session_id", "l2_role_id", "l2_role_name", "l3_session_id", "l3_role_id", "l3_role_name", "audit_report_path", "timestamp")
     missing = [field for field in required if gate.get(field) in (None, "")]
     return (not missing, "" if not missing else f"missing post-cutoff fields: {missing}")
+
+
+# SOD_DISPATCHER_ADVISORY_HARDENING_20260826 (C1): gates whose YYYYMMDD key
+# suffix dates on/after 2026-08-27 require complete advisory metadata.
+# Strictly non-retroactive: earlier key dates are grandfathered.
+ADVISORY_METADATA_CUTOFF_KEY_DATE = date(2026, 8, 27)
+ADVISORY_METADATA_FIELDS = ("timestamp", "l3_session_key", "repo_local_skill_sources", "forbidden_path_scan")
+_PLACEHOLDER_FIELD_VALUES = {"", "pending", "unknown", "todo", "tbd", "tba"}
+
+
+def _concrete_field_value(value) -> bool:
+    if isinstance(value, (list, tuple)):
+        return len(value) > 0
+    return isinstance(value, str) and value.strip().lower() not in _PLACEHOLDER_FIELD_VALUES
+
+
+def _repo_local_source_ok(source) -> bool:
+    """Each skill source must be a repo-relative path, never absolute/traversal."""
+    if not isinstance(source, str) or not source.strip():
+        return False
+    candidate = source.strip().replace("\\", "/")
+    if Path(candidate).is_absolute() or ".." in candidate.split("/"):
+        return False
+    normalized = candidate.lower()
+    return bool(
+        re.fullmatch(r"\.agents/agent/[a-z0-9_-]+\.md", normalized)
+        or re.fullmatch(r"\.agents/skills/[a-z0-9_-]+/skill\.md", normalized)
+    )
+
+
+def validate_advisory_gate_fields(gate: dict, gate_name: str) -> tuple[bool, str]:
+    """Strict four-field advisory metadata check for gates with a key-date
+    suffix >= 2026-08-27; all other gates pass untouched (non-retroactive)."""
+    key_date, key_error = _gate_key_date(gate_name)
+    if key_error:
+        return False, f"invalid gate key date: {key_error}"
+    if key_date is None or key_date < ADVISORY_METADATA_CUTOFF_KEY_DATE:
+        return True, ""
+
+    missing = [field for field in ADVISORY_METADATA_FIELDS if gate.get(field) in (None, "", [])]
+    if missing:
+        return False, f"missing post-cutoff advisory fields: {missing}"
+
+    resolved, resolve_error = resolve_gate_date(gate, gate_name)
+    if resolve_error:
+        return False, resolve_error
+    if resolved != key_date:
+        return False, "gate key date and timestamp date mismatch"
+
+    scan = gate.get("forbidden_path_scan")
+    session_id = gate.get("l3_session_id")
+    if gate.get("l3_session_key") != session_id:
+        return False, "l3_session_key must exactly bind l3_session_id"
+    if (not isinstance(scan, str) or scan.strip().lower() in _PLACEHOLDER_FIELD_VALUES or
+            not isinstance(session_id, str) or session_id not in scan or "completed" not in scan.lower()):
+        return False, "forbidden_path_scan must be completed and tied to l3_session_id"
+    has_violation, violations = validate_forbidden_path_usage(scan)
+    if has_violation:
+        return False, f"forbidden_path_scan sentence-level violation: {violations[0]}"
+
+    sources = gate.get("repo_local_skill_sources")
+    if not isinstance(sources, list):
+        return False, "repo_local_skill_sources must be a list of repo-local paths"
+    invalid_sources = [source for source in sources if not _repo_local_source_ok(source)]
+    if invalid_sources:
+        return False, f"repo_local_skill_sources contains non-repo-local entries: {invalid_sources}"
+
+    return True, ""
 
 
 def _immutable_gate_record(gate: dict) -> dict:
@@ -1461,7 +1529,7 @@ def validate_l2_role(role_id, role_name, role_specs: dict, gate_name: str = "") 
     except (ValueError, TypeError):
         return False, f"l2_role_id must be integer, got: {role_id}"
     
-    is_planning_role = role_id_int == 26 and gate_name.endswith("_plan")
+    is_planning_role = role_id_int == 26 and ("_plan" in gate_name.lower() or gate_name.lower().endswith("plan") or "plan" in gate_name.lower())
     if not (6 <= role_id_int <= 16 or is_planning_role):
         return False, f"l2_role_id must be 6-16, got: {role_id_int}"
     
@@ -2078,6 +2146,18 @@ def _validate_l2_report_content(content, role_id=None, role_name=None) -> tuple:
         for skill in declared_skills
     }
 
+    # Support Composite/Multi-Role Squad (COMPOSITE_ROLE_EXECUTION_20260824):
+    # Allow skills declared across any reported Tier 2 co-roles (Role IDs 6-16)
+    tier2_co_skills = set()
+    for agent_path in reported_agent_files:
+        stem = Path(agent_path).stem
+        for r_id, r_spec in role_specs.items():
+            if r_spec.get('name') == stem and r_spec.get('tier') == 2:
+                for s in (r_spec.get('skills') or []):
+                    tier2_co_skills.add(f".agents/skills/{s}/SKILL.md".lower())
+
+    allowed_skill_files = expected_skill_files.union(tier2_co_skills)
+
     if not reported_skill_files:
         return False, (
             "L2 report missing skill file evidence: "
@@ -2090,7 +2170,7 @@ def _validate_l2_report_content(content, role_id=None, role_name=None) -> tuple:
             "L2 report missing declared skill files: " + ", ".join(missing_skill_files)
         )
 
-    extra_skill_files = sorted(reported_skill_files - expected_skill_files)
+    extra_skill_files = sorted(reported_skill_files - allowed_skill_files)
     if extra_skill_files:
         return False, (
             "L2 report lists undeclared skill files: " + ", ".join(extra_skill_files)
@@ -2184,6 +2264,18 @@ def _validate_audit_report_skill_content(content, report_filename, role_id=None,
             for skill in declared_skills
         }
 
+        # Support Composite/Multi-Role Audit Council (COMPOSITE_ROLE_EXECUTION_20260824):
+        # Allow skills declared across any reported Tier 3 co-auditors (Role IDs 17-30)
+        tier3_co_skills = set()
+        for agent_path in reported_agent_files:
+            stem = Path(agent_path).stem
+            for r_id, r_spec in role_specs.items():
+                if r_spec.get('name') == stem and r_spec.get('tier') == 3:
+                    for s in (r_spec.get('skills') or []):
+                        tier3_co_skills.add(f".agents/skills/{s}/SKILL.md".lower())
+
+        allowed_skill_files = expected_skill_files.union(tier3_co_skills)
+
         if expected_skill_files and not reported_skill_files:
             return False, (
                 "Audit report missing skill file evidence: "
@@ -2196,7 +2288,7 @@ def _validate_audit_report_skill_content(content, report_filename, role_id=None,
                 "Audit report missing declared skill files: " + ", ".join(missing_skill_files)
             )
 
-        extra_skill_files = sorted(reported_skill_files - expected_skill_files)
+        extra_skill_files = sorted(reported_skill_files - allowed_skill_files)
         non_global_extras = [
             path for path in extra_skill_files
             if path not in ALLOWED_GLOBAL_REPO_LOCAL_FILES
@@ -2677,6 +2769,12 @@ def check_sod_compliance() -> bool:
         fields_valid, fields_msg = validate_post_cutoff_gate_fields(gate, ts)
         if not fields_valid:
             print(f"FAIL: Gate {gate_name} {fields_msg}")
+            all_pass = False
+            continue
+
+        advisory_valid, advisory_msg = validate_advisory_gate_fields(gate, gate_name)
+        if not advisory_valid:
+            print(f"FAIL: Gate {gate_name} {advisory_msg}")
             all_pass = False
             continue
         
