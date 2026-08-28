@@ -216,7 +216,8 @@ def _snapshot_files(paths: list[Path]) -> dict[str, str]:
     snapshot = {}
     for path in paths:
         try:
-            snapshot[path.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+            raw = path.read_bytes().replace(b"\r\n", b"\n")
+            snapshot[path.as_posix()] = hashlib.sha256(raw).hexdigest()
         except OSError as exc:
             raise RuntimeError(f"cannot snapshot gate-close file: {path.name}") from exc
     return snapshot
@@ -321,7 +322,8 @@ def _close_gate_locked(gate_name: str, paths: list[str], message: str, repo: Pat
         if blob_oid.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", blob_oid.stdout.strip()):
             raise RuntimeError("commit tree blob is invalid")
         blob = _git_bytes(repo, "cat-file", "blob", blob_oid.stdout.strip())
-        raw = blob.stdout if isinstance(blob.stdout, bytes) else blob.stdout.encode()
+        raw = blob.stdout if isinstance(blob.stdout, bytes) else blob.stdout.encode("utf-8", errors="replace")
+        raw = raw.replace(b"\r\n", b"\n")
         if blob.returncode or hashlib.sha256(raw).hexdigest() != snapshot[(repo / path).as_posix()]:
             raise RuntimeError("commit tree does not match verified snapshot")
 
