@@ -14,7 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Callable, Dict, List, Optional, Tuple, Any
 
 import numpy as np
 import pandas as pd
@@ -118,7 +118,11 @@ class OmegaPipeline:
         
         logger.info(f"OmegaPipeline initialized with universe: {config.universe}")
     
-    def run(self) -> PipelineResult:
+    def run(
+        self,
+        progress_callback: Optional[Callable[[str, int, int], None]] = None,
+        cancel_callback: Optional[Callable[[], bool]] = None,
+    ) -> PipelineResult:
         """
         Execute the full E2E pipeline.
         
@@ -128,6 +132,18 @@ class OmegaPipeline:
         errors = []
         
         try:
+            stages = ("DATA_INGEST", "FEATURE_ENGINEERING", "ALPHA_DISCOVERY", "RISK_OPTIMIZATION", "RESEARCH_EXECUTION")
+
+            def checkpoint(index: int) -> bool:
+                if cancel_callback and cancel_callback():
+                    return False
+                if progress_callback:
+                    progress_callback(stages[index], index, len(stages))
+                return True
+
+            if not checkpoint(0):
+                return PipelineResult(success=False, message="Pipeline cancelled", errors=["CANCELLED"])
+
             # Step 1: Load Data
             logger.info("Step 1: Loading market data...")
             data_result = self._load_data()
@@ -139,6 +155,9 @@ class OmegaPipeline:
                 )
             data = data_result["data"]
             logger.info(f"Loaded {len(data)} rows of market data")
+
+            if not checkpoint(1):
+                return PipelineResult(success=False, message="Pipeline cancelled", data=data, errors=["CANCELLED"])
             
             # Step 2: Compute Features
             logger.info("Step 2: Computing features...")
@@ -152,6 +171,9 @@ class OmegaPipeline:
                 )
             features = features_result["features"]
             logger.info(f"Computed {len(features.columns)} features")
+
+            if not checkpoint(2):
+                return PipelineResult(success=False, message="Pipeline cancelled", data=data, features=features, errors=["CANCELLED"])
             
             # Step 3: Generate Alphas
             logger.info("Step 3: Generating alpha signals...")
@@ -166,6 +188,9 @@ class OmegaPipeline:
                 )
             alphas = alphas_result["alphas"]
             logger.info(f"Generated {len(alphas.columns)} alpha signals")
+
+            if not checkpoint(3):
+                return PipelineResult(success=False, message="Pipeline cancelled", data=data, features=features, alphas=alphas, errors=["CANCELLED"])
             
             # Step 4: Apply Risk Controls
             logger.info("Step 4: Applying risk controls...")
@@ -181,6 +206,9 @@ class OmegaPipeline:
                 )
             positions = risk_result["positions"]
             logger.info(f"Risk-adjusted positions computed")
+
+            if not checkpoint(4):
+                return PipelineResult(success=False, message="Pipeline cancelled", data=data, features=features, alphas=alphas, positions=positions, errors=["CANCELLED"])
             
             # Step 5: Simulate Execution
             logger.info("Step 5: Simulating execution...")
@@ -337,17 +365,14 @@ class OmegaPipeline:
             positions = alphas[["ticker", "date", "alpha_momentum_rank"]].copy()
             positions.rename(columns={"alpha_momentum_rank": "target_weight"}, inplace=True)
             
-            # Apply individual position limits FIRST (before normalization)
-            max_position = self.config.risk_config.max_concentration_per_stock
-            
-            # Clip each position to max limit
-            positions["target_weight"] = positions["target_weight"].clip(0, max_position)
-            
-            # Normalize weights to sum to 1.0 per date
-            # Handle edge case where sum is zero
-            positions["target_weight"] = positions.groupby("date")["target_weight"].transform(
-                lambda x: x / x.sum() if x.sum() > 1e-8 else 0
-            )
+            # Apply risk limits per date while preserving the date column
+            def _apply_guard(group: pd.DataFrame) -> pd.DataFrame:
+                d = group["date"].iloc[0]
+                res = self.risk_guard.apply_limits(group[["ticker", "target_weight"]])
+                res["date"] = d
+                return res
+
+            positions = positions.groupby("date", as_index=False, group_keys=False).apply(_apply_guard)
             
             # Filter out positions with zero weight
             positions = positions[positions["target_weight"] > 1e-6].copy()

@@ -8,6 +8,7 @@ Architecture Reference: OMEGA_SYSTEM_ARCHITECTURE_V1.md Section 4 (Data Governan
 """
 
 import os
+import time
 import hashlib
 import logging
 from datetime import UTC, datetime, timedelta
@@ -15,6 +16,8 @@ from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
 import pandas as pd
 import numpy as np
+
+from omega.data.calendar import VNTradingCalendar
 
 
 logger = logging.getLogger(__name__)
@@ -162,18 +165,16 @@ class DataLoader:
 
         if not force_refresh and cache_path.exists():
             logger.info(f"Loading from cache: {cache_path}")
-            df = pd.read_parquet(cache_path)
-
-            # Validate schema on cache read (protect against corruption)
             try:
+                df = pd.read_parquet(cache_path)
                 self._validate_schema(df)
-            except (KeyError, ValueError) as e:
-                logger.warning(f"Cache validation failed: {e}. Refreshing from source.")
+            except Exception as e:
+                logger.warning(f"Cache load/validation failed ({type(e).__name__}: {e}). Refreshing from source.")
                 df = self._fetch_from_source(ticker, start_date, end_date, as_of_time)
                 # Only add PIT timestamps if not already present
                 if 'as_of' not in df.columns or 'available_at' not in df.columns:
                     df = self._add_pit_timestamps(df)
-                df.to_parquet(cache_path, index=False)
+                self._write_parquet_atomic(df, cache_path)
         else:
             logger.info(f"Fetching data for {ticker} from {start_date} to {end_date}")
             df = self._fetch_from_source(ticker, start_date, end_date, as_of_time)
@@ -182,8 +183,8 @@ class DataLoader:
             if 'as_of' not in df.columns or 'available_at' not in df.columns:
                 df = self._add_pit_timestamps(df)
 
-            # Save to cache
-            df.to_parquet(cache_path, index=False)
+            # Save to cache atomically
+            self._write_parquet_atomic(df, cache_path)
             logger.info(f"Saved to cache: {cache_path}")
 
         # Enforce PIT safety
@@ -256,13 +257,16 @@ class DataLoader:
         
         try:
             # Fetch price data from vnstock
-            data = self.vnstock_source.fetch_price_data(ticker, start_date, end_date)
+            data, provider_results = self.vnstock_source.fetch_price_data_with_reconciliation(
+                ticker, start_date, end_date
+            )
             
             if not data:
                 raise ValueError(f"No data returned for {ticker} from {start_date} to {end_date}")
             
             # Convert to DataFrame
             df = pd.DataFrame(data)
+            self._log_provider_close_deviations(ticker, data, provider_results)
             
             # Rename columns to match expected schema
             df = df.rename(columns={
@@ -279,13 +283,34 @@ class DataLoader:
             df['date'] = pd.to_datetime(df['date'], unit='s')
             
             # Ensure correct column order
-            df = df[['ticker', 'date', 'open', 'high', 'low', 'close', 'volume']]
+            df = df[['ticker', 'date', 'open', 'high', 'low', 'close', 'volume', 'source_used']]
             
             return df
             
         except Exception as e:
             logger.error(f"Failed to fetch data from vnstock for {ticker}: {e}")
             raise
+
+    def _log_provider_close_deviations(
+        self,
+        ticker: str,
+        selected_rows: List[Dict[str, Any]],
+        provider_results: Dict[str, List[Dict[str, Any]]],
+    ) -> None:
+        if not selected_rows:
+            return
+        selected_source = selected_rows[0]["source_used"]
+        selected_close = {row["timestamp"]: row["close"] for row in selected_rows}
+        for provider, rows in provider_results.items():
+            if provider == selected_source:
+                continue
+            for row in rows:
+                reference = selected_close.get(row["timestamp"])
+                if reference and abs(row["close"] - reference) / abs(reference) > 0.001:
+                    logger.warning(
+                        "Close deviation for %s: selected %s vs %s at %s exceeds 0.1%%",
+                        ticker, selected_source, provider, row["timestamp"],
+                    )
 
     def _add_pit_timestamps(self, df: pd.DataFrame) -> pd.DataFrame:
         """
@@ -294,54 +319,77 @@ class DataLoader:
         Rule: EOD prices are available at T+1 market open (09:00 VN time).
         - as_of: End of trading day (date at 15:00 VN time)
         - available_at: Next trading day at 09:00 VN time
+        Localizes naive timestamps to Asia/Ho_Chi_Minh.
         """
         df = df.copy()
 
         # Handle empty DataFrame
         if len(df) == 0:
-            df['as_of'] = pd.Series([], dtype='datetime64[ns]')
-            df['available_at'] = pd.Series([], dtype='datetime64[ns]')
+            df['as_of'] = pd.Series([], dtype='datetime64[ns, Asia/Ho_Chi_Minh]')
+            df['available_at'] = pd.Series([], dtype='datetime64[ns, Asia/Ho_Chi_Minh]')
             return df
 
+        # Localize naive date to Asia/Ho_Chi_Minh if needed
+        date_s = pd.to_datetime(df['date'])
+        if date_s.dt.tz is None:
+            date_hcm = date_s.dt.tz_localize("Asia/Ho_Chi_Minh")
+        else:
+            date_hcm = date_s.dt.tz_convert("Asia/Ho_Chi_Minh")
+
         # as_of: End of trading day (15:00 VN time)
-        df['as_of'] = pd.to_datetime(df['date']) + pd.Timedelta(hours=15)
+        df['as_of'] = date_hcm + pd.Timedelta(hours=15)
 
-        # available_at: Next business day at 09:00 VN time (T+1 lag)
-        df['available_at'] = df['as_of'] + pd.Timedelta(days=1)
+        def next_open(timestamp: pd.Timestamp) -> pd.Timestamp:
+            session = timestamp.date() + timedelta(days=1)
+            while not VNTradingCalendar.is_trading_day(datetime.combine(session, datetime.min.time())):
+                session += timedelta(days=1)
+            ts = pd.Timestamp(session).replace(hour=9)
+            return ts.tz_localize("Asia/Ho_Chi_Minh") if ts.tzinfo is None else ts.tz_convert("Asia/Ho_Chi_Minh")
 
-        # Adjust for weekends (if Friday, available on Monday)
-        df['available_at'] = df['available_at'].apply(
-            lambda x: x + pd.Timedelta(days=2) if x.weekday() == 5 else x  # Saturday -> Monday
-        )
-        df['available_at'] = df['available_at'].apply(
-            lambda x: x + pd.Timedelta(days=1) if x.weekday() == 6 else x  # Sunday -> Monday
-        )
-
-        # Set time to 09:00
-        df['available_at'] = df['available_at'].apply(
-            lambda x: x.replace(hour=9, minute=0, second=0, microsecond=0)
-        )
+        df['available_at'] = df['as_of'].map(next_open)
 
         return df
+
+    @staticmethod
+    def _normalize_to_utc_series(s: pd.Series) -> pd.Series:
+        """Localize naive market timestamps to Asia/Ho_Chi_Minh and convert to true UTC instants."""
+        s_dt = pd.to_datetime(s)
+        if s_dt.dt.tz is None:
+            return s_dt.dt.tz_localize("Asia/Ho_Chi_Minh").dt.tz_convert("UTC")
+        return s_dt.dt.tz_convert("UTC")
+
+    @staticmethod
+    def _normalize_to_utc_instant(ts_val: Any) -> pd.Timestamp:
+        """Localize naive market timestamp to Asia/Ho_Chi_Minh and convert to true UTC instant."""
+        ts = pd.Timestamp(ts_val)
+        if ts.tzinfo is None:
+            return ts.tz_localize("Asia/Ho_Chi_Minh").tz_convert("UTC")
+        return ts.tz_convert("UTC")
 
     def _enforce_pit_safety(self, df: pd.DataFrame, as_of_time: datetime) -> None:
         """
         Enforce PIT safety: as_of <= available_at for all rows.
         Filter out rows where available_at > as_of_time (not yet available).
+        Localizes naive market timestamps to Asia/Ho_Chi_Minh and compares true UTC instants.
 
         Raises:
             ValueError: If any row violates as_of <= available_at (PIT violation)
         """
-        # Check as_of <= available_at
-        violations = df[df['as_of'] > df['available_at']]
+        # Compare true UTC instants
+        as_of_utc = self._normalize_to_utc_series(df['as_of'])
+        avail_utc = self._normalize_to_utc_series(df['available_at'])
+
+        violations = df[as_of_utc > avail_utc]
         if len(violations) > 0:
             raise ValueError(
                 f"PIT violation: Found {len(violations)} rows where as_of > available_at:\n{violations.head()}"
             )
 
-        # Filter out data not yet available at query time
+        # Filter out data not yet available at query time (true UTC instant comparison)
         before_count = len(df)
-        df_filtered = df[df['available_at'] <= as_of_time]
+        as_of_val_utc = self._normalize_to_utc_instant(as_of_time)
+
+        df_filtered = df[avail_utc <= as_of_val_utc]
         after_count = len(df_filtered)
 
         if before_count > after_count:
@@ -439,6 +487,28 @@ class DataLoader:
         key_str = f"{ticker}_{start_date}_{end_date}"
         return hashlib.md5(key_str.encode()).hexdigest()
 
+    @staticmethod
+    def _write_parquet_atomic(df: pd.DataFrame, dest_path: Path) -> None:
+        """Write parquet cache to sibling temp file, flush with os.fsync for crash durability, and atomically replace with cleanup on failure."""
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = dest_path.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}.parquet")
+        try:
+            df.to_parquet(tmp_path, index=False)
+            # Flush file buffers to disk via os.fsync before atomic replace for crash durability
+            fd = os.open(str(tmp_path), os.O_RDWR)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp_path, dest_path)
+        except Exception:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+            raise
+
     def _validate_schema(self, df: pd.DataFrame) -> None:
         """
         Validate DataFrame schema against required columns.
@@ -457,7 +527,9 @@ class DataLoader:
 
         # Validate PIT constraint on cached data
         if len(df) > 0:
-            violations = df[df['as_of'] > df['available_at']]
+            as_of_utc = self._normalize_to_utc_series(df['as_of'])
+            avail_utc = self._normalize_to_utc_series(df['available_at'])
+            violations = df[as_of_utc > avail_utc]
             if len(violations) > 0:
                 raise ValueError(f"PIT violation in cached data: {len(violations)} rows")
 
