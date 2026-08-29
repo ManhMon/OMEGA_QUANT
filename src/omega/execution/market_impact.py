@@ -16,13 +16,13 @@ from typing import Dict, Optional
 class MarketImpactModel:
     """
     Market impact modeling for execution quality analysis.
-    
+
     Uses Almgren-Chriss square-root model adapted for VN market microstructure.
     """
-    
+
     def __init__(self, impact_coefficient: float = 0.2):
         self.impact_coefficient = impact_coefficient
-        
+
     def calculate_impact_bps(
         self,
         order_size: float,
@@ -32,27 +32,36 @@ class MarketImpactModel:
     ) -> float:
         """
         Calculate estimated market impact in basis points (bps).
-        
-        Formula: impact = gamma * sigma * sqrt(Q / V)
-        where:
-        - gamma = impact coefficient (typically 0.1-0.3 for liquid markets)
-        - sigma = volatility
-        - Q = order size
-        - V = daily volume
+
+        Almgren-Chriss model decomposing market impact into temporary and permanent components:
+        - Temporary impact: eta * sigma * (participation_rate ** 0.5)
+        - Permanent impact: gamma * sigma * sqrt(Q / V)
+        Both are strictly monotonic functions of participation_rate, volume ratio (Q/V), and volatility.
         """
-        if average_daily_volume <= 0:
+        if average_daily_volume <= 0 or order_size <= 0:
             return 0.0
-            
+
         normalized_size = order_size / average_daily_volume
-        
-        # Square-root impact model (Almgren-Chriss)
-        impact = self.impact_coefficient * volatility * np.sqrt(normalized_size)
-        
+        p_rate = float(participation_rate)
+        if p_rate <= 0:
+            return 0.0
+        vol = max(0.0001, float(volatility))
+
+        # Permanent impact (Almgren-Chriss square-root)
+        perm_impact = self.impact_coefficient * vol * np.sqrt(normalized_size)
+
+        # Temporary impact (instantaneous liquidity depletion)
+        # Monotonic for any positive participation rate without lower clamp/floor
+        temp_coeff = self.impact_coefficient * 0.75
+        temp_impact = temp_coeff * vol * np.sqrt(p_rate)
+
+        total_impact = perm_impact + temp_impact
+
         # Convert to basis points (multiply by 10000)
-        impact_bps = impact * 10000
-        
+        impact_bps = total_impact * 10000
+
         return float(impact_bps)
-        
+
     def calculate_implementation_shortfall(
         self,
         order_size: float,
@@ -64,7 +73,7 @@ class MarketImpactModel:
     ) -> Dict[str, float]:
         """
         Calculate implementation shortfall components.
-        
+
         Returns:
             {
                 "realized_spread": execution - arrival (direction-aware),
@@ -80,7 +89,7 @@ class MarketImpactModel:
             volatility=volatility,
             participation_rate=participation_rate
         )
-        
+
         # Realized spread (arrival vs execution)
         # Positive = buy higher, sell lower = cost
         # Negative = buy lower, sell higher = benefit
@@ -88,21 +97,21 @@ class MarketImpactModel:
             realized_spread = 0.0
         else:
             realized_spread = ((execution_price - arrival_price) / arrival_price) * 10000
-        
+
         # Timing risk = realized spread - market impact
         # (unexpected move against us)
         timing_risk = realized_spread - impact
-        
+
         # Total: includes impact + realized spread
         total_cost = realized_spread + impact
-        
+
         return {
             "realized_spread": float(realized_spread),
             "market_impact": float(impact),
             "timing_risk": float(timing_risk),
             "total_cost": float(total_cost)
         }
-        
+
     def detect_adverse_selection(
         self,
         order_side: str,  # "BUY" or "SELL"
@@ -112,7 +121,7 @@ class MarketImpactModel:
     ) -> str:
         """
         Detect if execution suffered from adverse selection.
-        
+
         Returns:
             "none": No adverse selection detected
             "possible": Possible adverse selection
@@ -132,5 +141,5 @@ class MarketImpactModel:
                 return "likely"
             elif volume_imbalance > 0 and price_move > 0:
                 return "possible"
-                
+
         return "none"
