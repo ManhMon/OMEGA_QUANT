@@ -432,6 +432,108 @@ export interface PortfolioRebalanceExecuteResponse {
   provenance?: ProvenanceEnvelope | null;
 }
 
+// Phase 4 Model Governance & Resource Governor Interfaces
+
+export interface ModelVersionItem {
+  version: string;
+  status: 'STAGING' | 'VALIDATED' | 'PRODUCTION' | 'ARCHIVED' | 'DEPRECATED';
+  checksum?: string | null;
+  artifact_path: string;
+  registered_at: string;
+  metadata: Record<string, any>;
+}
+
+export interface ModelSummaryItem {
+  model_name: string;
+  active_versions: Record<string, string | null>;
+  total_versions: number;
+  latest_version?: string | null;
+  last_updated?: string | null;
+}
+
+export interface ModelListResponse {
+  status: string;
+  count: number;
+  models: ModelSummaryItem[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface ModelVersionsResponse {
+  status: string;
+  model_name: string;
+  active_versions: Record<string, string | null>;
+  versions: ModelVersionItem[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface ModelVersionDetailResponse {
+  status: string;
+  model_name: string;
+  version: string;
+  version_info: ModelVersionItem;
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface DriftMetricItem {
+  metric_name: string;
+  baseline_value: number;
+  current_value: number;
+  drift_detected: boolean;
+  threshold: number;
+  p_value?: number | null;
+}
+
+export interface ModelDriftResponse {
+  status: string;
+  model_name: string;
+  active_version?: string | null;
+  drift_detected: boolean;
+  drift_level: 'LOW' | 'MODERATE' | 'CRITICAL' | 'NONE';
+  drift_score: number;
+  evaluated_at: string;
+  metrics: DriftMetricItem[];
+  summary: Record<string, any>;
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface ModelPromoteResponse {
+  status: string;
+  model_name: string;
+  version: string;
+  target_status: 'VALIDATED' | 'PRODUCTION';
+  totp_verified: boolean;
+  promoted_at: string;
+  message: string;
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface ModelRollbackResponse {
+  status: string;
+  model_name: string;
+  target_version: string;
+  totp_verified: boolean;
+  rolled_back_at: string;
+  previous_active_version?: string | null;
+  message: string;
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface ResourceGovernorStateResponse {
+  status: string;
+  mode: 'MANUAL' | 'COPILOT';
+  target_concurrency: number;
+  thread_pool_size: number;
+  batch_size: number;
+  version: number;
+  active_workers: number;
+  queue_depth: number;
+  system_load_pct: number;
+  memory_usage_mb: number;
+  mode_description: string;
+  updated_at: string;
+  provenance?: ProvenanceEnvelope | null;
+}
+
 export const advancedQuantApi = {
   submitJob: (request: JobSubmitRequest, idempotencyKey: string, signal?: AbortSignal) =>
     apiRequest<JobAcceptedResponse>('/api/v1/jobs', {
@@ -550,6 +652,46 @@ export const advancedQuantApi = {
   executePortfolioRebalance: (payload: { totp_code: string; strategy_id?: string; target_portfolio?: Record<string, number>; portfolio_value?: number; drift_threshold?: number; max_turnover?: number; routing_algo?: string; duration_minutes?: number }, signal?: AbortSignal) =>
     apiRequest<PortfolioRebalanceExecuteResponse>('/api/v1/portfolio/rebalance/execute', {
       method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    }),
+
+  // Phase 4 Model Governance & Resource Governor APIs
+  getModelList: (signal?: AbortSignal) =>
+    apiRequest<ModelListResponse>('/api/v1/models', { signal }),
+
+  getModelVersions: (modelName: string, signal?: AbortSignal) =>
+    apiRequest<ModelVersionsResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/versions`, { signal }),
+
+  getModelVersionDetail: (modelName: string, version: string, signal?: AbortSignal) =>
+    apiRequest<ModelVersionDetailResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(version)}`, { signal }),
+
+  getModelDrift: (modelName: string, signal?: AbortSignal) =>
+    apiRequest<ModelDriftResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/drift`, { signal }),
+
+  promoteModelVersion: (modelName: string, version: string, payload: { totp_code: string; target_status: 'VALIDATED' | 'PRODUCTION'; promoter_id?: string; rationale?: string; pit_evidence?: Record<string, any> }, signal?: AbortSignal) =>
+    apiRequest<ModelPromoteResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(version)}/promote`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    }),
+
+  rollbackModel: (modelName: string, payload: { totp_code: string; target_version: string; reason?: string }, signal?: AbortSignal) =>
+    apiRequest<ModelRollbackResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/rollback`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    }),
+
+  getResourceGovernor: (signal?: AbortSignal) =>
+    apiRequest<ResourceGovernorStateResponse>('/api/v1/operations/resource-governor', { signal }),
+
+  updateResourceGovernor: (payload: { mode?: 'MANUAL' | 'COPILOT'; target_concurrency?: number; thread_pool_size?: number; batch_size?: number }, signal?: AbortSignal) =>
+    apiRequest<ResourceGovernorStateResponse>('/api/v1/operations/resource-governor', {
+      method: 'PATCH',
       body: JSON.stringify(payload),
       headers: { 'Content-Type': 'application/json' },
       signal,

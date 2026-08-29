@@ -186,6 +186,129 @@ class ResourceGovernorPolicy(StrictApiModel):
     version: Annotated[int, Field(ge=1)] = 1
 
 
+# Phase 4 Model Governance & Resource Governor Schemas
+
+class ModelVersionItem(StrictApiModel):
+    version: Annotated[str, Field(pattern=r"^v\d+\.\d+\.\d+$")]
+    status: Literal["STAGING", "VALIDATED", "PRODUCTION", "ARCHIVED", "DEPRECATED"]
+    checksum: Sha256 | None = None
+    artifact_path: str
+    registered_at: AwareUtcDateTime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ModelSummaryItem(StrictApiModel):
+    model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    active_versions: dict[str, str | None]
+    total_versions: Annotated[int, Field(ge=0)]
+    latest_version: str | None = None
+    last_updated: AwareUtcDateTime | None = None
+
+
+class ModelListResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    count: Annotated[int, Field(ge=0)]
+    models: list[ModelSummaryItem]
+    provenance: ProvenanceEnvelope | None = None
+
+
+class ModelVersionsResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    active_versions: dict[str, str | None]
+    versions: list[ModelVersionItem]
+    provenance: ProvenanceEnvelope | None = None
+
+
+class ModelVersionDetailResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    version: Annotated[str, Field(pattern=r"^v\d+\.\d+\.\d+$")]
+    version_info: ModelVersionItem
+    provenance: ProvenanceEnvelope | None = None
+
+
+class DriftMetricItem(StrictApiModel):
+    metric_name: Annotated[str, Field(min_length=1, max_length=64)]
+    baseline_value: FiniteFloat
+    current_value: FiniteFloat
+    drift_detected: bool
+    threshold: FiniteFloat
+    p_value: Annotated[FiniteFloat, Field(ge=0.0, le=1.0)] | None = None
+
+
+class ModelDriftResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    active_version: str | None = None
+    drift_detected: bool
+    drift_level: Literal["LOW", "MODERATE", "CRITICAL", "NONE"]
+    drift_score: Annotated[FiniteFloat, Field(ge=0.0, le=1.0)]
+    evaluated_at: AwareUtcDateTime
+    metrics: list[DriftMetricItem]
+    summary: dict[str, Any] = Field(default_factory=dict)
+    provenance: ProvenanceEnvelope | None = None
+
+
+class ModelPromoteRequest(StrictApiModel):
+    totp_code: Annotated[str, Field(min_length=6, max_length=6, pattern=r"^\d{6}$")]
+    target_status: Literal["VALIDATED", "PRODUCTION"]
+    promoter_id: Annotated[str, Field(min_length=1, max_length=128)] = "OPERATOR_CHIEF_QUANT"
+    rationale: Annotated[str, Field(min_length=1, max_length=512)] = "Institutional grade validation criteria satisfied"
+    pit_evidence: dict[str, Any] | None = None
+
+
+class ModelPromoteResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    version: Annotated[str, Field(pattern=r"^v\d+\.\d+\.\d+$")]
+    target_status: Literal["VALIDATED", "PRODUCTION"]
+    totp_verified: bool
+    promoted_at: AwareUtcDateTime
+    message: str
+    provenance: ProvenanceEnvelope | None = None
+
+
+class ModelRollbackRequest(StrictApiModel):
+    totp_code: Annotated[str, Field(min_length=6, max_length=6, pattern=r"^\d{6}$")]
+    target_version: Annotated[str, Field(pattern=r"^v\d+\.\d+\.\d+$")]
+    reason: Annotated[str, Field(min_length=1, max_length=512)] = "Emergency rollback due to performance drift"
+
+
+class ModelRollbackResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    target_version: Annotated[str, Field(pattern=r"^v\d+\.\d+\.\d+$")]
+    totp_verified: bool
+    rolled_back_at: AwareUtcDateTime
+    previous_active_version: str | None = None
+    message: str
+    provenance: ProvenanceEnvelope | None = None
+
+
+class ResourceGovernorPolicyUpdateRequest(StrictApiModel):
+    mode: Literal["MANUAL", "COPILOT"] | GovernorMode | None = None
+    target_concurrency: Annotated[int, Field(ge=1, le=128)] | None = None
+    thread_pool_size: Annotated[int, Field(ge=1, le=256)] | None = None
+    batch_size: Annotated[int, Field(ge=1, le=10000)] | None = None
+
+
+class ResourceGovernorStateResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    mode: GovernorMode
+    target_concurrency: Annotated[int, Field(ge=1)]
+    thread_pool_size: Annotated[int, Field(ge=1)]
+    batch_size: Annotated[int, Field(ge=1)]
+    version: Annotated[int, Field(ge=1)]
+    active_workers: Annotated[int, Field(ge=0)]
+    queue_depth: Annotated[int, Field(ge=0)]
+    system_load_pct: Annotated[FiniteFloat, Field(ge=0.0, le=100.0)]
+    memory_usage_mb: Annotated[FiniteFloat, Field(ge=0.0)]
+    mode_description: str
+    updated_at: AwareUtcDateTime
+    provenance: ProvenanceEnvelope | None = None
+
+
 # Phase 2 Advanced Quant Request & Response Schemas
 
 class MarketImpactRequest(StrictApiModel):

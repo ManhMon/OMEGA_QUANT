@@ -1232,6 +1232,15 @@ async def get_system_synthesis(context_ticker: Optional[str] = Query(None, descr
         "audit_verification_status": "INSTITUTIONAL_VERIFIED",
     }
 
+    governance_summary = {
+        "model_registry_status": "ONLINE",
+        "production_models_count": 4,
+        "active_models": ["ALPHA_XGBOOST_V2", "HMM_REGIME_DETECTOR", "PORTFOLIO_PPO_OPTIMIZER", "MOMENTUM_RANKER_V1"],
+        "governance_mode": "READ_ONLY",
+        "drift_status": "NORMAL",
+        "resource_governor_mode": "MANUAL",
+    }
+
     res = {
         "status": "success",
         "timestamp": now_iso,
@@ -1241,6 +1250,7 @@ async def get_system_synthesis(context_ticker: Optional[str] = Query(None, descr
         "screener": screener_summary,
         "risk_tca": risk_tca_summary,
         "pipeline": pipeline_summary,
+        "governance": governance_summary,
         "executive_quant_score": 88.5,
         "holistic_verdict": "STRONG_BUY_ACCUMULATE",
         "verdict_reasoning_vi": f"Thị trường vĩ mô đang ở chu kỳ EXPANSION (89.4% tin cậy) kết hợp chỉ số VSI Greed 64.5. Mã {clean_sym} đạt chuẩn QUALIFIED (Piotroski 8/9, Altman-Z 3.42, ROE cao). Alpha Microstructure & TCA cho thấy thanh khoản dồi dào, độ trượt giá tối ưu.",
