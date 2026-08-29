@@ -259,6 +259,179 @@ export interface CorporateGraphResponse {
   edges: CorporateGraphEdge[];
 }
 
+// Phase 3 Active Quant, Evolution & Smart Execution Interfaces
+
+export interface WalkForwardFoldResult {
+  fold: number;
+  train_size: number;
+  test_size: number;
+  in_sample_sharpe: number;
+  out_of_sample_sharpe: number;
+  in_sample_return_pct: number;
+  out_of_sample_return_pct: number;
+  max_drawdown_pct: number;
+}
+
+export interface WalkForwardCpcvResponse {
+  status: string;
+  task_type: string;
+  job_id: string;
+  dataset_id: string;
+  n_splits: number;
+  n_test_splits: number;
+  total_folds: number;
+  mean_oos_sharpe: number;
+  median_oos_sharpe: number;
+  std_oos_sharpe: number;
+  mean_oos_return_pct: number;
+  worst_drawdown_pct: number;
+  pbo: number;
+  deflated_sharpe_ratio: number;
+  folds: WalkForwardFoldResult[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface OverfittingDiagnosticsResponse {
+  status: string;
+  strategy_id: string;
+  trials_tested: number;
+  pbo: number;
+  deflated_sharpe_ratio: number;
+  observed_sharpe: number;
+  expected_max_sharpe: number;
+  variance_of_trials: number;
+  skewness: number;
+  kurtosis: number;
+  fdr_q_values: number[];
+  is_overfitted: boolean;
+  verdict: string;
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface ConformalInterval {
+  confidence_level: number;
+  lower_price: number;
+  upper_price: number;
+  lower_return_pct: number;
+  upper_return_pct: number;
+  interval_width_pct: number;
+}
+
+export interface ConformalPredictResponse {
+  status: string;
+  symbol: string;
+  as_of: string;
+  point_forecast_price: number;
+  point_forecast_return_pct: number;
+  regime: string;
+  liquidity_bucket: string;
+  intervals: ConformalInterval[];
+  empirical_coverage: number;
+  is_valid_mondrian: boolean;
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface AlphaEvaluationResponse {
+  status: string;
+  expression: string;
+  is_valid: boolean;
+  ast_type: string;
+  ic_estimate: number;
+  ir_estimate: number;
+  turnover_estimate_pct: number;
+  complexity_score: number;
+  sample_result?: number[] | null;
+  error?: string | null;
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface AlphaSignalItem {
+  alpha_id: string;
+  name: string;
+  category: string;
+  formula: string;
+  ic_mean: number;
+  ir_annualized: number;
+  turnover_pct: number;
+  status: 'ACTIVE' | 'CANDIDATE' | 'DECAYED' | 'INCUBATING';
+}
+
+export interface AlphaArsenalResponse {
+  status: string;
+  total_available: number;
+  count: number;
+  signals: AlphaSignalItem[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface DecayPoint {
+  lag_days: number;
+  ic: number;
+  ir: number;
+  correlation_decay: number;
+}
+
+export interface AlphaDecayProfileResponse {
+  status: string;
+  alpha_id: string;
+  name: string;
+  half_life_days: number;
+  decay_regime: string;
+  profile: DecayPoint[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface GeneticDiscoveryGenerationHistory {
+  generation: number;
+  max_generations: number;
+  best_formula: string;
+  best_fitness: number;
+  mean_fitness: number;
+  fittest_ic: number;
+}
+
+export interface GeneticDiscoveryResponse {
+  status: string;
+  job_id: string;
+  task_type: string;
+  population_size: number;
+  generations: number;
+  best_formula: string;
+  best_fitness: number;
+  best_ic: number;
+  best_ir: number;
+  history: GeneticDiscoveryGenerationHistory[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface RebalanceOrderItem {
+  order_id: string;
+  symbol: string;
+  side: 'BUY' | 'SELL' | 'HOLD';
+  quantity: number;
+  price: number;
+  estimated_notional_vnd: number;
+  algo: 'TWAP' | 'VWAP' | 'POV' | 'DIRECT';
+  slices: number;
+  status: 'QUEUED' | 'SUBMITTED' | 'EXECUTED';
+}
+
+export interface PortfolioRebalanceExecuteResponse {
+  status: string;
+  job_id: string;
+  timestamp: string;
+  totp_verified: boolean;
+  strategy_id: string;
+  should_rebalance: boolean;
+  reason: string;
+  estimated_turnover: number;
+  estimated_cost_vnd: number;
+  orders: RebalanceOrderItem[];
+  target_changes: Record<string, number>;
+  liquidity_violations: string[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
 export const advancedQuantApi = {
   submitJob: (request: JobSubmitRequest, idempotencyKey: string, signal?: AbortSignal) =>
     apiRequest<JobAcceptedResponse>('/api/v1/jobs', {
@@ -322,5 +495,65 @@ export const advancedQuantApi = {
 
   getCorporateGraph: (symbol: string, signal?: AbortSignal) =>
     apiRequest<CorporateGraphResponse>(`/api/v1/fundamental/corporate-graph/${encodeURIComponent(symbol)}`, { signal }),
+
+  // Phase 3 Active Quant, Evolution & Smart Execution APIs
+  runWalkForwardCpcv: (payload: { dataset_id?: string; universe?: string[]; start_date?: string; end_date?: string; n_splits?: number; n_test_splits?: number; embargo_pct?: number; label_horizon?: number; initial_capital?: number; slippage_bps?: number; commission_bps?: number }, signal?: AbortSignal) =>
+    apiRequest<WalkForwardCpcvResponse>('/api/v1/quant/walk-forward', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    }),
+
+  getOverfittingDiagnostics: (strategyId = 'ALPHA_HRP_V2', trialsTested = 20, signal?: AbortSignal) =>
+    apiRequest<OverfittingDiagnosticsResponse>(`/api/v1/quant/overfitting-diagnostics?strategy_id=${encodeURIComponent(strategyId)}&trials_tested=${trialsTested}`, { signal }),
+
+  predictConformal: (payload: { symbol: string; horizon_days?: number; confidence_levels?: number[]; features?: Record<string, number> }, signal?: AbortSignal) =>
+    apiRequest<ConformalPredictResponse>('/api/v1/quant/conformal/predict', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    }),
+
+  getMarketConformal: (symbol: string, horizonDays = 5, signal?: AbortSignal) =>
+    apiRequest<ConformalPredictResponse>(`/api/v1/market/conformal/${encodeURIComponent(symbol)}?horizon_days=${horizonDays}`, { signal }),
+
+  evaluateAlphaAst: (payload: { expression: string; universe?: string; sample_data?: Record<string, number[]> }, signal?: AbortSignal) =>
+    apiRequest<AlphaEvaluationResponse>('/api/v1/alpha/ast/evaluate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    }),
+
+  getAlphaArsenalSignals: (params: { category?: string; status?: string; search?: string; limit?: number } = {}, signal?: AbortSignal) => {
+    const qParams = new URLSearchParams();
+    if (params.category) qParams.append('category', params.category);
+    if (params.status) qParams.append('status', params.status);
+    if (params.search) qParams.append('search', params.search);
+    if (params.limit) qParams.append('limit', String(params.limit));
+    return apiRequest<AlphaArsenalResponse>(`/api/v1/alpha/arsenal/signals?${qParams.toString()}`, { signal });
+  },
+
+  getAlphaDecayProfile: (alphaId: string, signal?: AbortSignal) =>
+    apiRequest<AlphaDecayProfileResponse>(`/api/v1/alpha/decay-profile/${encodeURIComponent(alphaId)}`, { signal }),
+
+  startAlphaDiscovery: (payload: { population_size?: number; generations?: number; mutation_rate?: number; crossover_rate?: number; target_ic?: number; target_ir?: number; allowed_operators?: string[] }, signal?: AbortSignal) =>
+    apiRequest<GeneticDiscoveryResponse>('/api/v1/alpha/discovery/start', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    }),
+
+  executePortfolioRebalance: (payload: { totp_code: string; strategy_id?: string; target_portfolio?: Record<string, number>; portfolio_value?: number; drift_threshold?: number; max_turnover?: number; routing_algo?: string; duration_minutes?: number }, signal?: AbortSignal) =>
+    apiRequest<PortfolioRebalanceExecuteResponse>('/api/v1/portfolio/rebalance/execute', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+    }),
 };
+
 

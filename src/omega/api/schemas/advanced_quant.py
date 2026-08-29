@@ -428,3 +428,258 @@ class CorporateGraphResponse(StrictApiModel):
     edges: list[CorporateGraphEdge]
     provenance: ProvenanceEnvelope | None = None
 
+
+# ==========================================
+# Phase 3 Active Quant Engines & Discovery Schemas
+# ==========================================
+
+def _parse_date(value: Any) -> Any:
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError as error:
+            raise ValueError("date must be ISO 8601 YYYY-MM-DD") from error
+    return value
+
+
+IsoDate = Annotated[date, BeforeValidator(_parse_date)]
+
+
+class WalkForwardCpcvRequest(StrictApiModel):
+    dataset_id: Annotated[str, Field(default="market_2015_now", min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_.-]+$")]
+    universe: list[Annotated[str, Field(pattern=r"^[A-Z0-9_]{1,18}$")]] = Field(
+        default_factory=lambda: ["FPT", "HPG", "MBB", "MWG", "DGC", "VNM", "TCB", "PNJ"]
+    )
+    start_date: IsoDate = Field(default=date(2020, 1, 1))
+    end_date: IsoDate = Field(default=date(2023, 12, 31))
+    n_splits: Annotated[int, Field(ge=3, le=20)] = 10
+    n_test_splits: Annotated[int, Field(ge=1, le=5)] = 2
+    embargo_pct: Annotated[FiniteFloat, Field(ge=0.0, lt=0.5)] = 0.01
+    label_horizon: Annotated[int, Field(ge=1, le=60)] = 5
+    initial_capital: Annotated[FiniteFloat, Field(gt=0)] = 1_000_000_000.0
+    slippage_bps: Annotated[FiniteFloat, Field(ge=0.0, le=500.0)] = 5.0
+    commission_bps: Annotated[FiniteFloat, Field(ge=0.0, le=100.0)] = 1.5
+
+    @model_validator(mode="after")
+    def validate_splits_and_dates(self) -> "WalkForwardCpcvRequest":
+        if self.n_test_splits >= self.n_splits:
+            raise ValueError("n_test_splits must be strictly less than n_splits")
+        if self.start_date > self.end_date:
+            raise ValueError("start_date must be <= end_date")
+        return self
+
+
+class WalkForwardFoldResult(StrictApiModel):
+    fold: Annotated[int, Field(ge=0)]
+    train_size: Annotated[int, Field(ge=0)]
+    test_size: Annotated[int, Field(ge=0)]
+    in_sample_sharpe: FiniteFloat
+    out_of_sample_sharpe: FiniteFloat
+    in_sample_return_pct: FiniteFloat
+    out_of_sample_return_pct: FiniteFloat
+    max_drawdown_pct: FiniteFloat
+
+
+class WalkForwardCpcvResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    task_type: Literal["WALK_FORWARD_CPCV"] = "WALK_FORWARD_CPCV"
+    job_id: UUID
+    dataset_id: str
+    n_splits: int
+    n_test_splits: int
+    total_folds: int
+    mean_oos_sharpe: FiniteFloat
+    median_oos_sharpe: FiniteFloat
+    std_oos_sharpe: FiniteFloat
+    mean_oos_return_pct: FiniteFloat
+    worst_drawdown_pct: FiniteFloat
+    pbo: Annotated[FiniteFloat, Field(ge=0.0, le=1.0)]
+    deflated_sharpe_ratio: Annotated[FiniteFloat, Field(ge=0.0, le=1.0)]
+    folds: list[WalkForwardFoldResult]
+    provenance: ProvenanceEnvelope | None = None
+
+
+class AlphaEvaluationRequest(StrictApiModel):
+    expression: Annotated[str, Field(min_length=1, max_length=4096)]
+    universe: Annotated[str, Field(default="VN703", min_length=1, max_length=64)] = "VN703"
+    sample_data: dict[str, list[FiniteFloat]] | None = None
+
+
+class AlphaEvaluationResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    expression: str
+    is_valid: bool
+    ast_type: Annotated[str, Field(min_length=1, max_length=64)]
+    ic_estimate: FiniteFloat
+    ir_estimate: FiniteFloat
+    turnover_estimate_pct: FiniteFloat
+    complexity_score: Annotated[int, Field(ge=1)]
+    sample_result: list[FiniteFloat] | None = None
+    error: str | None = None
+    provenance: ProvenanceEnvelope | None = None
+
+
+class GeneticDiscoveryRequest(StrictApiModel):
+    population_size: Annotated[int, Field(ge=10, le=500)] = 50
+    generations: Annotated[int, Field(ge=1, le=100)] = 10
+    mutation_rate: Annotated[FiniteFloat, Field(gt=0.0, le=1.0)] = 0.15
+    crossover_rate: Annotated[FiniteFloat, Field(gt=0.0, le=1.0)] = 0.75
+    target_ic: Annotated[FiniteFloat, Field(gt=0.0, le=0.5)] = 0.04
+    target_ir: Annotated[FiniteFloat, Field(gt=0.0, le=10.0)] = 1.5
+    allowed_operators: list[Annotated[str, Field(min_length=1, max_length=64)]] = Field(default_factory=list)
+
+
+class GeneticDiscoveryGenerationHistory(StrictApiModel):
+    generation: Annotated[int, Field(ge=1)]
+    max_generations: Annotated[int, Field(ge=1)]
+    best_formula: Annotated[str, Field(min_length=1, max_length=1024)]
+    best_fitness: FiniteFloat
+    mean_fitness: FiniteFloat
+    fittest_ic: FiniteFloat
+
+
+class GeneticDiscoveryResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    job_id: UUID
+    task_type: Literal["GENETIC_ALPHA_DISCOVERY"] = "GENETIC_ALPHA_DISCOVERY"
+    population_size: int
+    generations: int
+    best_formula: Annotated[str, Field(min_length=1, max_length=1024)]
+    best_fitness: FiniteFloat
+    best_ic: FiniteFloat
+    best_ir: FiniteFloat
+    history: list[GeneticDiscoveryGenerationHistory]
+    provenance: ProvenanceEnvelope | None = None
+
+
+class AlphaSignalItem(StrictApiModel):
+    alpha_id: Annotated[str, Field(min_length=1, max_length=64)]
+    name: Annotated[str, Field(min_length=1, max_length=128)]
+    category: Annotated[str, Field(min_length=1, max_length=64)]
+    formula: Annotated[str, Field(min_length=1, max_length=1024)]
+    ic_mean: FiniteFloat
+    ir_annualized: FiniteFloat
+    turnover_pct: FiniteFloat
+    status: Literal["ACTIVE", "CANDIDATE", "DECAYED", "INCUBATING"]
+
+
+class AlphaArsenalResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    total_available: Annotated[int, Field(ge=0)]
+    count: Annotated[int, Field(ge=0)]
+    signals: list[AlphaSignalItem]
+    provenance: ProvenanceEnvelope | None = None
+
+
+class DecayPoint(StrictApiModel):
+    lag_days: Annotated[int, Field(ge=0)]
+    ic: FiniteFloat
+    ir: FiniteFloat
+    correlation_decay: Annotated[FiniteFloat, Field(ge=0.0, le=1.0)]
+
+
+class AlphaDecayProfileResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    alpha_id: Annotated[str, Field(min_length=1, max_length=64)]
+    name: Annotated[str, Field(min_length=1, max_length=128)]
+    half_life_days: Annotated[int, Field(ge=1)]
+    decay_regime: Annotated[str, Field(min_length=1, max_length=64)]
+    profile: list[DecayPoint]
+    provenance: ProvenanceEnvelope | None = None
+
+
+class OverfittingDiagnosticsResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    strategy_id: Annotated[str, Field(min_length=1, max_length=64)]
+    trials_tested: Annotated[int, Field(ge=1)]
+    pbo: Annotated[FiniteFloat, Field(ge=0.0, le=1.0)]
+    deflated_sharpe_ratio: Annotated[FiniteFloat, Field(ge=0.0, le=1.0)]
+    observed_sharpe: FiniteFloat
+    expected_max_sharpe: FiniteFloat
+    variance_of_trials: FiniteFloat
+    skewness: FiniteFloat
+    kurtosis: FiniteFloat
+    fdr_q_values: list[FiniteFloat]
+    is_overfitted: bool
+    verdict: Annotated[str, Field(min_length=1, max_length=128)]
+    provenance: ProvenanceEnvelope | None = None
+
+
+class ConformalPredictRequest(StrictApiModel):
+    symbol: Annotated[str, Field(pattern=r"^[A-Z0-9_]{1,18}$")]
+    horizon_days: Annotated[int, Field(ge=1, le=60)] = 5
+    confidence_levels: list[Annotated[FiniteFloat, Field(gt=0.0, lt=1.0)]] = Field(default_factory=lambda: [0.80, 0.90, 0.95])
+    features: dict[str, FiniteFloat] | None = None
+
+
+class ConformalInterval(StrictApiModel):
+    confidence_level: Annotated[FiniteFloat, Field(gt=0.0, lt=1.0)]
+    lower_price: Annotated[FiniteFloat, Field(gt=0.0)]
+    upper_price: Annotated[FiniteFloat, Field(gt=0.0)]
+    lower_return_pct: FiniteFloat
+    upper_return_pct: FiniteFloat
+    interval_width_pct: Annotated[FiniteFloat, Field(ge=0.0)]
+
+
+class ConformalPredictResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    symbol: Annotated[str, Field(pattern=r"^[A-Z0-9_]{1,18}$")]
+    as_of: Annotated[str, Field(min_length=1, max_length=64)]
+    point_forecast_price: Annotated[FiniteFloat, Field(gt=0.0)]
+    point_forecast_return_pct: FiniteFloat
+    regime: Annotated[str, Field(min_length=1, max_length=64)]
+    liquidity_bucket: Annotated[str, Field(min_length=1, max_length=64)]
+    intervals: list[ConformalInterval]
+    empirical_coverage: Annotated[FiniteFloat, Field(ge=0.0, le=1.0)]
+    is_valid_mondrian: bool
+    provenance: ProvenanceEnvelope | None = None
+
+
+class PortfolioRebalanceExecuteRequest(StrictApiModel):
+    totp_code: Annotated[str, Field(min_length=6, max_length=6, pattern=r"^\d{6}$")]
+    strategy_id: Annotated[str, Field(min_length=1, max_length=64)] = "ALPHA_HRP_V2"
+    target_portfolio: dict[Annotated[str, Field(pattern=r"^[A-Z0-9_]{1,18}$")], Annotated[FiniteFloat, Field(ge=0.0, le=1.0)]] = Field(
+        default_factory=lambda: {"FPT": 0.25, "HPG": 0.25, "MBB": 0.25, "MWG": 0.25}
+    )
+    portfolio_value: Annotated[FiniteFloat, Field(ge=10_000_000.0)] = 1_000_000_000.0
+    drift_threshold: Annotated[FiniteFloat, Field(ge=0.001, le=0.5)] = 0.01
+    max_turnover: Annotated[FiniteFloat, Field(ge=0.01, le=1.0)] = 0.25
+    routing_algo: Literal["TWAP", "VWAP", "POV", "DIRECT"] = "TWAP"
+    duration_minutes: Annotated[int, Field(ge=5, le=480)] = 60
+
+    @model_validator(mode="after")
+    def validate_weights_sum(self) -> "PortfolioRebalanceExecuteRequest":
+        w_sum = sum(self.target_portfolio.values())
+        if w_sum <= 0 or w_sum > 1.0001:
+            raise ValueError("sum of target_portfolio weights must be > 0 and <= 1.0")
+        return self
+
+
+class RebalanceOrderItem(StrictApiModel):
+    order_id: Annotated[str, Field(min_length=1, max_length=64)]
+    symbol: Annotated[str, Field(pattern=r"^[A-Z0-9_]{1,18}$")]
+    side: Literal["BUY", "SELL", "HOLD"]
+    quantity: Annotated[int, Field(ge=0)]
+    price: Annotated[FiniteFloat, Field(gt=0.0)]
+    estimated_notional_vnd: Annotated[FiniteFloat, Field(ge=0.0)]
+    algo: Literal["TWAP", "VWAP", "POV", "DIRECT"]
+    slices: Annotated[int, Field(ge=1)]
+    status: Literal["QUEUED", "SUBMITTED", "EXECUTED"]
+
+
+class PortfolioRebalanceExecuteResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    job_id: UUID
+    timestamp: Annotated[str, Field(min_length=1, max_length=64)]
+    totp_verified: bool
+    strategy_id: str
+    should_rebalance: bool
+    reason: str
+    estimated_turnover: Annotated[FiniteFloat, Field(ge=0.0)]
+    estimated_cost_vnd: Annotated[FiniteFloat, Field(ge=0.0)]
+    orders: list[RebalanceOrderItem]
+    target_changes: dict[str, Any]
+    liquidity_violations: list[str] | dict[str, str]
+    provenance: ProvenanceEnvelope | None = None
+
+

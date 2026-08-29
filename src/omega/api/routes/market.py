@@ -16,6 +16,7 @@ from omega.api.schemas.advanced_quant import (
     OrderbookDepthResponse,
     MarketImpactResponse,
     FracDiffResponse,
+    ConformalPredictResponse,
     ProvenanceEnvelope,
 )
 
@@ -408,4 +409,19 @@ async def post_fracdiff_memory(request: FracDiffRequest) -> Dict[str, Any]:
         "provenance": prov.model_dump(),
     }
     return sanitize_floats(response_data)
+
+
+@router.get("/conformal/{symbol}", response_model=ConformalPredictResponse)
+async def get_market_conformal(
+    symbol: str,
+    horizon_days: int = Query(default=5, ge=1, le=60, description="Forecast horizon in days"),
+) -> Dict[str, Any]:
+    from omega.api.routes.quant import post_conformal_predict
+    from omega.api.schemas.advanced_quant import ConformalPredictRequest
+    try:
+        req = ConformalPredictRequest(symbol=symbol, horizon_days=horizon_days)
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    return await post_conformal_predict(req)
+
 
