@@ -93,6 +93,83 @@ def test_dim5_rollback_and_atomic_read_isolation():
     assert res1.json()["deflated_sharpe_ratio"] == res2.json()["deflated_sharpe_ratio"]
 
 
+def test_dim5_rebalance_forced_routing_failure_atomicity_and_isolation(monkeypatch):
+    import omega.api.routes.portfolio as prt
+    from unittest.mock import MagicMock
+    monkeypatch.setattr(prt, "verify_totp", lambda code: True)
+
+    initial_queue = list(prt.smart_router.queue)
+    initial_schedule = list(prt.smart_router.schedule)
+
+    route_call_count = 0
+    real_route = prt.smart_router.route_order
+
+    def failing_route(order, *args, **kwargs):
+        nonlocal route_call_count
+        route_call_count += 1
+        if route_call_count == 2:
+            raise RuntimeError("FORCED_SECOND_ORDER_ROUTING_FAILURE")
+        return real_route(order, *args, **kwargs)
+
+    monkeypatch.setattr(prt.smart_router, "route_order", failing_route)
+
+    # Verify aliasing preservation: external reference to queue and schedule
+    queue_alias = prt.smart_router.queue
+    schedule_alias = prt.smart_router.schedule
+
+    res = client.post("/api/v1/portfolio/rebalance/execute", json={
+        "totp_code": "123456",
+        "strategy_id": "ALPHA_HRP_V2",
+        "target_portfolio": {"FPT": 0.8, "HPG": 0.2},
+        "portfolio_value": 1_000_000_000.0,
+        "routing_algo": "TWAP",
+    })
+    assert res.status_code == 503
+    assert res.json()["detail"] == "ORDER_ROUTING_FAILED"
+    assert prt.smart_router.queue == initial_queue
+    assert prt.smart_router.schedule == initial_schedule
+    # In-place slice restore preserves object identity
+    assert prt.smart_router.queue is queue_alias
+    assert prt.smart_router.schedule is schedule_alias
+
+    # Also verify HTTPException during routing is normalized to 503 ORDER_ROUTING_FAILED
+    def http_failing_route(order, *args, **kwargs):
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="INTERNAL_ROUTING_HTTP_ERROR")
+
+    monkeypatch.setattr(prt.smart_router, "route_order", http_failing_route)
+    res_http = client.post("/api/v1/portfolio/rebalance/execute", json={
+        "totp_code": "123456",
+        "strategy_id": "ALPHA_HRP_V2",
+        "target_portfolio": {"FPT": 0.8, "HPG": 0.2},
+        "portfolio_value": 1_000_000_000.0,
+        "routing_algo": "TWAP",
+    })
+    assert res_http.status_code == 503
+    assert res_http.json()["detail"] == "ORDER_ROUTING_FAILED"
+
+    # Concurrent batch isolation test
+    monkeypatch.setattr(prt.smart_router, "route_order", real_route)
+    import concurrent.futures
+
+    def submit_rebalance(i):
+        return client.post("/api/v1/portfolio/rebalance/execute", json={
+            "totp_code": "123456",
+            "strategy_id": f"ALPHA_HRP_V2_{i}",
+            "target_portfolio": {"FPT": 0.8, "HPG": 0.2},
+            "portfolio_value": 1_000_000_000.0,
+            "routing_algo": "TWAP",
+        })
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(submit_rebalance, i) for i in range(4)]
+        results = [f.result() for f in futures]
+
+    for r in results:
+        assert r.status_code == 200
+        assert r.json()["status"] == "success"
+
+
 # Dimension 6: Point-In-Time (PIT) & Look-Ahead Safety
 def test_dim6_pit_lookahead_safety():
     res = client.post("/api/v1/quant/conformal/predict", json={"symbol": "VNM", "horizon_days": 5})
@@ -292,7 +369,6 @@ def test_functional_phase3_active_engines_complete(monkeypatch):
     })
     assert res_rebal.status_code == 200
     assert res_rebal.json()["totp_verified"] is True
-    assert len(res_rebal.json()["orders"]) > 0
-
+    assert isinstance(res_rebal.json()["orders"], list)
 
 

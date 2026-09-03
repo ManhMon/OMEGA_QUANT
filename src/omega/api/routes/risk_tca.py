@@ -1,6 +1,7 @@
 """Risk/TCA routes with real-input-only computation and fail-closed reads."""
 
 import hashlib
+import logging
 import math
 import re
 from datetime import datetime, timezone
@@ -13,6 +14,7 @@ from fastapi import APIRouter, HTTPException, Query
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from omega.execution.market_impact import MarketImpactModel
+from omega.api.routes._market_loader import load_market_dataset, redact_market_data_error
 from omega.risk.advanced_circuit_breaker import AdvancedCircuitBreaker, AdvancedCircuitBreakerConfig
 from omega.risk.liquidity_stress import LiquidityStressValidator
 from omega.risk.contagion_risk_validator import ContagionRiskValidator, ContagionRiskConfig
@@ -29,6 +31,7 @@ from omega.api.schemas.advanced_quant import (
 )
 
 router = APIRouter(tags=["risk_tca"])
+logger = logging.getLogger(__name__)
 FACTOR_KEYS = ("market_beta", "size_smb", "value_hml", "momentum", "volatility", "liquidity", "quality", "leverage")
 
 MARKET_PARQUET_PATH = Path("data/market_2015_now.parquet")
@@ -200,20 +203,21 @@ async def post_circuit_breaker_status(
 
 
 async def _compute_circuit_breaker_status(target_symbol: str) -> dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     canonical_symbol = target_symbol.strip().upper()
     if not canonical_symbol or not re.fullmatch(r"^[A-Z0-9_]{1,18}$", canonical_symbol):
         raise HTTPException(status_code=422, detail="INVALID_SYMBOL")
 
     try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
+        df = load_market_dataset(
             columns=["ticker", "date", "open", "high", "low", "close", "volume"],
+            filters=[("ticker", "=", canonical_symbol)],
+            allow_empty=True,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     sym_df = df[df["ticker"].str.upper() == canonical_symbol].copy()
     if sym_df.empty:
@@ -245,7 +249,7 @@ async def _compute_circuit_breaker_status(target_symbol: str) -> dict[str, Any]:
     limit_lock = circuit_breaker.check_limit_lock(mkt_snapshot)
     target_lock = limit_lock.get(canonical_symbol)
 
-    prov = _make_provenance("market_2015_now.parquet", "circuit_breaker", f"{canonical_symbol}_{len(closes)}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "circuit_breaker", f"{canonical_symbol}_{len(closes)}")
     return {
         "status": "success",
         "symbol": canonical_symbol,
@@ -275,9 +279,6 @@ async def post_stress_test_simulate(request: StressTestSimulateRequest) -> dict[
     if not request.portfolio_weights:
         raise HTTPException(status_code=422, detail="portfolio_weights cannot be empty")
 
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     weights_sum = sum(request.portfolio_weights.values())
     if weights_sum <= 0:
         raise HTTPException(status_code=422, detail="Sum of portfolio weights must be positive")
@@ -285,12 +286,16 @@ async def post_stress_test_simulate(request: StressTestSimulateRequest) -> dict[
     norm_weights = {k.strip().upper(): v / weights_sum for k, v in request.portfolio_weights.items()}
 
     try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
+        df = load_market_dataset(
             columns=["ticker", "date", "close", "volume"],
+            filters=[("ticker", "in", list(norm_weights))],
+            allow_empty=True,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     # Calculate real stock-level beta & volatility weights from parquet
     asset_betas: Dict[str, float] = {}
@@ -357,7 +362,7 @@ async def post_stress_test_simulate(request: StressTestSimulateRequest) -> dict[
     ]
 
     total_est_loss = float(np.mean([s["portfolio_impact_pct"] for s in scenarios]))
-    prov = _make_provenance("market_2015_now.parquet", "stress_test_simulate", f"{len(norm_weights)}_{request.market_shock_pct}_{request.include_contagion}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "stress_test_simulate", f"{len(norm_weights)}_{request.market_shock_pct}_{request.include_contagion}")
 
     return {
         "status": "success",
@@ -372,16 +377,16 @@ async def post_stress_test_simulate(request: StressTestSimulateRequest) -> dict[
 
 @router.get("/api/v1/risk/contagion-graph", response_model=ContagionGraphResponse)
 async def get_contagion_risk_graph() -> dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
+        df = load_market_dataset(
             columns=["ticker", "date", "close", "volume"],
+            filters=[("ticker", "in", ["VNM", "VCB", "HPG", "FPT", "SSI", "MWG", "MSN", "VIC"])],
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     core_symbols = ["VNM", "VCB", "HPG", "FPT", "SSI", "MWG", "MSN", "VIC"]
     sector_labels = {
@@ -442,7 +447,7 @@ async def get_contagion_risk_graph() -> dict[str, Any]:
     multiplier = 1.0 if stress_level == "GREEN" else 0.75 if stress_level == "YELLOW" else 0.40
     dominant_source = f"{dominant_pair[0]} ↔ {dominant_pair[1]}"
     narrative = f"Systemic risk graph calculated from real 250-day returns. Mean annualized volatility is {float(ann_vols.mean())*100:.1f}%. Dominant channel: {dominant_source} (+{max_transmission:.1f} bps)."
-    prov = _make_provenance("market_2015_now.parquet", "contagion_graph", f"{len(nodes)}_nodes_{len(edges)}_edges")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "contagion_graph", f"{len(nodes)}_nodes_{len(edges)}_edges")
 
     return {
         "status": "success",
@@ -462,16 +467,17 @@ async def post_liquidity_stress_validate(request: LiquidityStressValidateRequest
     if not request.positions:
         raise HTTPException(status_code=422, detail="positions cannot be empty")
 
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
+        df = load_market_dataset(
             columns=["ticker", "date", "close", "volume"],
+            filters=[("ticker", "in", [symbol.strip().upper() for symbol in request.positions])],
+            allow_empty=True,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     # Fail closed on unknown symbols
     market_tickers = set(df["ticker"].str.upper().unique())
@@ -516,7 +522,7 @@ async def post_liquidity_stress_validate(request: LiquidityStressValidateRequest
             "exceeds_limit": days > request.max_exit_days,
         })
 
-    prov = _make_provenance("market_2015_now.parquet", "liquidity_stress_validate", f"{len(request.positions)}_{request.max_adv_participation}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "liquidity_stress_validate", f"{len(request.positions)}_{request.max_adv_participation}")
     return {
         "status": "success",
         "is_safe": bool(report.is_safe),
@@ -548,7 +554,8 @@ async def get_corporate_graph(symbol: str) -> dict[str, Any]:
     try:
         sector_df = pd.read_csv(SECTOR_MAPPING_PATH)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read sector mapping: {str(e)}") from e
+        logger.error("sector mapping read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     match = sector_df[sector_df["symbol"].str.upper() == canonical_symbol]
     if match.empty:
@@ -562,7 +569,8 @@ async def get_corporate_graph(symbol: str) -> dict[str, Any]:
             columns=["symbol", "item_code", "item_value"],
         )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read financial statements dataset: {str(e)}") from e
+        logger.error("financial statements dataset read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     sym_fin = df_fin[df_fin["symbol"].str.upper() == canonical_symbol]
     if sym_fin.empty:
@@ -720,4 +728,3 @@ async def get_corporate_graph(symbol: str) -> dict[str, Any]:
         "edges": edges,
         "provenance": prov.model_dump(),
     }
-

@@ -1,11 +1,12 @@
 from datetime import datetime, timezone
 import hashlib
-from pathlib import Path
+import logging
 from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 from omega.execution.order_book_analyzer import OrderBookAnalyzer
+from omega.api.routes import _market_loader
 from omega.execution.microstructure_router import MicrostructureRouter
 from omega.execution.market_impact import MarketImpactModel
 from omega.quant.features.frac_diff import frac_diff_fixed_window, get_fracdiff_weights
@@ -21,8 +22,8 @@ from omega.api.schemas.advanced_quant import (
 )
 
 router = APIRouter(prefix="/api/v1/market", tags=["market"])
+logger = logging.getLogger(__name__)
 
-MARKET_PARQUET_PATH = Path("data/market_2015_now.parquet")
 orderbook_analyzer = OrderBookAnalyzer(lookback=10)
 micro_router = MicrostructureRouter(depth_levels=10)
 
@@ -60,7 +61,6 @@ def _make_provenance(source: str, dataset_id: str, payload_summary: Any) -> Prov
         normalized_timezone="UTC",
         cutoff_resolution="AS_OF_DEFAULT",
         content_hash=c_hash,
-        is_synthetic=False,
     )
 
 
@@ -71,20 +71,27 @@ async def get_market_ohlcv(
     end: Optional[str] = Query(default=None, description="End date YYYY-MM-DD"),
     limit: int = Query(default=500, ge=1, le=5000, description="Max bars to return"),
 ) -> Dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=404, detail="Market dataset not found")
-
     canonical_symbol = symbol.strip().upper()
     if not canonical_symbol:
         raise HTTPException(status_code=422, detail="Symbol cannot be empty")
 
-    try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
-            columns=["ticker", "date", "open", "high", "low", "close", "volume", "exchange"],
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+    start_date = _market_loader.validate_market_calendar(start) if start else None
+    end_date = _market_loader.validate_market_calendar(end) if end else None
+    if start_date and end_date and start_date > end_date:
+        raise HTTPException(status_code=422, detail="INVALID_DATE_RANGE")
+    filters = [("ticker", "=", canonical_symbol)]
+    if start:
+        filters.append(("date", ">=", pd.Timestamp(start)))
+    if end:
+        filters.append(("date", "<=", pd.Timestamp(end)))
+    df = _market_loader.load_market_dataset(
+        columns=[
+            "ticker", "date", "open", "high", "low", "close", "volume",
+            "exchange",
+        ],
+        filters=filters,
+        allow_empty=True,
+    )
 
     # Filter ticker
     sym_df = df[df["ticker"].str.upper() == canonical_symbol].copy()
@@ -119,7 +126,11 @@ async def get_market_ohlcv(
     if total_bars > limit:
         sym_df = sym_df.iloc[-limit:]
 
-    exchange = str(sym_df["exchange"].iloc[-1]) if not sym_df.empty and "exchange" in sym_df.columns else "HOSE"
+    exchange = (
+        str(sym_df["exchange"].iloc[-1])
+        if not sym_df.empty and "exchange" in sym_df.columns
+        else "HOSE"
+    )
 
     bars: List[Dict[str, Any]] = []
     for _, row in sym_df.iterrows():
@@ -162,20 +173,21 @@ async def get_vpin_toxicity(
     n_buckets: int = Query(default=20, ge=5, le=100, description="Number of volume buckets"),
     limit: int = Query(default=200, ge=20, le=1000, description="Number of historical bars to evaluate"),
 ) -> Dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     canonical_symbol = symbol.strip().upper()
     if not canonical_symbol:
         raise HTTPException(status_code=422, detail="Symbol cannot be empty")
 
     try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
+        df = _market_loader.load_market_dataset(
             columns=["ticker", "date", "open", "high", "low", "close", "volume"],
+            filters=[("ticker", "=", canonical_symbol)],
+            allow_empty=True,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", _market_loader.redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     sym_df = df[df["ticker"].str.upper() == canonical_symbol].copy()
     if sym_df.empty:
@@ -187,7 +199,7 @@ async def get_vpin_toxicity(
         sym_df = sym_df.iloc[-limit:]
 
     vpin_result = orderbook_analyzer.compute_vpin_from_ohlcv(sym_df, n_buckets=n_buckets)
-    prov = _make_provenance("market_2015_now.parquet", "vpin_toxicity", f"{canonical_symbol}_{n_buckets}_{limit}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "vpin_toxicity", f"{canonical_symbol}_{n_buckets}_{limit}")
     response_data = {
         "status": "success",
         "symbol": canonical_symbol,
@@ -203,20 +215,21 @@ async def get_orderbook_depth_waterfall(
     depth: int = Query(default=10, ge=3, le=20, description="Depth levels to simulate"),
     spread_bps: float = Query(default=10.0, ge=1.0, le=500.0, description="Observed bid-ask spread bps"),
 ) -> Dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     canonical_symbol = symbol.strip().upper()
     if not canonical_symbol:
         raise HTTPException(status_code=422, detail="Symbol cannot be empty")
 
     try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
+        df = _market_loader.load_market_dataset(
             columns=["ticker", "date", "close", "volume"],
+            filters=[("ticker", "=", canonical_symbol)],
+            allow_empty=True,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", _market_loader.redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     sym_df = df[df["ticker"].str.upper() == canonical_symbol].copy()
     if sym_df.empty:
@@ -234,26 +247,27 @@ async def get_orderbook_depth_waterfall(
         spread_bps=spread_bps,
         base_volume=max(1000.0, recent_adv * 0.05),
     )
-    prov = _make_provenance("market_2015_now.parquet", "orderbook_depth_waterfall", f"{canonical_symbol}_{depth}_{spread_bps}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "orderbook_depth_waterfall", f"{canonical_symbol}_{depth}_{spread_bps}")
     return sanitize_floats({"status": "success", **depth_data, "provenance": prov.model_dump()})
 
 
 @router.post("/market-impact", response_model=MarketImpactResponse)
 async def post_market_impact_curve(request: MarketImpactRequest) -> Dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     symbol = request.symbol.strip().upper()
     if not symbol:
         raise HTTPException(status_code=422, detail="Symbol cannot be empty")
 
     try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
+        df = _market_loader.load_market_dataset(
             columns=["ticker", "date", "close", "volume"],
+            filters=[("ticker", "=", symbol)],
+            allow_empty=True,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", _market_loader.redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     sym_df = df[df["ticker"].str.upper() == symbol].copy()
     if sym_df.empty:
@@ -325,7 +339,7 @@ async def post_market_impact_curve(request: MarketImpactRequest) -> Dict[str, An
     )
     point_cost_vnd = float(request.order_size * request.arrival_price * (point_impact / 10000.0))
 
-    prov = _make_provenance("market_2015_now.parquet", "market_impact", f"{symbol}_{request.order_size}_{request.average_daily_volume}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "market_impact", f"{symbol}_{request.order_size}_{request.average_daily_volume}")
     response_data = {
         "status": "success",
         "symbol": symbol,
@@ -346,17 +360,18 @@ async def post_market_impact_curve(request: MarketImpactRequest) -> Dict[str, An
 
 @router.post("/fracdiff", response_model=FracDiffResponse)
 async def post_fracdiff_memory(request: FracDiffRequest) -> Dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     canonical_symbol = request.symbol.strip().upper()
     try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
+        df = _market_loader.load_market_dataset(
             columns=["ticker", "date", "close", "volume"],
+            filters=[("ticker", "=", canonical_symbol)],
+            allow_empty=True,
         )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", _market_loader.redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     sym_df = df[df["ticker"].str.upper() == canonical_symbol].copy()
     if sym_df.empty:
@@ -396,7 +411,7 @@ async def post_fracdiff_memory(request: FracDiffRequest) -> Dict[str, Any]:
             "frac_diff": None if np.isnan(fv) else float(fv),
         })
 
-    prov = _make_provenance("market_2015_now.parquet", "fracdiff_fixed_window", f"{canonical_symbol}_{request.d}_{request.window}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "fracdiff_fixed_window", f"{canonical_symbol}_{request.d}_{request.window}")
     response_data = {
         "status": "success",
         "symbol": canonical_symbol,
@@ -423,5 +438,3 @@ async def get_market_conformal(
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc))
     return await post_conformal_predict(req)
-
-

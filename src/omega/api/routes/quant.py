@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,7 @@ from fastapi import APIRouter, HTTPException, Query, Depends
 from scipy.stats import norm, skew, kurtosis
 
 from omega.api.dependencies import job_service_dependency
+from omega.api.routes._market_loader import load_market_dataset, redact_market_data_error
 from omega.api.services.job_service import JobService
 from omega.quant.validation.cpcv import CombinatorialPurgedKFold
 from omega.quant.validation.dsr import deflated_sharpe_ratio, annualized_sharpe
@@ -24,6 +26,7 @@ from omega.api.schemas.advanced_quant import (
 )
 
 router = APIRouter(prefix="/api/v1/quant", tags=["quant"])
+logger = logging.getLogger(__name__)
 
 QUANT_PARQUET_PATH = Path("data/hybrid_eval_full_703.parquet")
 MARKET_PARQUET_PATH = Path("data/market_2015_now.parquet")
@@ -80,20 +83,23 @@ async def post_walk_forward_cpcv(
     req: WalkForwardCpcvRequest,
     job_service: JobService = Depends(job_service_dependency),
 ) -> Dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
-    try:
-        df = pd.read_parquet(
-            MARKET_PARQUET_PATH,
-            columns=["ticker", "date", "close", "volume"],
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
-
     canonical_symbols = [s.strip().upper() for s in req.universe if s.strip()]
     if not canonical_symbols:
         raise HTTPException(status_code=422, detail="Universe cannot be empty")
+    try:
+        df = load_market_dataset(
+            columns=["ticker", "date", "close", "volume"],
+            filters=[
+                ("ticker", "in", canonical_symbols),
+                ("date", ">=", pd.Timestamp(req.start_date)),
+                ("date", "<=", pd.Timestamp(req.end_date)),
+            ],
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("market dataset read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     filtered_df = df[df["ticker"].str.upper().isin(canonical_symbols)].copy()
     if filtered_df.empty:
@@ -181,7 +187,7 @@ async def post_walk_forward_cpcv(
     )
 
     job_id = uuid.uuid4()
-    prov = _make_provenance("market_2015_now.parquet", "walk_forward_cpcv", f"{req.universe}_{req.n_splits}_{req.n_test_splits}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "walk_forward_cpcv", f"{req.universe}_{req.n_splits}_{req.n_test_splits}")
 
     response_payload = {
         "status": "success",
@@ -209,13 +215,16 @@ async def get_overfitting_diagnostics(
     strategy_id: str = Query(default="ALPHA_HRP_V2", description="Target strategy ID"),
     trials_tested: int = Query(default=20, ge=2, le=500, description="Total search trials tested"),
 ) -> Dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     try:
-        df = pd.read_parquet(MARKET_PARQUET_PATH, columns=["ticker", "date", "close"])
+        df = load_market_dataset(
+            columns=["ticker", "date", "close"],
+            filters=[("ticker", "in", ["FPT", "HPG", "MBB", "MWG"])],
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     # Generate realistic trial sharpes distribution based on empirical return series
     sample_df = df[df["ticker"].isin(["FPT", "HPG", "MBB", "MWG"])].copy()
@@ -251,7 +260,7 @@ async def get_overfitting_diagnostics(
     is_overfitted = dsr_result.dsr < 0.95 or pbo > 0.50
     verdict = "REJECT_OVERFITTED" if is_overfitted else "PASS_STATISTICALLY_SIGNIFICANT"
 
-    prov = _make_provenance("market_2015_now.parquet", "overfitting_diagnostics", f"{strategy_id}_{trials_tested}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "overfitting_diagnostics", f"{strategy_id}_{trials_tested}")
 
     response_data = {
         "status": "success",
@@ -274,14 +283,18 @@ async def get_overfitting_diagnostics(
 
 @router.post("/conformal/predict", response_model=ConformalPredictResponse)
 async def post_conformal_predict(req: ConformalPredictRequest) -> Dict[str, Any]:
-    if not MARKET_PARQUET_PATH.exists():
-        raise HTTPException(status_code=424, detail="MARKET_DATASET_UNAVAILABLE")
-
     symbol = req.symbol.strip().upper()
     try:
-        df = pd.read_parquet(MARKET_PARQUET_PATH, columns=["ticker", "date", "close", "volume"])
+        df = load_market_dataset(
+            columns=["ticker", "date", "close", "volume"],
+            filters=[("ticker", "=", symbol)],
+            allow_empty=True,
+        )
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read market dataset: {str(e)}") from e
+        logger.error("market dataset read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     sym_df = df[df["ticker"].str.upper() == symbol].copy()
     if sym_df.empty:
@@ -324,7 +337,7 @@ async def post_conformal_predict(req: ConformalPredictRequest) -> Dict[str, Any]
             )
         )
 
-    prov = _make_provenance("market_2015_now.parquet", "conformal_prediction", f"{symbol}_{req.horizon_days}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "conformal_prediction", f"{symbol}_{req.horizon_days}")
 
     response_data = {
         "status": "success",
@@ -356,7 +369,8 @@ async def get_quant_screener(
     try:
         df = pd.read_parquet(QUANT_PARQUET_PATH)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to read quant dataset: {str(e)}") from e
+        logger.error("quant dataset read failed: %s", redact_market_data_error(e))
+        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
 
     if df.empty:
         return {
@@ -402,4 +416,3 @@ async def get_quant_screener(
         "total_pages": total_pages,
         "data": records,
     }
-

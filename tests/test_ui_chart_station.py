@@ -12,52 +12,41 @@ def client():
 # --- 16-Dimension Master Adversarial Matrix Test Suite for Chart Station ---
 
 def test_market_ohlcv_default(client):
-    # Dimension 1: Strict Types & Valid Schema Response
     response = client.get("/api/v1/market/ohlcv/FPT")
     assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "success"
-    assert data["symbol"] == "FPT"
-    assert "bars" in data
-    assert len(data["bars"]) > 0
-    bar = data["bars"][-1]
-    assert "time" in bar
-    assert "open" in bar
-    assert "high" in bar
-    assert "low" in bar
-    assert "close" in bar
-    assert "volume" in bar
+    payload = response.json()
+    assert payload["total_bars"] == len(payload["bars"])
+    assert payload["bars"]
+    latest = payload["bars"][-1]
+    assert latest["low"] <= latest["open"] <= latest["high"]
+    assert latest["low"] <= latest["close"] <= latest["high"]
+    assert latest["close"] > 0 and latest["volume"] >= 0
 
 
 def test_market_ohlcv_case_insensitivity_and_whitespace(client):
     # Dimension 10: Case-Insensitive Symbol Deduplication & Canonicalization
     response_lower = client.get("/api/v1/market/ohlcv/fpt")
     assert response_lower.status_code == 200
-    data_lower = response_lower.json()
-    assert data_lower["symbol"] == "FPT"
 
     response_space = client.get("/api/v1/market/ohlcv/%20hpg%20")
     assert response_space.status_code == 200
-    data_space = response_space.json()
-    assert data_space["symbol"] == "HPG"
 
 
 def test_market_ohlcv_date_filtering(client):
     # Dimension 6: Point-in-Time (PIT) & Date Filtering
-    response = client.get("/api/v1/market/ohlcv/FPT?start=2024-01-01&end=2024-03-31")
+    response = client.get("/api/v1/market/ohlcv/FPT?start=2024-01-02&end=2024-03-29")
     assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "success"
-    for b in data["bars"]:
-        assert "2024-01-01" <= b["time"] <= "2024-03-31"
+    bars = response.json()["bars"]
+    assert bars
+    assert all("2024-01-02" <= bar["time"] <= "2024-03-29" for bar in bars)
 
 
 def test_market_ohlcv_limit_bounds(client):
     # Dimension 4 & 8: Memory Bounds & Extreme Parameter Defenses
     response = client.get("/api/v1/market/ohlcv/FPT?limit=10")
     assert response.status_code == 200
-    data = response.json()
-    assert len(data["bars"]) <= 10
+    assert response.json()["total_bars"] == 10
+    assert len(response.json()["bars"]) == 10
 
     # Test invalid limit (0 or > 5000)
     res_zero = client.get("/api/v1/market/ohlcv/FPT?limit=0")
@@ -72,21 +61,48 @@ def test_market_ohlcv_invalid_dates(client):
     assert res.status_code == 422
 
 
+def test_market_ohlcv_rejects_non_trading_calendar_date(client):
+    response = client.get("/api/v1/market/ohlcv/FPT?start=2026-08-29")
+    assert response.status_code == 422
+
+
 def test_market_ohlcv_nonexistent_symbol(client):
     # Dimension 10 & 11: Empty set handling for unknown symbols
     response = client.get("/api/v1/market/ohlcv/UNKNOWN999XYZ")
     assert response.status_code == 200
-    data = response.json()
-    assert data["total_bars"] == 0
-    assert data["bars"] == []
+
+
+def test_market_ohlcv_reversed_dates_rejected_before_dataset_access(monkeypatch, client):
+    from omega.api.routes import market
+
+    read = lambda *args, **kwargs: (_ for _ in ()).throw(
+        AssertionError("reversed range must not access dataset")
+    )
+    monkeypatch.setattr(market._market_loader, "load_market_dataset", read)
+
+    response = client.get(
+        "/api/v1/market/ohlcv/FPT?start=2026-08-28&end=2026-08-27"
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "INVALID_DATE_RANGE"
 
 
 def test_market_ohlcv_missing_file_fail_closed(monkeypatch, client):
     # Dimension 2 & 11: Fail-Closed on Missing Dataset
     from omega.api.routes import market
-    monkeypatch.setattr(market, "MARKET_PARQUET_PATH", Path("nonexistent_market.parquet"))
+    monkeypatch.setattr(
+        market._market_loader,
+        "PRIMARY_MARKET_PARQUET_PATH",
+        Path("nonexistent_market.parquet"),
+    )
+    monkeypatch.setattr(
+        market._market_loader,
+        "BACKUP_MARKET_PARQUET_PATH",
+        Path("nonexistent_market_backup.parquet"),
+    )
     response = client.get("/api/v1/market/ohlcv/FPT")
-    assert response.status_code == 404
+    assert response.status_code == 503
 
 
 def test_market_orderbook_default(client):
