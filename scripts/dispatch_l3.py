@@ -59,13 +59,16 @@ MODELS = {
     "low": "cx/gpt-5.6-sol(medium)",
     "medium": "cx/gpt-5.6-sol(xhigh)",
     "high": "cx/gpt-5.6-sol(max)",
-    # fallback khi GPT 429: 9router/ag/gemini-3.7-flash-high
+    # fallback khi GPT 429: Aurora WebChat (gpt-5-6-thinking trên port 8080 qua scripts/run_l3_audit.py)
 }
 VALID_RISK_LEVELS = ("low", "high")
 
+FALLBACK_MODEL = "chatgpt-web/gpt-5-6-thinking"
+AURORA_FALLBACK_SCRIPT = "scripts/run_l3_audit.py"
+
 # Deep audit (final advisory, L1 dispatch trực tiếp qua codex exec)
 DEEPAUDIT_MODEL = "cx/gpt-5.6-sol(max)"
-DEEPAUDIT_FALLBACK = "9router/ag/gemini-3.7-flash-high"  # dùng khi DEEPAUDIT_MODEL bị 429
+DEEPAUDIT_FALLBACK = "chatgpt-web/gpt-5-6-thinking"  # dùng khi DEEPAUDIT_MODEL bị 429
 
 
 def parse_frontmatter(content: str) -> dict:
@@ -308,7 +311,10 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         cmd = (
             f'New-Item -ItemType File -Path {ps_quote(report_path.replace("/", chr(92)))} -Force | Out-Null; '
             f'{read_stmt} echo "" | codex exec -m "{model}" -s danger-full-access '
-            f"--dangerously-bypass-approvals-and-sandbox $__OMEGA_PROMPT"
+            f'--dangerously-bypass-approvals-and-sandbox $__OMEGA_PROMPT; '
+            f'if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 2) {{ '
+            f'python scripts/run_l3_audit.py {gate_name} --prompt-file {ps_quote(str(prompt_path))} --model gpt-5-6-thinking '
+            f'}}'
         )
     else:
         cmd = (

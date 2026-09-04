@@ -1,5 +1,5 @@
 # AGENTS.md - OMEGA_QUANT Protocol
-**Version**: 2.9 | **Updated**: 2026-06-12
+**Version**: 3.0 | **Updated**: 2026-08-27
 
 ## Tiers
 
@@ -9,15 +9,19 @@
 | L2 | OpenCode | 6-16 | Implement, refactor, run tests, write L2 report |
 | L3 | Codex | 17-30 | Plan, independent audit, verdict, gate metadata |
 
-## AG Kit Loading
+## AG Kit Loading & Composite Role Protocol (COMPOSITE_ROLE_EXECUTION_20260824)
 
 - Role specs live in `.agents/agent/*.md`.
 - Each role frontmatter defines `role_id`, `tier`, `platform`, `skills`, and `sod_boundary`.
 - `sod_boundary` is binding; L1 must enforce it before delegation.
-- Before delegation, L1 selects exactly one role and loads only declared skills.
-- L2 receives: role spec + task + scope + requirements.
-- L3 receives: audit role spec + scope + checks + verdict contract.
-- **Role boundary evidence**: L2/L3 prompts MUST include role_id and role_name. L1 MUST verify writer != auditor before delegation.
+- **Composite Role Execution Model (COMPOSITE_ROLE_EXECUTION_20260824)**:
+  - **L2 Engineering Squad (Tier 2 OpenCode)**: A task may be executed by a Primary Lead Role (Role ID 6-16) with optional co-assigned Tier 2 specialist roles (e.g., `ui-ux-integrator` + `backend-engineer` + `data-engineer`). The L2 session is authorized to load and report skills declared across all co-assigned Tier 2 roles, provided each role spec file is read from `REPO_AGENT_ROOT/<role>.md` and listed under `## Repo-Local Files Read`.
+  - **L3 Audit Council (Tier 3 Codex)**: An audit may be conducted by a Primary Lead Auditor (Role ID 17-30) with optional co-assigned Tier 3 auditor roles (e.g., `code-reviewer` + `security-auditor` + `it-systems-auditor` + `performance-tester`). The L3 session is authorized to load and report skills declared across all co-assigned Tier 3 roles, provided each role spec file is read from `REPO_AGENT_ROOT/<role>.md` and listed under `## Repo-Local Files Read`.
+  - **Cross-Tier Separation**: L2 sessions MUST NOT load Tier 3 roles. L3 sessions MUST NOT load Tier 2 roles.
+  - **Writer != Auditor**: The set of L2 role IDs must be strictly disjoint from the set of L3 role IDs (`set(l2_roles) & set(l3_roles) == empty`). Self-approval remains strictly forbidden.
+- L2 receives: primary + co-role specs + task + scope + requirements.
+- L3 receives: primary + co-audit role specs + scope + checks + verdict contract.
+- **Role boundary evidence**: L2/L3 prompts MUST include primary role_id and role_name. L1 MUST verify writer != auditor before delegation.
 
 ## Repo-Local Skill Source Contract (STRICT_REPO_LOCAL_SKILL_LOADING_20260612)
 
@@ -52,6 +56,20 @@ The following paths are **non-authoritative** for skill/role loading. Mentions a
 **Enforcement**: `scripts/sod_gate_enforcer.py` validates that post-cutoff gates and audit reports include repo-local skill source evidence and do not rely on forbidden paths as authoritative sources.
 
 ## Routing Enforcement
+
+### Graph-Gated Dispatch (SOD_GRAPH_GATED_DISPATCH_20260827)
+
+Before L2 or L3 dispatch, `scripts/dispatch_l2.py` and `scripts/dispatch_l3.py` MUST:
+
+1. Validate the external graph database at `C:\Users\GHC\tools\code-review-graph-data\omega_quant\graph.db` against current `HEAD`.
+2. Rebuild with `C:\Users\GHC\tools\code-review-graph` outside OMEGA_QUANT when missing or stale; otherwise run an incremental update. Cloud embeddings are forbidden.
+3. Resolve every scope token exactly. Reject missing, flag-like, traversal, and directory-expansion inputs above the explicit 200-file safe limit; never silently narrow scope. Existing docs/config may be reported `not_indexed`; source/test query failures remain errors.
+4. Validate finite, bounded, type-correct graph schemas and exact target/count consistency. Persist canonical JSON plus SHA-256 lock as one rollback-safe atomic pair under `.ly_state/session/`; bind unchanged repository and graph commits through publication.
+5. Fail closed before lessons, reports, prompts, model processes, or fallback on any graph, CLI, query, or evidence error.
+
+### Gate-Close Transaction
+
+Use `python scripts/update_gate.py close <gate> --message <message> --scope <file> [...]` only after L3 approval. It holds a single close lock, snapshots gate metadata, scoped files, and `HEAD` through enforcer and commit verification, revalidates exact `[APPROVED]`, rejects secrets and scope escapes, verifies parent/scope/blob hashes, pushes the immutable commit SHA once without force, then verifies the remote commit. Failure retains the local state; no silent retry.
 
 L1 must validate role tier, platform, and role_id ranges before dispatch:
 
@@ -92,8 +110,8 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 
 ## SOD Rules
 
-1. **1 Agent = 1 Role = 1 Task**.
-2. **Writer != Auditor**. Self-approval forbidden.
+1. **1 Task Execution = 1 Primary Lead Role (+ Optional Co-Assigned Specialist Roles within same Tier)**.
+2. **Writer != Auditor**. Self-approval forbidden. All L2 role IDs must be strictly disjoint from all L3 role IDs.
 3. L2 must exit/save state before L3 starts.
 4. L1 never plans, implements, or audits; L1 only delegates, records evidence, enforces gates. L1 MUST delegate all master plan and implementation plan creation to Codex L3 (model "cx/gpt-5.6-sol(max)") using a non-audit role.
 5. All state/evidence must be file-backed in `.ly_state/session/`.
@@ -141,6 +159,16 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 - **No verdict or partial verdict**: Gate remains `PENDING_L3_AUDIT`, no progression
 - **Manual override**: Forbidden. All approvals require valid L3 audit + enforcer exit 0
 
+### Anti-Drip Zero-Patch Consolidation Protocol (ANTI_DRIP_PROTOCOL_20260823)
+
+To prevent iterative drip/piecemeal fixes (fix1, fix2, fix3...) and achieve single-shot `[APPROVED]` verdicts, all agents MUST follow:
+
+1. **Zero-Patch Consolidated Prompting**: L1 MUST NOT dispatch piecemeal tasks. L1 must consolidate 100% of audit findings, edge cases, and 16-Dimension invariants into a single itemized prompt: `(1)..., (2)..., (3)...`.
+2. **Root-Cause Architectural Sweeping**: L2 MUST NOT apply symptom-level single-line patches. When a defect is identified (e.g. case-sensitivity, path aliasing, exit codes), L2 must use search tools to locate and fix all matching patterns across the entire module.
+3. **Pre-Audit Self-Fuzzing**: L2 MUST write adversarial unit tests covering boundary conditions (None/empty types, Math extremes/div0, File/rollback durability, Lock timeouts) prior to publishing reports.
+4. **Full Regression Closure**: L2 MUST execute the full related test suite (`pytest tests/ -v`) ensuring zero regression breakage before submitting.
+5. **Zero-Token Pre-Validation Gate**: L1 MUST run `python scripts/validate_l2_report.py` prior to invoking L3. Any formatting, heading, or placeholder defect MUST be rejected at zero LLM token cost.
+
 ### Lesson Extraction Hard Gate (lessons_extraction_hard_gate_20260726)
 
 Before ANY L2 remediation dispatch triggered by an L3 or final advisory `[NEEDS_FIX]`, L1 MUST:
@@ -165,8 +193,15 @@ The extraction evidence MUST include gate name `lessons_extraction_hard_gate_202
 
 5. Use extracted `role_id` and `name` in prompt (never hand-type role names)
 
+**Automated dispatch (RECOMMENDED):**
 ```powershell
-echo "" | opencode run --pure --dangerously-skip-permissions --dir "C:\Users\GHC\repos\OMEGA_QUANT" "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. TASK: [TASK]. GATE: [GATE_NAME]. LESSONS: [APPENDED_LESSONS_LEARNED]. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result. SCOPE: [FILES]. REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; write L2 report to .ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md. Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing. L2 REPORT FORMAT (MANDATORY - copy exactly): The report MUST contain these sections in order: (1) Header with Role, Gate, Session, Date fields. (2) '## Repo-Local Files Read' heading followed by bullet list of every file actually read from REPO_AGENT_ROOT and REPO_SKILL_ROOT (e.g. '- .agents/agent/{role_name}.md', '- .agents/skills/{skill}/SKILL.md'). (3) '## Changes Made' listing modified files. (4) '## Verification' with test results. (5) '## Forbidden Path Scan' with EXACTLY four lines, one per forbidden path, each line ending with the EXACT phrase: 'non-authoritative scan evidence only; no reliance.' — The four lines must mention: '.gemini\antigravity-ide\scratch\ag-kit', '.openclaw\skills', 'C:\Users\GHC\.agents', '.codex\memories'. FILENAME must be l2_role{role_id}_{task_slug}_{YYYYMMDD}.md with NO _retry suffix."
+python scripts/dispatch_l2.py <role_name> <gate_name> <task_slug> "<task_description>" "<scope>"
+```
+Copy lệnh từ output `---COMMAND---` rồi chạy. Script tự động: validate role, load lessons, infer model tier (`9router/cx/gpt-5.6-sol` high / `terra` medium / `luna` low), tạo session ID.
+
+**Manual dispatch (fallback nếu dispatch_l2.py không dùng được):**
+```powershell
+echo "" | opencode run -m "9router/cx/gpt-5.6-sol" --pure --dangerously-skip-permissions --dir "C:\Users\GHC\repos\OMEGA_QUANT" "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. TASK: [TASK]. GATE: [GATE_NAME]. LESSONS: [APPENDED_LESSONS_LEARNED]. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result. SCOPE: [FILES]. REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; write L2 report to .ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md. Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing. L2 REPORT FORMAT (MANDATORY - copy exactly): The report MUST contain these sections in order: (1) Header with Role, Gate, Session, Date fields. (2) '## Repo-Local Files Read' heading followed by bullet list of every file actually read from REPO_AGENT_ROOT and REPO_SKILL_ROOT (e.g. '- .agents/agent/{role_name}.md', '- .agents/skills/{skill}/SKILL.md'). (3) '## Changes Made' listing modified files. (4) '## Verification' with test results. (5) '## Forbidden Path Scan' with EXACTLY four lines, one per forbidden path, each line ending with the EXACT phrase: 'non-authoritative scan evidence only; no reliance.' — The four lines must mention: '.gemini\antigravity-ide\scratch\ag-kit', '.openclaw\skills', 'C:\Users\GHC\.agents', '.codex\memories'. FILENAME must be l2_role{role_id}_{task_slug}_{YYYYMMDD}.md with NO _retry suffix."
 ```
 
 **Platform lock protocol:** OpenCode L2 sessions MUST NOT call Codex or any L3 platform directly. L1 controls all cross-platform delegation.
@@ -203,9 +238,13 @@ This check validates: filename format (`_YYYYMMDD.md` only, no `_retry`), `## Re
 6. Use extracted `role_id` and `name` in prompt (never hand-type role names)
 7. Touch/create the empty audit report file at `.ly_state/session/audit_reports/role{role_id}_{gate_slug}_{YYYYMMDD}.md` before dispatching Codex, to prevent file-system sandbox patch failures on Windows.
 
-**Automated dispatch (recommended):** `python scripts/dispatch_l3.py <l3_role> <gate> <l2_session_id> <l2_role> "<scope>" [--risk low|high]`
+**Automated dispatch (RECOMMENDED):**
+```powershell
+python scripts/dispatch_l3.py <l3_role> <gate> <l2_session_id> <l2_role> "<scope>" [--risk low|high]
+```
+Copy lệnh từ output `---COMMAND---` rồi chạy. Script tự động: validate role (17-30, tier=3, Codex), load lessons, tạo placeholder report file, infer risk.
 
-This script handles steps 1-7 automatically, including lessons retrieval, role validation, and report file pre-creation.
+Script xử lý bước 1-7 tự động bao gồm lessons retrieval, role validation, và pre-creation report file.
 
 **Manual dispatch (fallback):**
 ```powershell
@@ -226,6 +265,14 @@ New-Item -ItemType File -Path .ly_state\session\audit_reports\role{role_id}_{gat
 **Platform isolation:** Codex L3 sessions MUST NOT call OpenCode or modify production source code directly. L3 writes only to `.ly_state/session/audit_reports/` and updates phase_gates.json.
 
 **Codex requirements:** always pipe prompt via `echo`; never use interactive stdin. Prompt must include `REPO_ROOT` and a first-step `Set-Location` guard. On Windows sandbox-restricted environments, always use `--dangerously-bypass-approvals-and-sandbox` instead of `--full-auto` to prevent restricted-token failures and infinite loops.
+
+### L3 Platform Fallback Protocol (L3_FALLBACK_AURORA_WEBCHAT)
+
+Khi nền tảng Codex CLI gặp sự cố (lỗi nhị phân, mất kết nối, 429 quota, hoặc không tương thích API `wire_api = "responses"` với các model chat), L3 **TỰ ĐỘNG FALLBACK** sang Aurora WebChat (`scripts/run_l3_audit.py`):
+- **Fallback Platform / Service**: Aurora ChatGPT Web Bridge trên port 8080 (`http://127.0.0.1:8080/v1`).
+- **Fallback Model**: `gpt-5-6-thinking` (hoặc `chatgpt-web/gpt-5-6-thinking` qua token ChatGPT Web trong `~/.config/opencode/opencode.json`).
+- **Tự động hóa**: Thực thi trực tiếp qua `python scripts/run_l3_audit.py <gate_name> --model gpt-5-6-thinking` (hoặc cờ `--aurora` trong `scripts/dispatch_l3.py`). Script tự động thực hiện pytest trên scope, nén ngữ cảnh, gửi request tới Aurora port 8080, trích xuất verdict, ghi báo cáo L3 audit và cập nhật gate bằng `scripts/update_gate.py`. Trường hợp Aurora gặp sự cố, script tự động dự phòng sang 9router (`ag/gemini-3.8-flash-high`).
+- **Bảo toàn SoD**: Phiên L3 WebChat Aurora vẫn tuân thủ 100% ranh giới SoD của Tier 3 (Role ID 17-30, Writer != Auditor, quyền ghi chỉ giới hạn trong `.ly_state/session/audit_reports/` và cập nhật gate qua `scripts/update_gate.py`, tuyệt đối không sửa file mã nguồn).
 
 ## Gate Contract
 
@@ -285,3 +332,24 @@ Missing/invalid fields -> `PENDING_L3_AUDIT`.
    echo "<TASK_PROMPT>" | codex exec -m "cx/gpt-5.6-sol(max)" --dangerously-bypass-approvals-and-sandbox
    ```
 6. **Plan Creation & Approval Rule**: L1 TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ LẬP KẾ HOẠCH. Mọi tác vụ lập kế hoạch tổng thể (master plan) và kế hoạch chi tiết (implementation_plan.md) bắt buộc phải được giao cho Codex L3 (sử dụng model `"cx/gpt-5.6-sol(max)"`) với một role phù hợp (không phải role audit) thực hiện. Sau khi kế hoạch được lập, quy trình audit bởi Codex L3 (role audit) vẫn phải diễn ra nghiêm ngặt trước khi chuyển cho L2 triển khai thực tế. L1 chỉ đóng vai trò điều phối, không được phép viết hay chỉnh sửa kế hoạch.
+7. **16-Dimension Pre-Audit Directive Enforcement**: L1 must ensure all L2 dispatches utilize `scripts/dispatch_l2.py` with embedded 16-Dimension Master Adversarial Matrix. L1 MUST execute `python scripts/validate_l2_report.py` before dispatching any L3 audit, mechanically rejecting invalid heading orders, unreplaced placeholders, and path traversal at zero token cost.
+
+## 16-Dimension Master Adversarial Testing Matrix (STRICT_ADVERSARIAL_MATRIX_20260823)
+
+All L2 implementations must rigorously self-fuzz and defend against the 16 Universal Invariants prior to submitting reports:
+1. **Strict Types & Malformed Inputs**: Validate schema types, fail-closed on None/empty/corrupted structures.
+2. **File I/O & Path Aliasing**: Reject directory inputs for file params; validate existence before read/write.
+3. **Fsync, Transactional Durability & Rollback Retention**: Atomic write (`.tmp` + `replace`), preserve backups on rollback failures.
+4. **Memory Bounds & OOM Prevention**: Stream large files, chunk records, enforce platform memory cap (4GB).
+5. **Concurrency, Deadlock & FileLock Timeouts**: Guard shared states with timeouts and atomic locks.
+6. **Point-in-Time (PIT) & Temporal Clocks**: Literal UTC ISO timestamps (`YYYY-MM-DDTHH:MM:SS+00:00`), no future leakage.
+7. **Sparse Calendar & Strict Forward-Fill**: Zero `bfill`, validate trading date alignment.
+8. **Mathematical Extremes & Bounds**: Defend against division by zero, MAD=0, std=0, NaN/Inf propagation.
+9. **Financial & Business Logic Edges**: Enforce dilution checks (F7), Altman Z sector boundaries.
+10. **Case-Insensitive Deduplication & Cardinality**: Canonicalize symbols to uppercase (`VNM` vs `vnm`).
+11. **Fail-Closed & Explicit Exit Codes**: Standard exit codes (0, 2, 3, 4, 5, 6, 7), no silent exception swallowing.
+12. **Full-Suite Regression Closure**: 100% test pass rate across related modules before submitting.
+13. **Metric & Artifact Consistency**: Ensure markdown reports match disk artifacts and JSON manifests 1:1.
+14. **Exception Chaining & Cause Preservation**: Use `raise ... from err` to preserve stack traces.
+15. **Opt-in Safety For Experimental Features**: Defaults must be safe and battle-tested.
+16. **Security & Secret Leakage Prevention**: Never log credentials or tokens; defend against path traversal.
