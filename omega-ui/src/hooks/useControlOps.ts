@@ -84,13 +84,72 @@ export function useControlOps() {
     };
   }, [upsertTask, updateTaskProgress, setIsDrawerOpen, setSelectedTaskId, addToast]);
 
+  const stopTask = useCallback(
+    async (taskId: string): Promise<void> => {
+      const streamInfo = streams.current.get(taskId);
+      if (streamInfo) {
+        streamInfo.source.close();
+        streams.current.delete(taskId);
+      }
+      try {
+        if (typeof apiClient.cancelPipelineRun === 'function') {
+          await apiClient.cancelPipelineRun(taskId);
+        }
+      } catch (err) {
+        console.warn(`Stop request for task ${taskId} warning:`, err);
+      }
+      updateTaskProgress(taskId, {
+        event_type: 'CANCELLED',
+        stage: 'CANCELLED',
+        message: 'Task cancelled by operator.',
+        progress: tasks[taskId]?.progress ?? 0,
+        payload: { cancelled_by: 'OPERATOR' }
+      });
+      addToast({
+        type: 'warning',
+        title: 'Task Cancelled',
+        message: `Task ${taskId} was cancelled.`
+      });
+    },
+    [tasks, updateTaskProgress, addToast]
+  );
+
+  const stopIngestTask = useCallback(
+    async (taskId?: string): Promise<void> => {
+      const targetId =
+        taskId ||
+        Object.values(tasks).find(
+          (t) =>
+            t.taskType === 'DATA_INGESTION' &&
+            (t.status === 'RUNNING' || t.status === 'PENDING' || t.status === 'RECONNECTING')
+        )?.taskId;
+      if (!targetId) {
+        addToast({
+          type: 'info',
+          title: 'No Active Ingest Task',
+          message: 'No active data ingestion task found to stop.'
+        });
+        return;
+      }
+      await stopTask(targetId);
+    },
+    [tasks, stopTask, addToast]
+  );
+
   const triggerIngestData = async (params: IngestDataParams = {}): Promise<ControlTaskResponse> => {
+    let sources = params.sources ? [...params.sources] : ['vci'];
+    // Mutual exclusivity between KBS and VCI sources
+    if (sources.includes('vci') && sources.includes('kbs')) {
+      sources = sources.filter((s) => s !== 'kbs');
+    }
+    const sanitizedParams = { ...params, sources };
+
     addToast({
       type: 'info',
       title: 'Ingest Data Dispatched',
-      message: `Sources: ${(params.sources || ['vci']).join(', ').toUpperCase()}`
+      message: `Sources: ${sources.join(', ').toUpperCase()}`
     });
-    const res = await apiClient.ingestData(params);
+    const res = await apiClient.ingestData(sanitizedParams);
     connectTaskSse(res.task_id, 'DATA_INGESTION');
     return res;
   };
@@ -149,6 +208,8 @@ export function useControlOps() {
     isTotpModalOpen,
     setIsTotpModalOpen,
     isKillSwitchEngaged,
+    stopTask,
+    stopIngestTask,
     triggerIngestData,
     triggerComputeAlphas,
     triggerOptimizePortfolio,
