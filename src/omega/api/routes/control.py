@@ -906,6 +906,7 @@ async def _execute_real_pipeline(job_id: str, req: PipelineRunRequest):
 # Checkpoint state paths and synchronization
 DEFAULT_INGEST_CHECKPOINT_PATH = Path(".ly_state/session/update_market_data_checkpoint.json")
 DEFAULT_INGEST_CHECKPOINT_LOCK_PATH = Path(".ly_state/session/update_market_data_checkpoint.lock")
+DEFAULT_INGEST_CONCURRENCY: int = 10
 
 
 def _get_full_vn703_universe() -> List[str]:
@@ -1017,24 +1018,57 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
             {"total_symbols": total_symbols, "resumed_from_checkpoint": resumed_count, "batch_size": batch_size}
         )
 
+        # Resolve primary equity source provider
+        equity_sources = [s for s in req.sources if s in ("vci", "kbs", "tcbs")]
+        active_provider = equity_sources[0] if equity_sources else "vci"
+
+        # Concurrency semaphore within batch for high-throughput I/O (F-003, Dimension 14)
+        sem = asyncio.Semaphore(DEFAULT_INGEST_CONCURRENCY)
+
+        # F-001: Explicit signature inspection instead of broad exception-driven detection
+        import inspect
+        loader_params = inspect.signature(loader.load_prices).parameters
+        supports_source_kwarg = "source" in loader_params
+
+        async def _fetch_single_symbol(sym: str):
+            if task_id in CANCELLED_JOBS:
+                return sym, None, None
+            async with sem:
+                if task_id in CANCELLED_JOBS:
+                    return sym, None, None
+                try:
+                    extra_kwargs = {"source": active_provider} if supports_source_kwarg else {}
+                    frm = await asyncio.to_thread(
+                        loader.load_prices,
+                        sym,
+                        req.start_date,
+                        req.end_date,
+                        as_of,
+                        req.force_refresh,
+                        **extra_kwargs,
+                    )
+                    return sym, frm, None
+                except Exception as exc:
+                    return sym, None, exc
+
         for batch_idx in range(total_batches):
             if task_id in CANCELLED_JOBS:
                 _push_task_event(task_id, "CANCELLED", TASKS[task_id].get("progress"), "CANCELLED", "Task cancelled by operator; checkpoint preserved.")
                 return
 
             batch_symbols = target_symbols[batch_idx * batch_size : (batch_idx + 1) * batch_size]
-            for sym_idx, symbol in enumerate(batch_symbols):
+            batch_results = await asyncio.gather(*[_fetch_single_symbol(s) for s in batch_symbols])
+
+            for sym, frame, exc in batch_results:
                 if task_id in CANCELLED_JOBS:
                     _push_task_event(task_id, "CANCELLED", TASKS[task_id].get("progress"), "CANCELLED", "Task cancelled by operator; checkpoint preserved.")
                     return
-                try:
-                    frame = await asyncio.to_thread(loader.load_prices, symbol, req.start_date, req.end_date, as_of, req.force_refresh)
-                    if frame is not None and not frame.empty:
-                        frames.append(frame)
-                        completed_set.add(symbol)
-                except Exception as e:
-                    logger.warning(f"Error loading prices for {symbol}: {e}")
-                    checkpoint.setdefault("failed_symbols", {})[symbol] = str(e)
+                if exc is not None:
+                    logger.warning(f"Error loading prices for {sym}: {exc}")
+                    checkpoint.setdefault("failed_symbols", {})[sym] = str(exc)
+                elif frame is not None and not frame.empty:
+                    frames.append(frame)
+                    completed_set.add(sym)
 
             # Update Checkpoint after each batch
             checkpoint["completed_symbols"] = sorted(list(completed_set))

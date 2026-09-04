@@ -17,7 +17,7 @@ from typing import Optional, Dict, List, Tuple, Any
 import pandas as pd
 import numpy as np
 
-from omega.data.calendar import VNTradingCalendar
+from omega.data.calendar import VNTradingCalendar, _get_json_holidays
 
 
 logger = logging.getLogger(__name__)
@@ -126,7 +126,8 @@ class DataLoader:
         as_of_time: datetime,
         force_refresh: bool = False,
         corporate_actions: Optional[List] = None,
-        apply_adjustments: bool = False
+        apply_adjustments: bool = False,
+        source: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Load EOD prices with PIT safety enforcement and optional corporate action adjustments.
@@ -160,7 +161,7 @@ class DataLoader:
             raise ValueError(f"start_date ({start_date}) must be <= end_date ({end_date})")
 
         # Check cache first
-        cache_key = self._generate_cache_key(ticker, start_date, end_date)
+        cache_key = self._generate_cache_key(ticker, start_date, end_date, source=source)
         cache_path = Path(self.cache_dir) / f"{cache_key}.parquet"
 
         if not force_refresh and cache_path.exists():
@@ -170,14 +171,14 @@ class DataLoader:
                 self._validate_schema(df)
             except Exception as e:
                 logger.warning(f"Cache load/validation failed ({type(e).__name__}: {e}). Refreshing from source.")
-                df = self._fetch_from_source(ticker, start_date, end_date, as_of_time)
+                df = self._fetch_from_source(ticker, start_date, end_date, as_of_time, source=source)
                 # Only add PIT timestamps if not already present
                 if 'as_of' not in df.columns or 'available_at' not in df.columns:
                     df = self._add_pit_timestamps(df)
                 self._write_parquet_atomic(df, cache_path)
         else:
             logger.info(f"Fetching data for {ticker} from {start_date} to {end_date}")
-            df = self._fetch_from_source(ticker, start_date, end_date, as_of_time)
+            df = self._fetch_from_source(ticker, start_date, end_date, as_of_time, source=source)
 
             # Only add PIT timestamps if not already present (for testing/mocking)
             if 'as_of' not in df.columns or 'available_at' not in df.columns:
@@ -239,15 +240,16 @@ class DataLoader:
         logger.info(f"Loaded {len(df)} rows for {ticker}, quality_score={quality_score:.2f}")
         return df
 
-    def _fetch_from_source(self, ticker: str, start_date: str, end_date: str, as_of_time: Optional[datetime] = None) -> pd.DataFrame:
+    def _fetch_from_source(self, ticker: str, start_date: str, end_date: str, as_of_time: Optional[datetime] = None, source: Optional[str] = None) -> pd.DataFrame:
         """
-        Fetch data from vnstock VCI provider.
+        Fetch data from vnstock provider (VCI, KBS, etc.).
         
         Args:
             ticker: Stock ticker symbol (e.g., "VNM", "VCB")
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             as_of_time: Query time (optional, for PIT compliance)
+            source: Primary provider source (e.g., "KBS", "VCI")
             
         Returns:
             DataFrame with columns: [ticker, date, open, high, low, close, volume]
@@ -256,9 +258,9 @@ class DataLoader:
             raise RuntimeError("vnstock package not available. Install with: pip install vnstock")
         
         try:
-            # Fetch price data from vnstock
+            # Fetch price data from vnstock with explicit source routing
             data, provider_results = self.vnstock_source.fetch_price_data_with_reconciliation(
-                ticker, start_date, end_date
+                ticker, start_date, end_date, source=source
             )
             
             if not data:
@@ -339,10 +341,18 @@ class DataLoader:
         # as_of: End of trading day (15:00 VN time)
         df['as_of'] = date_hcm + pd.Timedelta(hours=15)
 
+        holidays_cache = _get_json_holidays()
+
         def next_open(timestamp: pd.Timestamp) -> pd.Timestamp:
             session = timestamp.date() + timedelta(days=1)
+            year_str = str(session.year)
+            if year_str not in holidays_cache and session.year > 2027:
+                raise ValueError(f"no holiday coverage for {session.year}")
             while not VNTradingCalendar.is_trading_day(datetime.combine(session, datetime.min.time())):
                 session += timedelta(days=1)
+                year_str = str(session.year)
+                if year_str not in holidays_cache and session.year > 2027:
+                    raise ValueError(f"no holiday coverage for {session.year}")
             ts = pd.Timestamp(session).replace(hour=9)
             return ts.tz_localize("Asia/Ho_Chi_Minh") if ts.tzinfo is None else ts.tz_convert("Asia/Ho_Chi_Minh")
 
@@ -482,9 +492,11 @@ class DataLoader:
 
         return max(0.0, quality_score)
 
-    def _generate_cache_key(self, ticker: str, start_date: str, end_date: str) -> str:
-        """Generate cache key from ticker and date range."""
+    def _generate_cache_key(self, ticker: str, start_date: str, end_date: str, source: Optional[str] = None) -> str:
+        """Generate cache key from ticker, date range, and source."""
         key_str = f"{ticker}_{start_date}_{end_date}"
+        if source:
+            key_str += f"_{str(source).strip().upper()}"
         return hashlib.md5(key_str.encode()).hexdigest()
 
     @staticmethod
