@@ -62,26 +62,32 @@ class RateLimiter:
     sleep_fn: Callable[[float], Any] = time.sleep
 
     def __post_init__(self) -> None:
+        import threading
         self.timestamps: Deque[float] = deque()
+        self._lock = threading.Lock()
 
     def throttle(self) -> None:
-        now = self.time_fn()
-        while self.timestamps and now - self.timestamps[0] > self.period_seconds:
-            self.timestamps.popleft()
+        while True:
+            wait_time = 0.0
+            with self._lock:
+                now = self.time_fn()
+                while self.timestamps and now - self.timestamps[0] > self.period_seconds:
+                    self.timestamps.popleft()
 
-        if len(self.timestamps) >= self.max_requests:
-            wait_time = self.timestamps[0] + self.period_seconds - now
+                if len(self.timestamps) >= self.max_requests:
+                    wait_time = self.timestamps[0] + self.period_seconds - now
+                else:
+                    self.timestamps.append(now)
+                    return
+
             if wait_time > 0:
                 self.sleep_fn(wait_time)
-            self.throttle()
-        else:
-            self.timestamps.append(now)
 
 
 class VnstockVCIDataSource:
     """Data source using official vnstock package with VCI provider and multi-provider fallback."""
 
-    PROVIDERS: Tuple[str, ...] = ("VCI", "KBS")
+    PROVIDERS: Tuple[str, ...] = ("VCI", "KBS", "TCBS")
     PROVIDER_TIMEOUT_SECONDS: float = 10.0
     RAW_PRICE_THRESHOLD = _RAW_PRICE_THRESHOLD  # VND_FULL contract
     VND_PRICE_SCALE = _VND_PRICE_SCALE
@@ -112,8 +118,8 @@ class VnstockVCIDataSource:
             s_clean = str(active_src).strip().upper()
             if s_clean.startswith("VNSTOCK_"):
                 s_clean = s_clean[8:]
-            if s_clean in self.PROVIDERS:
-                return (s_clean,)
+            if s_clean not in self.PROVIDERS:
+                raise ValueError(f"Unsupported provider: {s_clean}. Must be one of {self.PROVIDERS}")
             return (s_clean,)
 
         active_provs = providers or self.default_providers
@@ -123,7 +129,9 @@ class VnstockVCIDataSource:
                 p_clean = str(p).strip().upper()
                 if p_clean.startswith("VNSTOCK_"):
                     p_clean = p_clean[8:]
-                if p_clean in self.PROVIDERS and p_clean not in cleaned:
+                if p_clean not in self.PROVIDERS:
+                    raise ValueError(f"Unsupported provider: {p_clean}. Must be one of {self.PROVIDERS}")
+                if p_clean not in cleaned:
                     cleaned.append(p_clean)
             if cleaned:
                 return tuple(cleaned)
@@ -203,7 +211,6 @@ class VnstockVCIDataSource:
         quote = Quote(source=provider, symbol=symbol)
         provider_obj = getattr(quote, "_provider", None) or getattr(quote, "provider", None)
         if provider_obj is not None:
-            # Set request timeout on provider quote module if applicable
             try:
                 mod_name = getattr(provider_obj, "__module__", "")
                 if "vci" in mod_name:
@@ -220,6 +227,26 @@ class VnstockVCIDataSource:
             return quote.history(start=start_date, end=end_date, interval="1D")
         except TypeError:
             return quote.history(start=start_date, end=end_date)
+
+    def _calculate_backoff(self, attempt: int, error_msg: str = "") -> float:
+        """Bounded exponential backoff with full jitter and Retry-After header parsing."""
+        import random
+        import re
+        retry_after = None
+        m = re.search(r"Retry-After:?\s*(\d+(?:\.\d+)?)", str(error_msg), re.IGNORECASE)
+        if m:
+            try:
+                retry_after = float(m.group(1))
+            except ValueError:
+                pass
+
+        if retry_after is not None and retry_after > 0:
+            return min(retry_after + random.uniform(0.1, 0.5), 30.0)
+
+        # Exponential: base * (2 ** attempt) with jitter
+        exp_delay = self.RETRY_BACKOFF_FACTOR * (2 ** attempt)
+        jittered = exp_delay * (0.5 + random.random() * 0.5)  # between 0.5x and 1.0x
+        return min(max(0.5, jittered), 30.0)
 
     def _fetch_provider_isolated(self, provider: str, symbol: str, start_date: str, end_date: str) -> List[Dict[str, Any]]:
         for attempt in range(self.MAX_RETRIES_429):
@@ -247,8 +274,17 @@ class VnstockVCIDataSource:
 
             if success and isinstance(result, pd.DataFrame):
                 return self._rows_from_frame(result, symbol, provider)
-            elif not success and isinstance(result, str) and ("429" in result or "Too Many Requests" in result):
-                wait_time = self.RETRY_BACKOFF_FACTOR * (attempt + 1)
+
+            # Classify error: retry on 429 (rate limit), timeouts, and transient 5xx server errors
+            err_str = str(result) if result is not None else "Worker timeout or empty result"
+            is_rate_limit = "429" in err_str or "Too Many Requests" in err_str
+            is_timeout = (not success and result is None) or "timeout" in err_str.lower() or "timed out" in err_str.lower()
+            is_5xx = any(code in err_str for code in ("500", "502", "503", "504", "Bad Gateway", "Service Unavailable", "Gateway Timeout"))
+
+            if is_rate_limit or is_timeout or is_5xx:
+                if self.PROVIDER_TIMEOUT_SECONDS < 0.1:
+                    break
+                wait_time = self._calculate_backoff(attempt, err_str)
                 time.sleep(wait_time)
                 continue
             else:
@@ -288,14 +324,10 @@ class VnstockVCIDataSource:
         for provider in providers:
             rows = self._fetch_provider_isolated(provider, symbol, start_date, end_date)
             provider_results[provider] = rows
+            if rows:
+                return rows, provider_results
 
-        selected_rows: List[Dict[str, Any]] = []
-        for provider in providers:
-            if provider_results.get(provider):
-                selected_rows = provider_results[provider]
-                break
-
-        return selected_rows, provider_results
+        return [], provider_results
 
     def get_ohlcv(self, symbols: List[str], days: int = 365, as_of_time: Optional[datetime] = None) -> pd.DataFrame:
         if as_of_time is None:

@@ -9,6 +9,7 @@ import base64
 import os
 import math
 import tempfile
+import shutil
 import logging
 import threading
 import pandas as pd
@@ -33,6 +34,57 @@ import re
 logger = logging.getLogger(__name__)
 
 _URL_REDACT_PATTERN = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s'\"<>]+")
+_AUTH_HEADER_PATTERN = re.compile(
+    r"""(?ix)
+    (?:
+        \b(?P<prefix>authorization\s*:\s*)
+        |
+        (?P<json_prefix>["']authorization["']\s*:\s*)
+    )
+    (?:
+        "(?:(?P<scheme_q>[a-zA-Z0-9_-]+)\s+)?(?:[^"\\]|\\.)*"
+        |
+        '(?:(?P<scheme_sq>[a-zA-Z0-9_-]+)\s+)?(?:[^'\\]|\\.)*'
+        |
+        (?:(?P<scheme>[a-zA-Z0-9_-]+)\s+)?
+        (?:
+            "(?:[^"\\]|\\.)*"
+            |
+            '(?:[^'\\]|\\.)*'
+            |
+            [^\r\n}]+
+        )+
+    )
+    """
+)
+_STANDALONE_AUTH_PATTERN = re.compile(
+    r"""(?ix)
+    \b(?P<scheme>bearer|basic|token|oauth|digest)\s+
+    (?:
+        "(?P<token_q>(?:[^"\\]|\\.)*)"
+        |
+        '(?P<token_sq>(?:[^'\\]|\\.)*)'
+        |
+        (?P<token>[^\s\"',;}&]+)
+    )
+    """
+)
+_SECRET_PATTERN = re.compile(
+    r"""(?ix)
+    (
+        [\"']?\b[a-z0-9_\-]*(?:api[_-]?key|bearer|token|secret|password|passwd|passphrase|credential|credentials|hmac(?:[_-]?key)?|jwt(?:[_-]?token)?|private[_-]?key|ssh(?:[_-]?private)?[_-]?key)[a-z0-9_\-]*[\"']?
+        \s*[:=]\s*
+    )
+    (?:
+        "(?P<val_q>(?:[^"\\]|\\.)*)"
+        |
+        '(?P<val_sq>(?:[^'\\]|\\.)*)'
+        |
+        (?P<val>[^\s\"',;}&]+)
+    )
+    """
+)
+_BARE_SECRET_PATTERN = re.compile(r"(?i)\b(sk-[a-zA-Z0-9]{10,}|ghp_[a-zA-Z0-9]{10,}|[a-f0-9]{32,64})\b")
 
 def _redact_text(text: Any) -> str:
     s = str(text)
@@ -50,9 +102,163 @@ def _redact_text(text: Any) -> str:
             pass
         return "[REDACTED_URL]"
     s = _URL_REDACT_PATTERN.sub(_sub_url, s)
-    # Redact potential bearer tokens / API keys / secrets
-    s = re.sub(r"(?i)(api[_-]?key|bearer|token|secret|password|passwd|authorization)[\s:=]+['\"]?([a-zA-Z0-9_\-\.]{8,})['\"]?", r"\1=[REDACTED]", s)
+    # Redact Authorization header values completely regardless of auth scheme, quoting, or special characters
+    def _sub_auth(m):
+        scheme = m.group("scheme") or m.group("scheme_q") or m.group("scheme_sq")
+        is_json = bool(m.group("json_prefix"))
+        if is_json:
+            quote_char = '"' if '"' in m.group("json_prefix") else "'"
+            if scheme:
+                return f"{quote_char}Authorization{quote_char}: {quote_char}{scheme} [REDACTED]{quote_char}"
+            return f"{quote_char}Authorization{quote_char}: {quote_char}[REDACTED]{quote_char}"
+
+        if scheme:
+            return f"Authorization: {scheme} [REDACTED]"
+        return "Authorization: [REDACTED]"
+    s = _AUTH_HEADER_PATTERN.sub(_sub_auth, s)
+    # Redact standalone authentication schemes (e.g. 'Bearer <token>', 'Basic <token>') without requiring 'Authorization:'
+    def _sub_standalone_auth(m):
+        tok = m.group("token_q") or m.group("token_sq") or m.group("token")
+        if tok and "[REDACTED" in tok:
+            return m.group(0)
+        scheme = m.group("scheme")
+        return f"{scheme} [REDACTED]"
+    s = _STANDALONE_AUTH_PATTERN.sub(_sub_standalone_auth, s)
+    # Redact potential bearer tokens / API keys / secrets (including quoted/multiline/spaces)
+    def _sub_secret(m):
+        val = m.group("val_q") or m.group("val_sq") or m.group("val")
+        if val and "[REDACTED" in val:
+            return m.group(0)
+        return m.group(1) + "[REDACTED]"
+    s = _SECRET_PATTERN.sub(_sub_secret, s)
+    s = _BARE_SECRET_PATTERN.sub("[REDACTED_SECRET]", s)
     return s
+
+
+_SENSITIVE_KEY_PATTERN = re.compile(
+    r"(?i)^(authorization|api[_-]?key|token|secret|password|passwd|passphrase|access[_-]?token|refresh[_-]?token|client[_-]?secret|credentials?|x[_-]?api[_-]?key|private[_-]?key|jwt[_-]?token|ssh[_-]?key|ssh[_-]?private[_-]?key|db[_-]?password|control[_-]?receipt[_-]?hmac[_-]?key)$"
+)
+
+_NON_SENSITIVE_NORMALIZED_KEYS = frozenset({
+    "maxtokens",
+    "prompttokens",
+    "completiontokens",
+    "totaltokens",
+    "tokencount",
+    "tokenscount",
+    "tokenusage",
+})
+
+_CREDENTIAL_TOKEN_WORDS = frozenset({
+    "secret",
+    "password",
+    "passwd",
+    "passphrase",
+    "credential",
+    "credentials",
+    "token",
+    "authorization",
+    "jwt",
+    "hmac",
+})
+
+
+def _tokenize_key_for_redaction(key: str) -> Set[str]:
+    """Tokenize camelCase, PascalCase, kebab-case, snake_case, dot, slash, and delimiter-separated keys into lowercase words."""
+    # Split consecutive capitals followed by lowercase (e.g. SSHPrivateKey -> SSH_Private_Key, DBPassword -> DB_Password)
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key.strip())
+    # Split lowercase/digit followed by capital (e.g. apiKey -> api_Key, token123Secret -> token123_Secret)
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
+    words = re.split(r"[\W_]+", s)
+    return {w.lower() for w in words if w}
+
+
+def _normalize_key_for_redaction(key: str) -> str:
+    """Normalizes key by stripping delimiters, converting camelCase/PascalCase/snake_case/kebab-case to lowercase alphanumeric."""
+    s = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", key.strip())
+    s = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", s)
+    return re.sub(r"[\W_]+", "", s).lower()
+
+
+_NORMALIZED_SENSITIVE_KEYS = frozenset({
+    "authorization",
+    "apikey",
+    "xapikey",
+    "token",
+    "secret",
+    "clientsecret",
+    "credential",
+    "credentials",
+    "password",
+    "passwd",
+    "passphrase",
+    "accesstoken",
+    "refreshtoken",
+    "idtoken",
+    "jwttoken",
+    "jwt",
+    "privatekey",
+    "sshprivatekey",
+    "sshkey",
+    "dbpassword",
+    "databasepassword",
+    "controlreceipthmackey",
+    "hmackey",
+})
+
+_SENSITIVE_SUFFIXES = (
+    "password",
+    "passwd",
+    "passphrase",
+    "secret",
+    "clientsecret",
+    "privatekey",
+    "hmackey",
+    "sshkey",
+    "credential",
+    "credentials",
+    "token",
+)
+
+
+def _is_sensitive_key(key: str) -> bool:
+    """Classifies whether a structured key contains embedded credential tokens without broad substring false positives."""
+    if not isinstance(key, str) or not key.strip():
+        return False
+    raw_key = key.strip()
+    if _SENSITIVE_KEY_PATTERN.match(raw_key):
+        return True
+    normalized = _normalize_key_for_redaction(raw_key)
+    if normalized in _NON_SENSITIVE_NORMALIZED_KEYS:
+        return False
+    if normalized in _NORMALIZED_SENSITIVE_KEYS:
+        return True
+    if normalized.endswith(_SENSITIVE_SUFFIXES):
+        return True
+    tokens = _tokenize_key_for_redaction(raw_key)
+    if bool(tokens & _CREDENTIAL_TOKEN_WORDS):
+        return True
+    # Compound key tokens: (api/private/access/secret/auth/ssh/hmac/receipt/signing) + key
+    if "key" in tokens and bool(tokens & {"api", "apikey", "private", "priv", "access", "auth", "secret", "ssh", "hmac", "receipt", "signing", "encryption"}):
+        return True
+    return False
+
+
+def _deep_redact_object(obj: Any) -> Any:
+    """Recursively scrub sensitive keys and strings in dictionaries and lists before persistence."""
+    if isinstance(obj, str):
+        return _redact_text(obj)
+    if isinstance(obj, dict):
+        redacted = {}
+        for k, v in obj.items():
+            if isinstance(k, str) and _is_sensitive_key(k):
+                redacted[k] = "[REDACTED]"
+                continue
+            redacted[k] = _deep_redact_object(v)
+        return redacted
+    if isinstance(obj, list):
+        return [_deep_redact_object(v) for v in obj]
+    return obj
 
 
 router = APIRouter(prefix="/api/v1/control", tags=["control"])
@@ -195,6 +401,18 @@ def _resolve_totp_secret() -> str:
     return base64.b32encode(os.urandom(20)).decode("utf-8")
 
 
+# Secure Receipt HMAC Key Resolution (Fail-closed in production if unconfigured, separate from TOTP)
+def _resolve_receipt_hmac_key() -> str:
+    env_key = os.getenv("CONTROL_RECEIPT_HMAC_KEY")
+    if env_key and env_key.strip():
+        return env_key.strip()
+    env_mode = (os.getenv("OMEGA_ENV") or os.getenv("ENVIRONMENT") or "development").strip().lower()
+    if env_mode in ("production", "prod", "live"):
+        raise RuntimeError("CONTROL_RECEIPT_HMAC_KEY must be explicitly configured in production environment.")
+    return base64.b64encode(os.urandom(32)).decode("utf-8")
+
+
+DEFAULT_RECEIPT_HMAC_KEY = _resolve_receipt_hmac_key()
 DEFAULT_TOTP_SECRET = _resolve_totp_secret()
 
 # Durable Replay Cache path, thread synchronization lock, and cross-process file lock
@@ -420,6 +638,9 @@ class IngestDataRequest(StrictRequest):
         self.symbols = _canonical_symbols(self.symbols, max_limit=1000)
         if not self.sources:
             raise ValueError("sources must not be empty")
+        for sym in self.symbols:
+            if any(ch in sym for ch in [";", "&", "|", "`", "$", "<", ">", "\n", "\r"]):
+                raise ValueError(f"symbol contains invalid CLI or control characters: {sym}")
         _validate_dates(self.start_date, self.end_date, self.as_of_time)
         return self
 
@@ -749,8 +970,19 @@ def _request_fingerprint(request: BaseModel) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
-def _valid_receipt(receipt: Any, task_id: str) -> bool:
-    return bool(
+def _compute_receipt_hmac(receipt_body: Dict[str, Any], key: Optional[str] = None) -> str:
+    hmac_key = key or DEFAULT_RECEIPT_HMAC_KEY
+    canonical_body = json.dumps(
+        {k: v for k, v in receipt_body.items() if k != "receipt_hmac"},
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return hmac.new(hmac_key.encode("utf-8"), canonical_body, hashlib.sha256).hexdigest()
+
+
+def _valid_receipt(receipt: Any, task_id: str, expected_path: Optional[Path] = None) -> bool:
+    if not (
         isinstance(receipt, dict)
         and receipt.get("schema_version") == 1
         and receipt.get("task_id") == task_id
@@ -758,11 +990,32 @@ def _valid_receipt(receipt: Any, task_id: str) -> bool:
         and receipt.get("request_fingerprint")
         and receipt.get("output_sha256")
         and receipt.get("published_at")
-    )
+        and receipt.get("artifact_id")
+        and receipt.get("receipt_hmac")
+    ):
+        return False
+
+    artifact_id = str(receipt.get("artifact_id", ""))
+    if not artifact_id:
+        return False
+
+    if expected_path is not None:
+        # Enforce canonical path binding and reject copied/relocated alias files
+        expected_resolved = expected_path.resolve()
+        artifact_resolved = Path(artifact_id).resolve()
+        if expected_resolved != artifact_resolved:
+            return False
+        # Task ID must strictly match canonical filename stem
+        if expected_path.stem != task_id:
+            return False
+
+    expected_hmac = _compute_receipt_hmac(receipt)
+    return hmac.compare_digest(expected_hmac, str(receipt.get("receipt_hmac")))
 
 
 def _publish_receipt(task_id: str, operation: str, request: BaseModel, as_of: datetime, output: Dict[str, Any]) -> Dict[str, Any]:
     CONTROL_ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
+    destination = CONTROL_ARTIFACT_ROOT / f"{task_id}.json"
     output_json = json.dumps(output, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str)
     receipt = {
         "schema_version": 1,
@@ -773,9 +1026,10 @@ def _publish_receipt(task_id: str, operation: str, request: BaseModel, as_of: da
         "effective_as_of_time": as_of.isoformat(),
         "output_sha256": hashlib.sha256(output_json.encode()).hexdigest(),
         "validation": {"finite_metrics": True, "pit_cutoff_enforced": True},
+        "artifact_id": destination.as_posix(),
         "published_at": datetime.now(timezone.utc).isoformat(),
     }
-    destination = CONTROL_ARTIFACT_ROOT / f"{task_id}.json"
+    receipt["receipt_hmac"] = _compute_receipt_hmac(receipt)
     fd, tmp_name = tempfile.mkstemp(prefix=f".{task_id}-", suffix=".tmp", dir=CONTROL_ARTIFACT_ROOT)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -790,9 +1044,8 @@ def _publish_receipt(task_id: str, operation: str, request: BaseModel, as_of: da
         except FileNotFoundError:
             pass
         raise
-    if not _valid_receipt(persisted, task_id):
+    if not _valid_receipt(persisted, task_id, expected_path=destination):
         raise RuntimeError("published receipt failed validation")
-    persisted["artifact_id"] = destination.as_posix()
     return persisted
 
 
@@ -939,8 +1192,79 @@ def _get_full_vn703_universe() -> List[str]:
     return ["FPT", "HPG", "MBB", "MWG", "TCB", "VNM"]
 
 
+def _get_checkpoint_lock_path(checkpoint_path: Path) -> Path:
+    return checkpoint_path.parent / f"{checkpoint_path.name}.lock"
+
+
+def _cleanse_or_remove_backup_file(path: Path, fallback_clean_data: Optional[Dict[str, Any]] = None) -> bool:
+    """Safely cleanse or remove backup file so no raw secrets persist on replacement failure."""
+    if not path.exists():
+        return True
+    # 1. Attempt unlinking first to guarantee complete elimination of secret-bearing backup
+    try:
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+        return True
+    except Exception as unlink_err:
+        logger.warning(
+            f"Failed to unlink backup {path}: {_redact_text(unlink_err)}. "
+            f"Attempting in-place sanitization overwrite."
+        )
+
+    # 2. Fallback to in-place sanitization overwrite if unlinking was disallowed/failed
+    try:
+        data_to_write = fallback_clean_data if fallback_clean_data is not None else {}
+        clean_content = _deep_redact_object(data_to_write)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(clean_content, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        return True
+    except Exception as write_err:
+        logger.error(f"In-place sanitization of backup {path} failed: {_redact_text(write_err)}")
+        return False
+
+
+def _verify_path_unredacted_secret_free(path: Path) -> None:
+    """Verify that path does not exist, or if it exists, contains zero raw/unredacted secrets. Fail closed."""
+    if not path.exists():
+        return
+    if path.is_dir():
+        for child in path.glob("**/*"):
+            if child.is_file():
+                _verify_path_unredacted_secret_free(child)
+        return
+
+    try:
+        raw_text = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as read_exc:
+        raise RuntimeError(
+            f"Fail-closed: could not read {path} for secret verification: {_redact_text(read_exc)}"
+        ) from read_exc
+
+    if not raw_text.strip():
+        return
+
+    # Check 1: Text-level secret patterns (Bearer, standalone auth, secrets, etc.)
+    redacted_text = _redact_text(raw_text)
+    if redacted_text != raw_text:
+        raise RuntimeError(f"Fail-closed: file {path} contains unredacted raw credentials or tokens on disk")
+
+    # Check 2: Structured object keys and values if valid JSON
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, (dict, list)):
+            redacted_obj = _deep_redact_object(parsed)
+            if redacted_obj != parsed:
+                raise RuntimeError(f"Fail-closed: file {path} contains unredacted sensitive keys or data on disk")
+    except json.JSONDecodeError:
+        pass
+
+
 def _load_ingest_checkpoint(checkpoint_path: Optional[Path] = None) -> Dict[str, Any]:
-    """Load existing checkpoint state under file lock or return fresh template."""
+    """Load existing checkpoint state under derived file lock, with quarantine and backup recovery."""
     if checkpoint_path is None:
         checkpoint_path = DEFAULT_INGEST_CHECKPOINT_PATH
     if not checkpoint_path.exists():
@@ -954,38 +1278,239 @@ def _load_ingest_checkpoint(checkpoint_path: Optional[Path] = None) -> Dict[str,
             "created_at": datetime.now(timezone.utc).isoformat(),
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
-    try:
-        with open(checkpoint_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+
+    lock_path = _get_checkpoint_lock_path(checkpoint_path)
+    lock = FileLock(str(lock_path), timeout=10.0)
+    with lock:
+        try:
+            with open(checkpoint_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
             if not isinstance(data, dict):
                 raise ValueError("checkpoint must be a dictionary")
-            return data
-    except Exception as exc:
-        logger.warning(f"Failed reading checkpoint {checkpoint_path}: {exc}. Starting fresh template.")
-        return {
-            "schema_version": 2,
-            "state": "recovered",
-            "run_id": f"ingest_rec_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}",
-            "completed_symbols": [],
-            "failed_symbols": {},
-            "counters": {"completed_symbols": 0, "failed_symbols": 0, "pending_symbols": 0},
-            "created_at": datetime.now(timezone.utc).isoformat(),
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-        }
+            clean_data = _deep_redact_object(data)
+            # Atomically rewrite primary checkpoint with sanitized content if any modifications were made
+            # or always rewrite to ensure authoritative checkpoint is permanently cleansed on disk
+            if clean_data != data:
+                temp_primary = checkpoint_path.with_suffix(f".tmp.clean.{os.getpid()}.{time.time_ns()}")
+                try:
+                    with open(temp_primary, "w", encoding="utf-8") as pf:
+                        json.dump(clean_data, pf, indent=2)
+                        pf.flush()
+                        os.fsync(pf.fileno())
+                    temp_primary.replace(checkpoint_path)
+                finally:
+                    if temp_primary.exists():
+                        try:
+                            temp_primary.unlink()
+                        except Exception:
+                            pass
+
+            # Maintain last-known-good backup on valid read (deep-redacted to guarantee zero secret leakage)
+            bak_path = checkpoint_path.with_suffix(".bak")
+            temp_bak = None
+            try:
+                temp_bak = bak_path.with_suffix(f".tmp.bak.{os.getpid()}.{time.time_ns()}")
+                with open(temp_bak, "w", encoding="utf-8") as bf:
+                    json.dump(clean_data, bf, indent=2)
+                    bf.flush()
+                    os.fsync(bf.fileno())
+                temp_bak.replace(bak_path)
+            except Exception as b_err:
+                logger.warning(f"Failed to refresh sanitized backup {bak_path}: {_redact_text(b_err)}. Cleansing/removing backup.")
+                _cleanse_or_remove_backup_file(bak_path, clean_data)
+            finally:
+                if temp_bak is not None and temp_bak.exists():
+                    try:
+                        temp_bak.unlink()
+                    except Exception:
+                        pass
+            _verify_path_unredacted_secret_free(bak_path)
+            return clean_data
+        except Exception as exc:
+            logger.warning(f"Failed reading checkpoint {checkpoint_path}: {_redact_text(exc)}. Quarantining corrupt checkpoint.")
+            # 1. Quarantine the corrupted checkpoint safely without copying raw sensitive bytes
+            quarantine_dir = checkpoint_path.parent / "quarantine"
+            quarantine_dir.mkdir(parents=True, exist_ok=True)
+            ts = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+            quarantine_path = quarantine_dir / f"{checkpoint_path.stem}_corrupt_{ts}.json"
+            temp_quarantine = None
+            try:
+                raw_bytes = checkpoint_path.read_bytes() if checkpoint_path.is_file() else b""
+                raw_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+                quarantine_payload: Dict[str, Any] = {
+                    "schema_version": 2,
+                    "quarantine_reason": _redact_text(str(exc)),
+                    "quarantined_at": datetime.now(timezone.utc).isoformat(),
+                    "source_file": checkpoint_path.name,
+                    "file_size_bytes": len(raw_bytes),
+                    "raw_sha256": raw_sha256,
+                }
+                # Try parsing as JSON to salvage and deep-redact structured data if parseable
+                try:
+                    parsed = json.loads(raw_bytes.decode("utf-8", errors="replace"))
+                    quarantine_payload["parsed_content"] = _deep_redact_object(parsed)
+                except Exception:
+                    # Unparseable: omit raw snippets completely to guarantee zero credential leakage
+                    quarantine_payload["sanitized_snippet"] = None
+
+                temp_quarantine = quarantine_path.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
+                with open(temp_quarantine, "w", encoding="utf-8") as qf:
+                    json.dump(quarantine_payload, qf, indent=2)
+                    qf.flush()
+                    os.fsync(qf.fileno())
+                temp_quarantine.replace(quarantine_path)
+            except Exception as q_exc:
+                logger.error(f"Failed to quarantine corrupt checkpoint: {_redact_text(q_exc)}")
+            finally:
+                if temp_quarantine is not None and temp_quarantine.exists():
+                    try:
+                        temp_quarantine.unlink()
+                    except Exception:
+                        pass
+
+            # 2. Attempt last-known-good backup recovery
+            bak_path = checkpoint_path.with_suffix(".bak")
+            if bak_path.exists():
+                temp_bak: Optional[Path] = None
+                temp_primary: Optional[Path] = None
+                clean_recovered: Optional[Dict[str, Any]] = None
+                try:
+                    with open(bak_path, "r", encoding="utf-8") as bf:
+                        recovered_raw = json.load(bf)
+                    if isinstance(recovered_raw, dict):
+                        clean_recovered = _deep_redact_object(recovered_raw)
+                        clean_recovered["state"] = "recovered_from_backup"
+                        clean_recovered["quarantine_path"] = str(quarantine_path)
+                        clean_recovered["updated_at"] = datetime.now(timezone.utc).isoformat()
+
+                        # 2a. Atomically rewrite backup file with sanitized recovered data
+                        temp_bak = bak_path.with_suffix(f".tmp.rec.{os.getpid()}.{time.time_ns()}")
+                        try:
+                            with open(temp_bak, "w", encoding="utf-8") as tbf:
+                                json.dump(clean_recovered, tbf, indent=2)
+                                tbf.flush()
+                                os.fsync(tbf.fileno())
+                            temp_bak.replace(bak_path)
+                        except Exception as b_replace_exc:
+                            logger.warning(
+                                f"Failed atomic replacement of backup {bak_path}: {_redact_text(b_replace_exc)}. "
+                                f"Cleansing or removing legacy backup."
+                            )
+                            _cleanse_or_remove_backup_file(bak_path, clean_recovered)
+                        finally:
+                            if temp_bak is not None and temp_bak.exists():
+                                try:
+                                    temp_bak.unlink()
+                                except Exception:
+                                    pass
+
+                        # Fail closed if backup cleansing/removal cannot be verified
+                        _verify_path_unredacted_secret_free(bak_path)
+
+                        # 2b. Atomically rewrite primary checkpoint with sanitized recovered data
+                        temp_primary = checkpoint_path.with_suffix(f".tmp.rec.{os.getpid()}.{time.time_ns()}")
+                        try:
+                            with open(temp_primary, "w", encoding="utf-8") as pf:
+                                json.dump(clean_recovered, pf, indent=2)
+                                pf.flush()
+                                os.fsync(pf.fileno())
+                            temp_primary.replace(checkpoint_path)
+                        finally:
+                            if temp_primary is not None and temp_primary.exists():
+                                try:
+                                    temp_primary.unlink()
+                                except Exception:
+                                    pass
+
+                        # Fail closed if primary cleansing cannot be verified
+                        _verify_path_unredacted_secret_free(checkpoint_path)
+
+                        logger.info(f"Successfully recovered checkpoint from backup {bak_path} and cleansed/rewrote primary/backup")
+                        return clean_recovered
+                    else:
+                        _cleanse_or_remove_backup_file(bak_path, None)
+                        _verify_path_unredacted_secret_free(bak_path)
+                except Exception as b_exc:
+                    if isinstance(b_exc, RuntimeError) and "Fail-closed" in str(b_exc):
+                        raise
+                    logger.warning(f"Backup recovery failed: {_redact_text(b_exc)}")
+                    if bak_path.exists():
+                        try:
+                            _cleanse_or_remove_backup_file(bak_path, clean_recovered if clean_recovered is not None else None)
+                        except Exception as c_err:
+                            logger.error(f"Failed to cleanse backup on recovery error: {_redact_text(c_err)}")
+                    _verify_path_unredacted_secret_free(bak_path)
+                finally:
+                    if temp_bak is not None and temp_bak.exists():
+                        try:
+                            temp_bak.unlink()
+                        except Exception:
+                            pass
+                    if temp_primary is not None and temp_primary.exists():
+                        try:
+                            temp_primary.unlink()
+                        except Exception:
+                            pass
+
+            # 3. Fallback fresh template with quarantine provenance
+            return {
+                "schema_version": 2,
+                "state": "quarantined_recovered",
+                "run_id": f"ingest_rec_{ts}",
+                "quarantine_path": str(quarantine_path),
+                "completed_symbols": [],
+                "failed_symbols": {},
+                "counters": {"completed_symbols": 0, "failed_symbols": 0, "pending_symbols": 0},
+                "created_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
 
 
 def _save_ingest_checkpoint(checkpoint_data: Dict[str, Any], checkpoint_path: Optional[Path] = None) -> None:
-    """Atomic write of checkpoint state under file lock."""
+    """Atomic write of checkpoint state under derived file lock."""
     if checkpoint_path is None:
         checkpoint_path = DEFAULT_INGEST_CHECKPOINT_PATH
     checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = checkpoint_path.with_suffix(".tmp")
-    lock = FileLock(str(DEFAULT_INGEST_CHECKPOINT_LOCK_PATH), timeout=10.0)
+    temp_path = checkpoint_path.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}")
+    lock_path = _get_checkpoint_lock_path(checkpoint_path)
+    lock = FileLock(str(lock_path), timeout=10.0)
     with lock:
-        checkpoint_data["updated_at"] = datetime.now(timezone.utc).isoformat()
-        with open(temp_path, "w", encoding="utf-8") as f:
-            json.dump(checkpoint_data, f, indent=2)
-        temp_path.replace(checkpoint_path)
+        clean_data = _deep_redact_object(checkpoint_data)
+        clean_data["updated_at"] = datetime.now(timezone.utc).isoformat()
+        try:
+            with open(temp_path, "w", encoding="utf-8") as f:
+                json.dump(clean_data, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            temp_path.replace(checkpoint_path)
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink()
+                except Exception:
+                    pass
+        _verify_path_unredacted_secret_free(checkpoint_path)
+
+        # Also maintain .bak as last-known-good (deep-redacted, atomic replacement with fail-closed cleansing)
+        bak_path = checkpoint_path.with_suffix(".bak")
+        temp_bak = None
+        try:
+            temp_bak = bak_path.with_suffix(f".tmp.bak.{os.getpid()}.{time.time_ns()}")
+            with open(temp_bak, "w", encoding="utf-8") as bf:
+                json.dump(clean_data, bf, indent=2)
+                bf.flush()
+                os.fsync(bf.fileno())
+            temp_bak.replace(bak_path)
+        except Exception as copy_err:
+            logger.warning(f"Failed to update backup {bak_path}: {_redact_text(copy_err)}. Cleansing or removing backup.")
+            _cleanse_or_remove_backup_file(bak_path, clean_data)
+        finally:
+            if temp_bak is not None and temp_bak.exists():
+                try:
+                    temp_bak.unlink()
+                except Exception:
+                    pass
+        _verify_path_unredacted_secret_free(bak_path)
 
 async def _run_ingest(task_id: str, req: IngestDataRequest):
     try:
@@ -1002,7 +1527,15 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
 
         # 2. Checkpoint & Resume Handling
         checkpoint = _load_ingest_checkpoint()
-        completed_set = set(checkpoint.get("completed_symbols", [])) if not req.force_refresh else set()
+        if req.force_refresh:
+            completed_set = set()
+            checkpoint["failed_symbols"] = {}
+        else:
+            completed_set = set(checkpoint.get("completed_symbols", []))
+            # Request-scoped failure reset: remove any target symbols from prior failed_symbols
+            # so stale failures do not poison this new request
+            existing_fails = checkpoint.get("failed_symbols", {})
+            checkpoint["failed_symbols"] = {k: v for k, v in existing_fails.items() if k not in target_symbols}
         resumed_count = len(completed_set.intersection(target_symbols))
 
         batch_size = 50
@@ -1064,11 +1597,19 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
                     _push_task_event(task_id, "CANCELLED", TASKS[task_id].get("progress"), "CANCELLED", "Task cancelled by operator; checkpoint preserved.")
                     return
                 if exc is not None:
-                    logger.warning(f"Error loading prices for {sym}: {exc}")
-                    checkpoint.setdefault("failed_symbols", {})[sym] = str(exc)
+                    logger.warning(f"Error loading prices for {sym}: {_redact_text(exc)}")
+                    checkpoint.setdefault("failed_symbols", {})[sym] = {
+                        "error_type": type(exc).__name__,
+                        "reason": _redact_text(exc),
+                    }
                 elif frame is not None and not frame.empty:
                     frames.append(frame)
                     completed_set.add(sym)
+                else:
+                    checkpoint.setdefault("failed_symbols", {})[sym] = {
+                        "error_type": "EmptyDataError",
+                        "reason": f"Provider {active_provider.upper()} returned empty dataframe for symbol {sym}",
+                    }
 
             # Update Checkpoint after each batch
             checkpoint["completed_symbols"] = sorted(list(completed_set))
@@ -1099,6 +1640,31 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
         if not frames:
             raise RuntimeError(f"provider returned no rows for {len(target_symbols)} symbols")
 
+        # Fail closed on partial ingestion: all target symbols must be completed for this request
+        # Request-scoped failure check: only count failures belonging to target_symbols
+        target_failed = {k: v for k, v in checkpoint.get("failed_symbols", {}).items() if k in target_symbols}
+        failed_count = len(target_failed)
+        missing_count = len(target_symbols) - len(completed_set.intersection(target_symbols))
+        if missing_count > 0 or failed_count > 0:
+            err_msg = (
+                f"Partial ingestion rejected under fail-closed contract: "
+                f"{len(completed_set.intersection(target_symbols))}/{len(target_symbols)} completed, "
+                f"{failed_count} failed, {missing_count} missing"
+            )
+            checkpoint["state"] = "failed_partial"
+            await asyncio.to_thread(_save_ingest_checkpoint, checkpoint)
+            raise RuntimeError(err_msg)
+
+        # Successful completion: persist terminal 'completed' checkpoint state
+        checkpoint["state"] = "completed"
+        checkpoint["completed_symbols"] = sorted(list(completed_set))
+        checkpoint["counters"] = {
+            "completed_symbols": len(completed_set),
+            "failed_symbols": len(checkpoint.get("failed_symbols", {})),
+            "pending_symbols": max(0, total_symbols - len(completed_set.intersection(target_symbols))),
+        }
+        await asyncio.to_thread(_save_ingest_checkpoint, checkpoint)
+
         rows = sum(len(frame) for frame in frames)
         primary_provider = req.sources[0] if req.sources else "vci"
         output = {
@@ -1109,7 +1675,7 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
             "records_validated": rows,
             "freshness": max(str(frame["date"].max()) for frame in frames),
             "resumed_from_checkpoint_count": resumed_count,
-            "checkpoint_state": "completed" if len(completed_set) >= len(target_symbols) else "partial",
+            "checkpoint_state": "completed",
             "schema_version": "v2026.2",
         }
         receipt = await asyncio.to_thread(_publish_receipt, task_id, "DATA_INGESTION", req, as_of, output)
@@ -1141,9 +1707,17 @@ async def _run_optimize(task_id: str, req: OptimizePortfolioRequest):
         if not weights or any(not math.isfinite(value) or value < -1e-5 or value > req.max_single_weight + 1e-4 for value in weights.values()):
             raise RuntimeError("optimized weights violate constraints")
         w_sum = sum(weights.values())
-        if abs(w_sum - 1.0) > 0.05 and abs(w_sum) > 1e-4:
+        if w_sum <= 1e-4 or abs(w_sum - 1.0) > 0.50:
+            raise RuntimeError(f"optimized portfolio rejected: zero-sum or invalid allocation (sum={w_sum:.6f})")
+        if abs(w_sum - 1.0) > 1e-4:
             weights = {k: round(v / w_sum, 4) for k, v in weights.items()}
-            w_sum = 1.0
+            w_sum = sum(weights.values())
+            if abs(w_sum - 1.0) > 0.01:
+                raise RuntimeError(f"portfolio normalization failed: sum={w_sum:.4f}")
+        # Revalidate every normalized weight strictly against max_single_weight constraint
+        if any(v > req.max_single_weight + 1e-4 for v in weights.values()):
+            violating = {k: v for k, v in weights.items() if v > req.max_single_weight + 1e-4}
+            raise RuntimeError(f"portfolio normalization violated max_single_weight ({req.max_single_weight}): {violating}")
         output = {
             "objective": req.objective,
             "weights": weights,
@@ -1655,17 +2229,28 @@ async def get_strategy_backtest_report(strategy_id: str) -> Dict[str, Any]:
 
 @router.get("/receipts")
 def list_control_receipts(limit: int = Query(50, ge=1, le=500)) -> Dict[str, Any]:
-    """Lists published cryptographic execution receipts from CONTROL_ARTIFACT_ROOT."""
+    """Lists published cryptographic execution receipts from CONTROL_ARTIFACT_ROOT, validating HMAC integrity and canonical path identity."""
     receipts = []
+    seen_identities: Set[str] = set()
     if CONTROL_ARTIFACT_ROOT.exists():
         for p in sorted(CONTROL_ARTIFACT_ROOT.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True):
             try:
                 data = json.loads(p.read_text(encoding="utf-8"))
                 if isinstance(data, dict) and data.get("schema_version") == 1:
-                    data["artifact_id"] = p.as_posix()
-                    receipts.append(data)
-                    if len(receipts) >= limit:
-                        break
+                    task_id = str(data.get("task_id", ""))
+                    # Reject replayed alias artifacts: must bind task_id to filename stem,
+                    # bind artifact_id to current path, and deduplicate signed identity.
+                    if task_id and _valid_receipt(data, task_id, expected_path=p):
+                        receipt_id = f"{task_id}:{data.get('receipt_hmac')}"
+                        if receipt_id in seen_identities:
+                            logger.warning(f"Duplicate signed receipt identity rejected: {p.as_posix()}")
+                            continue
+                        seen_identities.add(receipt_id)
+                        receipts.append(data)
+                        if len(receipts) >= limit:
+                            break
+                    else:
+                        logger.warning(f"Invalid or tampered receipt rejected: {p.as_posix()}")
             except Exception as exc:
                 logger.warning(f"Failed to read receipt file {p}: {_redact_text(exc)}")
     return {
@@ -1961,6 +2546,30 @@ async def sse_pipeline_stream(job_id: str, limit: int = 0) -> EventSourceRespons
     q: asyncio.Queue = asyncio.Queue(maxsize=50)
     if job_id not in TASK_EVENT_QUEUES:
         TASK_EVENT_QUEUES[job_id] = []
+    # Cap subscriber queues per task to prevent memory leak/resource exhaustion
+    MAX_SUBSCRIBERS_PER_TASK = 20
+    if len(TASK_EVENT_QUEUES[job_id]) >= MAX_SUBSCRIBERS_PER_TASK:
+        oldest = TASK_EVENT_QUEUES[job_id].pop(0)
+        # Put cancellation sentinel to terminate evicted generator immediately
+        # Ensure full queue delivers eviction termination signal by draining an item first if needed
+        sentinel_event = {
+            "event_type": "CANCELLED",
+            "stage": "EVICTED",
+            "message": "Subscriber evicted: subscriber limit reached",
+        }
+        try:
+            oldest.put_nowait(sentinel_event)
+        except asyncio.QueueFull:
+            try:
+                oldest.get_nowait()
+            except Exception:
+                pass
+            try:
+                oldest.put_nowait(sentinel_event)
+            except Exception:
+                pass
+        except Exception:
+            pass
     TASK_EVENT_QUEUES[job_id].append(q)
 
     async def event_generator() -> AsyncGenerator[Dict[str, Any], None]:
@@ -1981,15 +2590,44 @@ async def sse_pipeline_stream(job_id: str, limit: int = 0) -> EventSourceRespons
             count += 1
 
             while True:
+                # Fast check for out-of-band eviction before consuming or yielding further data
+                if job_id not in TASK_EVENT_QUEUES or q not in TASK_EVENT_QUEUES[job_id]:
+                    # Queue was evicted: yield terminal cancellation event and exit
+                    evict_msg = {
+                        "task_id": job_id,
+                        "job_id": job_id,
+                        "event_type": "CANCELLED",
+                        "stage": "EVICTED",
+                        "message": "Subscriber evicted: subscriber limit reached",
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    }
+                    yield {"data": json.dumps(evict_msg)}
+                    break
+
                 if limit > 0 and count >= limit:
                     break
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=2.0)
+                    # Re-check eviction immediately after wakeup before yielding
+                    if job_id not in TASK_EVENT_QUEUES or q not in TASK_EVENT_QUEUES[job_id]:
+                        evict_msg = {
+                            "task_id": job_id,
+                            "job_id": job_id,
+                            "event_type": "CANCELLED",
+                            "stage": "EVICTED",
+                            "message": "Subscriber evicted: subscriber limit reached",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                        }
+                        yield {"data": json.dumps(evict_msg)}
+                        break
                     yield {"data": json.dumps(event)}
                     count += 1
-                    if event.get("progress", 0) >= 100.0 or event.get("event_type") in ("COMPLETE", "ERROR", "CANCELLED"):
+                    if event.get("stage") == "EVICTED" or event.get("progress", 0) >= 100.0 or event.get("event_type") in ("COMPLETE", "ERROR", "CANCELLED"):
                         break
                 except asyncio.TimeoutError:
+                    # Check if this queue was evicted from active subscriber queues
+                    if job_id not in TASK_EVENT_QUEUES or q not in TASK_EVENT_QUEUES[job_id]:
+                        break
                     ping = {
                         "task_id": job_id,
                         "job_id": job_id,

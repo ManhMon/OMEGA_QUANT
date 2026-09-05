@@ -37,6 +37,13 @@ export function useControlOps() {
   }, []);
 
   const connectTaskSse = useCallback((taskId: string, initialType: ActiveTask['taskType']) => {
+    // Close and clean up prior EventSource if one already exists for this taskId
+    const priorStream = streams.current.get(taskId);
+    if (priorStream) {
+      priorStream.source.close();
+      streams.current.delete(taskId);
+    }
+
     const streamGeneration = ++generation.current;
     const eventSource = new EventSource(`${API_BASE}/sse/v1/tasks/${encodeURIComponent(taskId)}/progress`);
     streams.current.set(taskId, { source: eventSource, generation: streamGeneration });

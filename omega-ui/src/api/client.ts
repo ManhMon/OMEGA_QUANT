@@ -107,11 +107,118 @@ export interface StockScreenerItem {
   roe: number;
   piotroskiF: number;
   altmanZ: number;
+  altmanZone?: string | null;
   sector: string;
-  marketCapBillionVnd: number;
-  adv20BillionVnd: number;
+  marketCapBillionVnd?: number | null;
+  adv20BillionVnd?: number | null;
   momentumScore: number;
-  status: 'QUALIFIED' | 'WATCH' | 'DISQUALIFIED';
+  momentum1m?: number | null;
+  momentum3m?: number | null;
+  status: 'QUALIFIED' | 'WATCH' | 'DISTRESS' | 'DISQUALIFIED';
+}
+
+export function parseNullableNumber(val: unknown): number | null {
+  if (val === null || val === undefined) return null;
+  if (typeof val === 'number') {
+    return Number.isFinite(val) ? val : null;
+  }
+  if (typeof val === 'string') {
+    const trimmed = val.trim();
+    if (trimmed === '' || trimmed === 'NaN' || trimmed === 'Infinity' || trimmed === '-Infinity') {
+      return null;
+    }
+    const num = Number(trimmed);
+    return Number.isFinite(num) ? num : null;
+  }
+  return null;
+}
+
+export function normalizeStockScreenerItem(raw: unknown): StockScreenerItem {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      ticker: 'UNKNOWN',
+      exchange: 'HOSE',
+      pe: 0,
+      pb: 0,
+      roe: 0,
+      piotroskiF: 0,
+      altmanZ: 0,
+      altmanZone: null,
+      sector: 'General',
+      marketCapBillionVnd: null,
+      adv20BillionVnd: null,
+      momentumScore: 0,
+      momentum1m: null,
+      momentum3m: null,
+      status: 'WATCH',
+    };
+  }
+
+  const r = raw as Record<string, unknown>;
+
+  const rawTicker = r.ticker ?? r.symbol ?? r.ticker_symbol ?? r.stock_code;
+  const ticker = typeof rawTicker === 'string' && rawTicker.trim()
+    ? rawTicker.trim().toUpperCase()
+    : 'UNKNOWN';
+
+  const rawExchange = typeof r.exchange === 'string' ? r.exchange.trim().toUpperCase() : '';
+  const exchange: 'HOSE' | 'HNX' | 'UPCOM' =
+    rawExchange === 'HNX' || rawExchange === 'UPCOM' ? rawExchange : 'HOSE';
+
+  const rawSector = r.sector ?? r.industry ?? r.sector_name;
+  const sector = typeof rawSector === 'string' && rawSector.trim()
+    ? rawSector.trim()
+    : 'General';
+
+  const pe = parseNullableNumber(r.pe ?? r.p_e ?? r.price_to_earnings) ?? 0;
+  const pb = parseNullableNumber(r.pb ?? r.p_b ?? r.price_to_book) ?? 0;
+  const roe = parseNullableNumber(r.roe ?? r.return_on_equity ?? r.roe_pct) ?? 0;
+
+  const rawPiotroski = parseNullableNumber(r.piotroskiF ?? r.piotroski_f ?? r.f_score ?? r.piotroski);
+  const piotroskiF = rawPiotroski != null ? Math.max(0, Math.min(9, Math.round(rawPiotroski))) : 0;
+
+  const altmanZ = parseNullableNumber(r.altmanZ ?? r.altman_z ?? r.z_score) ?? 0;
+  const marketCapBillionVnd = parseNullableNumber(r.marketCapBillionVnd ?? r.market_cap_billion_vnd ?? r.market_cap);
+  const adv20BillionVnd = parseNullableNumber(r.adv20BillionVnd ?? r.adv20_billion_vnd ?? r.adv20 ?? r.adv);
+
+  const momentumScore = parseNullableNumber(
+    r.momentumScore ?? r.momentum_score ?? r.momentum ?? r.quant_score ?? r.hybrid_score
+  ) ?? 0;
+  const momentum1m = parseNullableNumber(r.momentum1m ?? r.momentum_1m);
+  const momentum3m = parseNullableNumber(r.momentum3m ?? r.momentum_3m);
+  const altmanZone = typeof r.altman_zone === 'string' ? r.altman_zone.trim().toLowerCase() : typeof r.altmanZone === 'string' ? r.altmanZone.trim().toLowerCase() : null;
+
+  let status: 'QUALIFIED' | 'WATCH' | 'DISTRESS' | 'DISQUALIFIED' = 'WATCH';
+  const rawStatus = typeof r.status === 'string' ? r.status.trim().toUpperCase() : typeof r.decision === 'string' ? r.decision.trim().toUpperCase() : '';
+  if (rawStatus === 'QUALIFIED' || rawStatus === 'WATCH' || rawStatus === 'DISTRESS' || rawStatus === 'DISQUALIFIED') {
+    status = rawStatus as 'QUALIFIED' | 'WATCH' | 'DISTRESS' | 'DISQUALIFIED';
+  } else if (r.is_veto === true) {
+    status = 'DISQUALIFIED';
+  } else if (altmanZone === 'distress' || (piotroskiF !== null && piotroskiF <= 3)) {
+    status = 'DISTRESS';
+  } else if (r.is_fallback === true) {
+    status = 'WATCH';
+  } else if ((piotroskiF ?? 0) >= 7 && (roe ?? 0) >= 15) {
+    status = 'QUALIFIED';
+  }
+
+  return {
+    ticker,
+    exchange,
+    pe,
+    pb,
+    roe,
+    piotroskiF,
+    altmanZ,
+    altmanZone,
+    sector,
+    marketCapBillionVnd,
+    adv20BillionVnd,
+    momentumScore: momentumScore ?? momentum1m,
+    momentum1m,
+    momentum3m,
+    status,
+  };
 }
 
 export interface PaginatedResponse<T> {
@@ -361,6 +468,127 @@ export interface ControlTaskResponse {
   message: string;
   stream_url: string;
 }
+
+export interface LakehouseDatasetMeta {
+  id: string;
+  file_name: string;
+  role: string;
+  exists: boolean;
+  size_mb: number;
+  total_rows: number;
+  symbols_count: number;
+  start_date: string | null;
+  end_date: string | null;
+  freshness_status: 'HEALTHY' | 'WARNING' | 'STALE' | 'FAILED';
+  days_lag: number;
+  last_modified: string | null;
+}
+
+export interface FreshnessDriftAlert {
+  dataset_id: string;
+  file_name: string;
+  days_lag: number;
+  freshness_status: string;
+  message: string;
+}
+
+export interface LakehouseStatusResponse {
+  status: string;
+  schema_version: string;
+  api_contract_version: number;
+  primary_provider: string;
+  backup_providers: string[];
+  timestamp: string;
+  lineage_commit_sha?: string;
+  pit_safe_boundary?: string;
+  freshness_drift_alerts?: FreshnessDriftAlert[];
+  datasets: LakehouseDatasetMeta[];
+}
+
+export interface DynamicUniverseItem {
+  rank: number;
+  symbol: string;
+  hybrid_score: number;
+  quant_score: number;
+  llm_score: number;
+  roe: number | null;
+  momentum_3m: number | null;
+  sector: string;
+  decision_cutoff: string;
+  status_label: 'QUALIFIED' | 'WATCH' | 'DISTRESS';
+}
+
+export interface DynamicUniverseResponse {
+  status: string;
+  schema_version: string;
+  api_contract_version: number;
+  universe_preset: string;
+  total_selected: number;
+  top_symbols: string[];
+  items: DynamicUniverseItem[];
+  model_governance: string;
+  provenance_sha256: string;
+  quant_weight?: number;
+  llm_weight?: number;
+  ranking_method?: string;
+  score_formula_meta?: Record<string, any>;
+}
+
+export interface OptimizationMetricPreview {
+  objective: string;
+  name: string;
+  expected_annual_return_pct: number;
+  estimated_volatility_pct: number;
+  cvar_95_pct: number;
+  sortino_ratio: number;
+  max_drawdown_pct: number;
+  diversification_ratio: number;
+  recommended_max_single_weight: number;
+  recommended_sector_cap: number;
+  recommended_cvar_confidence: number;
+  convergence_status: string;
+  rationale: string;
+}
+
+export interface OptimizationBoundsPreviewResponse {
+  status: string;
+  schema_version: string;
+  generated_at: string;
+  objectives: OptimizationMetricPreview[];
+}
+
+export interface StrategyBenchmarkItem {
+  strategy_id: string;
+  name: string;
+  is_optimal: boolean;
+  sharpe_ratio: number;
+  calmar_ratio: number;
+  win_rate_pct: number;
+  max_drawdown_pct: number;
+  annual_return_pct: number;
+  annual_volatility_pct: number;
+  cpcv_k_folds: number;
+  description: string;
+}
+
+export interface StrategyBenchmarksResponse {
+  status: string;
+  schema_version: string;
+  benchmark_protocol: string;
+  data_release_commit: string;
+  artifact_sha256: string;
+  generated_at: string;
+  total_strategies: number;
+  strategies: StrategyBenchmarkItem[];
+}
+
+export interface ControlDynamicUniverseParams {
+  universe_preset?: string;
+  top_n?: number;
+  sector_filter?: string;
+}
+
+
 
 export interface KillSwitchResponse {
   status: string;
@@ -924,9 +1152,19 @@ export const apiClient = {
     const params = new URLSearchParams();
     if (filters.search) params.append('symbol', filters.search);
     if (filters.page) params.append('page', String(filters.page));
-    if (filters.pageSize) params.append('limit', String(filters.pageSize));
+    if (filters.pageSize !== undefined && filters.pageSize !== null) params.append('limit', String(filters.pageSize));
+    if (filters.minPiotroski) params.append('min_piotroski', String(filters.minPiotroski));
+    if (filters.minRoe) params.append('min_roe', String(filters.minRoe));
+    if (filters.minAltmanZ) params.append('min_altman_z', String(filters.minAltmanZ));
+    if (filters.status) params.append('status', String(filters.status));
+    if (filters.sector) params.append('sector', String(filters.sector));
+    if (filters.exchange) params.append('exchange', String(filters.exchange));
     const qs = params.toString() ? `?${params.toString()}` : '';
-    return apiRequest<PaginatedResponse<StockScreenerItem>>(`/api/v1/quant/screener${qs}`);
+    const rawResp = await apiRequest<PaginatedResponse<unknown>>(`/api/v1/quant/screener${qs}`);
+    return {
+      ...rawResp,
+      data: Array.isArray(rawResp?.data) ? rawResp.data.map(normalizeStockScreenerItem) : [],
+    };
   },
 
   getPortfolioState: async (): Promise<PortfolioState> => {
@@ -1013,6 +1251,33 @@ export const apiClient = {
     }
     return await resp.json();
   },
+
+  getLakehouseStatus: async (): Promise<LakehouseStatusResponse> => {
+    return apiRequest<LakehouseStatusResponse>('/api/v1/control/lakehouse-status');
+  },
+
+  getControlReceipts: async (limit = 50): Promise<{ status: string; total_receipts: number; receipts: TaskReceipt[]; artifact_root: string }> => {
+    return apiRequest<{ status: string; total_receipts: number; receipts: TaskReceipt[]; artifact_root: string }>(`/api/v1/control/receipts?limit=${limit}`);
+  },
+
+  getOptimizationBoundsPreview: async (): Promise<OptimizationBoundsPreviewResponse> => {
+    return apiRequest<OptimizationBoundsPreviewResponse>('/api/v1/control/optimization-bounds-preview');
+  },
+
+  getStrategyBenchmarks: async (): Promise<StrategyBenchmarksResponse> => {
+    return apiRequest<StrategyBenchmarksResponse>('/api/v1/control/strategy-benchmarks');
+  },
+
+  getControlDynamicUniverse: async (params?: ControlDynamicUniverseParams): Promise<DynamicUniverseResponse> => {
+    const query = new URLSearchParams();
+    if (params?.universe_preset) query.set('universe_preset', params.universe_preset);
+    if (params?.top_n) query.set('top_n', String(params.top_n));
+    if (params?.sector_filter) query.set('sector_filter', params.sector_filter);
+    const qs = query.toString();
+    return apiRequest<DynamicUniverseResponse>(`/api/v1/control/dynamic-universe${qs ? `?${qs}` : ''}`);
+  },
+
+
 
   getBacktestReport: async (strategyId = 'ALPHA_HRP_V2'): Promise<BacktestResultData> => {
     const resp = await fetch(`${API_BASE}/api/v1/strategy/backtest/${encodeURIComponent(strategyId)}`);

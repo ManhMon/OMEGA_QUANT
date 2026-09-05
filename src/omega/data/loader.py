@@ -285,7 +285,7 @@ class DataLoader:
             df['date'] = pd.to_datetime(df['date'], unit='s')
             
             # Ensure correct column order
-            df = df[['ticker', 'date', 'open', 'high', 'low', 'close', 'volume', 'source_used']]
+            df = df[['ticker', 'date', 'open', 'high', 'low', 'close', 'volume']]
             
             return df
             
@@ -344,16 +344,11 @@ class DataLoader:
         holidays_cache = _get_json_holidays()
 
         def next_open(timestamp: pd.Timestamp) -> pd.Timestamp:
-            session = timestamp.date() + timedelta(days=1)
-            year_str = str(session.year)
-            if year_str not in holidays_cache and session.year > 2027:
-                raise ValueError(f"no holiday coverage for {session.year}")
-            while not VNTradingCalendar.is_trading_day(datetime.combine(session, datetime.min.time())):
-                session += timedelta(days=1)
-                year_str = str(session.year)
-                if year_str not in holidays_cache and session.year > 2027:
-                    raise ValueError(f"no holiday coverage for {session.year}")
-            ts = pd.Timestamp(session).replace(hour=9)
+            next_day = VNTradingCalendar.next_trading_day(timestamp.date())
+            year_str = str(next_day.year)
+            if year_str not in holidays_cache and next_day.year > 2027:
+                raise ValueError(f"no holiday coverage for {next_day.year}")
+            ts = pd.Timestamp(next_day).replace(hour=9)
             return ts.tz_localize("Asia/Ho_Chi_Minh") if ts.tzinfo is None else ts.tz_convert("Asia/Ho_Chi_Minh")
 
         df['available_at'] = df['as_of'].map(next_open)
@@ -523,22 +518,43 @@ class DataLoader:
 
     def _validate_schema(self, df: pd.DataFrame) -> None:
         """
-        Validate DataFrame schema against required columns.
+        Validate DataFrame schema against exact canonical columns, strict numeric/date types, and finite values.
 
         Required columns per OMEGA_SYSTEM_ARCHITECTURE_V1.md Section 7.3:
         - ticker, date, open, high, low, close, volume, as_of, available_at
 
         Raises:
-            ValueError: If required columns are missing
+            ValueError: If required columns are missing, unexpected columns exist, types drift, or values are non-finite.
         """
         required_columns = ['ticker', 'date', 'open', 'high', 'low', 'close', 'volume', 'as_of', 'available_at']
-        missing_columns = set(required_columns) - set(df.columns)
+        extra_columns = set(df.columns) - set(required_columns)
+        if extra_columns:
+            raise ValueError(f"Schema drift: unexpected columns in cached data: {extra_columns}")
 
+        missing_columns = set(required_columns) - set(df.columns)
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
 
-        # Validate PIT constraint on cached data
         if len(df) > 0:
+            # 1. Validate numeric OHLCV types & finite values
+            numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+            for col in numeric_cols:
+                if not pd.api.types.is_numeric_dtype(df[col]):
+                    raise ValueError(f"Schema drift: column '{col}' has non-numeric dtype '{df[col].dtype}'")
+                if df[col].isna().any() or np.isinf(df[col]).any():
+                    raise ValueError(f"Schema drift: column '{col}' contains NaN or Inf values")
+
+            # Validate non-negative prices & volume
+            if (df['close'] < 0).any() or (df['volume'] < 0).any():
+                raise ValueError("Negative prices or volume detected in cached data")
+
+            # 2. Strictly parse and validate date and PIT timestamps
+            for col in ['date', 'as_of', 'available_at']:
+                parsed = pd.to_datetime(df[col], errors='coerce')
+                if parsed.isna().any():
+                    raise ValueError(f"Schema drift: timestamp column '{col}' contains invalid date/datetime values or NaT")
+
+            # 3. Validate PIT constraint on cached data
             as_of_utc = self._normalize_to_utc_series(df['as_of'])
             avail_utc = self._normalize_to_utc_series(df['available_at'])
             violations = df[as_of_utc > avail_utc]
