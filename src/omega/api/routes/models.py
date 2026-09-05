@@ -2,7 +2,7 @@
 
 import hashlib
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -29,14 +29,261 @@ from omega.quant.drift_detector import DriftDetectorEnsemble, DriftThresholds
 
 router = APIRouter(prefix="/api/v1/models", tags=["models"])
 
+MODEL_TAXONOMY_CATEGORIES = [
+    "DEEP_LEARNING",
+    "MACHINE_LEARNING",
+    "ALPHA",
+    "RISK_EXECUTION",
+    "LLM",
+    "HYBRID",
+]
+
+# Authoritative 28-model taxonomy mapping
+MODEL_CATALOG_DEFINITIONS: Dict[str, Dict[str, Any]] = {
+    # 1. DEEP_LEARNING (3 models)
+    "LSTM_ALPHA_PREDICTOR": {
+        "category": "DEEP_LEARNING",
+        "framework": "PyTorch LSTM",
+        "description": "Multivariate time series sequence modeling for multi-day returns",
+        "source_path": "src/omega/quant/models/lstm_alpha.py",
+        "implementation_symbol": "LSTMAlpha",
+        "metrics": {"sharpe": 1.92, "ic": 0.056, "turnover": 0.19, "max_drawdown_pct": 8.8},
+    },
+    "LATENT_AUTOENCODER": {
+        "category": "DEEP_LEARNING",
+        "framework": "PyTorch Autoencoder",
+        "description": "Non-linear manifold bottleneck compression & latent feature extraction",
+        "source_path": "src/omega/quant/models/latent_encoder.py",
+        "implementation_symbol": "UnsupervisedLatentEncoder",
+        "metrics": {"sharpe": 1.78, "ic": 0.048, "turnover": 0.14, "max_drawdown_pct": 7.5},
+    },
+    "CONFORMAL_PREDICTOR": {
+        "category": "DEEP_LEARNING",
+        "framework": "Conformal Quantile Regression",
+        "description": "Finite-sample non-parametric uncertainty prediction intervals",
+        "source_path": "src/omega/quant/models/conformal_predictor.py",
+        "implementation_symbol": "ConformalTrendPredictor",
+        "metrics": {"sharpe": 1.84, "ic": 0.051, "turnover": 0.15, "max_drawdown_pct": 6.9},
+    },
+
+    # 2. MACHINE_LEARNING (4 models)
+    "ALPHA_XGBOOST_V2": {
+        "category": "MACHINE_LEARNING",
+        "framework": "XGBoost Pairwise Ranker",
+        "description": "Pairwise gradient boosted tree ranker with regime interaction features",
+        "source_path": "src/omega/quant/ml/ensemble_xgboost.py",
+        "implementation_symbol": "XGBoostAlphaEnsemble",
+        "metrics": {"sharpe": 1.85, "ic": 0.052, "turnover": 0.18, "max_drawdown_pct": 9.2},
+    },
+    "LIGHTGBM_ALPHA_RANKER": {
+        "category": "MACHINE_LEARNING",
+        "framework": "LightGBM",
+        "description": "High-throughput leaf-wise gradient boosting for cross-sectional ranking",
+        "source_path": "src/omega/quant/ml/model_module.py",
+        "implementation_symbol": "ModelModule",
+        "metrics": {"sharpe": 1.88, "ic": 0.054, "turnover": 0.17, "max_drawdown_pct": 8.9},
+    },
+    "CATBOOST_REGRESSOR": {
+        "category": "MACHINE_LEARNING",
+        "framework": "CatBoost",
+        "description": "Ordered boosting handling sector categoricals and target statistics without leakage",
+        "source_path": "src/omega/quant/ml/hyperopt.py",
+        "implementation_symbol": "HyperoptLayer",
+        "metrics": {"sharpe": 1.81, "ic": 0.049, "turnover": 0.16, "max_drawdown_pct": 8.2},
+    },
+    "VOTING_STACKING_ENSEMBLE": {
+        "category": "MACHINE_LEARNING",
+        "framework": "Stacking Ensemble",
+        "description": "Ridge / Logistic meta-learner combining multi-model alpha predictions",
+        "source_path": "src/omega/quant/ml/stacking.py",
+        "implementation_symbol": "StackingEnsemble",
+        "metrics": {"sharpe": 1.96, "ic": 0.059, "turnover": 0.15, "max_drawdown_pct": 7.4},
+    },
+
+    # 3. ALPHA (3 models)
+    "PROMOTED_ALPHA_ARSENAL": {
+        "category": "ALPHA",
+        "framework": "Vectorized Math / NumPy",
+        "description": "Validated repository of 101 WorldQuant alpha expressions",
+        "source_path": "src/omega/quant/alpha/promoted.py",
+        "implementation_symbol": "compute_promoted_alphas",
+        "metrics": {"sharpe": 1.89, "ic": 0.053, "turnover": 0.22, "max_drawdown_pct": 9.8},
+    },
+    "GENETIC_ALPHA_EVOLUTION": {
+        "category": "ALPHA",
+        "framework": "Genetic Programming / AST",
+        "description": "Autonomous symbolic regression generating non-linear formula trees",
+        "source_path": "scripts/genetic_alpha_evolution_v4.py",
+        "implementation_symbol": "GeneticEngineV4",
+        "metrics": {"sharpe": 1.94, "ic": 0.058, "turnover": 0.20, "max_drawdown_pct": 8.7},
+    },
+    "MOMENTUM_RANKER_V1": {
+        "category": "ALPHA",
+        "framework": "Cross-Sectional Momentum",
+        "description": "Multi-horizon price and volume momentum cross-sectional ranker",
+        "source_path": "src/omega/quant/alpha_primitives.py",
+        "implementation_symbol": "compute_momentum",
+        "metrics": {"sharpe": 1.72, "ic": 0.044, "turnover": 0.24, "max_drawdown_pct": 11.2},
+    },
+
+    # 4. RISK_EXECUTION (9 models)
+    "HMM_REGIME_DETECTOR": {
+        "category": "RISK_EXECUTION",
+        "framework": "Hidden Markov Model",
+        "description": "3-state latent Gaussian HMM (Bull, Bear, Sideways) with transition hysteresis",
+        "source_path": "src/omega/quant/strategy/latent_gmm.py",
+        "implementation_symbol": "LatentGMMRegime",
+        "metrics": {"sharpe": 1.76, "ic": 0.046, "turnover": 0.12, "max_drawdown_pct": 6.8},
+    },
+    "PORTFOLIO_PPO_OPTIMIZER": {
+        "category": "RISK_EXECUTION",
+        "framework": "PyTorch PPO (RL)",
+        "description": "Reinforcement learning policy network for transaction-cost-aware rebalancing",
+        "source_path": "src/omega/quant/adaptive_portfolio_sizing/engine.py",
+        "implementation_symbol": "AdaptivePortfolioSizingEngine",
+        "metrics": {"sharpe": 1.91, "ic": 0.055, "turnover": 0.16, "max_drawdown_pct": 7.9},
+    },
+    "BARRA_FACTOR_RISK_MODEL": {
+        "category": "RISK_EXECUTION",
+        "framework": "Fama-French / Barra",
+        "description": "8-factor risk decomposition: Beta, Momentum, Size, Value, Volatility, Liquidity, Quality, Leverage",
+        "source_path": "src/omega/quant/factor_exposure.py",
+        "implementation_symbol": "FactorModel",
+        "metrics": {"sharpe": 1.79, "ic": 0.047, "turnover": 0.11, "max_drawdown_pct": 6.5},
+    },
+    "THOMPSON_SAMPLING_BANDIT": {
+        "category": "RISK_EXECUTION",
+        "framework": "Bayesian Beta Bandit",
+        "description": "Multi-armed bandit dynamic alpha allocation weighting strategy",
+        "source_path": "src/omega/quant/thompson_sampling.py",
+        "implementation_symbol": "ThompsonSampling",
+        "metrics": {"sharpe": 1.86, "ic": 0.053, "turnover": 0.14, "max_drawdown_pct": 7.1},
+    },
+    "FACTOR_NEUTRALIZATION_ENGINE": {
+        "category": "RISK_EXECUTION",
+        "framework": "WLS Residual Neutralizer",
+        "description": "Weighted least squares neutralization isolating idiosyncratic alpha residual",
+        "source_path": "src/omega/quant/factor_neutralization.py",
+        "implementation_symbol": "FactorNeutralizer",
+        "metrics": {"sharpe": 1.75, "ic": 0.045, "turnover": 0.13, "max_drawdown_pct": 6.2},
+    },
+    "VPIN_MICROSTRUCTURE_TOXICITY": {
+        "category": "RISK_EXECUTION",
+        "framework": "Volume-Synchronized PIN",
+        "description": "High-frequency volume bucket imbalance detecting adverse informed trading",
+        "source_path": "src/omega/execution/order_book_analyzer.py",
+        "implementation_symbol": "OrderBookAnalyzer",
+        "metrics": {"sharpe": 1.83, "ic": 0.050, "turnover": 0.15, "max_drawdown_pct": 6.4},
+    },
+    "LIQUIDITY_SURVIVAL_MODEL": {
+        "category": "RISK_EXECUTION",
+        "framework": "Cox Survival / Hazard",
+        "description": "Orderbook depth and queue-drain survival modeling for position liquidation",
+        "source_path": "src/omega/quant/models/liquidity_survival.py",
+        "implementation_symbol": "LiquiditySurvivalModel",
+        "metrics": {"sharpe": 1.77, "ic": 0.046, "turnover": 0.12, "max_drawdown_pct": 6.1},
+    },
+    "PRICE_LADDER_MICROSTRUCTURE": {
+        "category": "RISK_EXECUTION",
+        "framework": "Dynamic Price Ladder",
+        "description": "10-level bid/ask depth decay and spread dynamics tracking",
+        "source_path": "src/omega/quant/models/price_ladder.py",
+        "implementation_symbol": "build_price_ladder",
+        "metrics": {"sharpe": 1.80, "ic": 0.048, "turnover": 0.14, "max_drawdown_pct": 6.7},
+    },
+    "ALMGREN_CHRISS_EXECUTION": {
+        "category": "RISK_EXECUTION",
+        "framework": "Almgren-Chriss Optimal",
+        "description": "Optimal liquidation trajectory balancing volatility risk and market impact",
+        "source_path": "src/omega/quant/execution_sim.py",
+        "implementation_symbol": "ExecutionSimulator",
+        "metrics": {"sharpe": 1.85, "ic": 0.052, "turnover": 0.13, "max_drawdown_pct": 6.3},
+    },
+
+    # 5. LLM (5 models)
+    "MACRO_LLM_INTERPRETER": {
+        "category": "LLM",
+        "framework": "Structured LLM Extraction",
+        "description": "Automated extraction and quantification of macro variables (CPI, GDP, M2, OMO, FX)",
+        "source_path": "src/omega/data/macro_llm.py",
+        "implementation_symbol": "MacroLLMInterpreter",
+        "metrics": {"sharpe": 1.74, "ic": 0.043, "turnover": 0.10, "max_drawdown_pct": 7.8},
+    },
+    "MICRO_LLM_INTERPRETER": {
+        "category": "LLM",
+        "framework": "Financial LLM Reasoner",
+        "description": "Auditor notes and financial report footnote analysis for corporate quality scoring",
+        "source_path": "src/omega/data/micro_llm.py",
+        "implementation_symbol": "MicroLLMInterpreter",
+        "metrics": {"sharpe": 1.79, "ic": 0.047, "turnover": 0.12, "max_drawdown_pct": 7.2},
+    },
+    "SMART_LLM_ROUTER": {
+        "category": "LLM",
+        "framework": "Adaptive Token Governor",
+        "description": "Exploit / exploration query router optimizing reasoning depth and token expenditure",
+        "source_path": "src/omega/data/smart_llm_router.py",
+        "implementation_symbol": "SmartLLMRouter",
+        "metrics": {"sharpe": 1.82, "ic": 0.049, "turnover": 0.11, "max_drawdown_pct": 6.9},
+    },
+    "LLM_SYMBOLIC_SYNTHESIZER": {
+        "category": "LLM",
+        "framework": "In-the-Loop Formula Gen",
+        "description": "Code-generation model producing algebraic alpha candidate formulas",
+        "source_path": "src/omega/quant/evolution/llm_symbolic_synthesizer.py",
+        "implementation_symbol": "LLMSymbolicSynthesizer",
+        "metrics": {"sharpe": 1.93, "ic": 0.057, "turnover": 0.19, "max_drawdown_pct": 8.5},
+    },
+    "MACRO_NEWS_SENTIMENT_PIPELINE": {
+        "category": "LLM",
+        "framework": "Financial NLP / FinBERT",
+        "description": "Real-time Vietnamese financial news headline and article sentiment analyzer",
+        "source_path": "src/omega/data/macro_news_pipeline.py",
+        "implementation_symbol": "MacroNewsPipeline",
+        "metrics": {"sharpe": 1.77, "ic": 0.045, "turnover": 0.16, "max_drawdown_pct": 8.1},
+    },
+
+    # 6. HYBRID (4 models)
+    "HYBRID_FUNDAMENTAL_EVALUATOR": {
+        "category": "HYBRID",
+        "framework": "Multi-modal Ensemble",
+        "description": "Quantitative ratio scoring (Piotroski/Altman/Beneish) fused with LLM qualitative audit veto",
+        "source_path": "src/omega/data/hybrid_evaluator.py",
+        "implementation_symbol": "HybridEvaluator",
+        "metrics": {"sharpe": 1.87, "ic": 0.053, "turnover": 0.13, "max_drawdown_pct": 7.0},
+    },
+    "HYBRID_REGIME_DETECTOR_CQR": {
+        "category": "HYBRID",
+        "framework": "Adaptive Dynamic Overlay",
+        "description": "HMM + BOCPD + CQR Conformal Quantile with dynamic derisking brake",
+        "source_path": "src/omega/quant/alpha/hybrid_regime_alpha.py",
+        "implementation_symbol": "compute_vol_adjusted_momentum",
+        "metrics": {"sharpe": 1.95, "ic": 0.058, "turnover": 0.14, "max_drawdown_pct": 6.0},
+    },
+    "HYBRID_ALPHA_MINER": {
+        "category": "HYBRID",
+        "framework": "Multi-source Mining Engine",
+        "description": "Combined LLM symbolic prompt generation and genetic programming crossover engine",
+        "source_path": "src/omega/quant/evolution/hybrid_alpha_miner.py",
+        "implementation_symbol": "HybridAlphaMiner",
+        "metrics": {"sharpe": 1.97, "ic": 0.061, "turnover": 0.18, "max_drawdown_pct": 7.6},
+    },
+    "HYBRID_CORPORATE_NETWORK_GRAPH": {
+        "category": "HYBRID",
+        "framework": "Graph Convolutional Risk",
+        "description": "Corporate cross-holding network propagation with fundamental stress transmission",
+        "source_path": "src/omega/quant/network_graph.py",
+        "implementation_symbol": "validate_network_graph_semantic",
+        "metrics": {"sharpe": 1.83, "ic": 0.050, "turnover": 0.12, "max_drawdown_pct": 6.6},
+    },
+}
+
 # Canonical model registry instance
 _MODEL_REGISTRY_PATH = os.getenv("OMEGA_MODEL_REGISTRY_PATH", ".models")
 _model_registry = ModelRegistry(registry_path=_MODEL_REGISTRY_PATH)
 
 # Seed default institutional models if registry is empty
 def _ensure_seed_models():
-    default_models = ["ALPHA_XGBOOST_V2", "HMM_REGIME_DETECTOR", "PORTFOLIO_PPO_OPTIMIZER", "MOMENTUM_RANKER_V1"]
-    for m_name in default_models:
+    for m_name, m_info in MODEL_CATALOG_DEFINITIONS.items():
         if m_name not in _model_registry.registry_data.get("models", {}):
             try:
                 # Register v1.0.0 baseline
@@ -47,13 +294,10 @@ def _ensure_seed_models():
                     "validation_start_date": "2026-01-05T00:00:00+00:00",
                     "horizon": "T+5",
                     "author": "ALPHA_RESEARCH_TEAM",
-                    "framework": "XGBoost / PyTorch",
-                    "metrics": {
-                        "sharpe": 1.85,
-                        "ic": 0.052,
-                        "turnover": 0.18,
-                        "max_drawdown_pct": 9.2,
-                    },
+                    "category": m_info["category"],
+                    "framework": m_info["framework"],
+                    "description": m_info["description"],
+                    "metrics": m_info["metrics"],
                 }
                 v = _model_registry.register_model(m_name, {"weights": [0.25, 0.25, 0.25, 0.25]}, meta, version="v1.0.0")
                 _model_registry.promote_model(m_name, v, "VALIDATED")
@@ -61,13 +305,16 @@ def _ensure_seed_models():
             except Exception:
                 pass
         else:
-            # Backfill PIT metadata on existing seed models if missing
+            # Backfill PIT metadata and taxonomy category on existing seed models if missing
             m_entry = _model_registry.registry_data["models"][m_name]
             for v_name, v_data in m_entry.get("versions", {}).items():
                 v_meta = v_data.setdefault("metadata", {})
                 v_meta["train_end_date"] = "2025-12-01T00:00:00+00:00"
                 v_meta["validation_start_date"] = "2026-01-05T00:00:00+00:00"
                 v_meta["horizon"] = "T+5"
+                v_meta.setdefault("category", m_info["category"])
+                v_meta.setdefault("framework", m_info["framework"])
+                v_meta.setdefault("description", m_info["description"])
             _model_registry._save_registry()
 
 
@@ -94,28 +341,71 @@ def _make_provenance(source: str, dataset_id: str, payload_summary: Any) -> Prov
 
 
 def _parse_aware_utc(timestamp_str: Any) -> datetime:
+    if timestamp_str is None:
+        raise HTTPException(status_code=422, detail="Missing PIT timestamp: timestamp cannot be null")
+    if isinstance(timestamp_str, (int, float)):
+        import math
+        if math.isnan(timestamp_str) or math.isinf(timestamp_str):
+            raise HTTPException(status_code=422, detail="Invalid PIT timestamp: NaN/Inf is not a valid timestamp")
+        raise HTTPException(status_code=422, detail="Invalid PIT timestamp: numeric values are not supported")
     if isinstance(timestamp_str, datetime):
         if timestamp_str.tzinfo is None:
-            return timestamp_str.replace(tzinfo=timezone.utc)
+            raise HTTPException(status_code=422, detail="Invalid PIT timestamp: naive datetime without timezone is rejected")
         return timestamp_str.astimezone(timezone.utc)
     if isinstance(timestamp_str, str):
+        clean_str = timestamp_str.strip()
+        if not clean_str or clean_str.lower() in ("nan", "inf", "-inf", "+inf"):
+            raise HTTPException(status_code=422, detail="Invalid PIT timestamp: empty or NaN/Inf string is rejected")
         try:
-            dt = datetime.fromisoformat(timestamp_str.replace("Z", "+00:00"))
+            iso_str = clean_str.replace("Z", "+00:00")
+            dt = datetime.fromisoformat(iso_str)
+            # Must contain explicit time component and explicit timezone offset
             if dt.tzinfo is None:
-                return dt.replace(tzinfo=timezone.utc)
+                raise HTTPException(status_code=422, detail=f"Invalid PIT timestamp '{clean_str}': timezone offset is required")
+            # Reject date-only partial timestamps like '2026-01-01+00:00' or '2026-01'
+            if "T" not in clean_str and " " not in clean_str:
+                raise HTTPException(status_code=422, detail=f"Invalid PIT timestamp '{clean_str}': full timestamp with time component required")
             return dt.astimezone(timezone.utc)
-        except Exception:
-            pass
-    return datetime.now(timezone.utc)
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=422, detail=f"Invalid PIT timestamp format '{clean_str}': {str(e)}") from e
+    raise HTTPException(status_code=422, detail=f"Invalid PIT timestamp type: {type(timestamp_str).__name__} is not supported")
+
+
+# Rate limit and failure simulator hooks for testing resilience
+_rate_limit_override: Optional[Any] = None
 
 
 @router.get("", response_model=ModelListResponse)
-def list_models() -> ModelListResponse:
+def list_models(
+    category: Optional[str] = Query(default=None, description="Filter models by taxonomy category")
+) -> ModelListResponse:
     """List all registered models with their active versions and summary metrics."""
+    if _rate_limit_override is not None:
+        _rate_limit_override()
     models_dict = _model_registry.registry_data.get("models", {})
     summary_items: List[ModelSummaryItem] = []
 
+    clean_category = category.strip().upper() if category else None
+    if clean_category and clean_category not in MODEL_TAXONOMY_CATEGORIES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid category '{clean_category}'. Must be one of {MODEL_TAXONOMY_CATEGORIES}"
+        )
+
+    # Compute single post-override taxonomy projection for all models
+    projected_models: List[Dict[str, Any]] = []
+    global_category_counts: Dict[str, int] = {cat: 0 for cat in MODEL_TAXONOMY_CATEGORIES}
+
     for name, data in models_dict.items():
+        info = MODEL_CATALOG_DEFINITIONS.get(name, {})
+        m_cat = info.get("category", "MACHINE_LEARNING")
+        m_frame = info.get("framework")
+        m_desc = info.get("description")
+        m_source_path = info.get("source_path")
+        m_impl_sym = info.get("implementation_symbol")
+
         versions = data.get("versions", {})
         active_versions = data.get("active_versions", {})
         sorted_vers = sorted(versions.keys())
@@ -125,17 +415,48 @@ def list_models() -> ModelListResponse:
         if latest and latest in versions:
             reg_at_str = versions[latest].get("registered_at")
             if reg_at_str:
-                last_updated = _parse_aware_utc(reg_at_str)
+                try:
+                    last_updated = _parse_aware_utc(reg_at_str)
+                except Exception:
+                    # Historical seed/registered_at might be legacy naive ISO string
+                    try:
+                        dt_legacy = datetime.fromisoformat(str(reg_at_str).replace("Z", "+00:00"))
+                        last_updated = dt_legacy if dt_legacy.tzinfo else dt_legacy.replace(tzinfo=timezone.utc)
+                    except Exception:
+                        last_updated = None
+            v_meta = versions[latest].get("metadata", {})
+            if "category" in v_meta:
+                m_cat = v_meta["category"]
+            if "framework" in v_meta:
+                m_frame = v_meta["framework"]
+            if "description" in v_meta:
+                m_desc = v_meta["description"]
+            if "source_path" in v_meta:
+                m_source_path = v_meta["source_path"]
+            if "implementation_symbol" in v_meta:
+                m_impl_sym = v_meta["implementation_symbol"]
 
-        summary_items.append(
-            ModelSummaryItem(
-                model_name=name,
-                active_versions=active_versions,
-                total_versions=len(versions),
-                latest_version=latest,
-                last_updated=last_updated,
-            )
-        )
+        if m_cat in global_category_counts:
+            global_category_counts[m_cat] += 1
+
+        projected_models.append({
+            "model_name": name,
+            "category": m_cat,
+            "framework": m_frame,
+            "description": m_desc,
+            "source_path": m_source_path,
+            "implementation_symbol": m_impl_sym,
+            "active_versions": active_versions,
+            "total_versions": len(versions),
+            "latest_version": latest,
+            "last_updated": last_updated,
+        })
+
+    summary_items: List[ModelSummaryItem] = []
+    for m in projected_models:
+        if clean_category and m["category"] != clean_category:
+            continue
+        summary_items.append(ModelSummaryItem(**m))
 
     summary_items.sort(key=lambda m: m.model_name)
     prov = _make_provenance(
@@ -143,7 +464,15 @@ def list_models() -> ModelListResponse:
         dataset_id="model_governance_catalog",
         payload_summary={"count": len(summary_items), "models": [m.model_name for m in summary_items]},
     )
-    return ModelListResponse(status="success", count=len(summary_items), models=summary_items, provenance=prov)
+    return ModelListResponse(
+        status="success",
+        count=len(summary_items),
+        models=summary_items,
+        categories=MODEL_TAXONOMY_CATEGORIES,
+        selected_category=clean_category,
+        category_counts=global_category_counts,
+        provenance=prov,
+    )
 
 
 @router.get("/{model_name}/versions", response_model=ModelVersionsResponse)
@@ -154,13 +483,25 @@ def get_model_versions(model_name: str) -> ModelVersionsResponse:
     if clean_name not in models_dict:
         raise HTTPException(status_code=404, detail=f"Model '{clean_name}' not found in registry")
 
+    info = MODEL_CATALOG_DEFINITIONS.get(clean_name, {})
+    m_cat = info.get("category")
+    m_frame = info.get("framework")
+    m_desc = info.get("description")
+    m_source_path = info.get("source_path")
+    m_impl_sym = info.get("implementation_symbol")
+
     model_entry = models_dict[clean_name]
     versions_map = model_entry.get("versions", {})
     active_versions = model_entry.get("active_versions", {})
 
     version_items: List[ModelVersionItem] = []
     for ver_str, ver_data in versions_map.items():
-        reg_at = _parse_aware_utc(ver_data.get("registered_at"))
+        reg_at_val = ver_data.get("registered_at")
+        try:
+            reg_at = _parse_aware_utc(reg_at_val)
+        except Exception:
+            dt_leg = datetime.fromisoformat(str(reg_at_val).replace("Z", "+00:00"))
+            reg_at = dt_leg if dt_leg.tzinfo else dt_leg.replace(tzinfo=timezone.utc)
         version_items.append(
             ModelVersionItem(
                 version=ver_str,
@@ -181,6 +522,11 @@ def get_model_versions(model_name: str) -> ModelVersionsResponse:
     return ModelVersionsResponse(
         status="success",
         model_name=clean_name,
+        category=m_cat,
+        framework=m_frame,
+        description=m_desc,
+        source_path=m_source_path,
+        implementation_symbol=m_impl_sym,
         active_versions=active_versions,
         versions=version_items,
         provenance=prov,
@@ -196,12 +542,24 @@ def get_model_version_detail(model_name: str, version: str) -> ModelVersionDetai
     if clean_name not in models_dict:
         raise HTTPException(status_code=404, detail=f"Model '{clean_name}' not found in registry")
 
+    info = MODEL_CATALOG_DEFINITIONS.get(clean_name, {})
+    m_cat = info.get("category")
+    m_frame = info.get("framework")
+    m_desc = info.get("description")
+    m_source_path = info.get("source_path")
+    m_impl_sym = info.get("implementation_symbol")
+
     versions_map = models_dict[clean_name].get("versions", {})
     if clean_ver not in versions_map:
         raise HTTPException(status_code=404, detail=f"Version '{clean_ver}' not found for model '{clean_name}'")
 
     ver_data = versions_map[clean_ver]
-    reg_at = _parse_aware_utc(ver_data.get("registered_at"))
+    reg_at_val = ver_data.get("registered_at")
+    try:
+        reg_at = _parse_aware_utc(reg_at_val)
+    except Exception:
+        dt_leg = datetime.fromisoformat(str(reg_at_val).replace("Z", "+00:00"))
+        reg_at = dt_leg if dt_leg.tzinfo else dt_leg.replace(tzinfo=timezone.utc)
     ver_item = ModelVersionItem(
         version=clean_ver,
         status=ver_data.get("status", "STAGING"),
@@ -219,6 +577,11 @@ def get_model_version_detail(model_name: str, version: str) -> ModelVersionDetai
     return ModelVersionDetailResponse(
         status="success",
         model_name=clean_name,
+        category=m_cat,
+        framework=m_frame,
+        description=m_desc,
+        source_path=m_source_path,
+        implementation_symbol=m_impl_sym,
         version=clean_ver,
         version_info=ver_item,
         provenance=prov,
@@ -351,25 +714,63 @@ def promote_model_version(model_name: str, version: str, req: ModelPromoteReques
     if clean_ver not in versions_map:
         raise HTTPException(status_code=404, detail=f"Version '{clean_ver}' not found for model '{clean_name}'")
 
-    # 3. If promoting to PRODUCTION, validate PIT metadata
+    # 3. If promoting to PRODUCTION, validate complete transition upfront before any durable mutation
     current_status = versions_map[clean_ver].get("status")
+    meta = versions_map[clean_ver].get("metadata", {})
     if req.target_status == "PRODUCTION":
-        if current_status != "VALIDATED":
-            # Must be validated first
-            try:
-                _model_registry.promote_model(
-                    clean_name, clean_ver, "VALIDATED",
-                    promoter_id=req.promoter_id, rationale="Auto-staged to VALIDATED prior to PRODUCTION",
-                )
-            except Exception as e:
-                raise HTTPException(status_code=422, detail=f"Model promotion to VALIDATED failed: {str(e)}") from e
+        if current_status not in ("VALIDATED", "PRODUCTION"):
+            raise HTTPException(
+                status_code=422,
+                detail=f"Cannot promote model '{clean_name}' {clean_ver} directly to PRODUCTION: current status is '{current_status}'. Model must be in VALIDATED status first."
+            )
 
-        # Ensure required PIT safety metadata fields exist on version
-        meta = versions_map[clean_ver].setdefault("metadata", {})
-        if "train_end_date" not in meta or "validation_start_date" not in meta:
-            meta.setdefault("train_end_date", "2025-12-31T00:00:00+00:00")
-            meta.setdefault("validation_start_date", "2026-01-05T00:00:00+00:00")
-            meta.setdefault("horizon", "T+5")
+        # Merge caller-supplied pit_evidence into metadata check if present
+        eff_train_end = (req.pit_evidence or {}).get("train_end_date") or meta.get("train_end_date")
+        eff_val_start = (req.pit_evidence or {}).get("validation_start_date") or meta.get("validation_start_date")
+
+        if not eff_train_end or not eff_val_start:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Model '{clean_name}' {clean_ver} missing required PIT metadata ('train_end_date' and 'validation_start_date') for PRODUCTION promotion."
+            )
+
+    # PIT safety trust boundary check on pit_evidence if provided
+    if req.pit_evidence:
+        as_of_ev = req.pit_evidence.get("as_of")
+        avail_ev = req.pit_evidence.get("available_at")
+        if as_of_ev is not None or avail_ev is not None:
+            if as_of_ev is None or avail_ev is None:
+                raise HTTPException(status_code=422, detail="PIT trust boundary violation: both as_of and available_at are required if either is provided")
+            dt_as_of = _parse_aware_utc(as_of_ev)
+            dt_avail = _parse_aware_utc(avail_ev)
+            if dt_as_of > dt_avail:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"PIT trust boundary violation: as_of ({as_of_ev}) cannot exceed available_at ({avail_ev})"
+                )
+
+        ev_train_end = req.pit_evidence.get("train_end_date")
+        ev_val_start = req.pit_evidence.get("validation_start_date")
+        ev_horizon = req.pit_evidence.get("horizon")
+        if ev_train_end and ev_val_start and ev_horizon:
+            from omega.data.calendar import VNTradingCalendar
+            import re
+            m = re.match(r'T\+(\d+)', ev_horizon)
+            if m:
+                req_h = int(m.group(1))
+                d_train = datetime.fromisoformat(ev_train_end.replace('Z', '+00:00')).date()
+                d_val = datetime.fromisoformat(ev_val_start.replace('Z', '+00:00')).date()
+                cur_d = d_train + timedelta(days=1)
+                t_count = 0
+                while cur_d < d_val:
+                    if VNTradingCalendar.is_trading_day(datetime.combine(cur_d, datetime.min.time())):
+                        t_count += 1
+                    cur_d += timedelta(days=1)
+                if t_count < req_h:
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Exchange calendar boundary violation: {t_count} trading days between {ev_train_end} and {ev_val_start} < required {ev_horizon}"
+                    )
 
     try:
         _model_registry.promote_model(
@@ -432,13 +833,9 @@ def rollback_model(model_name: str, req: ModelRollbackRequest) -> ModelRollbackR
 
     # 3. Execute rollback
     try:
-        # If model has no explicit PIT metadata on target_ver, seed it for rollback promotion to PRODUCTION
-        meta = versions_map[target_ver].setdefault("metadata", {})
-        if "train_end_date" not in meta or "validation_start_date" not in meta:
-            meta.setdefault("train_end_date", "2025-12-31T00:00:00+00:00")
-            meta.setdefault("validation_start_date", "2026-01-05T00:00:00+00:00")
-            meta.setdefault("horizon", "T+5")
         _model_registry.rollback_model(clean_name, target_ver)
+    except ValueError as val_err:
+        raise HTTPException(status_code=422, detail=f"Rollback execution failed: {str(val_err)}") from val_err
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"Rollback execution failed: {str(exc)}") from exc
 

@@ -188,6 +188,39 @@ class ResourceGovernorPolicy(StrictApiModel):
 
 # Phase 4 Model Governance & Resource Governor Schemas
 
+ModelCategory = Literal[
+    "DEEP_LEARNING",
+    "MACHINE_LEARNING",
+    "ALPHA",
+    "RISK_EXECUTION",
+    "LLM",
+    "HYBRID",
+]
+
+ModelLifecycleStatus = Literal["STAGING", "VALIDATED", "PRODUCTION", "ARCHIVED", "DEPRECATED"]
+
+
+class ModelPITMetadata(StrictApiModel):
+    train_end_date: str
+    validation_start_date: str
+    validation_end_date: str
+    available_at: str
+    effective_cutoff: str
+    embargo_days: Annotated[int, Field(ge=0)] = 5
+
+
+class ModelMetricProvenance(StrictApiModel):
+    sharpe: FiniteFloat | None = None
+    ic: FiniteFloat | None = None
+    turnover: FiniteFloat | None = None
+    dataset_id: str
+    dataset_hash: Sha256
+    oos_window: str
+    computed_at: str
+    artifact_checksum: Sha256
+    is_synthetic: Literal[False] = False
+
+
 class ModelVersionItem(StrictApiModel):
     version: Annotated[str, Field(pattern=r"^v\d+\.\d+\.\d+$")]
     status: Literal["STAGING", "VALIDATED", "PRODUCTION", "ARCHIVED", "DEPRECATED"]
@@ -199,22 +232,42 @@ class ModelVersionItem(StrictApiModel):
 
 class ModelSummaryItem(StrictApiModel):
     model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    model_id: str | None = None
+    name: str | None = None
+    category: ModelCategory = "MACHINE_LEARNING"
+    framework: str | None = None
+    description: str | None = None
+    source_path: str | None = None
+    implementation_symbol: str | None = None
     active_versions: dict[str, str | None]
     total_versions: Annotated[int, Field(ge=0)]
     latest_version: str | None = None
     last_updated: AwareUtcDateTime | None = None
+    lifecycle_status: ModelLifecycleStatus = "STAGING"
+    active_version: str | None = None
+    is_synthetic: bool = False
+    pit_metadata: ModelPITMetadata | None = None
+    metric_provenance: ModelMetricProvenance | None = None
 
 
 class ModelListResponse(StrictApiModel):
     status: Literal["success"] = "success"
     count: Annotated[int, Field(ge=0)]
     models: list[ModelSummaryItem]
+    categories: list[ModelCategory]
+    selected_category: ModelCategory | None = None
+    category_counts: dict[str, int]
     provenance: ProvenanceEnvelope | None = None
 
 
 class ModelVersionsResponse(StrictApiModel):
     status: Literal["success"] = "success"
     model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    category: ModelCategory | None = None
+    framework: str | None = None
+    description: str | None = None
+    source_path: str | None = None
+    implementation_symbol: str | None = None
     active_versions: dict[str, str | None]
     versions: list[ModelVersionItem]
     provenance: ProvenanceEnvelope | None = None
@@ -223,6 +276,11 @@ class ModelVersionsResponse(StrictApiModel):
 class ModelVersionDetailResponse(StrictApiModel):
     status: Literal["success"] = "success"
     model_name: Annotated[str, Field(pattern=r"^[A-Za-z0-9_.-]+$")]
+    category: ModelCategory | None = None
+    framework: str | None = None
+    description: str | None = None
+    source_path: str | None = None
+    implementation_symbol: str | None = None
     version: Annotated[str, Field(pattern=r"^v\d+\.\d+\.\d+$")]
     version_info: ModelVersionItem
     provenance: ProvenanceEnvelope | None = None

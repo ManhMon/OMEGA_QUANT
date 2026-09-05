@@ -257,6 +257,63 @@ export interface CorporateGraphResponse {
   edges_count: number;
   nodes: CorporateGraphNode[];
   edges: CorporateGraphEdge[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
+// Phase 2 Multi-Ticker Network Graph Interfaces
+export interface NetworkNodeItem {
+  id: string;
+  symbol: string;
+  name: string;
+  sector: string;
+  ecosystem?: string | null;
+  market_cap?: number | null;
+  market_cap_str: string;
+  adv20?: number | null;
+  adv20_str: string;
+  pe?: number | null;
+  roe?: number | null;
+  hybrid_score?: number | null;
+  degree: number;
+}
+
+export interface NetworkEdgeItem {
+  id: string;
+  source: string;
+  target: string;
+  relationship: string;
+  relationship_type: string;
+  weight: number;
+}
+
+export interface EcosystemDefinitionItem {
+  ecosystem_id: string;
+  name: string;
+  group_type: string;
+  record_created_at_utc: string;
+}
+
+export interface NetworkGraphMetadata {
+  taxonomy_name: string;
+  taxonomy_source: string;
+  taxonomy_version: string;
+  canonicalization_version: string;
+  as_of: string;
+  resolved_as_of: string;
+  nodes_count: number;
+  edges_count: number;
+  ecosystems_count: number;
+  manifest_sha256: string;
+  dataset_sha256: string;
+  payload_sha256?: string;
+}
+
+export interface NetworkGraphApiResponse {
+  status: string;
+  metadata: NetworkGraphMetadata;
+  nodes: NetworkNodeItem[];
+  edges: NetworkEdgeItem[];
+  ecosystems: EcosystemDefinitionItem[];
 }
 
 // Phase 3 Active Quant, Evolution & Smart Execution Interfaces
@@ -434,6 +491,8 @@ export interface PortfolioRebalanceExecuteResponse {
 
 // Phase 4 Model Governance & Resource Governor Interfaces
 
+export type ModelCategory = 'DEEP_LEARNING' | 'MACHINE_LEARNING' | 'ALPHA' | 'RISK_EXECUTION' | 'LLM' | 'HYBRID';
+
 export interface ModelVersionItem {
   version: string;
   status: 'STAGING' | 'VALIDATED' | 'PRODUCTION' | 'ARCHIVED' | 'DEPRECATED';
@@ -445,6 +504,11 @@ export interface ModelVersionItem {
 
 export interface ModelSummaryItem {
   model_name: string;
+  category?: ModelCategory;
+  framework?: string | null;
+  description?: string | null;
+  source_path?: string | null;
+  implementation_symbol?: string | null;
   active_versions: Record<string, string | null>;
   total_versions: number;
   latest_version?: string | null;
@@ -455,12 +519,20 @@ export interface ModelListResponse {
   status: string;
   count: number;
   models: ModelSummaryItem[];
+  categories?: string[];
+  selected_category?: string | null;
+  category_counts?: Record<string, number>;
   provenance?: ProvenanceEnvelope | null;
 }
 
 export interface ModelVersionsResponse {
   status: string;
   model_name: string;
+  category?: ModelCategory | null;
+  framework?: string | null;
+  description?: string | null;
+  source_path?: string | null;
+  implementation_symbol?: string | null;
   active_versions: Record<string, string | null>;
   versions: ModelVersionItem[];
   provenance?: ProvenanceEnvelope | null;
@@ -469,6 +541,11 @@ export interface ModelVersionsResponse {
 export interface ModelVersionDetailResponse {
   status: string;
   model_name: string;
+  category?: ModelCategory | null;
+  framework?: string | null;
+  description?: string | null;
+  source_path?: string | null;
+  implementation_symbol?: string | null;
   version: string;
   version_info: ModelVersionItem;
   provenance?: ProvenanceEnvelope | null;
@@ -532,6 +609,71 @@ export interface ResourceGovernorStateResponse {
   mode_description: string;
   updated_at: string;
   provenance?: ProvenanceEnvelope | null;
+}
+
+export interface AdvancedQuantRequestOptions extends RequestInit {
+  timeoutMs?: number;
+  maxRetries?: number;
+  retryDelayMs?: number;
+}
+
+export async function resilientApiRequest<T>(
+  path: string,
+  options: AdvancedQuantRequestOptions = {}
+): Promise<T> {
+  const {
+    timeoutMs = 10000,
+    maxRetries = 3,
+    retryDelayMs = 100,
+    signal,
+    ...fetchInit
+  } = options;
+
+  let attempt = 0;
+  while (true) {
+    attempt++;
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, timeoutMs);
+
+    let onAbort: (() => void) | undefined;
+    if (signal) {
+      if (signal.aborted) {
+        clearTimeout(timer);
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      onAbort = () => controller.abort();
+      signal.addEventListener('abort', onAbort);
+    }
+
+    try {
+      return await apiRequest<T>(path, {
+        ...fetchInit,
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      if (timedOut) {
+        throw new Error(`Request to ${path} timed out after ${timeoutMs}ms`);
+      }
+      if (signal?.aborted) {
+        throw err;
+      }
+      const is429 = err?.status === 429 || (typeof err?.message === 'string' && err.message.includes('429'));
+      if (is429 && attempt <= maxRetries) {
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs * attempt));
+        continue;
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+      if (signal && onAbort) {
+        signal.removeEventListener('abort', onAbort);
+      }
+    }
+  }
 }
 
 export const advancedQuantApi = {
@@ -598,6 +740,31 @@ export const advancedQuantApi = {
   getCorporateGraph: (symbol: string, signal?: AbortSignal) =>
     apiRequest<CorporateGraphResponse>(`/api/v1/fundamental/corporate-graph/${encodeURIComponent(symbol)}`, { signal }),
 
+  getNetworkGraph: (params: {
+    as_of?: string;
+    sector?: string;
+    ecosystem?: string;
+    symbol?: string;
+    relationship?: string;
+    min_market_cap?: number;
+    min_adv20?: number;
+    max_nodes?: number;
+    metric_color?: string;
+  } = {}, signal?: AbortSignal) => {
+    const qParams = new URLSearchParams();
+    if (params.as_of) qParams.append('as_of', params.as_of);
+    if (params.sector) qParams.append('sector', params.sector);
+    if (params.ecosystem) qParams.append('ecosystem', params.ecosystem);
+    if (params.symbol) qParams.append('symbol', params.symbol);
+    if (params.relationship) qParams.append('relationship', params.relationship);
+    if (params.min_market_cap !== undefined) qParams.append('min_market_cap', String(params.min_market_cap));
+    if (params.min_adv20 !== undefined) qParams.append('min_adv20', String(params.min_adv20));
+    if (params.max_nodes !== undefined) qParams.append('max_nodes', String(params.max_nodes));
+    if (params.metric_color) qParams.append('metric_color', params.metric_color);
+    const qs = qParams.toString();
+    return apiRequest<NetworkGraphApiResponse>(`/api/v1/quant/network-graph${qs ? `?${qs}` : ''}`, { signal });
+  },
+
   // Phase 3 Active Quant, Evolution & Smart Execution APIs
   runWalkForwardCpcv: (payload: { dataset_id?: string; universe?: string[]; start_date?: string; end_date?: string; n_splits?: number; n_test_splits?: number; embargo_pct?: number; label_horizon?: number; initial_capital?: number; slippage_bps?: number; commission_bps?: number }, signal?: AbortSignal) =>
     apiRequest<WalkForwardCpcvResponse>('/api/v1/quant/walk-forward', {
@@ -658,43 +825,48 @@ export const advancedQuantApi = {
     }),
 
   // Phase 4 Model Governance & Resource Governor APIs
-  getModelList: (signal?: AbortSignal) =>
-    apiRequest<ModelListResponse>('/api/v1/models', { signal }),
+  getModelList: (category?: string, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) => {
+    const q = category ? `?category=${encodeURIComponent(category)}` : '';
+    return resilientApiRequest<ModelListResponse>(`/api/v1/models${q}`, { ...options, signal });
+  },
 
-  getModelVersions: (modelName: string, signal?: AbortSignal) =>
-    apiRequest<ModelVersionsResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/versions`, { signal }),
+  getModelVersions: (modelName: string, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ModelVersionsResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/versions`, { ...options, signal }),
 
-  getModelVersionDetail: (modelName: string, version: string, signal?: AbortSignal) =>
-    apiRequest<ModelVersionDetailResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(version)}`, { signal }),
+  getModelVersionDetail: (modelName: string, version: string, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ModelVersionDetailResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(version)}`, { ...options, signal }),
 
-  getModelDrift: (modelName: string, signal?: AbortSignal) =>
-    apiRequest<ModelDriftResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/drift`, { signal }),
+  getModelDrift: (modelName: string, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ModelDriftResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/drift`, { ...options, signal }),
 
-  promoteModelVersion: (modelName: string, version: string, payload: { totp_code: string; target_status: 'VALIDATED' | 'PRODUCTION'; promoter_id?: string; rationale?: string; pit_evidence?: Record<string, any> }, signal?: AbortSignal) =>
-    apiRequest<ModelPromoteResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(version)}/promote`, {
+  promoteModelVersion: (modelName: string, version: string, payload: { totp_code: string; target_status: 'VALIDATED' | 'PRODUCTION'; promoter_id?: string; rationale?: string; pit_evidence?: Record<string, any> }, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ModelPromoteResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/versions/${encodeURIComponent(version)}/promote`, {
       method: 'POST',
       body: JSON.stringify(payload),
       headers: { 'Content-Type': 'application/json' },
       signal,
+      ...options,
     }),
 
-  rollbackModel: (modelName: string, payload: { totp_code: string; target_version: string; reason?: string }, signal?: AbortSignal) =>
-    apiRequest<ModelRollbackResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/rollback`, {
+  rollbackModel: (modelName: string, payload: { totp_code: string; target_version: string; reason?: string }, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ModelRollbackResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/rollback`, {
       method: 'POST',
       body: JSON.stringify(payload),
       headers: { 'Content-Type': 'application/json' },
       signal,
+      ...options,
     }),
 
-  getResourceGovernor: (signal?: AbortSignal) =>
-    apiRequest<ResourceGovernorStateResponse>('/api/v1/operations/resource-governor', { signal }),
+  getResourceGovernor: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ResourceGovernorStateResponse>('/api/v1/operations/resource-governor', { ...options, signal }),
 
-  updateResourceGovernor: (payload: { mode?: 'MANUAL' | 'COPILOT'; target_concurrency?: number; thread_pool_size?: number; batch_size?: number }, signal?: AbortSignal) =>
-    apiRequest<ResourceGovernorStateResponse>('/api/v1/operations/resource-governor', {
+  updateResourceGovernor: (payload: { mode?: 'MANUAL' | 'COPILOT'; target_concurrency?: number; thread_pool_size?: number; batch_size?: number }, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ResourceGovernorStateResponse>('/api/v1/operations/resource-governor', {
       method: 'PATCH',
       body: JSON.stringify(payload),
       headers: { 'Content-Type': 'application/json' },
       signal,
+      ...options,
     }),
 };
 
