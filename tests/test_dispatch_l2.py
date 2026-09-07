@@ -1,5 +1,9 @@
 import subprocess
 import sys
+import hashlib
+import json
+import os
+from datetime import datetime
 import pytest
 from pathlib import Path
 from scripts.dispatch_l2 import (
@@ -8,6 +12,7 @@ from scripts.dispatch_l2 import (
     parse_frontmatter,
     MODELS,
 )
+import scripts.dispatch_l2 as dispatch_l2
 
 REPO_ROOT = Path(__file__).parent.parent
 
@@ -319,8 +324,8 @@ def test_validate_l2_report_cli_path_traversal():
         text=True,
         cwd=str(REPO_ROOT),
     )
-    assert res.returncode == 1
-    assert "Path traversal" in res.stdout or "Path traversal" in res.stderr
+    assert res.returncode == 2
+    assert "ANTI_DRIP[E101]" in res.stdout or "ANTI_DRIP[E101]" in res.stderr
 
 
 def test_lock_cleanup_safety_on_pair_bytes_failure(tmp_path):
@@ -960,3 +965,107 @@ def test_long_credential_redaction_and_unterminated_quotes():
     assert "CANARY_SECRET" not in sanitized_esc
     assert "[REDACTED]" in redacted_esc
     assert "[REDACTED]" in sanitized_esc
+
+
+ANTI_GATE = "TEST_ANTI_DRIP_GATE_20260907"
+ANTI_SESSION = "l2_role11_anti_drip_test_20260907"
+
+
+def _audit(gate: str, verdict: str, timestamp: str, *, finding: bool = False) -> str:
+    suffix = ""
+    if finding:
+        suffix = """
+## 16-Dimension Adversarial Matrix
+
+| Dimension | Name | Result |
+|---:|---|---|
+| 16 | Secret redaction | [FAIL] |
+
+## Blocking Findings
+
+### F-004 - Plaintext backup survives replacement failure
+
+- **Severity**: High
+- **Probe output**: `BACKUP_LEAK=True`
+"""
+    return f"""# Audit
+
+- **Gate**: `{gate}`
+- **Audit Timestamp**: `{timestamp}`
+
+## Verdict
+
+- **Final Verdict**: **[{verdict}]**
+{suffix}
+"""
+
+
+def test_latest_approved_audit_overrides_older_needs_fix(tmp_path):
+    audit_dir = tmp_path / ".ly_state/session/audit_reports"
+    audit_dir.mkdir(parents=True)
+    old = audit_dir / "role21_test_anti_drip_gate_20260907_cycle11.md"
+    final = audit_dir / "role21_test_anti_drip_gate_20260907.md"
+    old.write_text(_audit(ANTI_GATE, "NEEDS_FIX", "2026-09-06T20:00:00+00:00", finding=True), encoding="utf-8")
+    final.write_text(_audit(ANTI_GATE, "APPROVED", "2026-09-06T21:00:00+00:00"), encoding="utf-8")
+    outcome = dispatch_l2.extract_prior_audit_outcomes(ANTI_GATE, tmp_path)
+    assert outcome is not None
+    assert outcome.report_path == final
+    assert outcome.verdict == "APPROVED"
+    assert dispatch_l2.build_anti_drip_contract(ANTI_SESSION, ANTI_GATE, tmp_path, outcome)["mode"] == "baseline"
+
+
+def test_remediation_extracts_structured_finding_and_sanitizes_secret(tmp_path):
+    audit_dir = tmp_path / ".ly_state/session/audit_reports"
+    audit_dir.mkdir(parents=True)
+    report = audit_dir / "role21_test_anti_drip_gate_20260907_cycle11.md"
+    content = _audit(ANTI_GATE, "NEEDS_FIX", "2026-09-06T20:00:00+00:00", finding=True)
+    content += "- **Probe output**: `api_key=LEAK`\n"
+    report.write_text(content, encoding="utf-8")
+    assert dispatch_l2._parse_dimensions(content, report)[1]
+    assert dispatch_l2._extract_audit_findings(content, report)
+    outcome = dispatch_l2.extract_prior_audit_outcomes(ANTI_GATE, tmp_path)
+    assert outcome is not None
+    assert outcome.findings == (dispatch_l2.AuditFinding(
+        "F-004", "high", "Plaintext backup survives replacement failure", ("BACKUP_LEAK=True",)
+    ),)
+
+
+def test_conflicting_latest_verdict_fails_closed(tmp_path):
+    audit_dir = tmp_path / ".ly_state/session/audit_reports"
+    audit_dir.mkdir(parents=True)
+    report = audit_dir / "role21_test_anti_drip_gate_20260907.md"
+    report.write_text(_audit(ANTI_GATE, "APPROVED", "2026-09-06T21:00:00+00:00") + "\n- **Status**: [NEEDS_FIX]\n", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="missing or conflicting"):
+        dispatch_l2.extract_prior_audit_outcomes(ANTI_GATE, tmp_path)
+
+
+def test_contract_atomic_pair_and_prompt_binding(tmp_path):
+    contract = dispatch_l2.build_anti_drip_contract(ANTI_SESSION, ANTI_GATE, tmp_path, None)
+    path, sidecar, digest = dispatch_l2.write_anti_drip_contract(tmp_path, ANTI_SESSION, contract)
+    assert path.read_bytes() == dispatch_l2.canonical_json_bytes(contract)
+    assert sidecar.read_bytes() == f"{digest}  {path.name}\n".encode("ascii")
+    clause = dispatch_l2.build_anti_drip_prompt_clause(path, digest, contract, tmp_path)
+    assert clause.splitlines().count(dispatch_l2.PROMPT_BEGIN_MARKER) == 1
+    assert [line.split(")", 1)[0][1:] for line in clause.splitlines() if line.startswith("(AD-")] == [f"AD-{n}" for n in range(1, 7)]
+
+
+def test_contract_atomic_failure_leaves_no_temp_files(tmp_path, monkeypatch):
+    contract = dispatch_l2.build_anti_drip_contract(ANTI_SESSION, ANTI_GATE, tmp_path, None)
+    real_replace = os.replace
+    calls = 0
+    def fail_second(source, destination):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("injected sidecar failure")
+        real_replace(source, destination)
+    monkeypatch.setattr(dispatch_l2.os, "replace", fail_second)
+    with pytest.raises(RuntimeError, match="atomic publication"):
+        dispatch_l2.write_anti_drip_contract(tmp_path, ANTI_SESSION, contract)
+    assert not list((tmp_path / ".ly_state/session").glob("tmp*"))
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), [object()]])
+def test_canonical_json_rejects_non_json_or_nonfinite(value):
+    with pytest.raises((ValueError, TypeError)):
+        dispatch_l2.canonical_json_bytes({"value": value})

@@ -23,8 +23,10 @@ import sqlite3
 import subprocess
 import tempfile
 import urllib.parse
+from dataclasses import dataclass
 from pathlib import Path
 from datetime import datetime, timezone
+from typing import Any, Literal, Mapping
 
 REPO_ROOT = Path(__file__).parent.parent
 AGENT_ROOT = REPO_ROOT / ".agents" / "agent"
@@ -57,6 +59,7 @@ GRAPH_RESULT_FIELDS = {
     "is_test", "edge_type", "source", "target", "import_target", "confidence",
     "confidence_tier", "test_file", "test_name", "caller", "callee",
     "file", "importer", "indirect", "target_resolution", "inferred_by",
+    "candidate_count", "candidates", "candidates_truncated", "resolution",
 }
 GRAPH_NON_INDEXED_SUFFIXES = {
     ".md", ".rst", ".txt", ".json", ".jsonl", ".toml", ".yaml", ".yml",
@@ -389,7 +392,7 @@ def _bounded_impact_query(repo_root: Path, scope_files: list[str]) -> tuple[dict
                 repo_root, "impact", "--files", *batch_scope, "--depth", "2", "--max-results", "100"
             )
         except RuntimeError as exc:
-            if "exceeded safe byte limit" not in str(exc):
+            if "exceeded safe byte limit" not in str(exc) and "graph impact response is truncated" not in str(exc):
                 raise
             if len(batch_scope) == 1:
                 raise RuntimeError(
@@ -1113,6 +1116,362 @@ def load_regression_classes(lessons_path=None) -> list[str]:
     return list(STATIC_REGRESSION_CLASSES)
 
 
+AuditVerdict = Literal["APPROVED", "NEEDS_FIX"]
+
+
+@dataclass(frozen=True)
+class AuditFinding:
+    finding_id: str
+    severity: str | None
+    title: str
+    probe_strings: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class PriorAuditOutcome:
+    report_path: Path
+    report_sha256: str
+    verdict: AuditVerdict
+    timestamp_text: str | None
+    cycle: int
+    passed_dimensions: tuple[tuple[int, str], ...]
+    failed_dimensions: tuple[tuple[int, str], ...]
+    findings: tuple[AuditFinding, ...]
+
+
+AUDIT_MIN_BYTES = 100
+FINAL_REPORT_CYCLE_RANK = 1_000_000_000
+AUDIT_TIMESTAMP_RE = re.compile(
+    r"(?im)^[ \t]*(?:[-*][ \t]+)?(?:\*\*)?(?:audit[ _-]?(?:timestamp|date)|timestamp|date)"
+    r"(?:\*\*)?[ \t]*:[ \t]*`?(?P<value>\d{4}-\d{2}-\d{2}(?:[T ][0-2]\d:[0-5]\d:[0-5]\d"
+    r"(?:\.\d{1,6})?(?:Z|[+-][0-2]\d:[0-5]\d)?)?)`?[ \t]*$"
+)
+AUDIT_FILENAME_DATE_RE = re.compile(r"(?<!\d)(?P<date>20\d{6})(?!\d)")
+AUDIT_CYCLE_RE = re.compile(r"(?i)(?:^|[_-])cycle[_-]?(?P<cycle>[0-9]{1,4})(?=\.md$|[_-])")
+AUDIT_GATE_RE = re.compile(
+    r"(?im)^[ \t]*[-*][ \t]+(?:\*\*)?Gate(?:\*\*)?[ \t]*:[ \t]*`?"
+    r"(?P<gate>[A-Za-z0-9_-]{1,128})`?[ \t]*$"
+)
+VERDICT_SECTION_RE = re.compile(r"(?ims)^##[ \t]+Verdict[ \t]*\r?\n(?P<body>.*?)(?=^##[ \t]+|\Z)")
+VERDICT_FIELD_RE = re.compile(
+    r"(?im)^[ \t]*(?:[-*][ \t]+)?\*{0,2}(?:final[_ -]?verdict|verdict|status)"
+    r"[ \t]*:?\*{0,2}[ \t]*:?[ \t]*`?\*{0,2}\[(?P<verdict>APPROVED|NEEDS_FIX)\]"
+)
+VERDICT_TOKEN_RE = re.compile(r"(?i)\[(APPROVED|NEEDS_FIX)\]")
+MATRIX_ROW_RE = re.compile(
+    r"^\|\s*(?P<dimension>[1-9]|1[0-6])\s*\|\s*(?P<name>[^|\r\n]{1,120}?)\s*\|(?P<cells>.+)\|\s*$"
+)
+FINDINGS_HEADING_RE = re.compile(r"(?im)^##[ \t]+(?P<blocking>Blocking[ \t]+)?Findings?[ \t]*$")
+FINDING_START_RE = re.compile(
+    r"(?im)^(?:#{3,6}[ \t]+|[-*][ \t]+)?\*{0,2}(?P<finding_id>F-[0-9]{3})\*{0,2}[ \t]*"
+    r"(?:[-:\u2013\u2014][ \t]*)?(?P<title>[^\r\n]{1,200}?)\s*$"
+)
+SEVERITY_RE = re.compile(
+    r"(?im)^[ \t]*[-*]?[ \t]*\*{0,2}Severity\*{0,2}[ \t]*:[ \t]*\*{0,2}"
+    r"(?P<severity>Critical|High|Medium|Low)\b"
+)
+PROBE_LABEL_RE = re.compile(
+    r"(?i)\b(?:probe(?:[ \t]+string|[ \t]+output)?|reproduction(?:[ \t]+output)?|"
+    r"observed(?:[ \t]+output)?|output|sentinel|fault[ \t]+injection)\b"
+)
+BACKTICK_VALUE_RE = re.compile(r"`(?P<value>[^`\r\n]{1,200})`")
+PROBE_ASSIGNMENT_RE = re.compile(
+    r"(?<![A-Za-z0-9_])(?P<value>[A-Z][A-Z0-9_]{2,63}=(?:True|False|None|-?[0-9]+(?:\.\d+)?|"
+    r"[A-Z][A-Z0-9_-]{1,63}))(?![A-Za-z0-9_])"
+)
+
+ANTI_DRIP_DIRECTIVE_POINTS = (
+    ("AD-1", "Consolidate every required finding ID from the contract; do not omit, rename, merge, or close any finding by assertion alone."),
+    ("AD-2", "Trace each finding to one root cause and sweep every matching implementation pattern, call site, normalization path, read/write/list/delete symmetry, error branch, rollback branch, concurrency branch, and authorized parameter variant before editing."),
+    ("AD-3", "Record every search regex, scanned path, total match count, changed match count, justified non-actionable match count, and unresolved_matches=0; a probe-specific or symptom-level single-line patch alone is forbidden."),
+    ("AD-4", "Add adversarial fault-injection tests for every required finding and every affected error, rollback, durability, or concurrency branch; report exact pytest test node IDs."),
+    ("AD-5", "Run pytest --collect-only for every reported node ID, then run focused tests and the full related suite; zero collection errors and zero test failures are required."),
+    ("AD-6", "For remediation mode, write exactly one Root-Cause Architectural Sweep JSON object whose session, gate, mode, finding IDs, probe strings, and SHA match the contract; for baseline mode, write no Root-Cause Architectural Sweep; in both modes, never edit the contract, sidecar, or prompt artifacts."),
+)
+PROMPT_BEGIN_MARKER = "<<<ANTI_DRIP_CONTRACT_BEGIN>>>"
+PROMPT_END_MARKER = "<<<ANTI_DRIP_CONTRACT_END>>>"
+PROMPT_CONTRACT_BLOCK_RE = re.compile(
+    rf"(?ms)^{re.escape(PROMPT_BEGIN_MARKER)}\r?\n.*?\r?\n{re.escape(PROMPT_END_MARKER)}(?=\s|\Z)"
+)
+
+
+def _extract_markdown_h2(content: str, heading_pattern: re.Pattern[str]) -> str | None:
+    match = heading_pattern.search(content)
+    if match is None:
+        return None
+    rest = content[match.end():]
+    next_h2 = re.search(r"(?m)^##[ \t]+", rest)
+    return rest[:next_h2.start() if next_h2 else None].strip()
+
+
+def _parse_audit_timestamp(content: str, path: Path) -> tuple[int, str | None]:
+    match = AUDIT_TIMESTAMP_RE.search(content)
+    if match:
+        value = match.group("value")
+        if "T" in value or " " in value:
+            try:
+                parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except ValueError as exc:
+                raise RuntimeError(f"latest audit timestamp is invalid: {path}") from exc
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return int(parsed.astimezone(timezone.utc).timestamp() * 1_000_000_000), value
+        return path.stat().st_mtime_ns, value
+    dates = list(AUDIT_FILENAME_DATE_RE.finditer(path.name))
+    return path.stat().st_mtime_ns, (
+        datetime.strptime(dates[-1].group("date"), "%Y%m%d").strftime("%Y-%m-%d") if dates else None
+    )
+
+
+def _parse_audit_cycle(path: Path) -> int:
+    match = AUDIT_CYCLE_RE.search(path.name)
+    return int(match.group("cycle")) if match else 0
+
+
+def _audit_report_sort_key(path: Path, content: str) -> tuple[int, int, str]:
+    timestamp, _ = _parse_audit_timestamp(content, path)
+    cycle = _parse_audit_cycle(path)
+    return timestamp, cycle if cycle > 0 else FINAL_REPORT_CYCLE_RANK, path.name.casefold()
+
+
+def _parse_audit_verdict(content: str, path: Path) -> AuditVerdict:
+    tokens: set[str] = set()
+    section = VERDICT_SECTION_RE.search(content)
+    if section:
+        for line in section.group("body").splitlines():
+            match = VERDICT_TOKEN_RE.search(line)
+            if match:
+                tokens.add(match.group(1).upper())
+                break
+    tokens.update(match.group("verdict").upper() for match in VERDICT_FIELD_RE.finditer(content))
+    if len(tokens) != 1:
+        raise RuntimeError(f"latest audit verdict is missing or conflicting: {path}")
+    return tokens.pop()  # type: ignore[return-value]
+
+
+def _extract_probe_strings(finding_body: str) -> tuple[str, ...]:
+    probes: list[str] = []
+    for line in finding_body.splitlines():
+        if not PROBE_LABEL_RE.search(line):
+            continue
+        values = [match.group("value") for match in BACKTICK_VALUE_RE.finditer(line)]
+        values.extend(match.group("value") for match in PROBE_ASSIGNMENT_RE.finditer(line))
+        for value in values:
+            sanitized = sanitize_lesson_field(value)
+            if sanitized and not _SECRET_KEY_RE.search(sanitized) and sanitized not in probes:
+                probes.append(sanitized[:200])
+                if len(probes) == 20:
+                    return tuple(probes)
+    return tuple(probes)
+
+
+def _extract_audit_findings(content: str, path: Path) -> tuple[AuditFinding, ...]:
+    sections = list(FINDINGS_HEADING_RE.finditer(content))
+    if not sections:
+        return ()
+    selected = next((item for item in sections if item.group("blocking")), sections[0])
+    rest = content[selected.end():]
+    next_h2 = re.search(r"(?m)^##[ \t]+", rest)
+    body = rest[:next_h2.start() if next_h2 else None]
+    starts = list(FINDING_START_RE.finditer(body))
+    findings: list[AuditFinding] = []
+    seen: set[str] = set()
+    for index, match in enumerate(starts):
+        finding_id = match.group("finding_id").upper()
+        if finding_id in seen:
+            raise RuntimeError(f"duplicate audit finding ID {finding_id}: {path}")
+        seen.add(finding_id)
+        title = sanitize_lesson_field(match.group("title"))
+        if not title:
+            raise RuntimeError(f"audit finding title is empty: {path}")
+        finding_body = body[match.end():starts[index + 1].start() if index + 1 < len(starts) else None]
+        severity_match = SEVERITY_RE.search(finding_body)
+        findings.append(AuditFinding(
+            finding_id, severity_match.group("severity").lower() if severity_match else None,
+            title, _extract_probe_strings(finding_body),
+        ))
+    return tuple(findings)
+
+
+def _parse_dimensions(content: str, path: Path) -> tuple[tuple[tuple[int, str], ...], tuple[tuple[int, str], ...]]:
+    section = _extract_markdown_h2(content, re.compile(r"(?im)^##[ \t]+16-Dimension Adversarial Matrix[ \t]*$"))
+    if section is None:
+        return (), ()
+    results: dict[int, tuple[str, str]] = {}
+    for line in section.splitlines():
+        match = MATRIX_ROW_RE.fullmatch(line)
+        if not match:
+            continue
+        cells = match.group("cells").upper()
+        states = [state for state in ("PASS", "FAIL") if re.search(rf"(?:\[{state}\]|\b{state}\b)", cells)]
+        dimension, name = int(match.group("dimension")), match.group("name").strip()
+        if len(states) != 1 or (dimension in results and results[dimension] != (name, states[0])):
+            raise RuntimeError(f"audit dimension matrix is conflicting: {path}")
+        results[dimension] = (name, states[0])
+    passed = tuple((number, name) for number, (name, state) in sorted(results.items()) if state == "PASS")
+    failed = tuple((number, name) for number, (name, state) in sorted(results.items()) if state == "FAIL")
+    return passed, failed
+
+
+def extract_prior_audit_outcomes(
+    gate_name: str, repo_root: Path, current_report_path: Path | None = None
+) -> PriorAuditOutcome | None:
+    audit_dir = (repo_root / ".ly_state/session/audit_reports").resolve()
+    candidates: dict[Path, Path] = {}
+
+    def add(path: Path, *, strict: bool) -> None:
+        resolved = path.resolve()
+        valid = (
+            resolved.parent == audit_dir and path.suffix == ".md" and path.is_file()
+            and not path.is_symlink() and path.stat().st_size >= AUDIT_MIN_BYTES
+        )
+        if not valid:
+            if strict:
+                raise RuntimeError(f"invalid audit report candidate: {path}")
+            return
+        candidates[resolved] = path
+
+    if current_report_path is not None:
+        add(current_report_path, strict=True)
+    phase_path = repo_root / ".ly_state/session/phase_gates.json"
+    if phase_path.exists():
+        try:
+            gates = json.loads(phase_path.read_text(encoding="utf-8", errors="strict"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError("phase_gates.json is unreadable while selecting latest audit") from exc
+        entry = gates.get(gate_name, {}) if isinstance(gates, dict) else {}
+        configured = entry.get("audit_report_path") if isinstance(entry, dict) else None
+        if configured is not None:
+            if not isinstance(configured, str) or Path(configured).is_absolute():
+                raise RuntimeError("phase_gates.json contains invalid audit_report_path")
+            add(repo_root / configured, strict=True)
+    if audit_dir.is_dir():
+        for path in audit_dir.glob(f"*{gate_name.lower()}*.md"):
+            add(path, strict=False)
+
+    parsed: list[tuple[tuple[int, int, str], Path, bytes, str, AuditVerdict,
+                       tuple[tuple[int, str], ...], tuple[tuple[int, str], ...],
+                       tuple[AuditFinding, ...]]] = []
+    for resolved, original in candidates.items():
+        try:
+            raw = resolved.read_bytes()
+            content = raw.decode("utf-8", errors="strict").replace("\r\n", "\n")
+        except (OSError, UnicodeError) as exc:
+            raise RuntimeError(f"audit report is unreadable: {original}") from exc
+        gate_match = AUDIT_GATE_RE.search(content)
+        if gate_match and gate_match.group("gate") != gate_name:
+            if original == current_report_path or (isinstance(locals().get("configured"), str) and (repo_root / configured).resolve() == resolved):
+                raise RuntimeError(f"audit report gate mismatch: {original}")
+            continue
+        parsed.append((
+            _audit_report_sort_key(resolved, content), resolved, raw, content,
+            _parse_audit_verdict(content, resolved), *_parse_dimensions(content, resolved),
+            _extract_audit_findings(content, resolved),
+        ))
+    if not parsed:
+        return None
+    _, path, raw, content, verdict, passed, failed, findings = max(parsed, key=lambda item: item[0])
+    if verdict == "NEEDS_FIX" and (not findings or not failed):
+        raise RuntimeError(
+            f"latest NEEDS_FIX audit lacks structured findings or failed dimensions "
+            f"(findings={len(findings)}, failed_dimensions={len(failed)}): {path}"
+        )
+    _, timestamp_text = _parse_audit_timestamp(content, path)
+    return PriorAuditOutcome(
+        path, hashlib.sha256(raw).hexdigest(), verdict, timestamp_text,
+        _parse_audit_cycle(path), passed, failed, findings,
+    )
+
+
+def canonical_json_bytes(payload: Mapping[str, Any]) -> bytes:
+    return (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+
+
+def build_anti_drip_contract(
+    session_id: str, gate_name: str, repo_root: Path, outcome: PriorAuditOutcome | None
+) -> dict[str, Any]:
+    validate_identifier(session_id, "session_id")
+    validate_identifier(gate_name, "gate_name")
+    remediation = outcome is not None and outcome.verdict == "NEEDS_FIX"
+    source = None if outcome is None else {
+        "path": outcome.report_path.resolve().relative_to(repo_root.resolve()).as_posix(),
+        "sha256": outcome.report_sha256, "verdict": outcome.verdict,
+        "timestamp": outcome.timestamp_text, "cycle": outcome.cycle,
+    }
+    return {
+        "schema_version": "anti-drip-contract/v1",
+        "contract_type": "ANTI_DRIP_PIPELINE_HARDENING",
+        "session_id": session_id, "gate_name": gate_name,
+        "mode": "remediation" if remediation else "baseline",
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
+        "source_audit": source,
+        "required_findings": [
+            {"finding_id": finding.finding_id, "severity": finding.severity, "title": finding.title,
+             "probe_strings": list(finding.probe_strings)} for finding in (outcome.findings if remediation else ())
+        ],
+        "passed_dimensions": [
+            {"dimension": number, "name": name} for number, name in (outcome.passed_dimensions if remediation else ())
+        ],
+        "failed_dimensions": [
+            {"dimension": number, "name": name} for number, name in (outcome.failed_dimensions if remediation else ())
+        ],
+        "directive": {"version": "codex-anti-drip-6/v1", "points": [
+            {"id": directive_id, "requirement": requirement}
+            for directive_id, requirement in ANTI_DRIP_DIRECTIVE_POINTS
+        ]},
+    }
+
+
+def write_anti_drip_contract(
+    repo_root: Path, session_id: str, payload: Mapping[str, Any]
+) -> tuple[Path, Path, str]:
+    validate_identifier(session_id, "session_id")
+    session_dir = repo_root / ".ly_state/session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    contract_path = ensure_session_containment(session_dir / f"anti_drip_contract_{session_id}.json", repo_root)
+    sidecar_path = ensure_session_containment(contract_path.with_suffix(".sha256"), repo_root)
+    data = canonical_json_bytes(payload)
+    digest = hashlib.sha256(data).hexdigest()
+    sidecar = f"{digest}  {contract_path.name}\n".encode("ascii")
+    temp_paths: list[Path] = []
+    try:
+        for blob in (data, sidecar):
+            with tempfile.NamedTemporaryFile("wb", delete=False, dir=session_dir) as handle:
+                temp_paths.append(Path(handle.name))
+                handle.write(blob)
+                handle.flush()
+                os.fsync(handle.fileno())
+        os.replace(temp_paths[0], contract_path)
+        os.replace(temp_paths[1], sidecar_path)
+        if contract_path.read_bytes() != data or sidecar_path.read_bytes() != sidecar:
+            raise RuntimeError("anti-drip contract readback mismatch")
+    except (OSError, ValueError, TypeError) as exc:
+        raise RuntimeError("anti-drip contract atomic publication failed") from exc
+    finally:
+        for path in temp_paths:
+            path.unlink(missing_ok=True)
+    return contract_path, sidecar_path, digest
+
+
+def build_anti_drip_prompt_clause(
+    contract_path: Path, contract_sha256: str, contract: Mapping[str, Any], repo_root: Path
+) -> str:
+    if not re.fullmatch(r"[0-9a-f]{64}", contract_sha256):
+        raise ValueError("contract_sha256 must be lowercase SHA-256")
+    relative = contract_path.resolve().relative_to(repo_root.resolve()).as_posix()
+    findings = json.dumps(contract["required_findings"], ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    lines = [
+        PROMPT_BEGIN_MARKER, f"ANTI_DRIP_CONTRACT_PATH={relative}",
+        f"ANTI_DRIP_CONTRACT_SHA256={contract_sha256}", f"ANTI_DRIP_SESSION_ID={contract['session_id']}",
+        f"ANTI_DRIP_GATE_NAME={contract['gate_name']}", f"ANTI_DRIP_MODE={contract['mode']}",
+        f"ANTI_DRIP_REQUIRED_FINDINGS={findings}", "CODEX_ANTI_DRIP_DIRECTIVE_VERSION=codex-anti-drip-6/v1",
+        *(f"({directive_id}) {requirement}" for directive_id, requirement in ANTI_DRIP_DIRECTIVE_POINTS),
+        PROMPT_END_MARKER,
+    ]
+    return "\n".join(lines)
+
+
+
 def build_regression_clause(classes: list[str] | None = None) -> str:
     """Build the STANDING REGRESSION CLAUSE prompt section enumerating error classes."""
     if classes is None:
@@ -1124,9 +1483,9 @@ def build_regression_clause(classes: list[str] | None = None) -> str:
     )
 
 MODELS = {
-    "high": "9router/cx/gpt-5.6-sol",
-    "medium": "9router/cx/gpt-5.6-terra",
-    "low": "9router/cx/gpt-5.6-luna"
+    "high": "9router/ag/gemini-3.8-flash-high",
+    "medium": "9router/ag/gemini-3.8-flash-high",
+    "low": "9router/ag/gemini-3.8-flash-high"
 }
 VALID_RISK_LEVELS = ("low", "medium", "high")
 
@@ -1192,6 +1551,8 @@ def _parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | Non
     pos_args = []
     explicit_risk = None
     co_roles = []
+    token_saver = False
+    explicit_model = None
     i = 0
     while i < len(args):
         arg = args[i]
@@ -1218,6 +1579,17 @@ def _parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | Non
             co_roles.append(co_role)
             i += 2
             continue
+        elif arg == "--token-saver":
+            token_saver = True
+            i += 1
+            continue
+        elif arg == "--model":
+            if i + 1 >= len(args):
+                print("[ERROR] Flag --model requires a model name.", file=sys.stderr)
+                sys.exit(2)
+            explicit_model = args[i + 1]
+            i += 2
+            continue
         elif arg.startswith("-"):
             print(f"[ERROR] Unknown or unsupported flag: '{arg}'.", file=sys.stderr)
             sys.exit(2)
@@ -1227,17 +1599,18 @@ def _parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | Non
 
     if len(pos_args) != 5:
         print(
-            "Usage: python scripts/dispatch_l2.py <role_name> <gate_name> <task_slug> <task_description> <scope> [--risk low|high] [--co-role <role_name>]...",
+            "Usage: python scripts/dispatch_l2.py <role_name> <gate_name> <task_slug> <task_description> <scope> [--risk low|high] [--co-role <role_name>]... [--token-saver] [--model <model>]",
             file=sys.stderr,
         )
         sys.exit(2)
 
-    return pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, co_roles
+    return pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, co_roles, token_saver, explicit_model
 
 
 def parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | None]:
     """Backward-compatible parser result for callers that do not consume co-roles."""
-    return _parse_cli_args(args)[:6]
+    res = _parse_cli_args(args)
+    return res[0], res[1], res[2], res[3], res[4], res[5]
 
 
 def _parse_skills(value) -> list[str]:
@@ -1311,7 +1684,7 @@ def resolve_l2_roles(primary_name: str, co_role_names: list[str], repo_root: Pat
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    role_name, gate_name, task_slug, task_desc, scope, explicit_risk, co_role_names = _parse_cli_args(sys.argv[1:])
+    role_name, gate_name, task_slug, task_desc, scope, explicit_risk, co_role_names, token_saver, explicit_model = _parse_cli_args(sys.argv[1:])
     validate_identifier(role_name, "role_name")
     validate_identifier(gate_name, "gate_name")
     validate_identifier(task_slug, "task_slug")
@@ -1320,10 +1693,18 @@ def main():
     if explicit_risk:
         risk = explicit_risk
         risk_reason = "explicit --risk flag"
+    elif token_saver:
+        risk = "low"
+        risk_reason = "token-saver flag active"
     else:
         risk, risk_reason = infer_risk(scope)
 
-    model = MODELS[risk]
+    if explicit_model:
+        model = explicit_model
+    elif token_saver:
+        model = MODELS["low"]
+    else:
+        model = MODELS[risk]
 
     # 1. Resolve every repo-local role and skill before dispatch side effects.
     try:
@@ -1345,13 +1726,19 @@ def main():
         _generate_and_print(
             roles, gate_name, task_desc, scope,
             session_id, lessons_block, risk, risk_reason, model, graph_evidence,
+            token_saver=token_saver,
         )
+    except (RuntimeError, OSError, UnicodeError, ValueError) as exc:
+        print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
+        return 2
     finally:
         release_session_lock(lock_path)
+    return 0
 
 
 def _generate_and_print(roles, gate_name, task_desc, scope,
-                        session_id, lessons_block, risk, risk_reason, model, graph_evidence):
+                        session_id, lessons_block, risk, risk_reason, model, graph_evidence,
+                        token_saver: bool = False):
     primary = roles[0]
     co_roles = roles[1:]
     role_name = primary["name"]
@@ -1364,7 +1751,32 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         path for role in roles for path in [role["role_file"], *role["skill_files"]]
     ))
     source_manifest = ", ".join(source_files)
-    # 4. Generate command with full 16-Dimension Adversarial Matrix directive
+    token_saver_clause = (
+        "TOKEN SAVER DIRECTIVE: Minimize token usage. Perform targeted, minimal diffs only; do not dump or rewrite untouched code. Keep L2 report concise. "
+        if token_saver else ""
+    )
+    outcome = extract_prior_audit_outcomes(gate_name, REPO_ROOT)
+    contract = build_anti_drip_contract(session_id, gate_name, REPO_ROOT, outcome)
+    contract_path, contract_sidecar_path, contract_sha256 = write_anti_drip_contract(
+        REPO_ROOT, session_id, contract
+    )
+    anti_drip_clause = build_anti_drip_prompt_clause(
+        contract_path, contract_sha256, contract, REPO_ROOT
+    )
+    if contract["mode"] == "remediation":
+        failed_summary = ", ".join(
+            f"Dim {item['dimension']} ({item['name']})" for item in contract["failed_dimensions"]
+        )
+        finding_summary = ", ".join(
+            f"{item['finding_id']} ({item['title']})" for item in contract["required_findings"]
+        )
+        adversarial_clause = (
+            f"{anti_drip_clause}\nANTI-DRIP REMEDIATION SUMMARY: failed dimensions [{failed_summary}]; "
+            f"required findings [{finding_summary}]."
+        )
+    else:
+        adversarial_clause = f"{anti_drip_clause}\n{ADVERSARIAL_DIRECTIVE_16D}"
+
     prompt = (
         f"REPO_ROOT: {REPO_ROOT}. "
         f"ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. "
@@ -1374,6 +1786,7 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         f"GATE: {gate_name}. "
         f"{build_graph_prompt_evidence(graph_evidence)} "
         f"LESSONS: {lessons_block}. "
+        f"{token_saver_clause}"
         f"SKILL SOURCE CONTRACT: REPO_AGENT_ROOT={REPO_ROOT}\\.agents\\agent; "
         f"REPO_SKILL_ROOT={REPO_ROOT}\\.agents\\skills. "
         f"First run Set-Location '{REPO_ROOT}'; "
@@ -1383,9 +1796,10 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         f"Report every exact repo-local role/skill file listed above and forbidden path scan result. "
         f"SCOPE: {scope}. "
         f"REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; "
+        f"TEST SCOPE CONSTRAINT: Limit test execution to declared scope files and related test suites (e.g. pytest <scope_test_files> -v, npm test); do NOT scan or run the full 4400+ test repository suite. "
         f"write L2 report to .ly_state/session/{session_id}.md. "
-        f"Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing. "
-        f"{ADVERSARIAL_DIRECTIVE_16D}"
+        f"Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing.\n"
+        f"{adversarial_clause}\n"
         f"L2 REPORT FORMAT (MANDATORY - copy exactly): The report MUST contain these sections in order: "
         f"(1) Header with Role, Gate, Session, Date fields. "
         f"(2) '## Summary' with concise overview. "
@@ -1409,6 +1823,25 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
     prompt_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = ensure_session_containment(prompt_dir / f"prompt_{session_id}.txt", REPO_ROOT)
     expected_digest = write_prompt_with_sha256(prompt_path, prompt)
+    prompt_bytes = prompt_path.read_bytes()
+    if hashlib.sha256(prompt_bytes).hexdigest() != expected_digest:
+        raise RuntimeError("prompt transport SHA-256 mismatch after write")
+    if prompt_bytes.startswith(b"\xef\xbb\xbf"):
+        raise RuntimeError("prompt readback contains UTF-8 BOM")
+    try:
+        prompt_readback = prompt_bytes.decode("utf-8", errors="strict")
+    except UnicodeDecodeError as exc:
+        raise RuntimeError(f"prompt readback is not strict UTF-8: {exc}") from exc
+    block_matches = list(PROMPT_CONTRACT_BLOCK_RE.finditer(prompt_readback))
+    if (
+        prompt_readback.splitlines().count(PROMPT_BEGIN_MARKER) != 1
+        or prompt_readback.splitlines().count(PROMPT_END_MARKER) != 1
+        or len(block_matches) != 1
+    ):
+        raise RuntimeError("prompt readback anti-drip marker cardinality mismatch")
+    actual_block = block_matches[0].group(0)
+    if "\r" in actual_block or actual_block != anti_drip_clause:
+        raise RuntimeError("prompt readback differs from generated anti-drip clause")
     read_stmt = build_verified_prompt_read_statement(prompt_path, expected_digest)
 
     cmd = (
@@ -1426,9 +1859,12 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
     print(f"GATE={gate_name}")
     print(f"MODEL={model}")
     print(f"RISK={risk} ({risk_reason})")
+    print(f"ANTI_DRIP_MODE={contract['mode']}")
+    print(f"ANTI_DRIP_CONTRACT={contract_path.relative_to(REPO_ROOT).as_posix()}")
+    print(f"ANTI_DRIP_CONTRACT_SHA256={contract_sha256}")
     print(f"---COMMAND---")
     print(cmd)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
