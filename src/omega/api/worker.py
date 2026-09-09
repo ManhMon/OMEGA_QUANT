@@ -89,6 +89,23 @@ def execute_job(job: dict[str, Any]) -> dict[str, Any]:
     task_type = job.get("task_type", "")
     if task_type in {"noop", "sample", "test", "health_probe"}:
         return {"status": "success", "echo": job.get("payload", {})}
+    if task_type in {"paper_order", "paper_execution", "virtual_order"}:
+        from omega.quant.execution.paper_trading import get_paper_engine
+        engine = get_paper_engine()
+        order = job.get("payload", {})
+        results = engine.execute_virtual_order(order)
+        has_rejected = any(str(r.get("execution_status", "")).startswith("REJECTED") for r in results)
+        if has_rejected:
+            first_rej = next(r for r in results if str(r.get("execution_status", "")).startswith("REJECTED"))
+            rej_status = first_rej.get("execution_status", "REJECTED")
+            rej_reason = first_rej.get("reject_reason", rej_status)
+            return {
+                "status": "error",
+                "error_code": rej_status,
+                "reason": rej_reason,
+                "executions": results,
+            }
+        return {"status": "success", "executions": results}
     raise RuntimeError(f"No real handler registered for task type {task_type}")
 
 
@@ -106,39 +123,57 @@ def run_worker(service: JobService | None = None, once: bool = False) -> int:
     signal.signal(signal.SIGINT, stop)
     service.recover_stale()
 
-    exit_code = 0
-    while not draining:
-        # Calculate real queue depth for telemetry input
-        queue_depth = 0
-        try:
-            with service._connect() as db:
-                row = db.execute("SELECT COUNT(*) as count FROM omega_jobs WHERE status='QUEUED'").fetchone()
-                if row:
-                    queue_depth = int(row["count"])
-        except Exception:
-            queue_depth = 0
+    service.register_worker(
+        worker_id,
+        socket.gethostname(),
+        os.getpid(),
+        {"concurrency": governor.policy.target_concurrency, "mode": governor.policy.mode.value},
+    )
 
-        governor.decide(queue_depth=queue_depth)
-        job = service.claim(worker_id)
-        if job is None:
+    exit_code = 0
+    try:
+        while not draining:
+            service.heartbeat_worker(worker_id)
+            # Calculate real queue depth for telemetry input
+            queue_depth = 0
+            try:
+                with service._connect() as db:
+                    row = db.execute("SELECT COUNT(*) as count FROM omega_jobs WHERE status='QUEUED'").fetchone()
+                    if row:
+                        queue_depth = int(row["count"])
+            except Exception:
+                queue_depth = 0
+
+            governor.decide(queue_depth=queue_depth)
+            job = service.claim(worker_id)
+            if job is None:
+                if once:
+                    return 0
+                time.sleep(1)
+                continue
+            if job["cancellation_requested_at"]:
+                service.acknowledge_cancellation(job["job_id"], worker_id)
+                if once:
+                    return 0
+                continue
+            try:
+                result = execute_job(job)
+                if result.get("status") in {"error", "rejected"}:
+                    err_code = str(result.get("error_code", "EXECUTION_REJECTED"))
+                    err_reason = str(result.get("reason", "Paper order rejected"))
+                    service.fail(job["job_id"], worker_id, err_code, err_reason)
+                    if once:
+                        return 1
+                else:
+                    service.complete(job["job_id"], worker_id, result)
+            except Exception as error:
+                service.fail(job["job_id"], worker_id, "UNSUPPORTED_TASK_TYPE", str(error))
+                if once:
+                    return 1
             if once:
                 return 0
-            time.sleep(1)
-            continue
-        if job["cancellation_requested_at"]:
-            service.acknowledge_cancellation(job["job_id"], worker_id)
-            if once:
-                return 0
-            continue
-        try:
-            result = execute_job(job)
-            service.complete(job["job_id"], worker_id, result)
-        except Exception as error:
-            service.fail(job["job_id"], worker_id, "UNSUPPORTED_TASK_TYPE", str(error))
-            if once:
-                return 1
-        if once:
-            return 0
+    finally:
+        service.deregister_worker(worker_id, "STOPPED")
     return exit_code
 
 

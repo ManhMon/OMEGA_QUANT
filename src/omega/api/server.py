@@ -15,6 +15,7 @@ from omega.api.routes.copilot import router as copilot_router, sse_copilot_route
 from omega.api.routes.jobs import router as jobs_router
 from omega.api.routes.models import router as models_router
 from omega.api.routes.operations import router as operations_router
+from omega.api.routes.execution import router as execution_router
 
 strategy_router = APIRouter(prefix="/api/v1/strategy", tags=["strategy"])
 strategy_router.add_api_route("/backtest/{strategy_id}", get_strategy_backtest_report, methods=["GET"])
@@ -79,6 +80,7 @@ def create_app() -> FastAPI:
     app.include_router(jobs_router)
     app.include_router(models_router)
     app.include_router(operations_router)
+    app.include_router(execution_router)
 
     @app.get("/health")
     async def health_check():

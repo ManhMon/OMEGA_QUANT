@@ -4,6 +4,7 @@ import { useExecutionBlotter } from '../../hooks/usePortfolioState';
 import { useUiStore } from '../../store/uiStore';
 import { useTranslation } from '../../i18n';
 import { TotpRebalanceModal } from './TotpRebalanceModal';
+import { PaperDaemonPanel } from './PaperDaemonPanel';
 import { advancedQuantApi, PortfolioRebalanceExecuteResponse } from '../../api/advancedQuant';
 
 export const ExecutionBlotterView: React.FC = () => {
@@ -122,6 +123,9 @@ export const ExecutionBlotterView: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-4 font-mono select-none">
+      {/* Paper Trading Daemon & Execution Lifecycle Controls */}
+      <PaperDaemonPanel onRefresh={refetch} />
+
       {/* OMS Quick Stats */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
         <div className="glass-card rounded-xl p-4 flex flex-col gap-1 border-emerald-500/20 bg-emerald-950/10">

@@ -868,6 +868,130 @@ export const advancedQuantApi = {
       signal,
       ...options,
     }),
+
+  // Paper Trading Lifecycle & Execution Controls
+  getPaperDaemonStatus: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<PaperDaemonStatusResponse>('/api/v1/execution/status', { ...options, signal }),
+
+  startPaperDaemon: (payload?: PaperDaemonStartRequest, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<PaperDaemonStatusResponse>('/api/v1/execution/start', {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      ...options,
+    }),
+
+  stopPaperDaemon: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<PaperDaemonStatusResponse>('/api/v1/execution/stop', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      ...options,
+    }),
+
+  pausePaperDaemon: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<PaperDaemonStatusResponse>('/api/v1/execution/pause', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      ...options,
+    }),
+
+  resumePaperDaemon: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<PaperDaemonStatusResponse>('/api/v1/execution/resume', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      ...options,
+    }),
+
+  submitPaperOrder: (payload: PaperOrderExecutionRequest, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<PaperOrderExecutionResponse>('/api/v1/execution/orders', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      ...options,
+    }),
+
+  getPaperOrders: (limit: number = 100, symbol?: string, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) => {
+    const q = new URLSearchParams();
+    q.set('limit', String(limit));
+    if (symbol) q.set('symbol', symbol);
+    return resilientApiRequest<Array<Record<string, unknown>>>(`/api/v1/execution/orders?${q.toString()}`, { ...options, signal });
+  },
+
+  getPaperPositions: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<{ positions: Record<string, unknown>; count: number; as_of: string }>('/api/v1/execution/positions', { ...options, signal }),
+
+  getExecutionWorkers: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<Array<Record<string, unknown>>>('/api/v1/execution/workers', { ...options, signal }),
 };
+
+export type PaperDaemonState = 'STOPPED' | 'RUNNING' | 'PAUSED' | 'ERROR';
+
+export interface PaperDaemonStatusResponse {
+  state: PaperDaemonState;
+  active: boolean;
+  mode?: string;
+  initial_capital_vnd?: number;
+  cash_vnd?: number;
+  portfolio_equity_vnd?: number;
+  total_pnl_vnd?: number;
+  daily_pnl_vnd: number;
+  realized_pnl_vnd?: number;
+  unrealized_pnl_vnd?: number;
+  uptime_seconds: number;
+  last_heartbeat: string | null;
+  processed_orders_count: number;
+  active_orders_count: number;
+  positions_count?: number;
+  positions?: Record<string, {
+    symbol: string;
+    shares: number;
+    avg_price: number;
+    current_price: number;
+    realized_pnl_vnd: number;
+    unrealized_pnl_vnd?: number;
+  }>;
+  active_workers?: number;
+  workers?: Array<{
+    worker_id: string;
+    hostname: string;
+    pid: number;
+    status: string;
+    started_at: string;
+    last_heartbeat: string;
+    metadata?: Record<string, unknown>;
+  }>;
+  model_pnl?: Record<string, number>;
+}
+
+export interface PaperDaemonStartRequest {
+  initial_capital?: number;
+  mode?: string;
+}
+
+export interface PaperOrderExecutionRequest {
+  symbol: string;
+  side: 'BUY' | 'SELL';
+  size: number;
+  price: number;
+  model_id?: string;
+  feature_ts: string;
+  decision_ts: string;
+  available_at?: string;
+  order_book_data?: Record<string, unknown>;
+}
+
+export interface PaperOrderExecutionResponse {
+  status: string;
+  symbol: string;
+  side: string;
+  executions: Array<Record<string, unknown>>;
+  count: number;
+  submitted_at: string;
+}
 
 

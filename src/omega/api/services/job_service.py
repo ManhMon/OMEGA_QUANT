@@ -100,6 +100,13 @@ class JobService:
                     event_type TEXT NOT NULL, payload_json TEXT NOT NULL, created_at TEXT NOT NULL,
                     FOREIGN KEY(job_id) REFERENCES omega_jobs(job_id)
                 );
+                CREATE TABLE IF NOT EXISTS omega_workers (
+                    worker_id TEXT PRIMARY KEY, hostname TEXT NOT NULL, pid INTEGER NOT NULL,
+                    status TEXT NOT NULL, started_at TEXT NOT NULL, last_heartbeat TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_omega_workers_status
+                    ON omega_workers(status, last_heartbeat);
             """)
 
     def submit(self, request: JobSubmitRequest, idempotency_key: str) -> tuple[dict[str, Any], bool]:
@@ -217,6 +224,77 @@ class JobService:
                 recovered += 1
             db.commit()
         return recovered
+
+    def register_worker(self, worker_id: str, hostname: str, pid: int, metadata: dict[str, Any] | None = None) -> dict[str, Any]:
+        now = utc_now().isoformat()
+        metadata_json = canonical_json(redact(metadata or {}))
+        with self._connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                """
+                INSERT INTO omega_workers(worker_id, hostname, pid, status, started_at, last_heartbeat, metadata_json)
+                VALUES(?, ?, ?, 'ACTIVE', ?, ?, ?)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    hostname=excluded.hostname, pid=excluded.pid, status='ACTIVE',
+                    last_heartbeat=excluded.last_heartbeat, metadata_json=excluded.metadata_json
+                """,
+                (worker_id, hostname, pid, now, now, metadata_json),
+            )
+            db.commit()
+        return self.get_worker(worker_id) or {}
+
+    def heartbeat_worker(self, worker_id: str) -> bool:
+        now = utc_now().isoformat()
+        with self._connect() as db:
+            changed = db.execute(
+                "UPDATE omega_workers SET last_heartbeat=?, status='ACTIVE' WHERE worker_id=?",
+                (now, worker_id),
+            ).rowcount
+        return changed > 0
+
+    def deregister_worker(self, worker_id: str, status: str = "STOPPED") -> bool:
+        now = utc_now().isoformat()
+        with self._connect() as db:
+            changed = db.execute(
+                "UPDATE omega_workers SET status=?, last_heartbeat=? WHERE worker_id=?",
+                (status, now, worker_id),
+            ).rowcount
+        return changed > 0
+
+    def list_active_workers(self, timeout_seconds: int = 60) -> list[dict[str, Any]]:
+        cutoff = (utc_now() - timedelta(seconds=timeout_seconds)).isoformat()
+        with self._connect() as db:
+            rows = db.execute(
+                "SELECT * FROM omega_workers WHERE status='ACTIVE' AND last_heartbeat>=? ORDER BY started_at",
+                (cutoff,),
+            ).fetchall()
+        return [
+            {
+                "worker_id": row["worker_id"],
+                "hostname": row["hostname"],
+                "pid": row["pid"],
+                "status": row["status"],
+                "started_at": row["started_at"],
+                "last_heartbeat": row["last_heartbeat"],
+                "metadata": json.loads(row["metadata_json"]),
+            }
+            for row in rows
+        ]
+
+    def get_worker(self, worker_id: str) -> dict[str, Any] | None:
+        with self._connect() as db:
+            row = db.execute("SELECT * FROM omega_workers WHERE worker_id=?", (worker_id,)).fetchone()
+        if row is None:
+            return None
+        return {
+            "worker_id": row["worker_id"],
+            "hostname": row["hostname"],
+            "pid": row["pid"],
+            "status": row["status"],
+            "started_at": row["started_at"],
+            "last_heartbeat": row["last_heartbeat"],
+            "metadata": json.loads(row["metadata_json"]),
+        }
 
     def _terminalize(self, job_id: str, worker_id: str, status: str, result: dict[str, Any] | None = None, error_code: str | None = None, error_message: str | None = None) -> None:
         now = utc_now().isoformat()
