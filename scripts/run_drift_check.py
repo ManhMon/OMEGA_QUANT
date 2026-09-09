@@ -234,45 +234,84 @@ def save_drift_status(drift_detected: bool, details: dict, rollback_info: dict) 
     logger.info(f"Drift status saved to: {DRIFT_STATUS_PATH}")
 
 
-def main():
-    logger.info("=== DAILY DRIFT CHECK START ===")
+def run_drift_sentinel(params: dict | None = None) -> dict:
+    """
+    Detection-only scheduling boundary for Drift Sentinel.
+    Runs drift detection and SRE alerting on recent model metrics.
+    auto_rollback is disabled by default to prevent unintended model rollbacks during monitoring.
+    """
+    params = params or {}
+    auto_rollback = bool(params.get("auto_rollback", False))
+    raw_path = params.get("metrics_path", METRICS_PATH)
+    metrics_path = Path(raw_path)
+    if not metrics_path.is_absolute():
+        metrics_path = PROJECT_ROOT / metrics_path
 
-    # Step 1: Load metrics
-    data = load_metrics()
+    if not metrics_path.exists() or metrics_path.is_dir():
+        fail_code = "METRICS_PATH_IS_DIR" if metrics_path.is_dir() else "METRICS_FILE_NOT_FOUND"
+        logger.warning(f"Metrics file not accessible: {metrics_path} ({fail_code})")
+        return {
+            "status": "failed",
+            "drift_detected": False,
+            "error": fail_code,
+            "details": {"metrics_path": str(metrics_path)},
+            "rollback": {"rollback_executed": False, "reason": "No metrics accessible"},
+        }
+
+    try:
+        with open(metrics_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as exc:
+        return {
+            "status": "failed",
+            "drift_detected": False,
+            "error": "CORRUPTED_METRICS_FILE",
+            "details": {"error": str(exc)},
+            "rollback": {"rollback_executed": False, "reason": "Corrupted metrics"},
+        }
+
     metrics_list = extract_metric_history(data)
-    logger.info(f"Extracted {len(metrics_list)} metric observations")
-
     if len(metrics_list) < 2:
-        logger.warning("Insufficient metric history for drift detection (need >= 2)")
-        save_drift_status(False, {"reason": "Insufficient history"}, {"rollback_executed": False})
-        sys.exit(0)
+        res = {
+            "status": "success",
+            "drift_detected": False,
+            "details": {"reason": "Insufficient history (< 2 observations)"},
+            "rollback": {"rollback_executed": False, "reason": "Insufficient history"},
+        }
+        save_drift_status(False, res["details"], res["rollback"])
+        return res
 
-    # Step 2: Run drift detection (2-of-3 majority voting)
     drift_detected, detection_details = run_drift_detection(metrics_list)
-    logger.info(f"Drift detection result: drift={drift_detected}")
-
-    # Step 3: SRE alerting confirmation
     sre_drift, sre_reason = run_sre_alerting(metrics_list)
-    logger.info(f"SRE alerting result: drift={sre_drift}, reason={sre_reason}")
 
-    # Majority voting: need 2-of-3 signals (ensemble + SRE counts as 2 detectors)
-    # The DriftDetectorEnsemble already does internal 2-of-3 voting
-    final_drift = drift_detected
+    final_drift = bool(drift_detected or sre_drift)
+    rollback_info = {"rollback_executed": False, "reason": "Detection-only mode (auto-rollback disabled)"}
 
-    rollback_info = {"rollback_executed": False, "reason": "No drift"}
-
-    if final_drift:
-        logger.warning("!!! DRIFT DETECTED - Executing rollback !!!")
+    if final_drift and auto_rollback:
         rollback_info = execute_rollback(metrics_list)
 
-        if rollback_info["rollback_executed"]:
-            logger.info(f"Rollback SUCCESS: {rollback_info['reason']}")
-        else:
-            logger.warning(f"Rollback SKIPPED: {rollback_info['reason']}")
-
-    # Step 4: Save status
     save_drift_status(final_drift, detection_details, rollback_info)
 
+    return {
+        "status": "success",
+        "drift_detected": final_drift,
+        "ensemble_drift": drift_detected,
+        "sre_drift": sre_drift,
+        "sre_reason": sre_reason,
+        "detection_details": detection_details if isinstance(detection_details, dict) else {"message": str(detection_details)},
+        "rollback": rollback_info,
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def main():
+    logger.info("=== DAILY DRIFT CHECK START ===")
+    res = run_drift_sentinel({"auto_rollback": True})
+    if res.get("status") == "failed":
+        logger.error(f"Drift check failed: {res.get('error')}")
+        sys.exit(1)
+
+    final_drift = res.get("drift_detected", False)
     if final_drift:
         logger.warning("=== DRIFT CHECK COMPLETE: DRIFT DETECTED (exit 2) ===")
         sys.exit(2)

@@ -864,3 +864,112 @@ class PortfolioRebalanceExecuteResponse(StrictApiModel):
     provenance: ProvenanceEnvelope | None = None
 
 
+# Phase 3: Multi-Seed Evolution, Variance Explorer & Drift Sentinel Schemas
+
+class PitWindows(StrictApiModel):
+    train_start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    train_end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    validation_start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    validation_end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    test_start_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    test_end_date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @model_validator(mode="after")
+    def validate_chronological_order(self) -> "PitWindows":
+        d_tr_s = date.fromisoformat(self.train_start_date)
+        d_tr_e = date.fromisoformat(self.train_end_date)
+        d_val_s = date.fromisoformat(self.validation_start_date)
+        d_val_e = date.fromisoformat(self.validation_end_date)
+        d_te_s = date.fromisoformat(self.test_start_date)
+        d_te_e = date.fromisoformat(self.test_end_date)
+
+        if not (d_tr_s <= d_tr_e < d_val_s <= d_val_e < d_te_s <= d_te_e):
+            raise ValueError(
+                "Chronological split violation: train_start <= train_end < val_start <= val_end < test_start <= test_end required"
+            )
+        return self
+
+
+class EvolutionRunRequest(StrictApiModel):
+    dataset: Annotated[str, Field(min_length=1, max_length=256)] = "data/market_2015_now.parquet"
+    pit_cutoff: AwareUtcDateTime
+    strategy_id: Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$")] = "GENETIC_ALPHA_EVOLUTION"
+    seeds: list[Annotated[int, Field(ge=0, le=2147483647)]] = Field(default_factory=lambda: [42, 1042, 2042, 3042, 4042])
+    population: Annotated[int, Field(ge=2, le=500)] = 50
+    generations: Annotated[int, Field(ge=1, le=200)] = 10
+    workers: Annotated[int, Field(ge=1, le=16)] = 1
+    transaction_cost_bps: Annotated[FiniteFloat, Field(ge=0.0, le=500.0)] = 25.0
+    windows: PitWindows | None = None
+    risk_parameters: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_evolution_params(self) -> "EvolutionRunRequest":
+        if self.pit_cutoff > datetime.now(timezone.utc) + timedelta(seconds=60):
+            raise ValueError("pit_cutoff cannot exceed current server time")
+        if len(self.seeds) < 1 or len(self.seeds) > 32:
+            raise ValueError("seeds count must be between 1 and 32")
+        if len(set(self.seeds)) != len(self.seeds):
+            raise ValueError("seeds list must contain unique integers")
+        clean_ds = self.dataset.replace("\\", "/")
+        if ".." in clean_ds or clean_ds.startswith("/") or "\x00" in clean_ds:
+            raise ValueError("path traversal or invalid path detected in dataset")
+        if any(f in clean_ds for f in [".agents", ".gemini", ".openclaw", ".codex"]):
+            raise ValueError("forbidden path reference detected in dataset")
+        return self
+
+
+class SeedResult(StrictApiModel):
+    seed: Annotated[int, Field(ge=0)]
+    status: Literal["COMPLETED", "FAILED", "SKIPPED"]
+    sharpe: FiniteFloat | None = None
+    ic: FiniteFloat | None = None
+    max_drawdown: FiniteFloat | None = None
+    turnover: FiniteFloat | None = None
+    trade_count: Annotated[int, Field(ge=0)] = 0
+    artifact_reference: str | None = None
+    failure_code: str | None = None
+
+
+class EvolutionSummary(StrictApiModel):
+    status: Literal["success", "partial", "failed"] = "success"
+    strategy_id: Annotated[str, Field(min_length=1, max_length=64)]
+    requested_seeds: Annotated[int, Field(ge=1)]
+    completed_seeds: Annotated[int, Field(ge=0)]
+    failed_seeds: Annotated[int, Field(ge=0)]
+    median_sharpe: FiniteFloat | None = None
+    iqr_sharpe: FiniteFloat | None = None
+    std_sharpe: FiniteFloat | None = None
+    worst_drawdown: FiniteFloat | None = None
+    median_ic: FiniteFloat | None = None
+    median_turnover: FiniteFloat | None = None
+    seed_results: list[SeedResult] = Field(default_factory=list)
+    provenance: ProvenanceEnvelope | None = None
+
+
+class DriftScheduleRequest(StrictApiModel):
+    enabled: bool | None = None
+    schedule: Annotated[str, Field(min_length=1, max_length=64)] | None = None
+    timezone: Annotated[str, Field(min_length=1, max_length=64)] | None = None
+    model_ids: list[Annotated[str, Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")]] | None = None
+    thresholds: dict[str, Annotated[FiniteFloat, Field(ge=0.0, le=10.0)]] | None = None
+    revision: Annotated[int, Field(ge=0)]
+
+
+class DriftMonitorStatus(StrictApiModel):
+    status: Literal["success"] = "success"
+    enabled: bool
+    schedule: Annotated[str, Field(min_length=1, max_length=64)]
+    timezone: Annotated[str, Field(min_length=1, max_length=64)]
+    last_run: AwareUtcDateTime | None = None
+    next_run: AwareUtcDateTime | None = None
+    heartbeat: AwareUtcDateTime
+    evaluated_model_ids: list[str]
+    missing_model_ids: list[str]
+    alerts: list[dict[str, Any]] = Field(default_factory=list)
+    last_job: dict[str, Any] | None = None
+    thresholds: dict[str, float]
+    revision: Annotated[int, Field(ge=0)]
+    provenance: ProvenanceEnvelope | None = None
+
+
+

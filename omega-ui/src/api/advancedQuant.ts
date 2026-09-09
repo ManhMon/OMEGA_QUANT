@@ -611,6 +611,90 @@ export interface ResourceGovernorStateResponse {
   provenance?: ProvenanceEnvelope | null;
 }
 
+export interface PitWindows {
+  train_start_date: string;
+  train_end_date: string;
+  validation_start_date: string;
+  validation_end_date: string;
+  test_start_date: string;
+  test_end_date: string;
+}
+
+export interface EvolutionRunRequest {
+  dataset?: string;
+  pit_cutoff: string;
+  strategy_id?: string;
+  seeds?: number[];
+  population?: number;
+  generations?: number;
+  workers?: number;
+  transaction_cost_bps?: number;
+  windows?: PitWindows;
+  risk_parameters?: Record<string, unknown>;
+}
+
+export interface SeedResult {
+  seed: number;
+  status: 'COMPLETED' | 'FAILED' | 'SKIPPED';
+  sharpe: number | null;
+  ic: number | null;
+  max_drawdown: number | null;
+  turnover: number | null;
+  trade_count: number;
+  artifact_reference?: string | null;
+  failure_code?: string | null;
+}
+
+export interface EvolutionSummary {
+  status: 'success' | 'partial' | 'failed';
+  strategy_id: string;
+  requested_seeds: number;
+  completed_seeds: number;
+  failed_seeds: number;
+  median_sharpe: number | null;
+  iqr_sharpe: number | null;
+  std_sharpe: number | null;
+  worst_drawdown: number | null;
+  median_ic: number | null;
+  median_turnover: number | null;
+  seed_results: SeedResult[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface DriftScheduleRequest {
+  enabled?: boolean;
+  schedule?: string;
+  timezone?: string;
+  model_ids?: string[];
+  thresholds?: Record<string, number>;
+  revision: number;
+}
+
+export interface DriftMonitorAlert {
+  alert_id: string;
+  severity: 'INFO' | 'WARNING' | 'CRITICAL';
+  timestamp: string;
+  message: string;
+  details?: Record<string, unknown>;
+}
+
+export interface DriftMonitorStatus {
+  status: string;
+  enabled: boolean;
+  schedule: string;
+  timezone: string;
+  last_run: string | null;
+  next_run: string | null;
+  heartbeat: string;
+  evaluated_model_ids: string[];
+  missing_model_ids: string[];
+  alerts: DriftMonitorAlert[];
+  last_job: Record<string, unknown> | null;
+  thresholds: Record<string, number>;
+  revision: number;
+  provenance?: ProvenanceEnvelope | null;
+}
+
 export interface AdvancedQuantRequestOptions extends RequestInit {
   timeoutMs?: number;
   maxRetries?: number;
@@ -927,6 +1011,31 @@ export const advancedQuantApi = {
 
   getExecutionWorkers: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
     resilientApiRequest<Array<Record<string, unknown>>>('/api/v1/execution/workers', { ...options, signal }),
+
+  // Phase 3 Multi-Seed Evolution, Variance Explorer & Drift Sentinel APIs
+  runEvolution: (req: EvolutionRunRequest, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<JobAcceptedResponse>('/api/v1/quant/evolution/runs', {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      ...options,
+    }),
+
+  getEvolutionRun: (jobId: string, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<JobStatusResponse>(`/api/v1/quant/evolution/runs/${encodeURIComponent(jobId)}`, { ...options, signal }),
+
+  getDriftMonitorStatus: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<DriftMonitorStatus>('/api/v1/models/drift-monitor/status', { ...options, signal }),
+
+  updateDriftSchedule: (req: DriftScheduleRequest, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<DriftMonitorStatus>('/api/v1/models/drift-monitor/schedule', {
+      method: 'PATCH',
+      body: JSON.stringify(req),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      ...options,
+    }),
 };
 
 export type PaperDaemonState = 'STOPPED' | 'RUNNING' | 'PAUSED' | 'ERROR';

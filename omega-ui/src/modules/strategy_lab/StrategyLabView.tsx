@@ -11,9 +11,26 @@ import {
 import { createChart, IChartApi, LineData, Time } from 'lightweight-charts';
 import { apiClient, BacktestResultData } from '../../api/client';
 import { advancedQuantApi, OverfittingDiagnosticsResponse, ConformalPredictResponse, WalkForwardCpcvResponse } from '../../api/advancedQuant';
+import { VarianceExplorer } from './VarianceExplorer';
 import { useTranslation } from '../../i18n';
 
+import { useUiStore } from '../../store/uiStore';
+
 export const StrategyLabView: React.FC = () => {
+  const storeSubTab = useUiStore((state) => state.activeSubTabs['strategy_lab']);
+  const activeFeatureId = useUiStore((state) => state.activeFeatureId);
+  const setActiveSubTabInStore = useUiStore((state) => state.setActiveSubTab);
+  const activeSubTab = (storeSubTab as 'cpcv' | 'conformal' | 'overfitting' | 'lab' | 'variance') || 'lab';
+  const setActiveSubTab = (tab: 'cpcv' | 'conformal' | 'overfitting' | 'lab' | 'variance') => setActiveSubTabInStore('strategy_lab', tab);
+
+  useEffect(() => {
+    if (activeFeatureId) {
+      if (activeFeatureId === 'F15') setActiveSubTabInStore('strategy_lab', 'cpcv');
+      else if (activeFeatureId === 'F16') setActiveSubTabInStore('strategy_lab', 'conformal');
+      else if (activeFeatureId === 'F17') setActiveSubTabInStore('strategy_lab', 'overfitting');
+    }
+  }, [activeFeatureId, setActiveSubTabInStore]);
+
   const [data, setData] = useState<BacktestResultData | null>(null);
   const [selectedStrategy, setSelectedStrategy] = useState('ALPHA_HRP_V2');
   const [isLoading, setIsLoading] = useState(false);
@@ -257,6 +274,64 @@ export const StrategyLabView: React.FC = () => {
 
   return (
     <div className="flex flex-col gap-4 h-full font-mono select-none overflow-y-auto pr-1">
+      {/* Sub-Tab Navigation Bar */}
+      <div className="flex items-center gap-1.5 p-1 rounded-lg bg-zinc-950/80 border border-white/10 text-xs">
+        <button
+          onClick={() => setActiveSubTab('lab')}
+          className={`px-3 py-1.5 rounded font-bold transition-all ${
+            activeSubTab === 'lab'
+              ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40'
+              : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          Overview & Equity Curve
+        </button>
+        <button
+          onClick={() => setActiveSubTab('cpcv')}
+          className={`px-3 py-1.5 rounded font-bold transition-all ${
+            activeSubTab === 'cpcv'
+              ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
+              : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          Walk-Forward CPCV (15 Folds)
+        </button>
+        <button
+          onClick={() => setActiveSubTab('conformal')}
+          className={`px-3 py-1.5 rounded font-bold transition-all ${
+            activeSubTab === 'conformal'
+              ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+              : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          Conformal Prediction Bands
+        </button>
+        <button
+          onClick={() => setActiveSubTab('overfitting')}
+          className={`px-3 py-1.5 rounded font-bold transition-all ${
+            activeSubTab === 'overfitting'
+              ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+              : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          Overfitting Diagnostics (DSR/PBO)
+        </button>
+        <button
+          onClick={() => setActiveSubTab('variance')}
+          className={`px-3 py-1.5 rounded font-bold transition-all ${
+            activeSubTab === 'variance'
+              ? 'bg-fuchsia-500/20 text-fuchsia-300 border border-fuchsia-500/40'
+              : 'text-zinc-400 hover:text-zinc-200'
+          }`}
+        >
+          Multi-Seed Variance
+        </button>
+      </div>
+
+      {activeSubTab === 'variance' ? (
+        <VarianceExplorer />
+      ) : (
+        <>
       {/* Control / Toolbar Bar */}
       <div className="p-3 rounded-xl bg-zinc-900/80 border border-white/10 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
@@ -558,6 +633,8 @@ export const StrategyLabView: React.FC = () => {
             </table>
           </div>
         </div>
+      )}
+        </>
       )}
     </div>
   );

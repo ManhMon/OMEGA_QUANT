@@ -21,6 +21,7 @@ import {
   ResourceGovernorStateResponse,
   ModelCategory
 } from '../../api/advancedQuant';
+import { DriftMonitorPanel } from './DriftMonitorPanel';
 import { TotpRebalanceModal } from '../execution_blotter/TotpRebalanceModal';
 import { useUiStore } from '../../store/uiStore';
 import { useTranslation } from '../../i18n';
@@ -770,6 +771,8 @@ export const ModelRegistryView: React.FC = () => {
             aria-labelledby="model-registry-tab-drift"
             className="flex flex-col gap-4 h-full overflow-y-auto pr-1"
           >
+            <DriftMonitorPanel onRefresh={() => fetchModelDetails(selectedModel)} />
+
             <div className="p-4 rounded-xl bg-zinc-900/60 border border-white/10 flex flex-col gap-3">
               <div className="flex items-center justify-between pb-2 border-b border-white/5">
                 <div className="flex items-center gap-2">

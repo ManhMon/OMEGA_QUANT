@@ -106,6 +106,22 @@ def execute_job(job: dict[str, Any]) -> dict[str, Any]:
                 "executions": results,
             }
         return {"status": "success", "executions": results}
+
+    if task_type in {"evolution_multiseed", "evolution_run"}:
+        from scripts.backtest_evolution_multiseed import run_evolution_multiseed
+        payload = job.get("payload", {})
+        return run_evolution_multiseed(payload)
+
+    if task_type in {"alpha_risk_tuning", "risk_tuning"}:
+        from scripts.alpha_risk_tuning_v2 import run_alpha_risk_tuning
+        payload = job.get("payload", {})
+        return run_alpha_risk_tuning(payload)
+
+    if task_type in {"drift_check", "drift_sentinel", "drift_monitor"}:
+        from scripts.run_drift_check import run_drift_sentinel
+        payload = job.get("payload", {})
+        return run_drift_sentinel(payload)
+
     raise RuntimeError(f"No real handler registered for task type {task_type}")
 
 
@@ -158,9 +174,9 @@ def run_worker(service: JobService | None = None, once: bool = False) -> int:
                 continue
             try:
                 result = execute_job(job)
-                if result.get("status") in {"error", "rejected"}:
-                    err_code = str(result.get("error_code", "EXECUTION_REJECTED"))
-                    err_reason = str(result.get("reason", "Paper order rejected"))
+                if result.get("status") in {"error", "rejected", "failed"}:
+                    err_code = str(result.get("error_code") or result.get("error") or "EXECUTION_FAILED")
+                    err_reason = str(result.get("reason") or result.get("failure_code") or "Job execution reported failure")
                     service.fail(job["job_id"], worker_id, err_code, err_reason)
                     if once:
                         return 1

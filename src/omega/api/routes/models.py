@@ -1,13 +1,16 @@
 ﻿"""Model governance and registry routes for OMEGA_QUANT."""
 
 import hashlib
+import json
 import os
+import uuid
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, status
+from filelock import FileLock, Timeout as FileLockTimeout
 
 from omega.api.routes.control import verify_totp
 from omega.api.schemas.advanced_quant import (
@@ -23,6 +26,8 @@ from omega.api.schemas.advanced_quant import (
     ModelVersionItem,
     ModelVersionsResponse,
     ProvenanceEnvelope,
+    DriftScheduleRequest,
+    DriftMonitorStatus,
 )
 from omega.data.registry import ModelRegistry
 from omega.quant.drift_detector import DriftDetectorEnsemble, DriftThresholds
@@ -473,6 +478,162 @@ def list_models(
         category_counts=global_category_counts,
         provenance=prov,
     )
+
+
+DRIFT_SCHEDULE_PATH = Path(".ly_state/session/drift_monitor_schedule.json")
+DRIFT_SCHEDULE_LOCK_PATH = DRIFT_SCHEDULE_PATH.with_suffix(".lock")
+
+
+def _load_drift_schedule_state() -> dict:
+    if DRIFT_SCHEDULE_PATH.exists():
+        try:
+            with open(DRIFT_SCHEDULE_PATH, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict) and "schedule" in data and "revision" in data:
+                    return data
+        except Exception:
+            pass
+    default_state = {
+        "enabled": True,
+        "schedule": "0 2 * * *",
+        "timezone": "UTC",
+        "model_ids": [],
+        "thresholds": {
+            "sharpe_drop": 0.30,
+            "ic_drop": 0.015,
+            "turnover_spike": 0.10,
+        },
+        "revision": 1,
+        "last_run": None,
+        "next_run": (datetime.now(timezone.utc) + timedelta(hours=6)).isoformat(),
+    }
+    _save_drift_schedule_state(default_state)
+    return default_state
+
+
+def _save_drift_schedule_state(state: dict) -> None:
+    DRIFT_SCHEDULE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = DRIFT_SCHEDULE_PATH.parent / f"{DRIFT_SCHEDULE_PATH.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, DRIFT_SCHEDULE_PATH)
+    finally:
+        if tmp_path.exists():
+            try:
+                tmp_path.unlink()
+            except Exception:
+                pass
+
+
+@router.get("/drift-monitor/status", response_model=DriftMonitorStatus)
+def get_drift_monitor_status() -> DriftMonitorStatus:
+    """
+    Retrieve autonomous Drift Sentinel status, active schedule, thresholds,
+    and evaluated vs missing model catalog resolution.
+    """
+    state = _load_drift_schedule_state()
+    models_dict = _model_registry.registry_data.get("models", {})
+    all_registered = sorted(list(models_dict.keys()))
+
+    configured_ids = state.get("model_ids") or []
+    if configured_ids:
+        evaluated_ids = [m for m in configured_ids if m in models_dict]
+        missing_ids = [m for m in configured_ids if m not in models_dict]
+    else:
+        evaluated_ids = all_registered
+        missing_ids = []
+
+    alerts = []
+    drift_status_file = Path(".ly_state/session/drift_status.json")
+    if drift_status_file.exists():
+        try:
+            with open(drift_status_file, "r", encoding="utf-8") as f:
+                d_status = json.load(f)
+                if d_status.get("drift_detected"):
+                    alerts.append({
+                        "alert_id": "DRIFT_ALERT_GLOBAL",
+                        "severity": "CRITICAL",
+                        "timestamp": d_status.get("check_timestamp"),
+                        "message": "Ensemble detected significant concept drift across models",
+                        "details": d_status.get("detection_details"),
+                    })
+        except Exception:
+            pass
+
+    now_utc = datetime.now(timezone.utc)
+    last_run_dt = datetime.fromisoformat(state["last_run"]) if state.get("last_run") else None
+    next_run_dt = datetime.fromisoformat(state["next_run"]) if state.get("next_run") else None
+
+    prov = _make_provenance(
+        source="OMEGA_DRIFT_SENTINEL",
+        dataset_id="drift_sentinel_monitor",
+        payload_summary={"enabled": state.get("enabled", True), "revision": state.get("revision", 1)},
+    )
+
+    return DriftMonitorStatus(
+        status="success",
+        enabled=bool(state.get("enabled", True)),
+        schedule=str(state.get("schedule", "0 2 * * *")),
+        timezone=str(state.get("timezone", "UTC")),
+        last_run=last_run_dt,
+        next_run=next_run_dt,
+        heartbeat=now_utc,
+        evaluated_model_ids=evaluated_ids,
+        missing_model_ids=missing_ids,
+        alerts=alerts,
+        last_job=state.get("last_job"),
+        thresholds=state.get("thresholds", {"sharpe_drop": 0.30, "ic_drop": 0.015, "turnover_spike": 0.10}),
+        revision=int(state.get("revision", 1)),
+        provenance=prov,
+    )
+
+
+@router.patch("/drift-monitor/schedule", response_model=DriftMonitorStatus)
+def update_drift_monitor_schedule(req: DriftScheduleRequest) -> DriftMonitorStatus:
+    """
+    Update Drift Sentinel schedule and thresholds with optimistic concurrency revision check
+    and atomic compare-and-swap under process-safe filelock.
+    """
+    DRIFT_SCHEDULE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock = FileLock(str(DRIFT_SCHEDULE_LOCK_PATH), timeout=10.0)
+    try:
+        with lock:
+            state = _load_drift_schedule_state()
+            current_rev = int(state.get("revision", 1))
+            if req.revision != current_rev:
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail=f"Drift schedule revision conflict: provided {req.revision}, current {current_rev}. Refresh and retry.",
+                )
+
+            if req.enabled is not None:
+                state["enabled"] = req.enabled
+            if req.schedule is not None:
+                parts = req.schedule.strip().split()
+                if len(parts) != 5:
+                    raise HTTPException(status_code=422, detail=f"Invalid cron schedule expression: '{req.schedule}'. Must have 5 fields.")
+                state["schedule"] = req.schedule.strip()
+            if req.timezone is not None:
+                state["timezone"] = req.timezone.strip()
+            if req.model_ids is not None:
+                state["model_ids"] = req.model_ids
+            if req.thresholds is not None:
+                if "thresholds" not in state or not isinstance(state["thresholds"], dict):
+                    state["thresholds"] = {}
+                state["thresholds"].update(req.thresholds)
+
+            state["revision"] = current_rev + 1
+            _save_drift_schedule_state(state)
+    except FileLockTimeout:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Drift schedule lock timeout. Another operation is in progress.",
+        )
+
+    return get_drift_monitor_status()
 
 
 @router.get("/{model_name}/versions", response_model=ModelVersionsResponse)

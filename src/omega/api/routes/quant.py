@@ -12,6 +12,8 @@ from scipy.stats import norm, skew, kurtosis
 from omega.api.dependencies import job_service_dependency
 from omega.api.routes._market_loader import load_market_dataset, redact_market_data_error
 from omega.api.services.job_service import JobService
+import json
+from uuid import UUID
 from omega.quant.validation.cpcv import CombinatorialPurgedKFold
 from omega.quant.validation.dsr import deflated_sharpe_ratio, annualized_sharpe
 from omega.api.schemas.advanced_quant import (
@@ -23,6 +25,16 @@ from omega.api.schemas.advanced_quant import (
     ConformalPredictResponse,
     ConformalInterval,
     ProvenanceEnvelope,
+    EvolutionRunRequest,
+    JobSubmitRequest,
+    JobAcceptedResponse,
+    JobStatusResponse,
+)
+from omega.quant.network_graph import (
+    NetworkGraphEngine,
+    NetworkGraphResponse,
+    validate_network_graph_semantic,
+    canonicalize_json,
 )
 
 router = APIRouter(prefix="/api/v1/quant", tags=["quant"])
@@ -358,10 +370,16 @@ async def post_conformal_predict(req: ConformalPredictRequest) -> Dict[str, Any]
 @router.get("/screener")
 async def get_quant_screener(
     symbol: Optional[str] = Query(default=None, description="Ticker symbol filter (e.g. VNM, VIC)"),
+    min_piotroski: Optional[int] = Query(default=None, description="Minimum Piotroski F-score (0-9)"),
+    min_roe: Optional[float] = Query(default=None, description="Minimum ROE percentage"),
+    min_altman_z: Optional[float] = Query(default=None, description="Minimum Altman Z-Score"),
+    status: Optional[str] = Query(default=None, description="Health status (QUALIFIED, WATCH, DISTRESS, DISQUALIFIED)"),
+    sector: Optional[str] = Query(default=None, description="ICB sector filter"),
+    exchange: Optional[str] = Query(default=None, description="Exchange filter (HOSE, HNX, UPCOM)"),
     is_fallback: Optional[bool] = Query(default=None, description="Filter by fallback flag"),
     is_veto: Optional[bool] = Query(default=None, description="Filter by veto flag"),
     page: int = Query(default=1, ge=1, description="Page number starting at 1"),
-    limit: int = Query(default=50, ge=1, le=1000, description="Items per page"),
+    limit: int = Query(default=25, ge=0, le=1000, description="Items per page (0 or 703 returns all)"),
 ) -> Dict[str, Any]:
     if not QUANT_PARQUET_PATH.exists():
         raise HTTPException(status_code=404, detail="Quant screener dataset not found")
@@ -382,26 +400,47 @@ async def get_quant_screener(
             "data": [],
         }
 
-    # Normalize symbol filtering
+    # Case-insensitive substring search for symbol
     if symbol:
         canonical_symbol = symbol.strip().upper()
-        df = df[df["symbol"].str.upper() == canonical_symbol]
+        df = df[df["symbol"].astype(str).str.upper().str.contains(canonical_symbol, na=False)]
+
+    # Multi-factor filters
+    if min_piotroski is not None and "piotroski_f" in df.columns:
+        df = df[pd.to_numeric(df["piotroski_f"], errors="coerce") >= min_piotroski]
+
+    if min_roe is not None and "roe" in df.columns:
+        df = df[pd.to_numeric(df["roe"], errors="coerce") >= min_roe]
+
+    if min_altman_z is not None and "altman_z" in df.columns:
+        df = df[pd.to_numeric(df["altman_z"], errors="coerce") >= min_altman_z]
+
+    if status and "status" in df.columns:
+        df = df[df["status"].astype(str).str.upper() == status.strip().upper()]
+
+    if sector and "sector" in df.columns:
+        df = df[df["sector"].astype(str).str.upper() == sector.strip().upper()]
+
+    if exchange and "exchange" in df.columns:
+        df = df[df["exchange"].astype(str).str.upper() == exchange.strip().upper()]
 
     # Filter by fallback
-    if is_fallback is not None:
+    if is_fallback is not None and "is_fallback" in df.columns:
         df = df[df["is_fallback"] == is_fallback]
 
     # Filter by veto
-    if is_veto is not None:
+    if is_veto is not None and "is_veto" in df.columns:
         df = df[df["is_veto"] == is_veto]
 
     total_records = len(df)
-    total_pages = (total_records + limit - 1) // limit if total_records > 0 else 0
-
-    # Paginate
-    start_idx = (page - 1) * limit
-    end_idx = start_idx + limit
-    page_df = df.iloc[start_idx:end_idx]
+    if limit <= 0 or limit >= total_records:
+        total_pages = 1 if total_records > 0 else 0
+        page_df = df
+    else:
+        total_pages = (total_records + limit - 1) // limit if total_records > 0 else 0
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        page_df = df.iloc[start_idx:end_idx]
 
     records: List[Dict[str, Any]] = []
     for _, row in page_df.iterrows():
@@ -416,3 +455,159 @@ async def get_quant_screener(
         "total_pages": total_pages,
         "data": records,
     }
+
+
+# Phase 2 Multi-Ticker Interactive Network Graph Global Engine Instance
+_network_graph_engine: Optional[NetworkGraphEngine] = None
+
+
+def get_network_graph_engine() -> NetworkGraphEngine:
+    global _network_graph_engine
+    if _network_graph_engine is None:
+        try:
+            _network_graph_engine = NetworkGraphEngine()
+        except Exception as e:
+            logger.error("Failed to initialize NetworkGraphEngine: %s", e)
+            raise HTTPException(status_code=424, detail=f"FAILED_DEPENDENCY: Corporate ledger invalid: {e}") from e
+    return _network_graph_engine
+
+
+@router.get("/network-graph", response_model=NetworkGraphResponse)
+async def get_network_graph(
+    as_of: Optional[str] = Query(default=None, description="Point-in-time timestamp (RFC3339) or OMITTED"),
+    sector: Optional[str] = Query(default=None, description="Filter by 19 Canonical Vietnam Equity Sector Bucket"),
+    ecosystem: Optional[str] = Query(default=None, description="Filter by ecosystem_id"),
+    symbol: Optional[str] = Query(default=None, description="Filter by ticker symbol"),
+    relationship: Optional[str] = Query(default=None, description="Filter by relationship type"),
+    min_market_cap: Optional[int] = Query(default=None, description="Min market cap in VND_FULL"),
+    min_adv20: Optional[int] = Query(default=None, description="Min 20-day ADV in VND_FULL"),
+    max_nodes: int = Query(default=100, ge=1, le=1000, description="Max node count"),
+    metric_color: str = Query(default="sector", description="Color grouping metric"),
+) -> Any:
+    # Section 18: Timeout Cancellation Contract (2.0s deadline with executor isolation & cooperative abortion)
+    import asyncio
+    import time
+    deadline = time.perf_counter() + 2.0
+
+    def _sync_projection():
+        engine = get_network_graph_engine()
+        graph_res = engine.build_network_graph(
+            as_of=as_of,
+            sector=sector,
+            ecosystem=ecosystem,
+            symbol=symbol,
+            relationship=relationship,
+            min_market_cap=min_market_cap,
+            min_adv20=min_adv20,
+            max_nodes=max_nodes,
+            metric_color=metric_color,
+            deadline_time=deadline,
+        )
+        # Section 9: GraphSemanticValidator
+        validate_network_graph_semantic(graph_res)
+        return graph_res
+
+    try:
+        res = await asyncio.wait_for(asyncio.to_thread(_sync_projection), timeout=2.0)
+        return res
+    except (asyncio.TimeoutError, TimeoutError):
+        raise HTTPException(status_code=504, detail="REQUEST_EXECUTION_TIMEOUT")
+
+    except ValueError as ve:
+        err_msg = str(ve)
+        if "FUTURE_AS_OF_NOT_PERMITTED" in err_msg:
+            raise HTTPException(status_code=422, detail="FUTURE_AS_OF_NOT_PERMITTED")
+        if "MALFORMED_AS_OF_TIMESTAMP" in err_msg:
+            raise HTTPException(status_code=422, detail="MALFORMED_AS_OF_TIMESTAMP")
+        if "SEMANTIC_ERROR" in err_msg:
+            raise HTTPException(status_code=500, detail=err_msg)
+        raise HTTPException(status_code=400, detail=err_msg)
+    except RuntimeError as re:
+        raise HTTPException(status_code=503, detail=str(re))
+
+
+@router.post("/evolution/runs", response_model=JobAcceptedResponse, status_code=202)
+async def post_evolution_run(
+    req: EvolutionRunRequest,
+    job_service: JobService = Depends(job_service_dependency),
+) -> JobAcceptedResponse:
+    ds_path = Path(req.dataset)
+    if not ds_path.is_absolute():
+        ds_path = Path.cwd() / ds_path
+    if not ds_path.exists():
+        raise HTTPException(status_code=422, detail=f"Dataset file not found: {req.dataset}")
+    if ds_path.is_dir():
+        raise HTTPException(status_code=422, detail=f"Dataset path is a directory, file required: {req.dataset}")
+
+    payload = {
+        "dataset": req.dataset,
+        "pit_cutoff": req.pit_cutoff.isoformat(),
+        "strategy_id": req.strategy_id,
+        "seeds": req.seeds,
+        "population": req.population,
+        "generations": req.generations,
+        "workers": req.workers,
+        "transaction_cost_bps": req.transaction_cost_bps,
+        "risk_parameters": req.risk_parameters,
+    }
+    if req.windows:
+        payload["windows"] = req.windows.model_dump()
+
+    job_req = JobSubmitRequest(
+        task_type="evolution_multiseed",
+        payload=payload,
+        pit_cutoff=req.pit_cutoff,
+    )
+    job, _ = job_service.submit(job_req, idempotency_key=f"evolution-{uuid.uuid4()}")
+    job_uuid = UUID(job["job_id"])
+    now_utc = datetime.fromisoformat(job["submitted_at"]) if isinstance(job["submitted_at"], str) else job["submitted_at"]
+
+    return JobAcceptedResponse(
+        job_id=job_uuid,
+        status="QUEUED",
+        job_url=f"/api/v1/jobs/{job_uuid}",
+        stream_url=f"/api/v1/jobs/{job_uuid}/events",
+        request_id=str(uuid.uuid4()),
+        submitted_at=now_utc,
+        request_sha256=job["request_sha256"],
+    )
+
+
+@router.get("/evolution/runs/{job_id}", response_model=JobStatusResponse)
+async def get_evolution_run(
+    job_id: UUID,
+    job_service: JobService = Depends(job_service_dependency),
+) -> JobStatusResponse:
+    try:
+        row = job_service.get(str(job_id))
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Evolution run {job_id} not found")
+
+    result = json.loads(row["result_json"]) if row["result_json"] else None
+    error = None
+    if row["error_code"]:
+        error = {
+            "error_code": row["error_code"],
+            "message": row["error_message"] or "Job failed",
+            "request_id": str(uuid.uuid4()),
+            "retryable": False,
+            "details": None,
+            "timestamp": row["updated_at"],
+        }
+
+    return JobStatusResponse(
+        job_id=UUID(row["job_id"]),
+        task_type=row["task_type"],
+        status=row["status"],
+        progress_pct=float(row["progress_pct"]),
+        stage=row["stage"],
+        message=row["message"],
+        submitted_at=datetime.fromisoformat(row["submitted_at"]),
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+        pit_cutoff=datetime.fromisoformat(row["pit_cutoff"]),
+        request_sha256=row["request_sha256"],
+        attempt_count=int(row["attempt_count"]),
+        max_attempts=int(row["max_attempts"]),
+        result=result,
+        error=error,
+    )
