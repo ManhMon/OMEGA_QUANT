@@ -144,11 +144,7 @@ export function useControlOps() {
   );
 
   const triggerIngestData = async (params: IngestDataParams = {}): Promise<ControlTaskResponse> => {
-    let sources = params.sources ? [...params.sources] : ['vci'];
-    // Mutual exclusivity between KBS and VCI sources
-    if (sources.includes('vci') && sources.includes('kbs')) {
-      sources = sources.filter((s) => s !== 'kbs');
-    }
+    const sources = params.sources ? [...params.sources] : ['vci'];
     const sanitizedParams = { ...params, sources };
 
     addToast({

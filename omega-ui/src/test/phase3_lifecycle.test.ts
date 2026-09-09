@@ -325,7 +325,7 @@ describe('Phase 3 UI Lifecycle & Adversarial Resistance Tests', () => {
     expect(optimize).toHaveBeenCalledWith({ objective: 'ALPHA_RANK_RISK_CAPPED', universe: ['FPT', 'VNM'], max_single_weight: 0.15 });
   });
 
-  it('7b. restores portfolio objective, alpha filters, governor switching, source exclusion, and schema-drift safety', async () => {
+  it('7b. restores portfolio objective, alpha filters, governor switching, source ordering, and schema-drift safety', async () => {
     const governorUpdate = vi.spyOn(advancedQuantApi, 'updateResourceGovernor');
     renderWithProviders(React.createElement(QuantControlCenter, null));
     await act(async () => { await Promise.resolve(); });
@@ -335,9 +335,10 @@ describe('Phase 3 UI Lifecycle & Adversarial Resistance Tests', () => {
     expect((container?.querySelector('select[aria-label="Optimization objective"]') as HTMLSelectElement).value).toBe('ALPHA_RANK_RISK_CAPPED');
     await act(async () => { Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent?.includes('Ingest'))?.click(); });
     await act(async () => { Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'KBS')?.click(); });
-    expect(Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'VCI')?.className).toContain('text-zinc-500');
+    expect(Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'VCI')?.className).toContain('text-emerald-300');
+    expect(Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'KBS')?.className).toContain('text-emerald-300');
     await act(async () => { Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'VCI')?.click(); });
-    expect(Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'KBS')?.className).toContain('text-zinc-500');
+    expect(Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'KBS')?.className).toContain('text-emerald-300');
     vi.spyOn(apiClient, 'getControlDynamicUniverse').mockResolvedValueOnce({ items: [null, { rank: 1, symbol: 'FPT', sector: 'TECH', status_label: 'QUALIFIED' }] } as any);
     await act(async () => { Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent?.includes('Alphas'))?.click(); await Promise.resolve(); });
     expect(container?.textContent).toContain('1. FPT');
@@ -356,12 +357,14 @@ describe('Phase 3 UI Lifecycle & Adversarial Resistance Tests', () => {
     expect(useUiStore.getState().toasts.some((toast) => toast.title === 'Governor update failed' && toast.message === 'governor offline')).toBe(true);
   });
 
-  it('7d. rejects malformed alpha envelopes and sectors, filters null datasets, and preserves delisted historical members', async () => {
+  it('7d. preserves lakehouse datasets when independent scheduler telemetry fails', async () => {
     vi.spyOn(apiClient, 'getLakehouseStatus').mockResolvedValueOnce({ datasets: [null, { id: 'prices', file_name: 'prices.parquet', freshness_status: 'HEALTHY', total_rows: 1 }] } as any);
+    vi.spyOn(apiClient, 'getIngestSchedulerTelemetry').mockRejectedValueOnce(new Error('scheduler offline'));
     vi.spyOn(apiClient, 'getControlDynamicUniverse').mockResolvedValueOnce({ items: [{ rank: 1, symbol: 'OLD', sector: 'INDUSTRIALS', status_label: 'DELISTED' }] } as any);
     renderWithProviders(React.createElement(QuantControlCenter, null));
     await act(async () => { Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent?.includes('Ingest'))?.click(); await Promise.resolve(); });
     expect(container?.textContent).toContain('prices.parquet');
+    expect(useUiStore.getState().toasts.some((toast) => toast.title === 'Ingest telemetry failed' && toast.message === 'scheduler offline')).toBe(true);
     await act(async () => { Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent?.includes('Alphas'))?.click(); await Promise.resolve(); });
     expect(container?.textContent).toContain('1. OLD');
     expect(container?.textContent).toContain('DELISTED');

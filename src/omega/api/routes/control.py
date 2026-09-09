@@ -1551,9 +1551,11 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
             {"total_symbols": total_symbols, "resumed_from_checkpoint": resumed_count, "batch_size": batch_size}
         )
 
-        # Resolve primary equity source provider
-        equity_sources = [s for s in req.sources if s in ("vci", "kbs", "tcbs")]
-        active_provider = equity_sources[0] if equity_sources else "vci"
+        equity_sources = [s for s in req.sources if s in ("vci", "kbs", "tcbs")] or ["vci"]
+        active_provider = equity_sources[0]
+        feed_health = {provider: "STANDBY" for provider in ("vci", "kbs", "tcbs")}
+        failover_history: List[Dict[str, str]] = []
+        failover_used = False
 
         # Concurrency semaphore within batch for high-throughput I/O (F-003, Dimension 14)
         sem = asyncio.Semaphore(DEFAULT_INGEST_CONCURRENCY)
@@ -1565,24 +1567,21 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
 
         async def _fetch_single_symbol(sym: str):
             if task_id in CANCELLED_JOBS:
-                return sym, None, None
+                return sym, None, None, []
             async with sem:
                 if task_id in CANCELLED_JOBS:
-                    return sym, None, None
-                try:
-                    extra_kwargs = {"source": active_provider} if supports_source_kwarg else {}
-                    frm = await asyncio.to_thread(
-                        loader.load_prices,
-                        sym,
-                        req.start_date,
-                        req.end_date,
-                        as_of,
-                        req.force_refresh,
-                        **extra_kwargs,
-                    )
-                    return sym, frm, None
-                except Exception as exc:
-                    return sym, None, exc
+                    return sym, None, None, []
+                failures = []
+                for provider in equity_sources:
+                    try:
+                        extra_kwargs = {"source": provider} if supports_source_kwarg else {}
+                        frm = await asyncio.to_thread(loader.load_prices, sym, req.start_date, req.end_date, as_of, req.force_refresh, **extra_kwargs)
+                        if frm is None or frm.empty:
+                            raise RuntimeError("provider returned an empty dataframe")
+                        return sym, frm, provider, failures
+                    except Exception as exc:
+                        failures.append((provider, exc))
+                return sym, None, None, failures
 
         for batch_idx in range(total_batches):
             if task_id in CANCELLED_JOBS:
@@ -1592,24 +1591,32 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
             batch_symbols = target_symbols[batch_idx * batch_size : (batch_idx + 1) * batch_size]
             batch_results = await asyncio.gather(*[_fetch_single_symbol(s) for s in batch_symbols])
 
-            for sym, frame, exc in batch_results:
+            for sym, frame, provider, failures in batch_results:
                 if task_id in CANCELLED_JOBS:
                     _push_task_event(task_id, "CANCELLED", TASKS[task_id].get("progress"), "CANCELLED", "Task cancelled by operator; checkpoint preserved.")
                     return
-                if exc is not None:
-                    logger.warning(f"Error loading prices for {sym}: {_redact_text(exc)}")
+                for failed_provider, exc in failures:
+                    feed_health[failed_provider] = "DEGRADED"
+                    logger.warning(f"Error loading prices for {sym} via {failed_provider}: {_redact_text(exc)}")
+                if frame is None:
+                    reason = _redact_text(failures[-1][1]) if failures else "provider returned no data"
                     checkpoint.setdefault("failed_symbols", {})[sym] = {
-                        "error_type": type(exc).__name__,
-                        "reason": _redact_text(exc),
+                        "error_type": type(failures[-1][1]).__name__ if failures else "EmptyDataError",
+                        "reason": reason,
                     }
-                elif frame is not None and not frame.empty:
+                else:
                     frames.append(frame)
                     completed_set.add(sym)
-                else:
-                    checkpoint.setdefault("failed_symbols", {})[sym] = {
-                        "error_type": "EmptyDataError",
-                        "reason": f"Provider {active_provider.upper()} returned empty dataframe for symbol {sym}",
-                    }
+                    active_provider = provider or active_provider
+                    if feed_health[active_provider] == "STANDBY":
+                        feed_health[active_provider] = "ONLINE"
+                    if failures and provider:
+                        failover_used = True
+                        failover_history.append({
+                            "symbol": sym,
+                            "from_provider": failures[-1][0],
+                            "to_provider": provider,
+                        })
 
             # Update Checkpoint after each batch
             checkpoint["completed_symbols"] = sorted(list(completed_set))
@@ -1619,6 +1626,10 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
                 "pending_symbols": max(0, total_symbols - len(completed_set))
             }
             checkpoint["state"] = "fetching"
+            checkpoint["feed_health"] = feed_health
+            checkpoint["active_feed"] = active_provider
+            checkpoint["failover_used"] = failover_used
+            checkpoint["failover_history"] = failover_history
             await asyncio.to_thread(_save_ingest_checkpoint, checkpoint)
 
             progress_pct = 5.0 + ((batch_idx + 1) / total_batches) * 85.0
@@ -1657,6 +1668,10 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
 
         # Successful completion: persist terminal 'completed' checkpoint state
         checkpoint["state"] = "completed"
+        checkpoint["feed_health"] = feed_health
+        checkpoint["active_feed"] = active_provider
+        checkpoint["failover_used"] = failover_used
+        checkpoint["failover_history"] = failover_history
         checkpoint["completed_symbols"] = sorted(list(completed_set))
         checkpoint["counters"] = {
             "completed_symbols": len(completed_set),
@@ -1668,7 +1683,7 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
         rows = sum(len(frame) for frame in frames)
         primary_provider = req.sources[0] if req.sources else "vci"
         output = {
-            "provider": primary_provider,
+            "provider": active_provider,
             "sources": req.sources,
             "symbols_count": len(target_symbols),
             "symbols_processed": len(frames),
@@ -1676,6 +1691,9 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
             "freshness": max(str(frame["date"].max()) for frame in frames),
             "resumed_from_checkpoint_count": resumed_count,
             "checkpoint_state": "completed",
+            "feed_health": feed_health,
+            "failover_used": failover_used,
+            "failover_history": failover_history,
             "schema_version": "v2026.2",
         }
         receipt = await asyncio.to_thread(_publish_receipt, task_id, "DATA_INGESTION", req, as_of, output)
@@ -2752,37 +2770,56 @@ def get_control_optimization_bounds_preview() -> OptimizationBoundsPreviewRespon
 
 
 class IngestSchedulerTelemetry(BaseModel):
-    status: str = "HEALTHY"
-    active_feed: str = "vci"
-    backup_feed: str = "kbs"
-    failover_ready: bool = True
+    status: Literal["HEALTHY", "DEGRADED", "HALTED", "IDLE"]
+    active_feed: Optional[str] = None
+    backup_feed: Optional[str] = None
+    failover_ready: bool
     cron_interval: str = "0 17 * * 1-5"
-    last_sync_timestamp: str = "2026-08-28T17:05:00Z"
-    next_scheduled_sync: str = "2026-08-29T17:00:00Z"
-    auto_refresh_enabled: bool = True
-    active_workers: int = 4
-    stale_threshold_days: int = 3
-    feed_health: Dict[str, str] = Field(default_factory=lambda: {"vci": "ONLINE", "kbs": "STANDBY", "tcbs": "STANDBY"})
-    provenance_commit: str = "b958162f9606a8db"
+    last_sync_timestamp: Optional[str] = None
+    next_scheduled_sync: Optional[str] = None
+    auto_refresh_enabled: bool
+    active_workers: int
+    stale_threshold_days: int
+    feed_health: Dict[str, Literal["ONLINE", "DEGRADED", "OFFLINE", "STANDBY"]]
+    provenance_commit: str
 
 
 @router.get("/ingest-scheduler/telemetry", response_model=IngestSchedulerTelemetry)
 async def get_ingest_scheduler_telemetry() -> IngestSchedulerTelemetry:
     """Provides live operational telemetry for the Lakehouse data ingestion scheduler and feed failover."""
-    now_utc = datetime.now(timezone.utc)
+    with _TASK_STATE_LOCK:
+        ingest_tasks = [task.copy() for task in TASKS.values() if task.get("task_type") == "DATA_INGESTION"]
+    latest_task = max(ingest_tasks, key=lambda task: task.get("updated_at", ""), default=None)
+    checkpoint = await asyncio.to_thread(_load_ingest_checkpoint)
+    configured_feeds = [feed for feed in (latest_task or {}).get("params", {}).get("sources", []) if feed in ("vci", "kbs", "tcbs")]
+    feed_health = {feed: "STANDBY" for feed in ("vci", "kbs", "tcbs")}
+    checkpoint_feed_health = checkpoint.get("feed_health", {})
+    if not isinstance(checkpoint_feed_health, dict):
+        checkpoint_feed_health = {}
+    for feed, health in checkpoint_feed_health.items():
+        if feed in feed_health and health in {"ONLINE", "DEGRADED", "OFFLINE", "STANDBY"}:
+            feed_health[feed] = health
+    active_feed = checkpoint.get("active_feed") or (configured_feeds[0] if configured_feeds else None)
+    if active_feed in feed_health and not KILL_SWITCH_ACTIVE:
+        feed_health[active_feed] = "ONLINE" if feed_health[active_feed] != "DEGRADED" else "DEGRADED"
+    if KILL_SWITCH_ACTIVE:
+        feed_health = {feed: "OFFLINE" for feed in feed_health}
+    active_workers = sum(1 for task in ingest_tasks if task.get("status") in ("QUEUED", "RUNNING"))
+    backup_feed = next((feed for feed in configured_feeds if feed != active_feed and feed_health[feed] in {"ONLINE", "STANDBY"}), None)
+    status = "HALTED" if KILL_SWITCH_ACTIVE else "DEGRADED" if any(health == "DEGRADED" for health in feed_health.values()) else "HEALTHY" if active_feed else "IDLE"
     return IngestSchedulerTelemetry(
-        status="HEALTHY" if not KILL_SWITCH_ACTIVE else "HALTED",
-        active_feed="vci",
-        backup_feed="kbs",
-        failover_ready=True,
+        status=status,
+        active_feed=active_feed,
+        backup_feed=backup_feed,
+        failover_ready=backup_feed is not None and not KILL_SWITCH_ACTIVE,
         cron_interval="0 17 * * 1-5",
-        last_sync_timestamp="2026-08-28T17:05:00Z",
-        next_scheduled_sync=(now_utc + timedelta(hours=6)).isoformat(),
+        last_sync_timestamp=(latest_task or {}).get("updated_at") or checkpoint.get("updated_at"),
+        next_scheduled_sync=None,
         auto_refresh_enabled=not KILL_SWITCH_ACTIVE,
-        active_workers=4,
+        active_workers=active_workers,
         stale_threshold_days=3,
-        feed_health={"vci": "ONLINE" if not KILL_SWITCH_ACTIVE else "OFFLINE", "kbs": "STANDBY", "tcbs": "STANDBY"},
-        provenance_commit="b958162f9606a8db",
+        feed_health=feed_health,
+        provenance_commit=os.getenv("OMEGA_GIT_SHA", "unknown"),
     )
 
 

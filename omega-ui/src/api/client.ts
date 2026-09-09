@@ -503,6 +503,21 @@ export interface LakehouseStatusResponse {
   datasets: LakehouseDatasetMeta[];
 }
 
+export interface IngestSchedulerTelemetry {
+  status: 'HEALTHY' | 'DEGRADED' | 'HALTED' | 'IDLE';
+  active_feed: string | null;
+  backup_feed: string | null;
+  failover_ready: boolean;
+  cron_interval: string;
+  last_sync_timestamp: string | null;
+  next_scheduled_sync: string | null;
+  auto_refresh_enabled: boolean;
+  active_workers: number;
+  stale_threshold_days: number;
+  feed_health: Record<string, 'ONLINE' | 'DEGRADED' | 'OFFLINE' | 'STANDBY'>;
+  provenance_commit: string;
+}
+
 export interface DynamicUniverseItem {
   rank: number;
   symbol: string;
@@ -1252,6 +1267,10 @@ export const apiClient = {
 
   getLakehouseStatus: async (signal?: AbortSignal): Promise<LakehouseStatusResponse> => {
     return apiRequest<LakehouseStatusResponse>('/api/v1/control/lakehouse-status', { signal });
+  },
+
+  getIngestSchedulerTelemetry: async (signal?: AbortSignal): Promise<IngestSchedulerTelemetry> => {
+    return apiRequest<IngestSchedulerTelemetry>('/api/v1/control/ingest-scheduler/telemetry', { signal });
   },
 
   getControlReceipts: async (limit = 50, signal?: AbortSignal): Promise<{ status: string; total_receipts: number; receipts: TaskReceipt[]; artifact_root: string }> => {

@@ -424,6 +424,100 @@ def test_ingest_data_success(client):
     assert "/sse/v1/tasks/" in data["stream_url"]
 
 
+def test_ingest_scheduler_telemetry_reports_runtime_failover(client, tmp_path, monkeypatch):
+    checkpoint = tmp_path / "ingest.json"
+    checkpoint.write_text(json.dumps({"active_feed": "kbs", "feed_health": {"vci": "DEGRADED", "kbs": "ONLINE"}, "updated_at": "2026-09-09T00:00:00+00:00"}), encoding="utf-8")
+    monkeypatch.setattr(control_mod, "DEFAULT_INGEST_CHECKPOINT_PATH", checkpoint)
+    control_mod.TASKS["task-ingest-runtime"] = {"task_type": "DATA_INGESTION", "status": "RUNNING", "updated_at": "2026-09-09T00:01:00+00:00", "params": {"sources": ["vci", "kbs", "tcbs"]}}
+
+    response = client.get("/api/v1/control/ingest-scheduler/telemetry")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "DEGRADED"
+    assert payload["active_feed"] == "kbs"
+    assert payload["backup_feed"] == "tcbs"
+    assert payload["failover_ready"] is True
+    assert payload["feed_health"]["vci"] == "DEGRADED"
+
+
+def test_ingest_fails_over_to_backup_feed(tmp_path, monkeypatch):
+    class Loader:
+        def load_prices(self, ticker, *_args, source=None, **_kwargs):
+            if source == "vci":
+                raise RuntimeError("provider 429")
+            return pd.DataFrame({"date": [pd.Timestamp("2023-12-29")], "close": [100000.0]})
+
+    task_id = "task-ingest-failover"
+    monkeypatch.setattr(control_mod, "DEFAULT_INGEST_CHECKPOINT_PATH", tmp_path / "checkpoint.json")
+    monkeypatch.setattr(control_mod, "CONTROL_ARTIFACT_ROOT", tmp_path / "receipts")
+    monkeypatch.setattr(control_mod, "DataLoader", lambda **_kwargs: Loader())
+    control_mod.TASKS[task_id] = {"task_type": "DATA_INGESTION", "status": "QUEUED", "progress": 0.0, "events": deque(maxlen=1000)}
+
+    import asyncio
+    asyncio.run(control_mod._run_ingest(task_id, control_mod.IngestDataRequest(symbols=["FPT"], sources=["vci", "kbs"])))
+
+    result = control_mod.TASKS[task_id]["result"]
+    assert result["provider"] == "kbs"
+    assert result["failover_used"] is True
+    assert result["failover_history"] == [{"symbol": "FPT", "from_provider": "vci", "to_provider": "kbs"}]
+    assert result["feed_health"] == {"vci": "DEGRADED", "kbs": "ONLINE", "tcbs": "STANDBY"}
+
+
+def test_ingest_cancellation_during_semaphore_admission_stays_cancelled(tmp_path, monkeypatch):
+    class Loader:
+        def load_prices(self, ticker, *_args, **_kwargs):
+            if ticker == "FPT":
+                control_mod.CANCELLED_JOBS.add(task_id)
+            return pd.DataFrame({"date": [pd.Timestamp("2023-12-29")], "close": [100000.0]})
+
+    task_id = "task-ingest-cancelled-admission"
+    monkeypatch.setattr(control_mod, "DEFAULT_INGEST_CHECKPOINT_PATH", tmp_path / "checkpoint.json")
+    monkeypatch.setattr(control_mod, "DEFAULT_INGEST_CONCURRENCY", 1)
+    monkeypatch.setattr(control_mod, "DataLoader", lambda **_kwargs: Loader())
+    control_mod.TASKS[task_id] = {"task_type": "DATA_INGESTION", "status": "RUNNING", "progress": 10.0, "events": deque(maxlen=1000)}
+
+    import asyncio
+    asyncio.run(control_mod._run_ingest(task_id, control_mod.IngestDataRequest(symbols=["FPT", "VNM"], sources=["vci", "kbs"])))
+
+    assert control_mod.TASKS[task_id]["status"] == "CANCELLED"
+    assert control_mod.TASKS[task_id]["events"][-1]["event_type"] == "CANCELLED"
+
+
+def test_ingest_failover_history_is_cumulative_and_health_is_not_reset(tmp_path, monkeypatch):
+    class Loader:
+        def load_prices(self, ticker, *_args, source=None, **_kwargs):
+            if ticker == "FPT" and source == "vci":
+                raise RuntimeError("vci unavailable")
+            return pd.DataFrame({"date": [pd.Timestamp("2023-12-29")], "close": [100000.0]})
+
+    task_id = "task-ingest-cumulative-failover"
+    monkeypatch.setattr(control_mod, "DEFAULT_INGEST_CHECKPOINT_PATH", tmp_path / "checkpoint.json")
+    monkeypatch.setattr(control_mod, "CONTROL_ARTIFACT_ROOT", tmp_path / "receipts")
+    monkeypatch.setattr(control_mod, "DataLoader", lambda **_kwargs: Loader())
+    control_mod.TASKS[task_id] = {"task_type": "DATA_INGESTION", "status": "QUEUED", "progress": 0.0, "events": deque(maxlen=1000)}
+
+    import asyncio
+    asyncio.run(control_mod._run_ingest(task_id, control_mod.IngestDataRequest(symbols=["FPT", "VNM"], sources=["vci", "kbs"])))
+
+    result = control_mod.TASKS[task_id]["result"]
+    assert result["failover_used"] is True
+    assert result["failover_history"] == [{"symbol": "FPT", "from_provider": "vci", "to_provider": "kbs"}]
+    assert result["feed_health"]["vci"] == "DEGRADED"
+
+
+@pytest.mark.parametrize("feed_health", [[], "malformed", None])
+def test_ingest_scheduler_telemetry_ignores_malformed_checkpoint_feed_health(client, tmp_path, monkeypatch, feed_health):
+    checkpoint = tmp_path / "ingest.json"
+    checkpoint.write_text(json.dumps({"active_feed": "kbs", "feed_health": feed_health}), encoding="utf-8")
+    monkeypatch.setattr(control_mod, "DEFAULT_INGEST_CHECKPOINT_PATH", checkpoint)
+
+    response = client.get("/api/v1/control/ingest-scheduler/telemetry")
+
+    assert response.status_code == 200
+    assert response.json()["feed_health"] == {"vci": "STANDBY", "kbs": "ONLINE", "tcbs": "STANDBY"}
+
+
 def test_compute_alphas_success(client):
     payload = {"universe": ["FPT", "HPG", "MBB", "MWG", "DGC", "VNM", "TCB", "PNJ"], "alpha_families": ["MOMENTUM"]}
     resp = client.post("/api/v1/control/compute-alphas", json=payload)
