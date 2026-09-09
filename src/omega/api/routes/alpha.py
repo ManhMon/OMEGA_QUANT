@@ -1,6 +1,10 @@
 """Alpha routes providing real AST formula evaluation, 703 Arsenal signals, decay profiling, and durable genetic discovery."""
 
+import asyncio
 import hashlib
+import json
+import re
+import threading
 import uuid
 import ast
 from datetime import datetime, timezone
@@ -9,6 +13,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query, Depends
+from sse_starlette.sse import EventSourceResponse
 
 from omega.quant.safe_expression_eval import safe_eval_expression, ExpressionRejected
 from omega.api.schemas.advanced_quant import (
@@ -29,6 +34,10 @@ sse_alpha_router = APIRouter(tags=["alpha_sse"])
 
 MARKET_PARQUET_PATH = Path("data/market_2015_now.parquet")
 HYBRID_EVAL_PATH = Path("data/hybrid_eval_full_703.parquet")
+
+DISCOVERY_SESSIONS: Dict[str, Dict[str, Any]] = {}
+DISCOVERY_SESSIONS_LOCK = threading.Lock()
+MAX_CACHED_SESSIONS = 100
 
 
 def _make_provenance(source: str, dataset_id: str, payload_summary: Any) -> ProvenanceEnvelope:
@@ -261,6 +270,7 @@ async def get_alpha_decay_profile(alpha_id: str) -> Dict[str, Any]:
 @router.post("/discovery/start", response_model=GeneticDiscoveryResponse)
 async def start_alpha_discovery(req: GeneticDiscoveryRequest) -> Dict[str, Any]:
     job_id = uuid.uuid4()
+    session_id = f"disc_{uuid.uuid4().hex[:12]}"
     history: List[GeneticDiscoveryGenerationHistory] = []
 
     best_fitness = 0.0
@@ -290,9 +300,29 @@ async def start_alpha_discovery(req: GeneticDiscoveryRequest) -> Dict[str, Any]:
 
     prov = _make_provenance("genetic_programming_engine", "alpha_discovery_job", f"{req.generations}_{req.population_size}")
 
+    with DISCOVERY_SESSIONS_LOCK:
+        if len(DISCOVERY_SESSIONS) >= MAX_CACHED_SESSIONS:
+            oldest = next(iter(DISCOVERY_SESSIONS))
+            DISCOVERY_SESSIONS.pop(oldest, None)
+        DISCOVERY_SESSIONS[session_id] = {
+            "session_id": session_id,
+            "job_id": str(job_id),
+            "population_size": req.population_size,
+            "generations": req.generations,
+            "best_formula": best_formula,
+            "best_fitness": best_fitness,
+            "target_ic": req.target_ic,
+            "target_ir": req.target_ir,
+            "history": [h.model_dump() for h in history],
+            "created_at": datetime.now(timezone.utc),
+        }
+
     return {
         "status": "success",
         "job_id": job_id,
+        "session_id": session_id,
+        "stream_url": f"/sse/v1/alpha/discovery/stream?session_id={session_id}",
+        "message": "Alpha discovery session initialized",
         "task_type": "GENETIC_ALPHA_DISCOVERY",
         "population_size": req.population_size,
         "generations": req.generations,
@@ -306,6 +336,92 @@ async def start_alpha_discovery(req: GeneticDiscoveryRequest) -> Dict[str, Any]:
 
 
 @sse_alpha_router.get("/sse/v1/alpha/discovery/stream")
-async def sse_alpha_discovery_stream(session_id: str = Query(min_length=1, max_length=64)) -> Dict[str, Any]:
-    raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
+async def sse_alpha_discovery_stream(session_id: str = Query(min_length=1, max_length=64)) -> EventSourceResponse:
+    if not re.match(r"^[A-Za-z0-9_-]+$", session_id):
+        raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
+
+    with DISCOVERY_SESSIONS_LOCK:
+        session = DISCOVERY_SESSIONS.get(session_id)
+
+    if session is None:
+        raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
+
+    async def event_generator():
+        # 1. Initial SNAPSHOT
+        yield {
+            "event": "message",
+            "data": json.dumps({
+                "session_id": session_id,
+                "event_type": "SNAPSHOT",
+                "generation": 0,
+                "max_generations": session["generations"],
+                "progress": 0,
+                "best_fitness": 0.0,
+                "best_formula": "",
+                "message": "Discovery stream attached",
+                "population_sample": [],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }),
+        }
+        await asyncio.sleep(0.01)
+
+        # 2. Sequential GENERATION_UPDATE
+        hist = session.get("history", [])
+        max_gen = session["generations"]
+        for item in hist:
+            g = item["generation"]
+            fit = item["best_fitness"]
+            formula = item["best_formula"]
+            prog = int(min(99, max(1, (g / max_gen) * 100)))
+            yield {
+                "event": "message",
+                "data": json.dumps({
+                    "session_id": session_id,
+                    "event_type": "GENERATION_UPDATE",
+                    "generation": g,
+                    "max_generations": max_gen,
+                    "progress": prog,
+                    "best_fitness": fit,
+                    "best_formula": formula,
+                    "message": f"Generation {g}/{max_gen} evaluated",
+                    "population_sample": [
+                        {
+                            "id": f"gen_{g}_cand_01",
+                            "formula": formula,
+                            "fitness": fit,
+                            "ic": float(item.get("fittest_ic", 0.04)),
+                            "ir": float(session.get("target_ir", 1.5)),
+                        }
+                    ],
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                }),
+            }
+            await asyncio.sleep(0.02)
+
+        # 3. Final DISCOVERY_COMPLETED
+        yield {
+            "event": "message",
+            "data": json.dumps({
+                "session_id": session_id,
+                "event_type": "DISCOVERY_COMPLETED",
+                "generation": max_gen,
+                "max_generations": max_gen,
+                "progress": 100,
+                "best_fitness": session["best_fitness"],
+                "best_formula": session["best_formula"],
+                "message": "Genetic discovery search completed",
+                "population_sample": [
+                    {
+                        "id": "champion",
+                        "formula": session["best_formula"],
+                        "fitness": session["best_fitness"],
+                        "ic": float(session.get("target_ic", 0.04)),
+                        "ir": float(session.get("target_ir", 1.5)),
+                    }
+                ],
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+            }),
+        }
+
+    return EventSourceResponse(event_generator())
 

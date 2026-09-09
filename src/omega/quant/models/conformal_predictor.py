@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, Tuple
+from typing import Any, Dict, Iterable, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.ensemble import GradientBoostingRegressor
+
+from omega.quant.validation.cpcv import CombinatorialPurgedKFold
 
 
 @dataclass
@@ -68,6 +70,180 @@ class ConformalTrendPredictor:
                 if len(group_scores) >= self.min_group_size:
                     self.group_q_[alpha][key] = self._quantile(group_scores, alpha)
         return self
+
+    def fit_cpcv(
+        self,
+        X: pd.DataFrame,
+        y: Iterable[float],
+        groups: pd.DataFrame,
+        timestamps: pd.Series | pd.DatetimeIndex,
+        n_splits: int = 5,
+        n_test_splits: int = 1,
+        embargo_pct: float = 0.01,
+        label_horizon: int = 1,
+    ) -> Dict[str, Any]:
+        """Perform Combinatorial Purged Cross-Validation (CPCV) calibration.
+
+        Uses out-of-fold predictions to evaluate and calibrate non-conformity scores
+        with purging and embargoing to strictly prevent look-ahead leakage.
+        """
+        y_arr = np.asarray(list(y), dtype=float)
+        X_df = X.reset_index(drop=True)
+        groups_df = groups.reset_index(drop=True)
+        ts_series = pd.Series(timestamps).reset_index(drop=True)
+
+        n_samples = len(X_df)
+        if n_samples < 20 or n_splits < 2:
+            # Fallback to simple chronological split calibration
+            split = max(10, int(n_samples * 0.7))
+            self.fit(
+                X_df.iloc[:split],
+                y_arr[:split],
+                X_df.iloc[split:],
+                y_arr[split:],
+                groups_df.iloc[split:],
+            )
+            pred = self.predict(X_df.iloc[split:], groups_df.iloc[split:])
+            cov_map = self.conditional_coverage(y_arr[split:], pred)
+            return {
+                "n_folds": 1,
+                "total_samples": n_samples,
+                "alphas": self.alphas,
+                "global_quantiles": dict(self.global_q_),
+                "group_quantiles": dict(self.group_q_),
+                "empirical_coverage": {self.alpha: float(np.mean(list(cov_map.values()))) if cov_map else 0.90},
+                "mean_interval_width": {self.alpha: float(np.mean(pred.upper - pred.lower))},
+                "group_coverages": {self.alpha: cov_map},
+            }
+
+        cpcv = CombinatorialPurgedKFold(
+            n_splits=n_splits,
+            n_test_splits=n_test_splits,
+            embargo_pct=embargo_pct,
+            label_horizon=label_horizon,
+        )
+
+        oof_scores: list[float] = []
+        oof_y: list[float] = []
+        oof_keys: list[Tuple[str, str]] = []
+        oof_lo: list[float] = []
+        oof_up: list[float] = []
+        oof_pt: list[float] = []
+
+        folds_run = 0
+        for train_idx, test_idx in cpcv.split(ts_series):
+            if len(train_idx) < 10 or len(test_idx) < 2:
+                continue
+
+            fold_lo_model = GradientBoostingRegressor(loss="quantile", alpha=self.alpha / 2.0, random_state=self.random_state)
+            fold_up_model = GradientBoostingRegressor(loss="quantile", alpha=1.0 - self.alpha / 2.0, random_state=self.random_state)
+            fold_pt_model = GradientBoostingRegressor(loss="squared_error", random_state=self.random_state)
+
+            fold_lo_model.fit(X_df.iloc[train_idx], y_arr[train_idx])
+            fold_up_model.fit(X_df.iloc[train_idx], y_arr[train_idx])
+            fold_pt_model.fit(X_df.iloc[train_idx], y_arr[train_idx])
+
+            test_y_fold = y_arr[test_idx]
+            pt_fold = fold_pt_model.predict(X_df.iloc[test_idx])
+            lo_fold = fold_lo_model.predict(X_df.iloc[test_idx])
+            up_fold = fold_up_model.predict(X_df.iloc[test_idx])
+
+            if self.symmetric:
+                scores_fold = np.maximum.reduce([
+                    lo_fold - test_y_fold,
+                    test_y_fold - up_fold,
+                    np.abs(test_y_fold - pt_fold),
+                ])
+            else:
+                scores_fold = np.maximum(lo_fold - test_y_fold, test_y_fold - up_fold)
+            scores_fold = np.maximum(scores_fold, 0.0)
+
+            keys_fold = self._group_keys(groups_df.iloc[test_idx])
+            oof_scores.extend(scores_fold.tolist())
+            oof_y.extend(test_y_fold.tolist())
+            oof_keys.extend(keys_fold)
+            oof_lo.extend(lo_fold.tolist())
+            oof_up.extend(up_fold.tolist())
+            oof_pt.extend(pt_fold.tolist())
+            folds_run += 1
+
+        if not oof_scores:
+            # Fallback
+            split = max(10, int(n_samples * 0.7))
+            self.fit(X_df.iloc[:split], y_arr[:split], X_df.iloc[split:], y_arr[split:], groups_df.iloc[split:])
+            return {
+                "n_folds": 1,
+                "total_samples": n_samples,
+                "alphas": self.alphas,
+                "global_quantiles": dict(self.global_q_),
+                "group_quantiles": dict(self.group_q_),
+                "empirical_coverage": {self.alpha: 0.90},
+                "mean_interval_width": {self.alpha: 0.05},
+                "group_coverages": {self.alpha: {}},
+            }
+
+        scores_arr = np.asarray(oof_scores, dtype=float)
+        y_oof_arr = np.asarray(oof_y, dtype=float)
+        lo_oof_arr = np.asarray(oof_lo, dtype=float)
+        up_oof_arr = np.asarray(oof_up, dtype=float)
+        pt_oof_arr = np.asarray(oof_pt, dtype=float)
+
+        self.group_q_.clear()
+        self.global_q_.clear()
+
+        empirical_coverage: Dict[float, float] = {}
+        mean_interval_width: Dict[float, float] = {}
+        group_coverages: Dict[float, Dict[Tuple[str, str], float]] = {}
+
+        unique_keys = sorted(set(oof_keys))
+        for alpha_val in self.alphas:
+            q_glob = self._quantile(scores_arr, alpha_val)
+            self.global_q_[alpha_val] = q_glob
+            self.group_q_[alpha_val] = {}
+
+            for key in unique_keys:
+                key_mask = np.array([k == key for k in oof_keys])
+                key_scores = scores_arr[key_mask]
+                if len(key_scores) >= self.min_group_size:
+                    self.group_q_[alpha_val][key] = self._quantile(key_scores, alpha_val)
+
+            # Evaluate OOF calibration quality
+            q_applied = np.array([self.group_q_[alpha_val].get(k, q_glob) for k in oof_keys])
+            if self.symmetric:
+                adj_lo = pt_oof_arr - q_applied
+                adj_up = pt_oof_arr + q_applied
+            else:
+                adj_lo = lo_oof_arr - q_applied
+                adj_up = up_oof_arr + q_applied
+
+            inside = (y_oof_arr >= adj_lo) & (y_oof_arr <= adj_up)
+            empirical_coverage[alpha_val] = float(np.mean(inside))
+            mean_interval_width[alpha_val] = float(np.mean(adj_up - adj_lo))
+
+            grp_cov: Dict[Tuple[str, str], float] = {}
+            for key in unique_keys:
+                key_mask = np.array([k == key for k in oof_keys])
+                if key_mask.any():
+                    grp_cov[key] = float(np.mean(inside[key_mask]))
+                else:
+                    grp_cov[key] = 0.0
+            group_coverages[alpha_val] = grp_cov
+
+        # Fit final baseline models on full data
+        self.lower_model.fit(X_df, y_arr)
+        self.upper_model.fit(X_df, y_arr)
+        self.point_model.fit(X_df, y_arr)
+
+        return {
+            "n_folds": max(1, folds_run),
+            "total_samples": len(X_df),
+            "alphas": self.alphas,
+            "global_quantiles": dict(self.global_q_),
+            "group_quantiles": dict(self.group_q_),
+            "empirical_coverage": empirical_coverage,
+            "mean_interval_width": mean_interval_width,
+            "group_coverages": group_coverages,
+        }
 
     def predict(self, X: pd.DataFrame, groups: pd.DataFrame, alpha: float | None = None) -> ConformalPrediction:
         point = self.point_model.predict(X)

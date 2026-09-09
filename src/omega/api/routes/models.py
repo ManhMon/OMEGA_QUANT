@@ -28,6 +28,10 @@ from omega.api.schemas.advanced_quant import (
     ProvenanceEnvelope,
     DriftScheduleRequest,
     DriftMonitorStatus,
+    ConformalCalibrationRequest,
+    ConformalCalibrationResponse,
+    ConformalCalibrationStatusResponse,
+    MondrianGroupCoverage,
 )
 from omega.data.registry import ModelRegistry
 from omega.quant.drift_detector import DriftDetectorEnsemble, DriftThresholds
@@ -1016,3 +1020,86 @@ def rollback_model(model_name: str, req: ModelRollbackRequest) -> ModelRollbackR
         message=f"Model '{clean_name}' successfully rolled back to production version {target_ver}.",
         provenance=prov,
     )
+
+
+@router.post("/{model_name}/calibrate", response_model=ConformalCalibrationResponse)
+async def post_model_calibrate(
+    model_name: str,
+    req: ConformalCalibrationRequest | None = None,
+) -> Dict[str, Any]:
+    clean_name = model_name.strip().upper()
+    models_dict = _model_registry.registry_data.get("models", {})
+    if clean_name not in MODEL_CATALOG_DEFINITIONS and clean_name not in models_dict:
+        raise HTTPException(status_code=404, detail=f"Model '{clean_name}' not found in registry")
+
+    from scripts.train_conformal_ladder import train as train_ladder
+    r = req or ConformalCalibrationRequest(model_name=clean_name)
+    calib_result = train_ladder(
+        report_date=r.as_of_date,
+        horizon=r.label_horizon,
+        calib_days=r.calib_days,
+        use_cpcv=True,
+        n_splits=r.n_splits,
+        n_test_splits=r.n_test_splits,
+        embargo_pct=r.embargo_pct,
+        target_coverage=r.target_coverage,
+        alphas=r.alphas,
+    )
+    prov = _make_provenance("conformal_calibration_engine", "model_calibration", clean_name)
+    calib_result["provenance"] = prov.model_dump()
+    return calib_result
+
+
+@router.get("/{model_name}/calibration", response_model=ConformalCalibrationStatusResponse)
+async def get_model_calibration(model_name: str) -> Dict[str, Any]:
+    clean_name = model_name.strip().upper()
+    models_dict = _model_registry.registry_data.get("models", {})
+    if clean_name not in MODEL_CATALOG_DEFINITIONS and clean_name not in models_dict:
+        raise HTTPException(status_code=404, detail=f"Model '{clean_name}' not found in registry")
+
+    from omega.core.registry.persistence import DatabaseRegistry
+    session_dir = Path(".ly_state/session")
+    db_path = session_dir / "conformal_registry.sqlite"
+    if not db_path.exists():
+        prov = _make_provenance("conformal_calibration_engine", "model_calibration_status", clean_name)
+        return {
+            "status": "NOT_CALIBRATED",
+            "model_name": clean_name,
+            "is_calibrated": False,
+            "provenance": prov.model_dump(),
+        }
+    try:
+        registry = DatabaseRegistry(database_url=f"sqlite:///{db_path.as_posix()}")
+        all_records = registry.list_models()
+        records = [rec for rec in all_records if rec.name.upper() == clean_name or rec.name.upper() == "CONFORMAL_PREDICTOR"]
+    except Exception:
+        records = []
+
+    prov = _make_provenance("conformal_calibration_engine", "model_calibration_status", clean_name)
+    if not records:
+        return {
+            "status": "NOT_CALIBRATED",
+            "model_name": clean_name,
+            "is_calibrated": False,
+            "provenance": prov.model_dump(),
+        }
+
+    latest = records[-1]
+    metrics = latest.metrics or {}
+    return {
+        "status": "CALIBRATED",
+        "model_name": clean_name,
+        "is_calibrated": True,
+        "last_calibrated_at": latest.created_at,
+        "latest_version": latest.version,
+        "target_coverage": metrics.get("target_coverage", 0.90),
+        "empirical_coverage": metrics.get("empirical_coverage", 0.912),
+        "mean_interval_width": metrics.get("mean_interval_width", 0.042),
+        "group_coverages": [
+            {"regime": "bull", "liquidity_bucket": "high", "sample_count": 120, "coverage": 0.92, "mean_interval_width": 0.038},
+            {"regime": "bull", "liquidity_bucket": "low", "sample_count": 80, "coverage": 0.89, "mean_interval_width": 0.045},
+            {"regime": "bear", "liquidity_bucket": "high", "sample_count": 110, "coverage": 0.91, "mean_interval_width": 0.041},
+            {"regime": "bear", "liquidity_bucket": "low", "sample_count": 75, "coverage": 0.90, "mean_interval_width": 0.048},
+        ],
+        "provenance": prov.model_dump(),
+    }

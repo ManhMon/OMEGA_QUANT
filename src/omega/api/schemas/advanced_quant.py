@@ -721,7 +721,7 @@ class GeneticDiscoveryGenerationHistory(StrictApiModel):
 
 class GeneticDiscoveryResponse(StrictApiModel):
     status: Literal["success"] = "success"
-    job_id: UUID
+    job_id: UUID | Annotated[str, Field(min_length=1, max_length=64)]
     task_type: Literal["GENETIC_ALPHA_DISCOVERY"] = "GENETIC_ALPHA_DISCOVERY"
     population_size: int
     generations: int
@@ -730,7 +730,23 @@ class GeneticDiscoveryResponse(StrictApiModel):
     best_ic: FiniteFloat
     best_ir: FiniteFloat
     history: list[GeneticDiscoveryGenerationHistory]
+    session_id: Annotated[str, Field(min_length=1, max_length=64)] | None = None
+    stream_url: Annotated[str, Field(min_length=1, max_length=256)] | None = None
+    message: Annotated[str, Field(min_length=1, max_length=256)] | None = None
     provenance: ProvenanceEnvelope | None = None
+
+
+class DiscoveryProgressEvent(StrictApiModel):
+    session_id: Annotated[str, Field(min_length=1, max_length=64)]
+    event_type: Literal["SNAPSHOT", "GENERATION_UPDATE", "DISCOVERY_COMPLETED", "PING"]
+    generation: Annotated[int, Field(ge=0)]
+    max_generations: Annotated[int, Field(ge=1)]
+    progress: Annotated[int, Field(ge=0, le=100)]
+    best_fitness: FiniteFloat
+    best_formula: Annotated[str, Field(min_length=1, max_length=1024)]
+    message: str | None = None
+    population_sample: list[dict[str, Any]] = Field(default_factory=list)
+    timestamp: AwareUtcDateTime
 
 
 class AlphaSignalItem(StrictApiModel):
@@ -970,6 +986,60 @@ class DriftMonitorStatus(StrictApiModel):
     thresholds: dict[str, float]
     revision: Annotated[int, Field(ge=0)]
     provenance: ProvenanceEnvelope | None = None
+
+
+class ConformalCalibrationRequest(StrictApiModel):
+    model_name: Annotated[str, Field(min_length=1, max_length=64)] = "CONFORMAL_PREDICTOR"
+    universe: list[Annotated[str, Field(min_length=1, max_length=16)]] = Field(default_factory=lambda: ["VN30"])
+    target_coverage: Annotated[FiniteFloat, Field(gt=0.5, lt=1.0)] = 0.90
+    n_splits: Annotated[int, Field(ge=2, le=20)] = 5
+    n_test_splits: Annotated[int, Field(ge=1, le=5)] = 1
+    embargo_pct: Annotated[FiniteFloat, Field(ge=0.0, le=0.1)] = 0.01
+    label_horizon: Annotated[int, Field(ge=1, le=60)] = 1
+    calib_days: Annotated[int, Field(ge=20, le=2520)] = 252
+    alphas: list[Annotated[FiniteFloat, Field(gt=0.0, lt=1.0)]] = Field(default_factory=lambda: [0.5, 0.2, 0.1, 0.05])
+    as_of_date: date | None = None
+
+
+class MondrianGroupCoverage(StrictApiModel):
+    regime: Annotated[str, Field(min_length=1, max_length=64)]
+    liquidity_bucket: Annotated[str, Field(min_length=1, max_length=64)]
+    sample_count: Annotated[int, Field(ge=0)]
+    coverage: FiniteFloat
+    mean_interval_width: FiniteFloat
+
+
+class ConformalCalibrationResponse(StrictApiModel):
+    status: Literal["success", "calibrated"] = "success"
+    model_name: Annotated[str, Field(min_length=1, max_length=64)]
+    version: Annotated[str, Field(min_length=1, max_length=64)]
+    n_folds: Annotated[int, Field(ge=1)]
+    total_samples: Annotated[int, Field(ge=1)]
+    target_coverage: FiniteFloat
+    empirical_coverage: FiniteFloat
+    mean_interval_width: FiniteFloat
+    alphas: list[FiniteFloat]
+    quantiles: dict[str, FiniteFloat]
+    group_coverages: list[MondrianGroupCoverage]
+    artifact_path: Annotated[str, Field(min_length=1, max_length=256)]
+    calibrated_at: AwareUtcDateTime
+    pit_embargo: AwareUtcDateTime
+    is_valid: bool = True
+    provenance: ProvenanceEnvelope | None = None
+
+
+class ConformalCalibrationStatusResponse(StrictApiModel):
+    status: Literal["CALIBRATED", "NOT_CALIBRATED", "CALIBRATING", "ERROR"] = "CALIBRATED"
+    model_name: Annotated[str, Field(min_length=1, max_length=64)]
+    is_calibrated: bool
+    last_calibrated_at: AwareUtcDateTime | None = None
+    latest_version: Annotated[str, Field(min_length=1, max_length=64)] | None = None
+    target_coverage: FiniteFloat | None = None
+    empirical_coverage: FiniteFloat | None = None
+    mean_interval_width: FiniteFloat | None = None
+    group_coverages: list[MondrianGroupCoverage] = Field(default_factory=list)
+    provenance: ProvenanceEnvelope | None = None
+
 
 
 

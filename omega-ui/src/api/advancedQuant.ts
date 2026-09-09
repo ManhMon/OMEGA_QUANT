@@ -1036,6 +1036,37 @@ export const advancedQuantApi = {
       signal,
       ...options,
     }),
+
+  // Conformal CPCV Calibration APIs
+  calibrateConformalCpcv: (req: ConformalCalibrationRequest, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ConformalCalibrationResponse>('/api/v1/quant/conformal/calibrate', {
+      method: 'POST',
+      body: JSON.stringify(req),
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      ...options,
+    }),
+
+  getConformalCalibrationStatus: (modelName: string = 'CONFORMAL_PREDICTOR', signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ConformalCalibrationStatusResponse>(`/api/v1/quant/conformal/calibration-status?model_name=${encodeURIComponent(modelName)}`, {
+      signal,
+      ...options,
+    }),
+
+  calibrateModelConformal: (modelName: string, req?: ConformalCalibrationRequest, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ConformalCalibrationResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/calibrate`, {
+      method: 'POST',
+      body: req ? JSON.stringify(req) : undefined,
+      headers: { 'Content-Type': 'application/json' },
+      signal,
+      ...options,
+    }),
+
+  getModelCalibrationStatus: (modelName: string, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
+    resilientApiRequest<ConformalCalibrationStatusResponse>(`/api/v1/models/${encodeURIComponent(modelName)}/calibration`, {
+      signal,
+      ...options,
+    }),
 };
 
 export type PaperDaemonState = 'STOPPED' | 'RUNNING' | 'PAUSED' | 'ERROR';
@@ -1102,5 +1133,59 @@ export interface PaperOrderExecutionResponse {
   count: number;
   submitted_at: string;
 }
+
+export interface ConformalCalibrationRequest {
+  model_name?: string;
+  universe?: string[];
+  target_coverage?: number;
+  n_splits?: number;
+  n_test_splits?: number;
+  embargo_pct?: number;
+  label_horizon?: number;
+  calib_days?: number;
+  alphas?: number[];
+  as_of_date?: string;
+}
+
+export interface MondrianGroupCoverage {
+  regime: string;
+  liquidity_bucket: string;
+  sample_count: number;
+  coverage: number;
+  mean_interval_width: number;
+}
+
+export interface ConformalCalibrationResponse {
+  status: string;
+  model_name: string;
+  version: string;
+  n_folds: number;
+  total_samples: number;
+  target_coverage: number;
+  empirical_coverage: number;
+  mean_interval_width: number;
+  alphas: number[];
+  quantiles: Record<string, number>;
+  group_coverages: MondrianGroupCoverage[];
+  artifact_path: string;
+  calibrated_at: string;
+  pit_embargo: string;
+  is_valid: boolean;
+  provenance?: ProvenanceEnvelope | null;
+}
+
+export interface ConformalCalibrationStatusResponse {
+  status: 'CALIBRATED' | 'NOT_CALIBRATED' | 'CALIBRATING' | 'ERROR';
+  model_name: string;
+  is_calibrated: boolean;
+  last_calibrated_at: string | null;
+  latest_version: string | null;
+  target_coverage: number | null;
+  empirical_coverage: number | null;
+  mean_interval_width: number | null;
+  group_coverages: MondrianGroupCoverage[];
+  provenance?: ProvenanceEnvelope | null;
+}
+
 
 

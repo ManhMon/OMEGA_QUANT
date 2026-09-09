@@ -23,6 +23,7 @@ import {
 import { useAlphaFactory } from '../../hooks/useAlphaFactory';
 import { advancedQuantApi, AlphaEvaluationResponse, AlphaDecayProfileResponse } from '../../api/advancedQuant';
 import { useTranslation } from '../../i18n';
+import { useUiStore } from '../../store/uiStore';
 
 const PRESET_FORMULAS = [
   { label: 'Momentum 5D Reversal', formula: 'ts_rank(close / delay(close, 5) - 1, 10)' },
@@ -59,7 +60,20 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
   } = useAlphaFactory();
 
   const { t } = useTranslation();
-  const [activeTab, setActiveTab] = useState<'AST_STUDIO' | 'ARSENAL_703' | 'GENETIC_EVOLUTION'>('AST_STUDIO');
+  const storeSubTab = useUiStore((state) => state.activeSubTabs['alpha_factory']);
+  const activeFeatureId = useUiStore((state) => state.activeFeatureId);
+  const setActiveSubTabInStore = useUiStore((state) => state.setActiveSubTab);
+  const activeTab = (storeSubTab as 'AST_STUDIO' | 'ARSENAL_703' | 'GENETIC_EVOLUTION' | 'ALPHA_DECAY') || 'AST_STUDIO';
+  const setActiveTab = (tab: 'AST_STUDIO' | 'ARSENAL_703' | 'GENETIC_EVOLUTION' | 'ALPHA_DECAY') => setActiveSubTabInStore('alpha_factory', tab);
+
+  useEffect(() => {
+    if (activeFeatureId) {
+      if (activeFeatureId === 'F11') setActiveSubTabInStore('alpha_factory', 'AST_STUDIO');
+      else if (activeFeatureId === 'F12') setActiveSubTabInStore('alpha_factory', 'ARSENAL_703');
+      else if (activeFeatureId === 'F13') setActiveSubTabInStore('alpha_factory', 'ALPHA_DECAY');
+      else if (activeFeatureId === 'F14') setActiveSubTabInStore('alpha_factory', 'GENETIC_EVOLUTION');
+    }
+  }, [activeFeatureId, setActiveSubTabInStore]);
   const [generations, setGenerations] = useState<number>(10);
   const [popSize, setPopSize] = useState<number>(50);
   const [currentPage, setCurrentPage] = useState<number>(1);
@@ -200,6 +214,18 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
             <span className="text-[10px] bg-cyan-900/60 text-cyan-200 px-1.5 py-0.2 rounded font-mono ml-1">
               {totalArsenalCount || 703}
             </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('ALPHA_DECAY')}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-md font-semibold text-xs transition-all ${
+              activeTab === 'ALPHA_DECAY'
+                ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40 shadow-sm'
+                : 'text-zinc-400 hover:text-zinc-200'
+            }`}
+          >
+            <Activity className="w-3.5 h-3.5" />
+            Alpha Decay Profiler
           </button>
 
           <button
@@ -643,7 +669,44 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
           </div>
         )}
 
-        {/* TAB 3: Genetic Evolution Visualizer */}
+        {/* TAB 3: Alpha Decay Profiler */}
+        {activeTab === 'ALPHA_DECAY' && (
+          <div className="flex flex-col gap-4">
+            <div className="bg-zinc-900/70 border border-white/10 rounded-xl p-4 flex flex-col gap-3 shadow-md">
+              <div className="flex items-center justify-between border-b border-white/5 pb-2">
+                <div className="flex items-center gap-2">
+                  <TrendingDown className="w-4 h-4 text-amber-400" />
+                  <span className="font-bold text-zinc-100 text-sm">Alpha Decay Profiler & Half-Life Modeling</span>
+                </div>
+                {localDecayProfile && (
+                  <span className="text-[10px] bg-amber-500/20 text-amber-300 border border-amber-500/30 px-2 py-0.5 rounded font-bold">
+                    {localDecayProfile.decay_regime}
+                  </span>
+                )}
+              </div>
+              <p className="text-xs text-zinc-400">
+                Forward IC decay analysis across 1D, 5D, 10D, and 30D holding horizons to determine signal persistence.
+              </p>
+              {localDecayProfile ? (
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-3 pt-2">
+                  {localDecayProfile.profile.map((d) => (
+                    <div key={d.lag_days} className="p-3 rounded-lg bg-zinc-950 border border-white/5 flex flex-col gap-1">
+                      <span className="text-[10px] text-zinc-400">Lag: T+{d.lag_days}</span>
+                      <span className="text-xs font-bold text-emerald-400">IC: {d.ic.toFixed(3)}</span>
+                      <span className="text-[9px] text-zinc-500">IR: {d.ir.toFixed(2)}</span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="p-4 bg-zinc-950 rounded-lg text-center text-zinc-400 text-xs">
+                  Select an alpha from 703 Arsenal to view detailed decay curve.
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: Genetic Evolution Visualizer */}
         {activeTab === 'GENETIC_EVOLUTION' && (
           <div className="grid grid-cols-12 gap-4 h-full">
             {/* Left: Evolution Config & Controls */}
@@ -681,6 +744,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                 </div>
 
                 <button
+                  data-testid="launch-discovery-btn"
                   onClick={() => handleStartDiscovery({ generations, population_size: popSize })}
                   disabled={isDiscovering}
                   className="flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold py-2.5 rounded-lg shadow-md transition-all active:scale-95"
@@ -695,6 +759,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                 <div className="flex items-center justify-between">
                   <span className="text-zinc-300 text-[10px]">{t.alphaFactory.sessionStatus}</span>
                   <span
+                    data-testid="discovery-session-status"
                     className={`text-[9px] px-2 py-0.5 rounded font-bold ${
                       discoveryState.status === 'RUNNING'
                         ? 'bg-purple-500/20 text-purple-300 border border-purple-500/30'
@@ -707,7 +772,10 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                   </span>
                 </div>
 
-                <div className="w-full bg-zinc-950 h-2 rounded-full overflow-hidden border border-white/5 my-1">
+                <div
+                  data-testid="discovery-progress-bar"
+                  className="w-full bg-zinc-950 h-2 rounded-full overflow-hidden border border-white/5 my-1"
+                >
                   <div
                     className="bg-purple-500 h-full transition-all duration-300"
                     style={{ width: `${discoveryState.progress}%` }}
@@ -732,7 +800,10 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                     <span className="font-bold text-zinc-200">{t.alphaFactory.fittestDiscovered}</span>
                   </div>
                   {discoveryState.bestFitness > 0 && (
-                    <span className="text-purple-300 font-mono font-bold text-xs">
+                    <span
+                      data-testid="discovery-best-fitness"
+                      className="text-purple-300 font-mono font-bold text-xs"
+                    >
                       Fitness: {discoveryState.bestFitness.toFixed(2)}
                     </span>
                   )}
@@ -741,7 +812,10 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                 {discoveryState.bestFormula ? (
                   <div className="bg-zinc-950 p-3 rounded-lg border border-purple-500/30 flex flex-col gap-2">
                     <span className="text-zinc-300 text-[10px] uppercase font-bold">{t.alphaFactory.candidateExpr}</span>
-                    <code className="text-xs text-purple-300 font-mono bg-zinc-900 p-2 rounded">
+                    <code
+                      data-testid="discovery-best-formula"
+                      className="text-xs text-purple-300 font-mono bg-zinc-900 p-2 rounded"
+                    >
                       {discoveryState.bestFormula}
                     </code>
                     <div className="flex items-center justify-end">
@@ -789,4 +863,3 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
     </div>
   );
 };
-
