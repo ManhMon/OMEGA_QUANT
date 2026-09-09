@@ -102,16 +102,16 @@ export interface MacroMetrics {
 export interface StockScreenerItem {
   ticker: string;
   exchange: 'HOSE' | 'HNX' | 'UPCOM';
-  pe: number;
-  pb: number;
-  roe: number;
-  piotroskiF: number;
-  altmanZ: number;
+  pe: number | null;
+  pb: number | null;
+  roe: number | null;
+  piotroskiF: number | null;
+  altmanZ: number | null;
   altmanZone?: string | null;
   sector: string;
   marketCapBillionVnd?: number | null;
   adv20BillionVnd?: number | null;
-  momentumScore: number;
+  momentumScore: number | null;
   momentum1m?: number | null;
   momentum3m?: number | null;
   status: 'QUALIFIED' | 'WATCH' | 'DISTRESS' | 'DISQUALIFIED';
@@ -138,16 +138,16 @@ export function normalizeStockScreenerItem(raw: unknown): StockScreenerItem {
     return {
       ticker: 'UNKNOWN',
       exchange: 'HOSE',
-      pe: 0,
-      pb: 0,
-      roe: 0,
-      piotroskiF: 0,
-      altmanZ: 0,
+      pe: null,
+      pb: null,
+      roe: null,
+      piotroskiF: null,
+      altmanZ: null,
       altmanZone: null,
       sector: 'General',
       marketCapBillionVnd: null,
       adv20BillionVnd: null,
-      momentumScore: 0,
+      momentumScore: null,
       momentum1m: null,
       momentum3m: null,
       status: 'WATCH',
@@ -170,20 +170,18 @@ export function normalizeStockScreenerItem(raw: unknown): StockScreenerItem {
     ? rawSector.trim()
     : 'General';
 
-  const pe = parseNullableNumber(r.pe ?? r.p_e ?? r.price_to_earnings) ?? 0;
-  const pb = parseNullableNumber(r.pb ?? r.p_b ?? r.price_to_book) ?? 0;
-  const roe = parseNullableNumber(r.roe ?? r.return_on_equity ?? r.roe_pct) ?? 0;
+  const pe = parseNullableNumber(r.pe ?? r.p_e ?? r.price_to_earnings);
+  const pb = parseNullableNumber(r.pb ?? r.p_b ?? r.price_to_book);
+  const roe = parseNullableNumber(r.roe ?? r.return_on_equity ?? r.roe_pct);
 
   const rawPiotroski = parseNullableNumber(r.piotroskiF ?? r.piotroski_f ?? r.f_score ?? r.piotroski);
-  const piotroskiF = rawPiotroski != null ? Math.max(0, Math.min(9, Math.round(rawPiotroski))) : 0;
+  const piotroskiF = rawPiotroski != null ? Math.max(0, Math.min(9, Math.round(rawPiotroski))) : null;
 
-  const altmanZ = parseNullableNumber(r.altmanZ ?? r.altman_z ?? r.z_score) ?? 0;
+  const altmanZ = parseNullableNumber(r.altmanZ ?? r.altman_z ?? r.z_score);
   const marketCapBillionVnd = parseNullableNumber(r.marketCapBillionVnd ?? r.market_cap_billion_vnd ?? r.market_cap);
   const adv20BillionVnd = parseNullableNumber(r.adv20BillionVnd ?? r.adv20_billion_vnd ?? r.adv20 ?? r.adv);
 
-  const momentumScore = parseNullableNumber(
-    r.momentumScore ?? r.momentum_score ?? r.momentum ?? r.quant_score ?? r.hybrid_score
-  ) ?? 0;
+  const momentumScore = parseNullableNumber(r.momentumScore ?? r.momentum_score ?? r.momentum ?? r.quant_score ?? r.hybrid_score);
   const momentum1m = parseNullableNumber(r.momentum1m ?? r.momentum_1m);
   const momentum3m = parseNullableNumber(r.momentum3m ?? r.momentum_3m);
   const altmanZone = typeof r.altman_zone === 'string' ? r.altman_zone.trim().toLowerCase() : typeof r.altmanZone === 'string' ? r.altmanZone.trim().toLowerCase() : null;
@@ -198,7 +196,7 @@ export function normalizeStockScreenerItem(raw: unknown): StockScreenerItem {
     status = 'DISTRESS';
   } else if (r.is_fallback === true) {
     status = 'WATCH';
-  } else if ((piotroskiF ?? 0) >= 7 && (roe ?? 0) >= 15) {
+  } else if (piotroskiF !== null && roe !== null && piotroskiF >= 7 && roe >= 15) {
     status = 'QUALIFIED';
   }
 
@@ -515,7 +513,7 @@ export interface DynamicUniverseItem {
   momentum_3m: number | null;
   sector: string;
   decision_cutoff: string;
-  status_label: 'QUALIFIED' | 'WATCH' | 'DISTRESS';
+  status_label: 'QUALIFIED' | 'WATCH' | 'DISTRESS' | 'DELISTED';
 }
 
 export interface DynamicUniverseResponse {
@@ -1252,29 +1250,29 @@ export const apiClient = {
     return await resp.json();
   },
 
-  getLakehouseStatus: async (): Promise<LakehouseStatusResponse> => {
-    return apiRequest<LakehouseStatusResponse>('/api/v1/control/lakehouse-status');
+  getLakehouseStatus: async (signal?: AbortSignal): Promise<LakehouseStatusResponse> => {
+    return apiRequest<LakehouseStatusResponse>('/api/v1/control/lakehouse-status', { signal });
   },
 
-  getControlReceipts: async (limit = 50): Promise<{ status: string; total_receipts: number; receipts: TaskReceipt[]; artifact_root: string }> => {
-    return apiRequest<{ status: string; total_receipts: number; receipts: TaskReceipt[]; artifact_root: string }>(`/api/v1/control/receipts?limit=${limit}`);
+  getControlReceipts: async (limit = 50, signal?: AbortSignal): Promise<{ status: string; total_receipts: number; receipts: TaskReceipt[]; artifact_root: string }> => {
+    return apiRequest<{ status: string; total_receipts: number; receipts: TaskReceipt[]; artifact_root: string }>(`/api/v1/control/receipts?limit=${limit}`, { signal });
   },
 
   getOptimizationBoundsPreview: async (): Promise<OptimizationBoundsPreviewResponse> => {
     return apiRequest<OptimizationBoundsPreviewResponse>('/api/v1/control/optimization-bounds-preview');
   },
 
-  getStrategyBenchmarks: async (): Promise<StrategyBenchmarksResponse> => {
-    return apiRequest<StrategyBenchmarksResponse>('/api/v1/control/strategy-benchmarks');
+  getStrategyBenchmarks: async (signal?: AbortSignal): Promise<StrategyBenchmarksResponse> => {
+    return apiRequest<StrategyBenchmarksResponse>('/api/v1/control/strategy-benchmarks', { signal });
   },
 
-  getControlDynamicUniverse: async (params?: ControlDynamicUniverseParams): Promise<DynamicUniverseResponse> => {
+  getControlDynamicUniverse: async (params?: ControlDynamicUniverseParams, signal?: AbortSignal): Promise<DynamicUniverseResponse> => {
     const query = new URLSearchParams();
     if (params?.universe_preset) query.set('universe_preset', params.universe_preset);
     if (params?.top_n) query.set('top_n', String(params.top_n));
     if (params?.sector_filter) query.set('sector_filter', params.sector_filter);
     const qs = query.toString();
-    return apiRequest<DynamicUniverseResponse>(`/api/v1/control/dynamic-universe${qs ? `?${qs}` : ''}`);
+    return apiRequest<DynamicUniverseResponse>(`/api/v1/control/dynamic-universe${qs ? `?${qs}` : ''}`, { signal });
   },
 
 

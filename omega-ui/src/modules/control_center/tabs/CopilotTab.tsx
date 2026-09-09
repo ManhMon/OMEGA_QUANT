@@ -1,0 +1,2 @@
+import { useUiStore } from '../../../store/uiStore';
+export function CopilotTab() { const setActiveModule = useUiStore((state) => state.setActiveModule); return <section className="space-y-3 rounded border border-white/10 bg-zinc-900 p-4 font-mono text-sm text-zinc-300"><p>Omni-Quant Copilot analyzes telemetry and presents governed actions in the global drawer.</p><button className="rounded bg-emerald-500 px-3 py-2 text-xs font-bold text-zinc-950" onClick={() => setActiveModule('strategy_lab')}>OPEN STRATEGY LAB COPILOT</button></section>; }

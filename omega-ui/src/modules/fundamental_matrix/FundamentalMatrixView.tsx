@@ -213,19 +213,19 @@ export const FundamentalMatrixView: React.FC = () => {
                     </td>
                     <td className="px-4 py-3 text-zinc-400">{row.exchange}</td>
                     <td className="px-4 py-3 text-zinc-300">{row.sector}</td>
-                    <td className="px-4 py-3 text-zinc-200">{row.pe.toFixed(1)}</td>
-                    <td className="px-4 py-3 text-zinc-200">{row.pb.toFixed(1)}</td>
-                    <td className="px-4 py-3 text-emerald-400 font-semibold">{row.roe.toFixed(1)}%</td>
+                    <td className="px-4 py-3 text-zinc-200">{formatMetricValue(row.pe, 1)}</td>
+                    <td className="px-4 py-3 text-zinc-200">{formatMetricValue(row.pb, 1)}</td>
+                    <td className="px-4 py-3 text-emerald-400 font-semibold">{formatMetricValue(row.roe, 1, '%')}</td>
                     <td className="px-4 py-3">
                       <span className={`px-2 py-0.5 rounded font-bold ${
-                        row.piotroskiF >= 7 ? 'bg-emerald-950/60 border border-emerald-500/30 text-emerald-300' : 'bg-zinc-900 text-zinc-400'
+                        (row.piotroskiF ?? 0) >= 7 ? 'bg-emerald-950/60 border border-emerald-500/30 text-emerald-300' : 'bg-zinc-900 text-zinc-400'
                       }`}>
-                        {row.piotroskiF}/9
+                        {row.piotroskiF === null ? '--/9' : `${row.piotroskiF}/9`}
                       </span>
                     </td>
-                    <td className="px-4 py-3 text-cyan-300">{row.altmanZ.toFixed(2)}</td>
-                    <td className={`px-4 py-3 font-semibold ${row.momentumScore >= 0 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                      {row.momentumScore >= 0 ? `+${row.momentumScore.toFixed(2)}` : row.momentumScore.toFixed(2)}
+                    <td className="px-4 py-3 text-cyan-300">{formatMetricValue(row.altmanZ, 2)}</td>
+                    <td className={`px-4 py-3 font-semibold ${momentumColor(row.momentumScore)}`}>
+                      {formatMomentumScore(row.momentumScore)}
                     </td>
                     <td className="px-4 py-3 text-right">
                       <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
@@ -274,3 +274,16 @@ export const FundamentalMatrixView: React.FC = () => {
   );
 };
 
+export function formatMetricValue(value: unknown, digits: number, suffix = ''): string {
+  const fallback = '--';
+  return typeof value === 'number' && Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : fallback;
+}
+
+export function formatMomentumScore(value: unknown): string {
+  const fallback = '--';
+  return typeof value === 'number' && Number.isFinite(value) ? `${value >= 0 ? '+' : ''}${value.toFixed(2)}` : fallback;
+}
+
+export function momentumColor(value: number | null): string {
+  return value == null ? 'text-zinc-500' : value >= 0 ? 'text-emerald-400' : 'text-rose-400';
+}

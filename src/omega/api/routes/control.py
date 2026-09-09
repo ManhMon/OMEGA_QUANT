@@ -2489,7 +2489,7 @@ async def get_control_dynamic_universe(
                 m_val = None
 
             status_val = str(row.get("status", "")).strip().upper()
-            if status_val in {"QUALIFIED", "WATCH", "DISTRESS"}:
+            if status_val in {"QUALIFIED", "WATCH", "DISTRESS", "DELISTED"}:
                 status_label = status_val
             else:
                 status_label = "QUALIFIED" if h_score >= 0.65 else "WATCH" if h_score >= 0.45 else "DISTRESS"

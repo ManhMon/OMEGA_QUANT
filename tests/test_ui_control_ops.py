@@ -6,6 +6,8 @@ import concurrent.futures
 from collections import deque
 from unittest.mock import patch
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
+import pandas as pd
 from starlette.testclient import TestClient
 from omega.api.server import app
 import omega.api.routes.control as control_mod
@@ -257,6 +259,48 @@ def test_dim11_survivorship_delisting_anomalies(client):
     # Dim 11: Delisted or unknown symbols handled gracefully with explicit validation error
     resp = client.post("/api/v1/control/ingest-data", json={"symbols": ["INVALID_SYM_XXX_123"]})
     assert resp.status_code == 422
+
+
+def test_dynamic_universe_preserves_historical_delisted_constituent(client, monkeypatch):
+    frame = pd.DataFrame([
+        {"symbol": "OLD", "hybrid_score": 0.99, "quant_score": 0.95, "llm_score": 0.90,
+         "status": "DELISTED", "decision_cutoff": "2020-12-31"},
+        {"symbol": "LIVE", "hybrid_score": 0.80, "quant_score": 0.75, "llm_score": 0.70,
+         "status": "QUALIFIED", "decision_cutoff": "2020-12-31"},
+    ])
+    monkeypatch.setattr(control_mod.Path, "exists", lambda self: self == Path("data/hybrid_eval_full_703.parquet"))
+    monkeypatch.setattr(control_mod.pd, "read_parquet", lambda _: frame)
+
+    response = client.get("/api/v1/control/dynamic-universe?top_n=5")
+
+    assert response.status_code == 200
+    items = {item["symbol"]: item for item in response.json()["items"]}
+    assert items["OLD"]["status_label"] == "DELISTED"
+    assert items["OLD"]["decision_cutoff"] == "2020-12-31"
+
+
+def test_dynamic_universe_unknown_status_uses_score_fallback(client, monkeypatch):
+    frame = pd.DataFrame([{
+        "symbol": "LEGACY", "hybrid_score": 0.50, "quant_score": 0.50, "llm_score": 0.50,
+        "status": "RETIRED", "decision_cutoff": "2020-12-31",
+    }])
+    monkeypatch.setattr(control_mod.Path, "exists", lambda self: self == Path("data/hybrid_eval_full_703.parquet"))
+    monkeypatch.setattr(control_mod.pd, "read_parquet", lambda _: frame)
+
+    response = client.get("/api/v1/control/dynamic-universe?top_n=5")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["status_label"] == "WATCH"
+
+
+def test_dynamic_universe_parquet_failure_returns_redacted_error(client, monkeypatch):
+    monkeypatch.setattr(control_mod.Path, "exists", lambda self: self == Path("data/hybrid_eval_full_703.parquet"))
+    monkeypatch.setattr(control_mod.pd, "read_parquet", lambda _: (_ for _ in ()).throw(RuntimeError("database password=secret")))
+
+    response = client.get("/api/v1/control/dynamic-universe")
+
+    assert response.status_code == 500
+    assert "secret" not in response.json()["detail"]
 
 
 def test_dim12_cli_injection_flag_smuggling_sanitization(client):
