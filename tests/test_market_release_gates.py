@@ -576,3 +576,30 @@ def test_runtime_scale_equivalent_overlaps_normalize_both_inputs_without_duplica
     assert isinstance(merged["available_at"].dtype, pd.DatetimeTZDtype)
     valid, validation_errors = updater.validate_dataframe(merged, "runtime_scale")
     assert valid, validation_errors
+
+
+def test_post_market_dissemination_available_at_within_cutoff():
+    rows = _rows()
+    # On trading day 2026-07-24, running post-market at 17:19 ICT (10:19 UTC)
+    # available_at is 2026-07-25 00:00 ICT.
+    # It must be accepted by release gates.
+    cutoff_post_market = datetime(2026, 7, 24, 10, 19, tzinfo=timezone.utc)
+    ok, errors, report = updater.validate_release_gates(
+        rows, {}, ["AAA", "BBB"], pd.Timestamp("2026-07-31"), None,
+        cutoff_post_market,
+    )
+    assert ok, errors
+
+
+def test_intraday_available_at_blocks_release():
+    rows = _rows()
+    # On trading day 2026-07-24, running before market close at 10:00 ICT (03:00 UTC)
+    # today's daily bar is not yet finalized, so available_at (2026-07-25 00:00 ICT) exceeds cutoff.
+    cutoff_intraday = datetime(2026, 7, 24, 3, 0, tzinfo=timezone.utc)
+    ok, errors, _ = updater.validate_release_gates(
+        rows, {}, ["AAA", "BBB"], pd.Timestamp("2026-07-31"), None,
+        cutoff_intraday,
+    )
+    assert not ok
+    assert "provenance: available_at exceeds cutoff" in errors
+
