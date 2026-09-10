@@ -221,6 +221,36 @@ def test_intraday_roll_uses_preceding_trading_day_expiry():
     assert result["expiry_day"] is True
 
 
+def test_ledger_skips_expiry_when_trade_date_is_absent_or_uncovered():
+    kwargs = dict(
+        nav_t_minus_1=100.0,
+        realized_stock_weights_t_minus_1=np.array([0.0]),
+        stock_returns_t=np.array([0.0]),
+        cash_free_t_minus_1=100.0,
+        margin_locked_t_minus_1=0.0,
+        futures_vm_receivable_t_minus_1=0.0,
+    )
+
+    assert run_joint_ledger_step(**kwargs)["expiry_date"] is None
+    result = run_joint_ledger_step(**kwargs, trade_date=pd.Timestamp("2030-01-15"))
+    assert result["expiry_date"] is None
+    assert result["expiry_day"] is False
+
+
+@pytest.mark.parametrize("trade_date", ["not-a-date", float("nan"), pd.NaT])
+def test_joint_ledger_rejects_invalid_trade_date_before_calculation(trade_date):
+    with pytest.raises(ValueError, match="trade_date must be a valid date"):
+        run_joint_ledger_step(
+            nav_t_minus_1=100.0,
+            realized_stock_weights_t_minus_1=np.array([0.0]),
+            stock_returns_t=np.array([0.0]),
+            cash_free_t_minus_1=100.0,
+            margin_locked_t_minus_1=0.0,
+            futures_vm_receivable_t_minus_1=0.0,
+            trade_date=trade_date,
+        )
+
+
 def test_pretrade_margin_check_includes_futures_trade_costs():
     cost = estimate_futures_trade_cost(1.0, 100.0, 10.0)
     result = run_joint_ledger_step(

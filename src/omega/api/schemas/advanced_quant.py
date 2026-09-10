@@ -77,7 +77,7 @@ class PitWindowRequest(StrictApiModel):
         cutoff = self.pit_cutoff or self.as_of_time
         if self.start_date > self.end_date or self.end_date > self.as_of_time.date():
             raise ValueError("start_date <= end_date <= local date(as_of_time) required")
-        if cutoff > self.as_of_time:
+        if cutoff.astimezone(timezone.utc) > self.as_of_time.astimezone(timezone.utc):
             raise ValueError("pit_cutoff must not exceed as_of_time")
         if self.as_of_time > datetime.now(timezone.utc) + timedelta(seconds=60):
             raise ValueError("as_of_time exceeds server clock tolerance")
@@ -103,9 +103,9 @@ class ProvenanceEnvelope(StrictApiModel):
 
     @model_validator(mode="after")
     def validate_pit(self) -> "ProvenanceEnvelope":
-        if self.effective_cutoff > self.as_of:
+        if self.effective_cutoff.astimezone(timezone.utc) > self.as_of.astimezone(timezone.utc):
             raise ValueError("effective_cutoff must not exceed as_of")
-        if self.max_included_available_at and self.max_included_available_at > self.effective_cutoff:
+        if self.max_included_available_at and self.max_included_available_at.astimezone(timezone.utc) > self.effective_cutoff.astimezone(timezone.utc):
             raise ValueError("included data exceeds effective_cutoff")
         return self
 
@@ -1029,7 +1029,7 @@ class ConformalCalibrationResponse(StrictApiModel):
 
 
 class ConformalCalibrationStatusResponse(StrictApiModel):
-    status: Literal["CALIBRATED", "NOT_CALIBRATED", "CALIBRATING", "ERROR"] = "CALIBRATED"
+    status: Literal["CALIBRATED", "NOT_CALIBRATED", "CALIBRATING", "ERROR", "data_unavailable"] = "CALIBRATED"
     model_name: Annotated[str, Field(min_length=1, max_length=64)]
     is_calibrated: bool
     last_calibrated_at: AwareUtcDateTime | None = None
@@ -1039,7 +1039,5 @@ class ConformalCalibrationStatusResponse(StrictApiModel):
     mean_interval_width: FiniteFloat | None = None
     group_coverages: list[MondrianGroupCoverage] = Field(default_factory=list)
     provenance: ProvenanceEnvelope | None = None
-
-
 
 

@@ -106,7 +106,17 @@ def run_joint_ledger_step(
     futures_trade_cost_t: float = 0.0,
     stock_liquidation_order: list[tuple[str, float, float]] | None = None,
     contract_round_lot: int = 1,
-) -> dict[str, float | bool | str | date]:
+) -> dict[str, float | bool | str | date | None]:
+    trade_day: date | None = None
+    if trade_date is not None:
+        try:
+            parsed_trade_date = pd.Timestamp(trade_date)
+            if pd.isna(parsed_trade_date):
+                raise ValueError
+            trade_day = parsed_trade_date.date()
+        except (TypeError, ValueError, OverflowError):
+            raise ValueError("trade_date must be a valid date") from None
+
     def _round_contracts(value: float) -> float:
         if contract_round_lot > 1:
             return float(np.trunc(value / contract_round_lot) * contract_round_lot)
@@ -125,7 +135,7 @@ def run_joint_ledger_step(
     nav_before_trades = float(
         nav_t_minus_1 + stock_pnl_t + futures_pnl_t
     )
-    rates = resolve_margin_rates(trade_date or pd.Timestamp("1900-01-01"))
+    rates = resolve_margin_rates(trade_day or date(1900, 1, 1))
     futures_trade = float(target_futures_contracts if target_futures_contracts is not None else futures_contracts_t_minus_1)
     futures_trade = _round_contracts(futures_trade)
     incremental_contracts = futures_trade - float(futures_contracts_t_minus_1)
@@ -172,7 +182,12 @@ def run_joint_ledger_step(
     cash_free_t = float(nav_after_trades - stock_notional_t - margin_locked_t - futures_vm_receivable_t)
     margin_equity_t = float(margin_locked_t + futures_vm_receivable_t)
     bucket_sum_t = float(stock_notional_t + cash_free_t + margin_equity_t)
-    expiry_date = get_futures_expiry_date((trade_date or pd.Timestamp("1900-01-01")).year, (trade_date or pd.Timestamp("1900-01-01")).month)
+    expiry_date: date | None = None
+    if trade_day is not None:
+        try:
+            expiry_date = get_futures_expiry_date(trade_day.year, trade_day.month)
+        except (TypeError, ValueError, OverflowError):
+            pass
     return {
         "stock_pnl_t": stock_pnl_t,
         "futures_pnl_t": futures_pnl_t,
@@ -189,9 +204,9 @@ def run_joint_ledger_step(
         "forced_stock_sales": forced_stock_sales,
         "maintenance_margin_rate": rates["maintenance"],
         "initial_margin_rate": rates["initial"],
-        "trade_date": pd.Timestamp(trade_date).date() if trade_date is not None else None,
+        "trade_date": trade_day,
         "expiry_date": expiry_date,
-        "expiry_day": bool(trade_date is not None and pd.Timestamp(trade_date).date() == expiry_date),
+        "expiry_day": bool(trade_day is not None and trade_day == expiry_date),
         "insolvency": insolvency,
     }
 

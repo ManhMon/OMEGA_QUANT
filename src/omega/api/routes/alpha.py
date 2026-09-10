@@ -3,6 +3,7 @@
 import asyncio
 import hashlib
 import json
+import math
 import re
 import threading
 import uuid
@@ -38,6 +39,8 @@ HYBRID_EVAL_PATH = Path("data/hybrid_eval_full_703.parquet")
 DISCOVERY_SESSIONS: Dict[str, Dict[str, Any]] = {}
 DISCOVERY_SESSIONS_LOCK = threading.Lock()
 MAX_CACHED_SESSIONS = 100
+DISCOVERY_SSE_MAX_POLLS = 60
+DISCOVERY_SSE_POLL_INTERVAL_SECONDS = 1.0
 
 
 def _make_provenance(source: str, dataset_id: str, payload_summary: Any) -> ProvenanceEnvelope:
@@ -269,8 +272,23 @@ async def get_alpha_decay_profile(alpha_id: str) -> Dict[str, Any]:
 
 @router.post("/discovery/start", response_model=GeneticDiscoveryResponse)
 async def start_alpha_discovery(req: GeneticDiscoveryRequest) -> Dict[str, Any]:
-    job_id = uuid.uuid4()
+    from omega.api.services.job_service import get_job_service
+    from omega.api.schemas.advanced_quant import JobSubmitRequest
+
     session_id = f"disc_{uuid.uuid4().hex[:12]}"
+    now_utc = datetime.now(timezone.utc)
+
+    # Enqueue real discovery job into durable job queue
+    job_service = get_job_service()
+    job_req = JobSubmitRequest(
+        task_type="genetic_alpha_discovery",
+        payload=req.model_dump(mode="json"),
+        pit_cutoff=now_utc,
+        max_attempts=3,
+    )
+    job_data, _ = job_service.submit(job_req, idempotency_key=session_id)
+    real_job_id = uuid.UUID(job_data["job_id"])
+
     history: List[GeneticDiscoveryGenerationHistory] = []
 
     best_fitness = 0.0
@@ -306,7 +324,7 @@ async def start_alpha_discovery(req: GeneticDiscoveryRequest) -> Dict[str, Any]:
             DISCOVERY_SESSIONS.pop(oldest, None)
         DISCOVERY_SESSIONS[session_id] = {
             "session_id": session_id,
-            "job_id": str(job_id),
+            "job_id": str(real_job_id),
             "population_size": req.population_size,
             "generations": req.generations,
             "best_formula": best_formula,
@@ -319,7 +337,7 @@ async def start_alpha_discovery(req: GeneticDiscoveryRequest) -> Dict[str, Any]:
 
     return {
         "status": "success",
-        "job_id": job_id,
+        "job_id": real_job_id,
         "session_id": session_id,
         "stream_url": f"/sse/v1/alpha/discovery/stream?session_id={session_id}",
         "message": "Alpha discovery session initialized",
@@ -347,6 +365,40 @@ async def sse_alpha_discovery_stream(session_id: str = Query(min_length=1, max_l
         raise HTTPException(status_code=404, detail="JOB_NOT_FOUND")
 
     async def event_generator():
+        from omega.api.services.job_service import get_job_service
+
+        session_max_generations = 0
+
+        def terminal_event(event_type: str, message: str) -> dict[str, str]:
+            return {
+                "event": "message",
+                "data": json.dumps({
+                    "session_id": session_id, "event_type": event_type, "generation": 0,
+                    "max_generations": session_max_generations, "progress": 0,
+                    "best_fitness": 0.0, "best_formula": "", "message": message,
+                    "population_sample": [], "timestamp": datetime.now(timezone.utc).isoformat(),
+                }),
+            }
+
+        def finite_float(value: object) -> float:
+            if isinstance(value, bool):
+                raise ValueError
+            parsed = float(value)
+            if not math.isfinite(parsed):
+                raise ValueError
+            return parsed
+
+        try:
+            session_generations = int(session["generations"])
+            target_ir = finite_float(session.get("target_ir", 1.5))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            yield terminal_event("DISCOVERY_FAILED", "Discovery session contains invalid numeric values")
+            return
+        if isinstance(session["generations"], bool) or session_generations < 1:
+            yield terminal_event("DISCOVERY_FAILED", "Discovery session contains an invalid generation count")
+            return
+        session_max_generations = session_generations
+
         # 1. Initial SNAPSHOT
         yield {
             "event": "message",
@@ -354,7 +406,7 @@ async def sse_alpha_discovery_stream(session_id: str = Query(min_length=1, max_l
                 "session_id": session_id,
                 "event_type": "SNAPSHOT",
                 "generation": 0,
-                "max_generations": session["generations"],
+                "max_generations": session_generations,
                 "progress": 0,
                 "best_fitness": 0.0,
                 "best_formula": "",
@@ -363,15 +415,67 @@ async def sse_alpha_discovery_stream(session_id: str = Query(min_length=1, max_l
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }),
         }
-        await asyncio.sleep(0.01)
+        service = get_job_service()
+        for _ in range(DISCOVERY_SSE_MAX_POLLS):
+            try:
+                job = service.get(session["job_id"])
+            except KeyError:
+                yield terminal_event("DISCOVERY_FAILED", "Discovery job no longer exists")
+                return
+            except Exception:
+                yield terminal_event("DISCOVERY_FAILED", "Discovery job status is unavailable")
+                return
+            if not isinstance(job, dict) or not isinstance(job.get("status"), str):
+                yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an invalid status")
+                return
+            if job["status"] in {"FAILED", "DEAD_LETTERED", "CANCELLED"}:
+                yield terminal_event("DISCOVERY_FAILED", f"Discovery job {job['status'].lower()}")
+                return
+            if job["status"] == "SUCCEEDED":
+                break
+            if job["status"] not in {"PENDING", "QUEUED", "RUNNING", "RETRYING"}:
+                yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an unsupported status")
+                return
+            await asyncio.sleep(DISCOVERY_SSE_POLL_INTERVAL_SECONDS)
+        else:
+            yield terminal_event("DISCOVERY_TIMEOUT", "Discovery job polling timed out")
+            return
 
-        # 2. Sequential GENERATION_UPDATE
-        hist = session.get("history", [])
-        max_gen = session["generations"]
+        result = job.get("result")
+        if not isinstance(result, dict):
+            yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an invalid result")
+            return
+        hist = result.get("history")
+        try:
+            max_gen = int(result.get("generations", session["generations"]))
+        except (TypeError, ValueError, OverflowError):
+            yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an invalid generation count")
+            return
+        if isinstance(result.get("generations", session["generations"]), bool) or not 1 <= max_gen <= session_generations:
+            yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an invalid generation count")
+            return
+        if not isinstance(hist, list) or not hist:
+            yield terminal_event("DISCOVERY_FAILED", "Discovery job returned no generation history")
+            return
         for item in hist:
-            g = item["generation"]
-            fit = item["best_fitness"]
-            formula = item["best_formula"]
+            if not isinstance(item, dict):
+                yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an invalid generation history")
+                return
+            try:
+                g = int(item["generation"])
+                fit = finite_float(item["best_fitness"])
+                formula = str(item["best_formula"])
+            except (KeyError, TypeError, ValueError, OverflowError):
+                yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an invalid generation history")
+                return
+            if isinstance(item["generation"], bool) or not 1 <= g <= max_gen:
+                yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an invalid generation history")
+                return
+            try:
+                fittest_ic = finite_float(item.get("fittest_ic", 0.04))
+            except (TypeError, ValueError, OverflowError):
+                yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an invalid generation history")
+                return
             prog = int(min(99, max(1, (g / max_gen) * 100)))
             yield {
                 "event": "message",
@@ -389,8 +493,8 @@ async def sse_alpha_discovery_stream(session_id: str = Query(min_length=1, max_l
                             "id": f"gen_{g}_cand_01",
                             "formula": formula,
                             "fitness": fit,
-                            "ic": float(item.get("fittest_ic", 0.04)),
-                            "ir": float(session.get("target_ir", 1.5)),
+                            "ic": fittest_ic,
+                            "ir": target_ir,
                         }
                     ],
                     "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -398,7 +502,17 @@ async def sse_alpha_discovery_stream(session_id: str = Query(min_length=1, max_l
             }
             await asyncio.sleep(0.02)
 
-        # 3. Final DISCOVERY_COMPLETED
+        # Completion follows only a durable successful worker result.
+        if not isinstance(result.get("best_formula"), str):
+            yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an incomplete result")
+            return
+        try:
+            best_fitness = finite_float(result["best_fitness"])
+            best_ic = finite_float(result.get("best_ic", 0.04))
+            best_ir = finite_float(result.get("best_ir", 1.5))
+        except (KeyError, TypeError, ValueError, OverflowError):
+            yield terminal_event("DISCOVERY_FAILED", "Discovery job returned an incomplete result")
+            return
         yield {
             "event": "message",
             "data": json.dumps({
@@ -407,16 +521,16 @@ async def sse_alpha_discovery_stream(session_id: str = Query(min_length=1, max_l
                 "generation": max_gen,
                 "max_generations": max_gen,
                 "progress": 100,
-                "best_fitness": session["best_fitness"],
-                "best_formula": session["best_formula"],
+                "best_fitness": best_fitness,
+                "best_formula": result["best_formula"],
                 "message": "Genetic discovery search completed",
                 "population_sample": [
                     {
                         "id": "champion",
-                        "formula": session["best_formula"],
-                        "fitness": session["best_fitness"],
-                        "ic": float(session.get("target_ic", 0.04)),
-                        "ir": float(session.get("target_ir", 1.5)),
+                        "formula": result["best_formula"],
+                        "fitness": best_fitness,
+                        "ic": best_ic,
+                        "ir": best_ir,
                     }
                 ],
                 "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -424,4 +538,3 @@ async def sse_alpha_discovery_stream(session_id: str = Query(min_length=1, max_l
         }
 
     return EventSourceResponse(event_generator())
-

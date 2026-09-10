@@ -10,6 +10,8 @@ import threading
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from filelock import FileLock, Timeout as FileLockTimeout
+
 from omega.execution.vn_transaction_cost_model import VNTransactionCostModel, TransactionCostConfig
 
 
@@ -136,7 +138,10 @@ class PaperTradingEngine:
         self.smart_router = smart_router
         self.virtual_orders_log_path = f"{self.log_dir}/virtual_orders.jsonl"
         self.state_file_path = f"{self.log_dir}/daemon_state.json"
+        self.lock_file = f"{self.log_dir}/.paper_engine.lock"
+        self._file_lock = FileLock(str(self.lock_file), timeout=10.0)
         self._lock = threading.Lock()
+        self._has_persisted_state: bool = False
 
         # Daemon lifecycle state
         self.state: str = "STOPPED"
@@ -164,37 +169,47 @@ class PaperTradingEngine:
         self._sync_daemon_state()
 
     def _sync_daemon_state(self) -> None:
-        """Read state from disk file to synchronize state across processes."""
+        """Read state from disk file to synchronize state across processes under filelock."""
         if not os.path.isfile(self.state_file_path):
             return
         try:
-            with open(self.state_file_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            if not isinstance(data, dict):
-                return
-            self.state = data.get("state", self.state)
-            self.mode = data.get("mode", self.mode)
-            if "initial_capital" in data and _is_finite_positive(data["initial_capital"]):
-                self.initial_capital = float(data["initial_capital"])
-            if "cash" in data and isinstance(data["cash"], (int, float)) and math.isfinite(data["cash"]):
-                self.cash = float(data["cash"])
-            if data.get("started_at"):
-                try:
-                    self.started_at = datetime.fromisoformat(data["started_at"])
-                except Exception:
-                    pass
-            elif data.get("state") == "STOPPED":
-                self.started_at = None
-            if data.get("last_heartbeat"):
-                try:
-                    self.last_heartbeat = datetime.fromisoformat(data["last_heartbeat"])
-                except Exception:
-                    pass
+            with self._file_lock:
+                if not os.path.isfile(self.state_file_path):
+                    return
+                with open(self.state_file_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if not isinstance(data, dict):
+                    raise ValueError("daemon state root must be a JSON object")
+                self.state = data.get("state", self.state)
+                self.mode = data.get("mode", self.mode)
+                if "initial_capital" in data and _is_finite_positive(data["initial_capital"]):
+                    self.initial_capital = float(data["initial_capital"])
+                if "cash" in data and isinstance(data["cash"], (int, float)) and math.isfinite(data["cash"]):
+                    self.cash = float(data["cash"])
+                    self._has_persisted_state = True
+                if "positions" in data and isinstance(data["positions"], dict):
+                    self.positions = copy.deepcopy(data["positions"])
+                if "daily_pnl" in data and isinstance(data["daily_pnl"], dict):
+                    self.daily_pnl = {str(k): float(v) for k, v in data["daily_pnl"].items() if isinstance(v, (int, float))}
+                if "realized_pnl" in data and isinstance(data["realized_pnl"], dict):
+                    self.realized_pnl = {str(k): float(v) for k, v in data["realized_pnl"].items() if isinstance(v, (int, float))}
+                if data.get("started_at"):
+                    try:
+                        self.started_at = datetime.fromisoformat(data["started_at"])
+                    except Exception:
+                        pass
+                elif data.get("state") == "STOPPED":
+                    self.started_at = None
+                if data.get("last_heartbeat"):
+                    try:
+                        self.last_heartbeat = datetime.fromisoformat(data["last_heartbeat"])
+                    except Exception:
+                        pass
         except Exception as e:
-            logger.debug(f"State sync from disk skipped: {e}")
+            raise RuntimeError(f"daemon state integrity failure: {e}") from e
 
     def _save_daemon_state(self) -> None:
-        """Persist state to disk file atomically using temp file replace."""
+        """Persist state to disk file atomically using temp file replace under cross-process filelock."""
         try:
             parent = os.path.dirname(self.state_file_path)
             if parent and not os.path.exists(parent):
@@ -204,73 +219,87 @@ class PaperTradingEngine:
                 "mode": self.mode,
                 "initial_capital": self.initial_capital,
                 "cash": self.cash,
+                "positions": {k: copy.deepcopy(v) for k, v in self.positions.items()},
+                "daily_pnl": dict(self.daily_pnl),
+                "realized_pnl": dict(self.realized_pnl),
                 "started_at": self.started_at.isoformat() if self.started_at else None,
                 "last_heartbeat": self.last_heartbeat.isoformat() if self.last_heartbeat else None,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             tmp_path = f"{self.state_file_path}.tmp.{os.getpid()}"
-            with open(tmp_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, indent=2)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self.state_file_path)
+            with self._file_lock:
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, self.state_file_path)
+                self._has_persisted_state = True
         except Exception as e:
             logger.error(f"Failed to persist daemon state: {e}")
+            raise
 
-    def start(self, initial_capital: float = 1_000_000_000.0, mode: str = "SHADOW") -> Dict[str, Any]:
-        """Start paper trading daemon."""
+    def start(self, initial_capital: float = 1_000_000_000.0, mode: str = "SHADOW", reset_capital: bool = False) -> Dict[str, Any]:
+        """Start paper trading daemon, preserving real persisted cash and positions on restart."""
         with self._lock:
-            self._sync_daemon_state()
-            if self.state in {"RUNNING", "PAUSED"}:
-                raise ValueError(f"Cannot start daemon: already in state {self.state}")
-            if not _is_finite_positive(initial_capital):
-                raise ValueError(f"Initial capital must be positive finite number, got {initial_capital}")
+            with self._file_lock:
+                self._sync_daemon_state()
+                if self.state in {"RUNNING", "PAUSED"}:
+                    raise ValueError(f"Cannot start daemon: already in state {self.state}")
+                if not _is_finite_positive(initial_capital):
+                    raise ValueError(f"Initial capital must be positive finite number, got {initial_capital}")
 
-            now = datetime.now(timezone.utc)
-            self.state = "RUNNING"
-            self.mode = str(mode).upper()
-            self.initial_capital = float(initial_capital)
-            self.cash = float(initial_capital)
-            self.started_at = now
-            self.last_heartbeat = now
-            self._save_daemon_state()
-            logger.info(f"Paper trading daemon started with initial capital {self.initial_capital} VND in {self.mode} mode.")
-            return self._get_status_locked()
+                now = datetime.now(timezone.utc)
+                self.state = "RUNNING"
+                self.mode = str(mode).upper()
+                self.started_at = now
+                self.last_heartbeat = now
+                if reset_capital or not self._has_persisted_state:
+                    self.initial_capital = float(initial_capital)
+                    self.cash = float(initial_capital)
+                    self.positions = {}
+                    self.daily_pnl = {}
+                    self.realized_pnl = {}
+                self._save_daemon_state()
+                logger.info(f"Paper trading daemon started with cash {self.cash} VND in {self.mode} mode.")
+                return self._get_status_locked()
 
     def stop(self) -> Dict[str, Any]:
         """Stop paper trading daemon."""
         with self._lock:
-            self._sync_daemon_state()
-            self.state = "STOPPED"
-            self.started_at = None
-            self.last_heartbeat = datetime.now(timezone.utc)
-            self._save_daemon_state()
-            logger.info("Paper trading daemon stopped.")
-            return self._get_status_locked()
+            with self._file_lock:
+                self._sync_daemon_state()
+                self.state = "STOPPED"
+                self.started_at = None
+                self.last_heartbeat = datetime.now(timezone.utc)
+                self._save_daemon_state()
+                logger.info("Paper trading daemon stopped.")
+                return self._get_status_locked()
 
     def pause(self) -> Dict[str, Any]:
         """Pause paper trading execution."""
         with self._lock:
-            self._sync_daemon_state()
-            if self.state != "RUNNING":
-                raise ValueError(f"Cannot pause daemon in state {self.state}; must be RUNNING")
-            self.state = "PAUSED"
-            self.last_heartbeat = datetime.now(timezone.utc)
-            self._save_daemon_state()
-            logger.info("Paper trading daemon paused.")
-            return self._get_status_locked()
+            with self._file_lock:
+                self._sync_daemon_state()
+                if self.state != "RUNNING":
+                    raise ValueError(f"Cannot pause daemon in state {self.state}; must be RUNNING")
+                self.state = "PAUSED"
+                self.last_heartbeat = datetime.now(timezone.utc)
+                self._save_daemon_state()
+                logger.info("Paper trading daemon paused.")
+                return self._get_status_locked()
 
     def resume(self) -> Dict[str, Any]:
         """Resume paper trading execution."""
         with self._lock:
-            self._sync_daemon_state()
-            if self.state != "PAUSED":
-                raise ValueError(f"Cannot resume daemon in state {self.state}; must be PAUSED")
-            self.state = "RUNNING"
-            self.last_heartbeat = datetime.now(timezone.utc)
-            self._save_daemon_state()
-            logger.info("Paper trading daemon resumed.")
-            return self._get_status_locked()
+            with self._file_lock:
+                self._sync_daemon_state()
+                if self.state != "PAUSED":
+                    raise ValueError(f"Cannot resume daemon in state {self.state}; must be PAUSED")
+                self.state = "RUNNING"
+                self.last_heartbeat = datetime.now(timezone.utc)
+                self._save_daemon_state()
+                logger.info("Paper trading daemon resumed.")
+                return self._get_status_locked()
 
     def _get_status_locked(self) -> Dict[str, Any]:
         """Internal helper returning deepcopy status dict while lock is held."""
@@ -311,6 +340,11 @@ class PaperTradingEngine:
             return self._get_status_locked()
 
     def execute_virtual_order(self, order: Dict[str, Any], order_book_data: Dict[str, Any] = None) -> List[Dict[str, Any]]:
+        """Serialize each read-verify-journal-snapshot transaction across engines."""
+        with self._file_lock:
+            return self._execute_virtual_order_locked(order, order_book_data)
+
+    def _execute_virtual_order_locked(self, order: Dict[str, Any], order_book_data: Dict[str, Any] = None) -> List[Dict[str, Any]]:
         """
         Execute a virtual order with slippage, lifecycle checks, and logging.
         Enforces:
@@ -323,8 +357,9 @@ class PaperTradingEngine:
         - Bounds on child order fanout and history records.
         """
         with self._lock:
-            self._sync_daemon_state()
-            self.last_heartbeat = datetime.now(timezone.utc)
+            with self._file_lock:
+                self._sync_daemon_state()
+                self.last_heartbeat = datetime.now(timezone.utc)
 
             # Check daemon lifecycle: ONLY RUNNING is allowed to execute orders
             if self.state != "RUNNING":
@@ -369,6 +404,18 @@ class PaperTradingEngine:
                 self.orders_history.append(rejected_order)
                 return [rejected_order]
             price = float(raw_price)
+
+            # Invariant: STRICTLY PROHIBIT SHORT SELLING IN VN STOCK
+            if side == "SELL":
+                current_holdings = float(self.positions.get(symbol, {}).get("shares", 0.0))
+                if current_holdings <= 0.0 or size > current_holdings:
+                    rejected_order = self._create_rejected_record(
+                        order,
+                        "REJECTED_SHORT_SELL_PROHIBITED",
+                        f"Short selling strictly prohibited in VN stock: requested sell size {size} exceeds current holdings {current_holdings}",
+                    )
+                    self.orders_history.append(rejected_order)
+                    return [rejected_order]
 
             # PIT Timestamps verification
             feature_ts = order.get("feature_ts")
@@ -461,6 +508,33 @@ class PaperTradingEngine:
                 c_price = float(child.get("price", price))
                 c_side = str(child.get("side", side)).upper().strip()
 
+                # Invariant: STRICTLY PROHIBIT SHORT SELLING IN VN STOCK (child order level)
+                if c_side == "SELL":
+                    current_holdings = float(self.positions.get(c_symbol, {}).get("shares", 0.0))
+                    if current_holdings <= 0.0 or c_size > current_holdings:
+                        log_record = {
+                            "execution_ts": datetime.now(timezone.utc).isoformat(),
+                            "feature_ts": str(feature_ts),
+                            "decision_ts": str(decision_ts),
+                            "available_at": str(available_at),
+                            "symbol": c_symbol,
+                            "side": c_side,
+                            "size": c_size,
+                            "quantity": c_size,
+                            "intended_price": c_price,
+                            "executed_price": 0.0,
+                            "notional": 0.0,
+                            "pnl": 0.0,
+                            "execution_status": "REJECTED_SHORT_SELL_PROHIBITED",
+                            "model_id": model_id,
+                            "total_cost_vnd": 0.0,
+                            "is_virtual": True,
+                            "reject_reason": f"Short selling strictly prohibited in VN stock: child sell size {c_size} exceeds current holdings {current_holdings}",
+                        }
+                        self.orders_history.append(log_record)
+                        execution_results.append(log_record)
+                        continue
+
                 execution_ts = datetime.now(timezone.utc).isoformat()
 
                 # Price band and trading boundaries check
@@ -552,8 +626,9 @@ class PaperTradingEngine:
                 snapshot_realized_pnl = dict(self.realized_pnl)
                 snapshot_history_len = len(self.orders_history)
 
+                journal_offset = None
                 try:
-                    self._log_virtual_order(log_record)
+                    journal_offset = self._log_virtual_order(log_record)
                     # Durable write succeeded; apply in-memory state mutations
                     self._apply_fill(c_symbol, c_side, c_size, executed_price, total_cost_vnd, model_id)
                     self.orders_history.append(log_record)
@@ -567,6 +642,11 @@ class PaperTradingEngine:
                     self.daily_pnl = snapshot_daily_pnl
                     self.realized_pnl = snapshot_realized_pnl
                     self.orders_history = self.orders_history[:snapshot_history_len]
+                    if journal_offset is not None:
+                        try:
+                            self._rollback_virtual_order(journal_offset)
+                        except Exception as rollback_error:
+                            logger.critical("Journal rollback failed after snapshot failure: %s", rollback_error)
 
                     # Return rejection record
                     rej_record = self._create_rejected_record(
@@ -605,15 +685,24 @@ class PaperTradingEngine:
             pos["current_price"] = executed_price
             pos["unrealized_pnl_vnd"] = pos["shares"] * (pos["current_price"] - pos["avg_price"])
         else:
+            current_shares = float(pos.get("shares", 0.0))
+            if size > current_shares:
+                raise ValueError(
+                    f"Short selling strictly prohibited in VN stock: requested sell size {size} exceeds current holdings {current_shares}"
+                )
             gross_proceeds = executed_price * size
             self.cash += (gross_proceeds - total_cost_vnd)
 
-            sold_shares = min(pos["shares"], size)
-            realized_gain = (executed_price - pos["avg_price"]) * sold_shares - total_cost_vnd
+            realized_gain = (executed_price - pos["avg_price"]) * size - total_cost_vnd
             pos["realized_pnl_vnd"] += realized_gain
-            pos["shares"] = max(0.0, pos["shares"] - size)
-            pos["current_price"] = executed_price
-            pos["unrealized_pnl_vnd"] = pos["shares"] * (pos["current_price"] - pos["avg_price"]) if pos["shares"] > 0 else 0.0
+            pos["shares"] -= size
+            if pos["shares"] <= 0.0:
+                pos["shares"] = 0.0
+                pos["avg_price"] = 0.0
+                pos["unrealized_pnl_vnd"] = 0.0
+            else:
+                pos["current_price"] = executed_price
+                pos["unrealized_pnl_vnd"] = pos["shares"] * (pos["current_price"] - pos["avg_price"])
 
             if model_id not in self.realized_pnl:
                 self.realized_pnl[model_id] = 0.0
@@ -662,61 +751,78 @@ class PaperTradingEngine:
         with self._lock:
             return {k: copy.deepcopy(v) for k, v in self.positions.items()}
 
-    def _log_virtual_order(self, record: Dict[str, Any]) -> None:
-        """Logs the virtual order to JSONL with strict fsync durability."""
+    def _log_virtual_order(self, record: Dict[str, Any]) -> int:
+        """Logs the virtual order to JSONL with strict fsync durability under process-safe filelock."""
         if os.path.isdir(self.virtual_orders_log_path):
             raise IsADirectoryError(f"Log path is a directory: {self.virtual_orders_log_path}")
         parent = os.path.dirname(self.virtual_orders_log_path)
         if parent and not os.path.exists(parent):
             os.makedirs(parent, exist_ok=True)
         line = json.dumps(record, sort_keys=True) + "\n"
-        with open(self.virtual_orders_log_path, "a", encoding="utf-8") as f:
-            f.write(line)
-            f.flush()
-            os.fsync(f.fileno())
+        with self._file_lock:
+            with open(self.virtual_orders_log_path, "a", encoding="utf-8") as f:
+                offset = f.tell()
+                f.write(line)
+                f.flush()
+                os.fsync(f.fileno())
+        return offset
+
+    def _rollback_virtual_order(self, offset: int) -> None:
+        """Remove the just-appended journal record after snapshot durability fails."""
+        with self._file_lock:
+            with open(self.virtual_orders_log_path, "r+b") as f:
+                f.truncate(offset)
+                f.flush()
+                os.fsync(f.fileno())
 
     def rehydrate_from_log(self) -> int:
-        """Rehydrate orders and positions from durable log with corruption resilience and deduplication."""
+        """Rehydrate orders and positions from durable log with corruption resilience and deduplication under filelock."""
         if not os.path.isfile(self.virtual_orders_log_path):
             return 0
         rehydrated_count = 0
         seen_keys = set()
         with self._lock:
-            try:
-                with open(self.virtual_orders_log_path, "r", encoding="utf-8") as f:
-                    for line_no, raw_line in enumerate(f, 1):
-                        line = raw_line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except Exception as e:
-                            logger.warning(f"Corrupt JSONL line {line_no} skipped: {e}")
-                            continue
-                        if not isinstance(rec, dict):
-                            continue
-                        # Deduplication fingerprint
-                        key = hashlib.sha256(
-                            f"{rec.get('symbol')}:{rec.get('side')}:{rec.get('size')}:{rec.get('execution_ts')}:{rec.get('decision_ts')}:{rec.get('executed_price')}".encode()
-                        ).hexdigest()
-                        if key in seen_keys:
-                            continue
-                        seen_keys.add(key)
+            with self._file_lock:
+                try:
+                    with open(self.virtual_orders_log_path, "r", encoding="utf-8") as f:
+                        for line_no, raw_line in enumerate(f, 1):
+                            line = raw_line.strip()
+                            if not line:
+                                continue
+                            try:
+                                rec = json.loads(line)
+                            except Exception as e:
+                                logger.warning(f"Corrupt JSONL line {line_no} skipped: {e}")
+                                continue
+                            if not isinstance(rec, dict):
+                                continue
+                            # Deduplication fingerprint
+                            key = hashlib.sha256(
+                                f"{rec.get('symbol')}:{rec.get('side')}:{rec.get('size')}:{rec.get('execution_ts')}:{rec.get('decision_ts')}:{rec.get('executed_price')}".encode()
+                            ).hexdigest()
+                            if key in seen_keys:
+                                continue
+                            seen_keys.add(key)
 
-                        self.orders_history.append(rec)
-                        rehydrated_count += 1
-                        if rec.get("execution_status") == "FILLED":
-                            sym = str(rec.get("symbol", ""))
-                            s_side = str(rec.get("side", ""))
-                            s_size = float(rec.get("size", 0.0))
-                            s_price = float(rec.get("executed_price", 0.0))
-                            s_cost = float(rec.get("total_cost_vnd", 0.0))
-                            m_id = str(rec.get("model_id", "unknown"))
-                            self._apply_fill(sym, s_side, s_size, s_price, s_cost, m_id)
-                if len(self.orders_history) > self.max_history_records:
-                    self.orders_history = self.orders_history[-self.max_history_records:]
-            except Exception as read_err:
-                logger.error(f"Rehydration error from {self.virtual_orders_log_path}: {read_err}")
+                            self.orders_history.append(rec)
+                            rehydrated_count += 1
+                            if rec.get("execution_status") == "FILLED":
+                                sym = str(rec.get("symbol", ""))
+                                s_side = str(rec.get("side", ""))
+                                s_size = float(rec.get("size", 0.0))
+                                s_price = float(rec.get("executed_price", 0.0))
+                                s_cost = float(rec.get("total_cost_vnd", 0.0))
+                                m_id = str(rec.get("model_id", "unknown"))
+                                if s_side == "SELL":
+                                    cur_sh = self.positions.get(sym, {}).get("shares", 0.0)
+                                    if s_size > cur_sh:
+                                        logger.warning(f"Oversell record in log skipped for {sym}: {s_size} > {cur_sh}")
+                                        continue
+                                self._apply_fill(sym, s_side, s_size, s_price, s_cost, m_id)
+                    if len(self.orders_history) > self.max_history_records:
+                        self.orders_history = self.orders_history[-self.max_history_records:]
+                except Exception as read_err:
+                    logger.error(f"Rehydration error from {self.virtual_orders_log_path}: {read_err}")
         return rehydrated_count
 
     def evaluate_shadow_mode(self, days_passed: int, min_smoke_days: int = 5, min_burn_in_days: int = 30) -> str:
@@ -739,18 +845,20 @@ class PaperTradingEngine:
     def reset_daily_pnl(self):
         """Resets daily P&L tracking (e.g., at end of day or test isolation)."""
         with self._lock:
-            self.state = "STOPPED"
-            self.started_at = None
-            self.daily_pnl = {}
-            self.realized_pnl = {}
-            self.positions = {}
-            self.orders_history = []
-            self.cash = self.initial_capital
-            if os.path.isfile(self.state_file_path):
-                try:
-                    os.remove(self.state_file_path)
-                except Exception:
-                    pass
+            with self._file_lock:
+                self.state = "STOPPED"
+                self.started_at = None
+                self.daily_pnl = {}
+                self.realized_pnl = {}
+                self.positions = {}
+                self.orders_history = []
+                self.cash = self.initial_capital
+                self._has_persisted_state = False
+                if os.path.isfile(self.state_file_path):
+                    try:
+                        os.remove(self.state_file_path)
+                    except Exception:
+                        pass
 
 
 # Singleton / Factory management

@@ -236,6 +236,8 @@ def get_futures_expiry_date(year: int, month: int) -> date:
     Third Thursday. If that day is not a trading day, roll back to the
     preceding trading day.
     """
+    if year not in VNTradingCalendar.SUPPORTED_YEARS:
+        raise ValueError(f"no holiday coverage for {year}")
     first_day = date(year, month, 1)
     days_to_thursday = (3 - first_day.weekday()) % 7
     first_thursday = first_day + timedelta(days=days_to_thursday)
