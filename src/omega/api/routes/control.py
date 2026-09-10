@@ -264,6 +264,20 @@ def _deep_redact_object(obj: Any) -> Any:
 router = APIRouter(prefix="/api/v1/control", tags=["control"])
 sse_control_router = APIRouter(tags=["control_sse"])
 
+_FEED_PROBE_TARGETS = {
+    "vci": ("vnstocks.com", 443),
+    "kbs": ("www.kbsec.com.vn", 443),
+    "tcbs": ("tcinvest.tcbs.com.vn", 443),
+}
+
+
+async def _probe_live_feed(feed: str, timeout: float = 2.0) -> None:
+    host, port = _FEED_PROBE_TARGETS[feed]
+    reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
+    del reader
+    writer.close()
+    await writer.wait_closed()
+
 # In-memory Task State, Event Queues, and Cancel Sets
 MAX_TASKS_LIMIT = 500
 MAX_ACTIVE_TASKS_LIMIT = 500
@@ -626,12 +640,13 @@ class RebalanceRequest(BaseModel):
 
 
 class IngestDataRequest(StrictRequest):
-    symbols: List[str] = Field(default_factory=lambda: ["ALL"], description="Explicit stock symbols, or ['ALL'], ['VN703']")
+    symbols: List[str] = Field(default_factory=lambda: ["ALL"], description="Explicit stock symbols, or ['ALL'], ['VN703'], ['VN30']")
     sources: List[Literal["vci", "kbs", "tcbs", "macro", "news"]] = Field(default_factory=lambda: ["vci"], description="Supported real providers")
     start_date: str = Field(default="2023-01-01", description="Start date YYYY-MM-DD")
     end_date: str = Field(default="2023-12-31", description="End date YYYY-MM-DD")
     as_of_time: Optional[str] = Field(default=None, description="UTC PIT cutoff")
     force_refresh: bool = Field(default=False, description="Force overwrite cache")
+    max_concurrency: Optional[int] = Field(default=None, ge=1, le=10, description="Concurrency limit for symbol ingestion")
 
     @model_validator(mode="after")
     def validate_request(self):
@@ -1159,7 +1174,16 @@ async def _execute_real_pipeline(job_id: str, req: PipelineRunRequest):
 # Checkpoint state paths and synchronization
 DEFAULT_INGEST_CHECKPOINT_PATH = Path(".ly_state/session/update_market_data_checkpoint.json")
 DEFAULT_INGEST_CHECKPOINT_LOCK_PATH = Path(".ly_state/session/update_market_data_checkpoint.lock")
-DEFAULT_INGEST_CONCURRENCY: int = 10
+DEFAULT_INGEST_CONCURRENCY: int = int(os.getenv("OMEGA_INGEST_CONCURRENCY", "3"))
+
+
+def _get_vn30_universe() -> List[str]:
+    """Authoritative VN30 constituent symbols."""
+    return [
+        "ACB", "BCM", "BID", "BVH", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG",
+        "MBB", "MSN", "MWG", "PLX", "POW", "SAB", "SHB", "SSB", "SSI", "STB",
+        "TCB", "TPB", "VCB", "VHM", "VIB", "VIC", "VJC", "VNM", "VPB", "VRE",
+    ]
 
 
 def _get_full_vn703_universe() -> List[str]:
@@ -1519,9 +1543,17 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
         frames = []
         raw_symbols = list(req.symbols)
 
-        # 1. Resolve Target Symbols: VN703 / ALL expansions
+        # 1. Resolve Target Symbols: VN703 / ALL / VN30 expansions
         if any(s in ("ALL", "VN703") for s in raw_symbols):
             target_symbols = _get_full_vn703_universe()
+        elif any(s == "VN30" for s in raw_symbols):
+            expanded: List[str] = []
+            for s in raw_symbols:
+                if s == "VN30":
+                    expanded.extend(_get_vn30_universe())
+                else:
+                    expanded.append(s)
+            target_symbols = list(dict.fromkeys(expanded))
         else:
             target_symbols = raw_symbols
 
@@ -1558,7 +1590,8 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
         failover_used = False
 
         # Concurrency semaphore within batch for high-throughput I/O (F-003, Dimension 14)
-        sem = asyncio.Semaphore(DEFAULT_INGEST_CONCURRENCY)
+        concurrency_limit = req.max_concurrency if req.max_concurrency is not None else DEFAULT_INGEST_CONCURRENCY
+        sem = asyncio.Semaphore(concurrency_limit)
 
         # F-001: Explicit signature inspection instead of broad exception-driven detection
         import inspect
@@ -1575,7 +1608,13 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
                 for provider in equity_sources:
                     try:
                         extra_kwargs = {"source": provider} if supports_source_kwarg else {}
-                        frm = await asyncio.to_thread(loader.load_prices, sym, req.start_date, req.end_date, as_of, req.force_refresh, **extra_kwargs)
+                        try:
+                            frm = await asyncio.wait_for(
+                                asyncio.to_thread(loader.load_prices, sym, req.start_date, req.end_date, as_of, req.force_refresh, **extra_kwargs),
+                                timeout=15.0,
+                            )
+                        except (asyncio.TimeoutError, TimeoutError) as t_err:
+                            raise TimeoutError(f"Provider {provider} timed out after 15.0s during price load for {sym}") from t_err
                         if frm is None or frm.empty:
                             raise RuntimeError("provider returned an empty dataframe")
                         return sym, frm, provider, failures
@@ -1647,6 +1686,8 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
                     "checkpoint_completed": len(completed_set)
                 }
             )
+            # Cooperative yield for event-loop responsiveness (SSE/telemetry non-blocking)
+            await asyncio.sleep(0.01)
 
         if not frames:
             raise RuntimeError(f"provider returned no rows for {len(target_symbols)} symbols")
@@ -2436,12 +2477,7 @@ async def get_control_dynamic_universe(
         df = pd.read_parquet(p)
         preset_upper = universe_preset.strip().upper()
         if preset_upper == "VN30":
-            vn30_symbols = [
-                "ACB", "BCM", "BID", "BVH", "CTG", "FPT", "GAS", "GVR", "HDB", "HPG",
-                "MBB", "MSN", "MWG", "PLX", "POW", "SAB", "SHB", "SSB", "SSI", "STB",
-                "TCB", "TPB", "VCB", "VHM", "VIB", "VIC", "VJC", "VNM", "VPB", "VRE"
-            ]
-            df = df[df["symbol"].isin(vn30_symbols)].copy()
+            df = df[df["symbol"].isin(_get_vn30_universe())].copy()
         elif preset_upper == "VN100":
             df = df.head(100).copy()
 
@@ -2785,7 +2821,7 @@ class IngestSchedulerTelemetry(BaseModel):
 
 
 @router.get("/ingest-scheduler/telemetry", response_model=IngestSchedulerTelemetry)
-async def get_ingest_scheduler_telemetry() -> IngestSchedulerTelemetry:
+async def get_ingest_scheduler_telemetry(probe: bool = Query(default=False, description="Trigger live feed health probe")) -> IngestSchedulerTelemetry:
     """Provides live operational telemetry for the Lakehouse data ingestion scheduler and feed failover."""
     with _TASK_STATE_LOCK:
         ingest_tasks = [task.copy() for task in TASKS.values() if task.get("task_type") == "DATA_INGESTION"]
@@ -2799,9 +2835,33 @@ async def get_ingest_scheduler_telemetry() -> IngestSchedulerTelemetry:
     for feed, health in checkpoint_feed_health.items():
         if feed in feed_health and health in {"ONLINE", "DEGRADED", "OFFLINE", "STANDBY"}:
             feed_health[feed] = health
+
     active_feed = checkpoint.get("active_feed") or (configured_feeds[0] if configured_feeds else None)
+    last_sync = (latest_task or {}).get("updated_at") or checkpoint.get("updated_at")
+
+    evidence_stale = False
+    if last_sync:
+        try:
+            ls_dt = datetime.fromisoformat(str(last_sync).replace("Z", "+00:00"))
+            if ls_dt.tzinfo is None:
+                ls_dt = ls_dt.replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - ls_dt).total_seconds() > 3 * 86400:
+                evidence_stale = True
+        except Exception:
+            pass
+
+    if probe and active_feed and not KILL_SWITCH_ACTIVE:
+        try:
+            await _probe_live_feed(active_feed)
+        except Exception:
+            if active_feed in feed_health:
+                feed_health[active_feed] = "DEGRADED"
+
     if active_feed in feed_health and not KILL_SWITCH_ACTIVE:
-        feed_health[active_feed] = "ONLINE" if feed_health[active_feed] != "DEGRADED" else "DEGRADED"
+        if evidence_stale and feed_health.get(active_feed) != "DEGRADED":
+            feed_health[active_feed] = "DEGRADED"
+        else:
+            feed_health[active_feed] = "ONLINE" if feed_health[active_feed] != "DEGRADED" else "DEGRADED"
     if KILL_SWITCH_ACTIVE:
         feed_health = {feed: "OFFLINE" for feed in feed_health}
     active_workers = sum(1 for task in ingest_tasks if task.get("status") in ("QUEUED", "RUNNING"))
@@ -2813,7 +2873,7 @@ async def get_ingest_scheduler_telemetry() -> IngestSchedulerTelemetry:
         backup_feed=backup_feed,
         failover_ready=backup_feed is not None and not KILL_SWITCH_ACTIVE,
         cron_interval="0 17 * * 1-5",
-        last_sync_timestamp=(latest_task or {}).get("updated_at") or checkpoint.get("updated_at"),
+        last_sync_timestamp=last_sync,
         next_scheduled_sync=None,
         auto_refresh_enabled=not KILL_SWITCH_ACTIVE,
         active_workers=active_workers,
