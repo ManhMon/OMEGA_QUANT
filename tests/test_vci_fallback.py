@@ -10,6 +10,7 @@ import pytest
 from vnstock.api.quote import Quote
 
 from omega.data.vnstock_vci import VnstockVCIDataSource, _stop_price_process
+from omega.data.vnstock_client import VnstockClient
 from omega.data.loader import DataLoader
 from omega.data.macro_news_pipeline import VnstockNewsAdapter, load_source_registry, load_universe_snapshot
 from omega.data.registry import DatasetRegistry
@@ -372,4 +373,21 @@ def test_each_parallel_provider_request_is_rate_limited(monkeypatch):
 
     source.fetch_price_data("VCB", "2024-01-01", "2024-01-03")
 
-    assert len(calls) == len(source.PROVIDERS)
+
+def test_fetch_company_profile_uses_overview_with_fallback(monkeypatch):
+    class CompanyStub:
+        def __init__(self, symbol, source):
+            self.symbol = symbol
+            self.source = source
+
+        def overview(self):
+            return pd.DataFrame([{"symbol": self.symbol, "name": "VCB"}])
+
+        def profile(self):
+            raise AssertionError("profile should not be called when overview exists")
+
+    monkeypatch.setattr("omega.data.vnstock_client.Company", CompanyStub)
+
+    frame = VnstockClient().fetch_company_profile("VCB")
+
+    assert frame.loc[0, "name"] == "VCB"

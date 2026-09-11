@@ -441,15 +441,25 @@ class VnstockClient:
             df = ensure_vnd_scale(df, price_cols=["open", "high", "low", "close"])
         return df
 
-    # ── Company profile (via Vnstock().stock().company.profile()) ─────────
+    # ── Company profile (via Company.overview with compatibility fallbacks) ──
 
     def fetch_company_profile(self, symbol: str) -> pd.DataFrame:
-        """Fetch company profile via ``Vnstock().stock().company.profile()``."""
+        """Fetch company profile using ``Company.overview()``.
+
+        Vnstock 4.x exposes company overview data through ``overview()``.
+        Older provider variants may still expose ``profile()`` or ``info()``,
+        so these are retained as compatibility fallbacks.
+        """
         self.rate_limiter.throttle()
         try:
             company = Company(symbol=symbol, source=self.source)
-            profile = company.profile()
-            return profile if profile is not None else pd.DataFrame()
+            for method_name in ("overview", "profile", "info"):
+                method = getattr(company, method_name, None)
+                if callable(method):
+                    profile = method()
+                    if profile is not None:
+                        return profile
+            return pd.DataFrame()
         except Exception as exc:
             logger.error(f"fetch_company_profile({symbol}): {exc}")
             return pd.DataFrame()
