@@ -411,6 +411,11 @@ def _fetch_history_chunked(
                     is_post_delisting = delist_dt is not None and start_dt > delist_dt
                     if is_pre_listing or is_post_delisting:
                         return pd.DataFrame()
+                    # Short windows can legitimately contain no exchange sessions
+                    # (weekend/holiday). Preserve checkpoint continuity instead of
+                    # treating absence of a bar as upstream corruption.
+                    if (end_dt - start_dt).days <= 7:
+                        return pd.DataFrame()
                     if list_dt is None:
                         raise RuntimeError(
                             f"[{symbol}] Unverified empty chunk {start_date}..{end_date}: missing positive listing_date or trading continuity proof"
