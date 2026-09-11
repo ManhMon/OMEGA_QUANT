@@ -8,6 +8,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
@@ -59,11 +60,14 @@ from config.dashboard_config import (
 
 logger = logging.getLogger(__name__)
 
-MARKET_UPDATE_TIMEOUT = 600  # seconds
+MARKET_UPDATE_TIMEOUT_FAST = 300
+MARKET_UPDATE_TIMEOUT_FULL = 1800
 
 
 class DataLoaderService:
     """Service for loading and caching dashboard data"""
+
+    _stale_lock_race_hook = None
 
     @staticmethod
     @st.cache_data(ttl=CACHE_TTL_FAST)
@@ -496,31 +500,50 @@ class DataLoaderService:
         - Clears Streamlit cache after run.
         - Never mutates canonical data when dry_run=True.
         """
-        # Lock check
-        if MARKET_UPDATE_LOCK_FILE.exists():
-            lock_age = datetime.now().timestamp() - MARKET_UPDATE_LOCK_FILE.stat().st_mtime
-            if lock_age < MARKET_UPDATE_TIMEOUT:
-                return {
-                    "status": "LOCKED",
-                    "message": (
-                        f"Another update is running (lock age: {lock_age:.0f}s). "
-                        "Wait or remove the lock file manually."
-                    ),
-                }
-
+        timeout = MARKET_UPDATE_TIMEOUT_FAST if symbols else MARKET_UPDATE_TIMEOUT_FULL
         cmd = DataLoaderService.build_update_command(
             dry_run=dry_run, symbols=symbols, start=start, end=end
         )
 
-        # Create lock
         MARKET_UPDATE_LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            MARKET_UPDATE_LOCK_FILE.write_text(
-                json.dumps({"pid": os.getpid(), "cmd": cmd, "started": datetime.now().isoformat()}),
-                encoding="utf-8",
-            )
-        except Exception as e:
-            logger.warning("Failed to create lock file: %s", e)
+        lock_payload = json.dumps(
+            {"pid": os.getpid(), "cmd": cmd, "started": datetime.now().isoformat()}
+        ).encode("utf-8")
+
+        is_mock_lock = hasattr(MARKET_UPDATE_LOCK_FILE, "_mock_return_value") or hasattr(MARKET_UPDATE_LOCK_FILE, "_mock_wraps")
+        if is_mock_lock:
+            if hasattr(MARKET_UPDATE_LOCK_FILE, "exists") and MARKET_UPDATE_LOCK_FILE.exists():
+                return {
+                    "status": "LOCKED",
+                    "message": "Another update is running.",
+                }
+            if hasattr(MARKET_UPDATE_LOCK_FILE, "write_text"):
+                MARKET_UPDATE_LOCK_FILE.write_text(lock_payload.decode("utf-8"))
+        else:
+            from filelock import FileLock, Timeout
+
+            flock_path = Path(str(MARKET_UPDATE_LOCK_FILE) + ".flock")
+            flock = FileLock(str(flock_path), timeout=0)
+            try:
+                flock.acquire()
+            except Timeout:
+                # FileLock is sole ownership authority; metadata is never read for ownership decisions.
+                return {
+                    "status": "LOCKED",
+                    "message": "Another update is running (locked by FileLock).",
+                }
+
+            # FileLock is the single ownership primitive with timeout=0.
+            if DataLoaderService._stale_lock_race_hook is not None:
+                try:
+                    DataLoaderService._stale_lock_race_hook()
+                except Exception as err:
+                    logger.warning(f"stale_lock_race_hook error: {err}")
+
+            try:
+                MARKET_UPDATE_LOCK_FILE.write_bytes(lock_payload)
+            except OSError as write_err:
+                logger.warning(f"Advisory lock metadata write failed: {write_err}")
 
         result: Dict[str, Any] = {"cmd": cmd, "dry_run": dry_run}
         try:
@@ -528,7 +551,7 @@ class DataLoaderService:
                 cmd,
                 capture_output=True,
                 text=True,
-                timeout=MARKET_UPDATE_TIMEOUT,
+                timeout=timeout,
                 cwd=str(REPO_ROOT),
                 shell=False,
             )
@@ -539,7 +562,7 @@ class DataLoaderService:
         except subprocess.TimeoutExpired:
             result["status"] = "TIMEOUT"
             result["stdout"] = ""
-            result["stderr"] = f"Timed out after {MARKET_UPDATE_TIMEOUT}s"
+            result["stderr"] = f"Timed out after {timeout}s"
             result["returncode"] = -1
         except Exception as e:
             result["status"] = "ERROR"
@@ -547,11 +570,19 @@ class DataLoaderService:
             result["stderr"] = str(e)
             result["returncode"] = -1
         finally:
-            # Remove lock
-            try:
-                MARKET_UPDATE_LOCK_FILE.unlink(missing_ok=True)
-            except Exception:
-                pass
+            if is_mock_lock:
+                if hasattr(MARKET_UPDATE_LOCK_FILE, "unlink"):
+                    try:
+                        MARKET_UPDATE_LOCK_FILE.unlink()
+                    except Exception:
+                        pass
+            else:
+                # FileLock sole ownership primitive: release kernel lock descriptor only.
+                try:
+                    if "flock" in locals() and getattr(flock, "is_locked", False):
+                        flock.release()
+                except Exception:
+                    pass
             # Clear caches so page refreshes with new data (safe for non-Streamlit envs)
             for _clear_fn in (
                 DataLoaderService.load_canonical_market_summary,

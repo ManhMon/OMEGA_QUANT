@@ -259,17 +259,14 @@ def read_canonical(canonical_path: Path) -> Optional[pd.DataFrame]:
     df["date"] = pd.to_datetime(df["date"])
     if "available_at" in df.columns:
         df["available_at"] = pd.to_datetime(df["available_at"])
-    if "source" in df.columns:
-        df["source"] = df["source"].fillna("vnstock_vci")
     if "price_scale" in df.columns:
         df["price_scale"] = df["price_scale"].fillna(PRICE_SCALE_LABEL)
     if "adjusted" in df.columns:
         df["adjusted"] = df["adjusted"].fillna("backward_adjusted")
     if "rebuild_date" in df.columns:
         df["rebuild_date"] = df["rebuild_date"].fillna("2026-06-13")
-    if "as_of" in df.columns:
-        df["as_of"] = df["as_of"].fillna(df["date"].dt.strftime("%Y-%m-%d 15:00:00"))
-    logger.info(f"Canonical loaded: {len(df)} rows, {df['ticker'].nunique()} tickers")
+    ticker_count = df["ticker"].nunique() if "ticker" in df.columns else 0
+    logger.info(f"Canonical loaded: {len(df)} rows, {ticker_count} tickers")
     return df
 
 
@@ -319,45 +316,235 @@ def _run_reconciliation(
     return payload
 
 
+def _resolve_listing_dates(
+    client,
+    symbol: str,
+    listing_date: Optional[str] = None,
+    delisting_date: Optional[str] = None,
+) -> Tuple[Optional[pd.Timestamp], Optional[pd.Timestamp]]:
+    """Resolve positive listing and delisting dates from explicit args, client metadata, or signed envelopes."""
+    list_dt = pd.to_datetime(listing_date) if listing_date is not None else None
+    delist_dt = pd.to_datetime(delisting_date) if delisting_date is not None else None
+    if list_dt is not None:
+        return list_dt, delist_dt
+
+    if hasattr(client, "get_listing_date") and callable(client.get_listing_date):
+        try:
+            ld = client.get_listing_date(symbol)
+            if ld:
+                list_dt = pd.to_datetime(ld)
+        except Exception:
+            pass
+    elif hasattr(client, "listing_date"):
+        try:
+            ld = getattr(client, "listing_date")
+            if ld:
+                list_dt = pd.to_datetime(ld)
+        except Exception:
+            pass
+    elif hasattr(client, "fetch_company_profile") and callable(client.fetch_company_profile):
+        try:
+            prof = client.fetch_company_profile(symbol)
+            if isinstance(prof, pd.DataFrame) and not prof.empty and "listing_date" in prof.columns:
+                val = prof["listing_date"].dropna().iloc[0]
+                if val:
+                    list_dt = pd.to_datetime(val)
+        except Exception:
+            pass
+
+    if list_dt is None or delist_dt is None:
+        try:
+            if TICKER_LIFECYCLE_PATH.exists():
+                lifecycle_data = json.loads(TICKER_LIFECYCLE_PATH.read_text(encoding="utf-8"))
+                sym_entry = lifecycle_data.get(symbol.upper(), {})
+                payload = sym_entry.get("payload", sym_entry)
+                if list_dt is None and "listing_date" in payload:
+                    list_dt = pd.to_datetime(payload["listing_date"])
+                if delist_dt is None and "delisting_date" in payload:
+                    delist_dt = pd.to_datetime(payload["delisting_date"])
+        except Exception:
+            pass
+
+    return list_dt, delist_dt
+
+
 def _fetch_history_chunked(
     client,
     symbol: str,
     start_date: str,
     end_date: str,
+    max_chunk_retries: int = 3,
+    max_total_attempts: int = 15,
+    listing_date: Optional[str] = None,
+    delisting_date: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Fetch history chunked in <= 5-year slices to bypass vnstock 8-year community window truncation."""
+    """Fetch history chunked in <= 5-year slices to bypass vnstock 8-year community window truncation.
+
+    Enforces deterministic retry ceiling per chunk and symbol-level total attempt budget.
+    Requires positive listing metadata and fails closed on empty chunks during listed periods.
+    """
     start_dt = pd.to_datetime(start_date)
     end_dt = pd.to_datetime(end_date)
     max_days = 5 * 365
-    if (end_dt - start_dt).days <= max_days:
-        return client.fetch_history(
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-            interval="1D",
-            normalize_vnd=True,
-        )
 
-    chunks: List[pd.DataFrame] = []
+    list_dt, delist_dt = _resolve_listing_dates(client, symbol, listing_date, delisting_date)
+
+    if (end_dt - start_dt).days <= max_days:
+        total_attempts = 0
+        last_exc: Optional[Exception] = None
+        for attempt in range(1, max_chunk_retries + 1):
+            if total_attempts >= max_total_attempts:
+                raise RuntimeError(
+                    f"[{symbol}] Upstream attempt ceiling ({max_total_attempts}) exhausted while fetching chunk {start_date}..{end_date}"
+                )
+            total_attempts += 1
+            try:
+                res = client.fetch_history(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date,
+                    interval="1D",
+                    normalize_vnd=True,
+                )
+                if res is None or res.empty:
+                    is_pre_listing = list_dt is not None and end_dt < list_dt
+                    is_post_delisting = delist_dt is not None and start_dt > delist_dt
+                    if is_pre_listing or is_post_delisting:
+                        return pd.DataFrame()
+                    if list_dt is None:
+                        raise RuntimeError(
+                            f"[{symbol}] Unverified empty chunk {start_date}..{end_date}: missing positive listing_date or trading continuity proof"
+                        )
+                    raise RuntimeError(
+                        f"[{symbol}] Unverified empty chunk {start_date}..{end_date}: empty chunk during listed period (listing_date={list_dt.date()}) failed closed, missing positive listing_date or trading continuity proof"
+                    )
+                return res
+            except Exception as e:
+                last_exc = e
+        if isinstance(last_exc, RuntimeError) and (
+            "Unverified empty chunk" in str(last_exc)
+            or "Detected silent empty chunk gap" in str(last_exc)
+            or "during listed period" in str(last_exc)
+            or "missing positive listing" in str(last_exc)
+        ):
+            raise last_exc
+        raise RuntimeError(
+            f"[{symbol}] Required chunk {start_date}..{end_date} failed after {max_chunk_retries} attempts"
+        ) from last_exc
+
+    chunk_results: List[Tuple[pd.Timestamp, pd.Timestamp, pd.DataFrame]] = []
     curr_start = start_dt
+    total_attempts = 0
     while curr_start < end_dt:
         curr_end = min(curr_start + timedelta(days=max_days), end_dt)
-        try:
-            chunk = client.fetch_history(
-                symbol=symbol,
-                start_date=curr_start.strftime("%Y-%m-%d"),
-                end_date=curr_end.strftime("%Y-%m-%d"),
-                interval="1D",
-                normalize_vnd=True,
-            )
-            if chunk is not None and not chunk.empty:
-                chunks.append(chunk)
-        except Exception as e:
-            logger.warning(f"[{symbol}] Chunk {curr_start.date()}..{curr_end.date()} failed: {e}")
+        chunk_success = False
+        last_exc = None
+        for attempt in range(1, max_chunk_retries + 1):
+            if total_attempts >= max_total_attempts:
+                raise RuntimeError(
+                    f"[{symbol}] Upstream attempt ceiling ({max_total_attempts}) exhausted while fetching chunk {curr_start.date()}..{curr_end.date()}"
+                )
+            total_attempts += 1
+            try:
+                chunk = client.fetch_history(
+                    symbol=symbol,
+                    start_date=curr_start.strftime("%Y-%m-%d"),
+                    end_date=curr_end.strftime("%Y-%m-%d"),
+                    interval="1D",
+                    normalize_vnd=True,
+                )
+                chunk_df = chunk if (chunk is not None and not chunk.empty) else pd.DataFrame()
+                if chunk_df.empty:
+                    is_pre_listing = list_dt is not None and curr_end < list_dt
+                    is_post_delisting = delist_dt is not None and curr_start > delist_dt
+                    if any(not c[2].empty for c in chunk_results) and not is_post_delisting:
+                        if attempt < max_chunk_retries:
+                            continue
+                        raise RuntimeError(
+                            f"[{symbol}] Detected silent empty chunk gap: chunk {curr_start.date()}..{curr_end.date()} returned no data while preceding chunks contain data"
+                        )
+                    if not (is_pre_listing or is_post_delisting):
+                        if attempt < max_chunk_retries:
+                            continue
+                        if list_dt is None:
+                            raise RuntimeError(
+                                f"[{symbol}] Unverified empty chunk {curr_start.date()}..{curr_end.date()}: missing positive listing_date or trading continuity proof"
+                            )
+                        raise RuntimeError(
+                            f"[{symbol}] Unverified empty chunk {curr_start.date()}..{curr_end.date()}: empty chunk during listed period (listing_date={list_dt.date()}) failed closed, missing positive listing_date or trading continuity proof"
+                        )
+                chunk_results.append((curr_start, curr_end, chunk_df))
+                chunk_success = True
+                break
+            except Exception as e:
+                last_exc = e
+        if not chunk_success:
+            if isinstance(last_exc, RuntimeError) and (
+                "Unverified empty chunk" in str(last_exc)
+                or "Detected silent empty chunk gap" in str(last_exc)
+                or "during listed period" in str(last_exc)
+                or "missing positive listing" in str(last_exc)
+            ):
+                raise last_exc
+            raise RuntimeError(
+                f"[{symbol}] Required chunk {curr_start.date()}..{curr_end.date()} failed after {max_chunk_retries} attempts"
+            ) from last_exc
         curr_start = curr_end + timedelta(days=1)
 
+    first_data_idx: Optional[int] = None
+    last_data_idx: Optional[int] = None
+    for idx, (_, _, c_df) in enumerate(chunk_results):
+        if not c_df.empty:
+            if first_data_idx is None:
+                first_data_idx = idx
+            last_data_idx = idx
+
+    # Fail-closed validation for intermediate gaps
+    if first_data_idx is not None and last_data_idx is not None:
+        for i in range(first_data_idx + 1, last_data_idx):
+            c_start, c_end, c_df = chunk_results[i]
+            if c_df.empty:
+                raise RuntimeError(
+                    f"[{symbol}] Detected silent empty chunk gap: chunk {c_start.date()}..{c_end.date()} returned no data while subsequent chunks contain data"
+                )
+
+    # Fail-closed validation for leading empty chunks (must be proven pre-listing with positive listing metadata)
+    if first_data_idx is not None and first_data_idx > 0:
+        for i in range(0, first_data_idx):
+            c_start, c_end, c_df = chunk_results[i]
+            if c_df.empty:
+                if list_dt is None:
+                    raise RuntimeError(
+                        f"[{symbol}] Unverified empty chunk {c_start.date()}..{c_end.date()}: missing positive listing_date or trading continuity proof"
+                    )
+                if not (c_end < list_dt):
+                    raise RuntimeError(
+                        f"[{symbol}] Unverified empty chunk {c_start.date()}..{c_end.date()}: empty chunk during listed period (listing_date={list_dt.date()}) failed closed, missing positive listing_date or trading continuity proof"
+                    )
+
+    # Fail-closed validation for trailing empty chunks (must be proven post-delisting with positive delisting metadata)
+    if last_data_idx is not None and last_data_idx < len(chunk_results) - 1:
+        for i in range(last_data_idx + 1, len(chunk_results)):
+            c_start, c_end, c_df = chunk_results[i]
+            if c_df.empty:
+                if delist_dt is None or not (c_start > delist_dt):
+                    raise RuntimeError(
+                        f"[{symbol}] Unverified empty chunk {c_start.date()}..{c_end.date()}: missing positive listing_date or trading continuity proof"
+                    )
+
+    chunks = [c_df for _, _, c_df in chunk_results if not c_df.empty]
     if not chunks:
-        return pd.DataFrame()
+        if list_dt is not None and end_dt < list_dt:
+            return pd.DataFrame()
+        if delist_dt is not None and start_dt > delist_dt:
+            return pd.DataFrame()
+        if list_dt is None:
+            raise RuntimeError(
+                f"[{symbol}] All required chunks returned unverified empty data without positive listing proof"
+            )
+        raise RuntimeError(
+            f"[{symbol}] All required chunks returned empty data during listed period (listing_date={list_dt.date()}): missing positive listing_date or trading continuity proof"
+        )
     out = pd.concat(chunks, ignore_index=True)
     date_col = "time" if "time" in out.columns else ("date" if "date" in out.columns else None)
     if date_col is not None:
@@ -378,21 +565,21 @@ def fetch_one_symbol(
     start_date: str,
     end_date: str,
     exchange: str,
+    listing_date: Optional[str] = None,
+    delisting_date: Optional[str] = None,
 ) -> pd.DataFrame:
     """Fetch OHLCV for one symbol from VCI, returning canonical-schema DataFrame."""
-    try:
-        df = _fetch_history_chunked(
-            client=client,
-            symbol=symbol,
-            start_date=start_date,
-            end_date=end_date,
-        )
-    except Exception as e:
-        logger.error(f"[{symbol}] Fetch failed: {e}")
-        return pd.DataFrame()
+    df = _fetch_history_chunked(
+        client=client,
+        symbol=symbol,
+        start_date=start_date,
+        end_date=end_date,
+        listing_date=listing_date,
+        delisting_date=delisting_date,
+    )
 
-    if df.empty:
-        return df
+    if df is None or df.empty:
+        return pd.DataFrame()
 
     df = df.reset_index(drop=True)
     df.columns = [c.lower() for c in df.columns]
@@ -444,8 +631,6 @@ def _vci_available_at(dates: pd.Series) -> pd.Series:
 def _normalize_legacy_vci_available_at(df: pd.DataFrame) -> pd.DataFrame:
     """Normalize PIT timestamps; repair only positively identified legacy VCI rows."""
     normalized = df.copy()
-    if "source" in normalized.columns:
-        normalized["source"] = normalized["source"].fillna("vnstock_vci")
     if "price_scale" in normalized.columns:
         normalized["price_scale"] = normalized["price_scale"].fillna(PRICE_SCALE_LABEL)
     if "adjusted" in normalized.columns:
@@ -655,18 +840,33 @@ def validate_dataframe(df: pd.DataFrame, label: str = "data") -> Tuple[bool, Lis
             if null_ct > 0:
                 errors.append(f"{label}: {null_ct} null values in '{col}'")
 
-    # 4. Non-positive OHLC
+    # 4. Non-positive OHLC and finiteness
     for col in ["open", "high", "low", "close"]:
         if col in df.columns:
-            bad_ct = int((pd.to_numeric(df[col], errors="coerce") <= 0).sum())
+            vals = pd.to_numeric(df[col], errors="coerce")
+            bad_ct = int(((vals <= 0) | (~np.isfinite(vals))).sum())
             if bad_ct > 0:
-                errors.append(f"{label}: {bad_ct} non-positive values in '{col}'")
+                errors.append(f"{label}: {bad_ct} non-positive/non-finite values in '{col}'")
 
-    # 5. Negative volume
+    # 5. Negative volume and finiteness
     if "volume" in df.columns:
-        neg_vol = int((pd.to_numeric(df["volume"], errors="coerce") < 0).sum())
+        vol_vals = pd.to_numeric(df["volume"], errors="coerce")
+        neg_vol = int(((vol_vals < 0) | (~np.isfinite(vol_vals))).sum())
         if neg_vol > 0:
-            errors.append(f"{label}: {neg_vol} negative volume values")
+            errors.append(f"{label}: {neg_vol} negative/non-finite volume values")
+
+    # 5b. OHLC relationship invariants: high >= max(open, close, low), low <= min(open, close, high)
+    if all(c in df.columns for c in ("open", "high", "low", "close")):
+        h = pd.to_numeric(df["high"], errors="coerce")
+        l = pd.to_numeric(df["low"], errors="coerce")
+        o = pd.to_numeric(df["open"], errors="coerce")
+        c = pd.to_numeric(df["close"], errors="coerce")
+        bad_high = int(((h < o) | (h < c) | (h < l)).sum())
+        if bad_high > 0:
+            errors.append(f"{label}: {bad_high} rows where high < max(open, close, low)")
+        bad_low = int(((l > o) | (l > c) | (l > h)).sum())
+        if bad_low > 0:
+            errors.append(f"{label}: {bad_low} rows where low > min(open, close, high)")
 
     # 6. Exchange whitelist
     if "exchange" in df.columns:
@@ -1222,49 +1422,112 @@ def run_full_history_refetch(
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# Atomic Write with Backup
+# Atomic Write with Backup & Directory Durability
 # ═══════════════════════════════════════════════════════════════════════════════
+
+def _fsync_directory(path: Path) -> None:
+    """Fsync directory for durability; safe on POSIX and Windows."""
+    try:
+        if os.name == "nt":
+            return
+        fd = os.open(str(path), os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except (AttributeError, OSError):
+        pass
+
 
 def atomic_write_with_backup(
     df: pd.DataFrame,
     target_path: Path,
     backup: bool = True,
+    lock_timeout_seconds: float = 60.0,
 ) -> Path:
-    """Write DataFrame to parquet atomically with optional backup.
+    """Write DataFrame to parquet atomically with optional backup and writer exclusion.
 
-    1. Create backup of existing file (if backup=True and file exists)
-    2. Write to temp file in same directory
-    3. Atomic rename temp -> target
+    Certified atomic write ordering:
+      1. Temp write: serialize DataFrame to unique temp file on the same filesystem.
+      2. File fsync: flush and fsync temp file descriptors.
+      3. Validation: validate serialized parquet readback and row count before replacement.
+      4. Backup: create durable backup of existing file (if backup=True and target exists).
+      5. Atomic replace: atomically replace target with temp file.
+      6. Directory fsync: fsync parent directory for crash durability. Rollback on failure.
 
     Returns the path written to.
     """
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(f"Expected pandas DataFrame, got {type(df).__name__}")
+
+    target_path = Path(target_path).resolve()
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = target_path.parent / f".{target_path.name}.lock"
 
-    # Backup existing file
-    if backup and target_path.exists():
-        backup_path = target_path.with_suffix(".parquet.bak")
-        shutil.copy2(str(target_path), str(backup_path))
-        logger.info(f"Backup created: {backup_path}")
+    from filelock import FileLock
 
-    # Write to temp file then rename (atomic on same filesystem)
-    fd, tmp_path_str = tempfile.mkstemp(
-        suffix=".parquet.tmp",
-        dir=str(target_path.parent),
-    )
-    tmp_path = Path(tmp_path_str)
-    try:
-        import os
-        os.close(fd)
-        df.to_parquet(tmp_path, index=False)
-        with tmp_path.open("rb+") as stream:
-            os.fsync(stream.fileno())
-        tmp_path.replace(target_path)
-        _fsync_directory(target_path.parent)
-        logger.info(f"Atomic write complete: {target_path} ({len(df)} rows)")
-    except Exception:
-        if tmp_path.exists():
-            tmp_path.unlink()
-        raise
+    with FileLock(str(lock_path), timeout=lock_timeout_seconds):
+        had_existing = target_path.exists()
+        backup_path: Optional[Path] = None
+
+        # Write to temp file in same directory (guaranteed same filesystem)
+        with tempfile.NamedTemporaryFile(
+            dir=str(target_path.parent),
+            prefix=f".tmp_{target_path.stem}_",
+            suffix=".parquet.tmp",
+            delete=False,
+        ) as handle:
+            temp_path = Path(handle.name)
+
+        try:
+            # 1. Temp write
+            df.to_parquet(temp_path, index=False)
+
+            # 2. File fsync
+            with temp_path.open("rb+") as stream:
+                stream.flush()
+                os.fsync(stream.fileno())
+
+            # 3. Validation
+            readback = pd.read_parquet(temp_path)
+            if len(readback) != len(df):
+                raise ValueError(
+                    f"Temp parquet verification failed: expected {len(df)} rows, got {len(readback)}"
+                )
+
+            # 4. Backup (only after temp write, fsync, and readback validation succeed)
+            if backup and had_existing:
+                backup_path = target_path.with_suffix(".parquet.bak")
+                shutil.copy2(str(target_path), str(backup_path))
+                with backup_path.open("rb+") as bstream:
+                    bstream.flush()
+                    os.fsync(bstream.fileno())
+                logger.info(f"Backup created: {backup_path}")
+
+            # 5. Atomic replace
+            os.replace(temp_path, target_path)
+
+            # 6. Directory fsync
+            _fsync_directory(target_path.parent)
+            logger.info(f"Atomic write complete: {target_path} ({len(df)} rows)")
+        except Exception as exc:
+            # Rollback: if target was lost during replacement but backup exists, restore target
+            if had_existing and backup_path is not None and backup_path.exists() and not target_path.exists():
+                try:
+                    shutil.copy2(str(backup_path), str(target_path))
+                    with target_path.open("rb+") as rstream:
+                        rstream.flush()
+                        os.fsync(rstream.fileno())
+                    _fsync_directory(target_path.parent)
+                except Exception:
+                    pass
+            raise exc
+        finally:
+            if temp_path.exists():
+                try:
+                    temp_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
 
     return target_path
 
@@ -1275,16 +1538,6 @@ def _write_fsync(path: Path, content: bytes) -> None:
         os.fsync(stream.fileno())
     if os.name != "nt":
         _fsync_directory(path.parent)
-
-
-def _fsync_directory(path: Path) -> None:
-    if os.name == "nt":
-        return
-    fd = os.open(path, os.O_RDONLY)
-    try:
-        os.fsync(fd)
-    finally:
-        os.close(fd)
 
 
 def _write_immutable_json(path: Path, payload: Dict) -> Path:
