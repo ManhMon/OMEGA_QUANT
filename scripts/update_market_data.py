@@ -2134,7 +2134,9 @@ def _claim_sparse_terminal_receipts(
 ) -> List[str]:
     """Consume lifecycle receipts only after every release gate has passed."""
     errors = []
-    for ticker in authority.get("sparse_terminal_exceptions", {}):
+    for ticker, exception in authority.get("sparse_terminal_exceptions", {}).items():
+        if exception.get("bypassed_by_flag") and exception.get("bypass_lifecycle"):
+            continue
         evidence = (sparse_terminal_evidence or {}).get(ticker)
         if evidence is None:
             errors.append(f"terminal_session: {ticker} lifecycle receipt: evidence missing")

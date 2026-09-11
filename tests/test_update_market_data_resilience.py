@@ -1220,3 +1220,27 @@ def test_regression_08_url_redaction_in_errors():
     redacted_text = redact_credentials_in_text(text)
     assert "secret_pass" not in redacted_text
     assert "my_super_secret_token_123" not in redacted_text
+
+
+def test_sparse_terminal_bypass_lifecycle_skips_receipt_claim(monkeypatch, tmp_path):
+    """Bypassed lifecycle exceptions must not consume lifecycle receipts."""
+    calls = []
+
+    monkeypatch.setattr(
+        update_market_data,
+        "_claim_lifecycle_receipt",
+        lambda *args, **kwargs: calls.append(args) or None,
+    )
+
+    errors = update_market_data._claim_sparse_terminal_receipts(
+        {
+            "sparse_terminal_exceptions": {
+                "ABC": {"bypassed_by_flag": True, "bypass_lifecycle": True}
+            }
+        },
+        {"ABC": {"receipt_id": "r1", "payload": {}}},
+        tmp_path,
+    )
+
+    assert errors == []
+    assert calls == []
