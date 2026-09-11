@@ -1181,6 +1181,44 @@ def test_regression_05_test_isolation_snapshot_restore(tmp_path):
     assert pd.read_parquet(target_path).loc[0, "ticker"] == "SNAP"
 
 
+def test_fix_sparse_terminal_receipts_string_bypass_exception():
+    """String bypass_by_flag exceptions skip lifecycle receipt claims."""
+    errors = update_market_data._claim_sparse_terminal_receipts(
+        {"sparse_terminal_exceptions": {"ABC": "bypassed_by_flag"}},
+        {},
+        None,
+    )
+    assert errors == []
+
+
+def test_fix_sparse_terminal_receipts_dict_bypass_exception():
+    """Dict bypass exceptions skip lifecycle receipt claims without AttributeError."""
+    errors = update_market_data._claim_sparse_terminal_receipts(
+        {
+            "sparse_terminal_exceptions": {
+                "ABC": {"bypassed_by_flag": True, "bypass_lifecycle": True}
+            }
+        },
+        {},
+        None,
+    )
+    assert errors == []
+
+
+def test_fix_sparse_terminal_receipts_non_bypass_dict_still_validates_evidence():
+    """Non-bypass dict exceptions still require lifecycle evidence."""
+    errors = update_market_data._claim_sparse_terminal_receipts(
+        {
+            "sparse_terminal_exceptions": {
+                "ABC": {"bypassed_by_flag": False, "bypass_lifecycle": False}
+            }
+        },
+        {},
+        None,
+    )
+    assert errors == ["terminal_session: ABC lifecycle receipt: evidence missing"]
+
+
 def test_regression_06_durable_tls_sni_evidence():
     """Durable TLS SNI evidence preservation in production official_watermark and copilot."""
     import ssl
