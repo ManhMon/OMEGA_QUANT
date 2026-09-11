@@ -8,7 +8,8 @@ from typing import Any, Callable, Deque, Dict, Iterable, List, Optional
 from datetime import datetime, timedelta
 
 # Import official vnstock package
-from vnstock import Quote
+from vnstock.api.quote import Quote
+from vnstock.api.listing import Listing
 from vnstock.core.types import TimeFrame
 
 # VND_FULL price-unit contract guard
@@ -145,8 +146,7 @@ class VnstockVCIDataSource:
             current = chunk_end + timedelta(days=1)
 
     def list_symbols(self, exchange: str = "HOSE") -> List[str]:
-        from vnstock import Listing
-        # VCI primary, KBS fallback
+                # VCI primary, KBS fallback
         for src in ("VCI", "KBS"):
             try:
                 listing = Listing(source=src)

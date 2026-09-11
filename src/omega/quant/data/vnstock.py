@@ -8,7 +8,8 @@ from typing import Any, Callable, Deque, Dict, Iterable, List, Optional
 from datetime import datetime, timedelta
 
 # Import official vnstock package
-from vnstock import Quote
+from vnstock.api.quote import Quote
+from vnstock.api.listing import Listing
 from vnstock.core.types import TimeFrame
 
 @dataclass
@@ -187,8 +188,7 @@ class VnstockVCIDataSource:
         Returns:
             List of symbol strings
         """
-        from vnstock import Listing
-        
+                
         # VCI primary, KBS fallback
         for src in ("VCI", "KBS"):
             try:

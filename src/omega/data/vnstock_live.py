@@ -26,7 +26,7 @@ import logging
 
 # Import official vnstock package
 try:
-    from vnstock import Quote
+    from vnstock.api.quote import Quote
     from vnstock.core.types import TimeFrame
     VNSTOCK_AVAILABLE = True
 except ImportError:

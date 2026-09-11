@@ -38,8 +38,12 @@ from typing import Any, Callable, Deque, Dict, List, Optional
 import pandas as pd
 from filelock import FileLock
 
-# ── vnstock 4.x imports (the only module that imports vnstock directly) ──────
-from vnstock import Quote, Listing, Trading, Market  # noqa: F401  (re-export)
+# ── vnstock 4.x namespace imports (the only module that imports vnstock directly) ──────
+from vnstock.api.quote import Quote  # noqa: F401  (re-export)
+from vnstock.api.listing import Listing  # noqa: F401  (re-export)
+from vnstock.api.trading import Trading  # noqa: F401  (re-export)
+from vnstock.api.company import Company  # noqa: F401  (re-export)
+from vnstock.ui.market import Market  # noqa: F401  (re-export)
 from vnstock.core.types import TimeFrame  # noqa: F401
 
 # ── VND_FULL price-unit contract guard ──────────────────────────────────────
@@ -443,9 +447,8 @@ class VnstockClient:
         """Fetch company profile via ``Vnstock().stock().company.profile()``."""
         self.rate_limiter.throttle()
         try:
-            from vnstock import Vnstock
-            stock = Vnstock().stock(symbol=symbol, source=self.source)
-            profile = stock.company.profile()
+            company = Company(symbol=symbol, source=self.source)
+            profile = company.profile()
             return profile if profile is not None else pd.DataFrame()
         except Exception as exc:
             logger.error(f"fetch_company_profile({symbol}): {exc}")

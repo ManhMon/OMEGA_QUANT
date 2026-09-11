@@ -10,7 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Deque, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
-from vnstock import Quote
+from vnstock.api.quote import Quote
 
 import math
 import numpy as np
