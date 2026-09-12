@@ -3,6 +3,8 @@
 import hashlib
 import json
 import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
 import time
@@ -23,6 +25,10 @@ CAFEF_HTML_URL = "https://cafef.vn/thi-truong-chung-khoan.chn"
 TINNHANHCK_HTML_URL = "https://tinnhanhchungkhoan.vn/chung-khoan/"
 VNECONOMY_HTML_URL = "https://vneconomy.vn/chung-khoan.htm"
 VNSTOCK_PAGE_SIZE = 100
+NEWS_WORKERS = 4
+NEWS_PAGE_SIZE = 200
+MAX_PAGES_PER_TICKER = 10
+NEWS_RATE_LIMIT_SECONDS = 0.5
 VIETCAP_NEWS_API_URL = "https://api.vietcap.com.vn/market-news"
 VIETCAP_PAGE_SIZE = 100
 VIETCAP_HISTORICAL_START = datetime(2015, 1, 1, tzinfo=timezone.utc)
@@ -109,7 +115,8 @@ class NewsAggregator:
             raise ValueError("max_articles_per_source must be a positive integer")
         self.max_articles_per_source = max_articles_per_source
         self.last_request_time = {}
-        self.rate_limit_seconds = 2.0
+        self.rate_limit_seconds = NEWS_RATE_LIMIT_SECONDS
+        self._rate_limit_lock = threading.Lock()
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -123,11 +130,13 @@ class NewsAggregator:
         }
 
     def _rate_limit(self, domain: str) -> None:
-        if domain in self.last_request_time:
-            elapsed = time.time() - self.last_request_time[domain]
+        with self._rate_limit_lock:
+            now = time.monotonic()
+            last = self.last_request_time.get(domain, 0.0)
+            elapsed = now - last
             if elapsed < self.rate_limit_seconds:
                 time.sleep(self.rate_limit_seconds - elapsed)
-        self.last_request_time[domain] = time.time()
+            self.last_request_time[domain] = time.monotonic()
 
     def _fetch_raw(self, url: str, domain: str) -> Optional[requests.Response]:
         self._rate_limit(domain)
@@ -318,26 +327,29 @@ class NewsAggregator:
             logger.error("vnstock import failed: %s", exc)
             return results
 
-        for ticker in self._load_universe_tickers():
-            if len(results) >= self.max_articles_per_source:
-                break
+        def fetch_ticker(ticker: str) -> List[SentimentInput]:
+            ticker_results: List[SentimentInput] = []
             try:
                 self._rate_limit("vnstock")
                 company = Company(symbol=ticker, source="VCI")
                 frame, next_cursor = self._fetch_vnstock_page(company, cursor=None)
             except Exception as exc:
                 logger.warning("vnstock news fetch failed for %s: %s", ticker, exc)
-                continue
-            if frame is None or frame.empty:
-                continue
-            self._validate_vnstock_schema(frame)
-            seen_cursors = set()
+                return ticker_results
 
-            while True:
+            if frame is None or frame.empty:
+                return ticker_results
+            try:
+                self._validate_vnstock_schema(frame)
+            except Exception as exc:
+                logger.warning("vnstock schema validation failed for %s: %s", ticker, exc)
+                return ticker_results
+            seen_cursors = set()
+            page_count = 0
+            while page_count < MAX_PAGES_PER_TICKER:
+                page_count += 1
                 reached_cutoff = False
                 for row in frame.to_dict(orient="records"):
-                    if len(results) >= self.max_articles_per_source:
-                        break
                     timestamp = self._parse_public_date(row.get("public_date"))
                     if timestamp is None:
                         continue
@@ -349,37 +361,32 @@ class NewsAggregator:
                         continue
                     title = row.get("news_title")
                     summary = row.get("news_short_content")
-                    if not self._matches_sentiment_keywords(title, summary):
-                        continue
-                    text = " ".join(part.strip() for part in [title or "", summary or ""] if part and part.strip())
-                    if not text:
-                        continue
-                    results.append(SentimentInput(
-                        text=text,
-                        source="vnstock",
-                        timestamp=timestamp,
-                        ticker=ticker,
-                        fetched_at=as_of_time,
-                        raw_timestamp=str(row.get("public_date")),
-                        payload_sha256=self._payload_sha256(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)),
-                    ))
-                if len(results) >= self.max_articles_per_source:
+                    if self._matches_sentiment_keywords(title, summary):
+                        ticker_results.append(SentimentInput(
+                            text=" ".join(part.strip() for part in [title or "", summary or ""] if part and part.strip()),
+                            source="vnstock", timestamp=timestamp, ticker=ticker,
+                            fetched_at=as_of_time, raw_timestamp=str(row.get("public_date")),
+                            payload_sha256=self._payload_sha256(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)),
+                        ))
+                if reached_cutoff or next_cursor is None or next_cursor in seen_cursors:
                     break
-                if reached_cutoff:
-                    break
-                if next_cursor is None:
-                    break
-                if next_cursor in seen_cursors:
-                    raise ValueError(f"vnstock pagination repeated cursor for {ticker}: {next_cursor}")
                 seen_cursors.add(next_cursor)
                 try:
                     frame, next_cursor = self._fetch_vnstock_page(company, cursor=next_cursor)
+                    if frame is None or frame.empty:
+                        break
+                    self._validate_vnstock_schema(frame)
                 except Exception as exc:
-                    logger.warning("vnstock cursor fetch failed for %s: %s", ticker, exc)
+                    logger.warning("vnstock cursor page validation/fetch failed for %s: %s", ticker, exc)
                     break
-                if frame is None or frame.empty:
+            return ticker_results
+
+        tickers = self._load_universe_tickers()
+        with ThreadPoolExecutor(max_workers=NEWS_WORKERS) as executor:
+            for ticker_results in executor.map(fetch_ticker, tickers):
+                results.extend(ticker_results)
+                if len(results) >= self.max_articles_per_source:
                     break
-                self._validate_vnstock_schema(frame)
         return results
 
     @staticmethod
@@ -590,11 +597,16 @@ class NewsAggregator:
         except Exception as exc:
             logger.warning("Vietcap scraping failed; continuing without Vietcap articles: %s", exc)
 
-        for scraper in (self._scrape_cafef, self._scrape_tinnhanhck, self._scrape_vneconomy):
+        def run_scraper(scraper):
             try:
-                all_news.extend(scraper(as_of_time, hours_back, fetched_at))
+                return scraper(as_of_time, hours_back, fetched_at)
             except Exception as exc:
                 logger.error("HTML news scraping failed: %s", exc)
+                return []
+
+        with ThreadPoolExecutor(max_workers=NEWS_WORKERS) as executor:
+            for items in executor.map(run_scraper, (self._scrape_cafef, self._scrape_tinnhanhck, self._scrape_vneconomy)):
+                all_news.extend(items)
 
         deduplicated = []
         seen = set()
