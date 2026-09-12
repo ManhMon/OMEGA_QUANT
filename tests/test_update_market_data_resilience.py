@@ -402,6 +402,103 @@ def test_read_canonical_preserves_unknown_source_and_as_of(tmp_path, monkeypatch
     assert pd.isna(result.loc[0, "as_of"])
 
 
+def test_read_canonical_empty_frame_is_treated_as_no_canonical(tmp_path, monkeypatch):
+    """F-001: Empty canonical must not reach date/ticker access paths."""
+    path = tmp_path / "canonical.parquet"
+    path.touch()
+    monkeypatch.setattr(update_market_data.pd, "read_parquet", lambda _: pd.DataFrame())
+
+    assert update_market_data.read_canonical(path) is None
+
+
+def test_canonical_metadata_empty_frame_has_no_dates():
+    """F-001: Schema-less empty frames must not access a missing date column."""
+    assert update_market_data._canonical_metadata(pd.DataFrame()) == (None, {})
+
+
+def test_canonical_metadata_missing_date_fails_closed():
+    """F-001: Non-empty canonical frames without date must reject publication."""
+    with pytest.raises(ValueError, match="missing required date column"):
+        update_market_data._canonical_metadata(pd.DataFrame({"ticker": ["VCB"]}))
+
+
+def test_read_canonical_missing_date_fails_closed(tmp_path, monkeypatch):
+    """F-001: A malformed persisted canonical must not be treated as empty."""
+    path = tmp_path / "canonical.parquet"
+    path.touch()
+    monkeypatch.setattr(
+        update_market_data.pd,
+        "read_parquet",
+        lambda _: pd.DataFrame({"ticker": ["VCB"]}),
+    )
+
+    with pytest.raises(ValueError, match="missing required date column"):
+        update_market_data.read_canonical(path)
+
+
+def test_updater_rejects_canonical_missing_date_without_writing(tmp_path, monkeypatch):
+    """F-001: Canonical schema drift stops the updater before merge or write."""
+    canonical_path = tmp_path / "canonical.parquet"
+    canonical_path.touch()
+    new_data = pd.DataFrame({"ticker": ["VCB"], "date": [pd.Timestamp("2026-01-02")]})
+
+    monkeypatch.setattr(update_market_data, "load_universe_from_json", lambda _: {"hsx": ["VCB"]})
+    monkeypatch.setattr(update_market_data, "_create_vnstock_client", lambda: object())
+    monkeypatch.setattr(
+        update_market_data,
+        "fetch_symbols",
+        lambda *_args, **_kwargs: (new_data, {"rows": 1, "fetched": 1, "empty": 0, "errors": 0, "errors_list": []}),
+    )
+    monkeypatch.setattr(update_market_data.pd, "read_parquet", lambda _: pd.DataFrame({"ticker": ["VCB"]}))
+
+    result = update_market_data.run_updater(
+        canonical_path=canonical_path,
+        start_date="2026-01-01",
+        end_date="2026-01-02",
+        dry_run=False,
+    )
+
+    assert result == {
+        "status": "canonical_schema_invalid",
+        "errors": [f"Canonical schema missing required date column: {canonical_path}"],
+    }
+
+
+def test_updater_default_start_rejects_canonical_missing_date_before_fetch_or_write(tmp_path, monkeypatch):
+    """F-001: Default incremental discovery validates canonical before side effects."""
+    canonical_path = tmp_path / "canonical.parquet"
+    canonical_path.touch()
+    fetch_calls = 0
+    write_calls = 0
+
+    def fetch_symbols(*_args, **_kwargs):
+        nonlocal fetch_calls
+        fetch_calls += 1
+        return pd.DataFrame(), {}
+
+    def write_parquet(*_args, **_kwargs):
+        nonlocal write_calls
+        write_calls += 1
+
+    monkeypatch.setattr(update_market_data, "load_universe_from_json", lambda _: {"hsx": ["VCB"]})
+    monkeypatch.setattr(update_market_data, "fetch_symbols", fetch_symbols)
+    monkeypatch.setattr(update_market_data.pd, "read_parquet", lambda *_args, **_kwargs: pd.DataFrame({"ticker": ["VCB"]}))
+    monkeypatch.setattr(pd.DataFrame, "to_parquet", write_parquet)
+
+    result = update_market_data.run_updater(
+        canonical_path=canonical_path,
+        start_date=None,
+        end_date="2026-01-02",
+    )
+
+    assert result == {
+        "status": "canonical_schema_invalid",
+        "errors": [f"Canonical schema missing required date column: {canonical_path}"],
+    }
+    assert fetch_calls == 0
+    assert write_calls == 0
+
+
 def test_legacy_normalization_preserves_unknown_source():
     """F-003: Legacy normalization must preserve unknown provenance without fabricating vnstock_vci."""
     frame = pd.DataFrame(
@@ -756,6 +853,47 @@ def test_atomic_write_readback_validation_failure_rolls_back(tmp_path, monkeypat
     assert target_path.exists()
     assert pd.read_parquet(target_path).loc[0, "ticker"] == "AAA"
     # Certified ordering: Step 4 (backup) must NOT execute if Step 3 (validation) fails
+    assert not target_path.with_suffix(".parquet.bak").exists()
+
+
+def test_atomic_write_readback_validates_each_column_with_bounded_memory(tmp_path, monkeypatch):
+    """F-002: Readback validates all columns without materializing the full table."""
+    target_path = tmp_path / "market_data.parquet"
+    frame = pd.DataFrame({"ticker": ["AAA", "BBB"], "close": [10.0, 20.0]})
+    real_read = pd.read_parquet
+    read_columns = []
+
+    def mock_read(path, *args, **kwargs):
+        if ".tmp_" in str(path):
+            read_columns.append(kwargs.get("columns"))
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(update_market_data.pd, "read_parquet", mock_read)
+
+    update_market_data.atomic_write_with_backup(frame, target_path, backup=False)
+
+    assert read_columns == [["ticker"], ["close"]]
+
+
+def test_atomic_write_readback_rejects_non_ticker_column_corruption(tmp_path, monkeypatch):
+    """F-002: Corruption in a non-ticker parquet column aborts publication."""
+    target_path = tmp_path / "market_data.parquet"
+    initial = pd.DataFrame({"ticker": ["AAA"], "close": [10.0]})
+    update_market_data.atomic_write_with_backup(initial, target_path, backup=False)
+    candidate = pd.DataFrame({"ticker": ["BBB", "CCC"], "close": [20.0, 30.0]})
+    real_read = pd.read_parquet
+
+    def corrupt_close_readback(path, *args, **kwargs):
+        if ".tmp_" in str(path) and kwargs.get("columns") == ["close"]:
+            return pd.DataFrame({"close": [20.0]})
+        return real_read(path, *args, **kwargs)
+
+    monkeypatch.setattr(update_market_data.pd, "read_parquet", corrupt_close_readback)
+
+    with pytest.raises(ValueError, match="verification failed for close"):
+        update_market_data.atomic_write_with_backup(candidate, target_path, backup=True)
+
+    assert pd.read_parquet(target_path).loc[0, "ticker"] == "AAA"
     assert not target_path.with_suffix(".parquet.bak").exists()
 
 

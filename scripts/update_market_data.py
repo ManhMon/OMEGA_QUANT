@@ -69,6 +69,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import gc
 import hashlib
 import hmac
 import json
@@ -256,6 +257,11 @@ def read_canonical(canonical_path: Path) -> Optional[pd.DataFrame]:
     if not canonical_path.exists():
         return None
     df = pd.read_parquet(canonical_path)
+    if df.empty:
+        logger.info(f"Canonical is empty: {canonical_path.name}")
+        return None
+    if "date" not in df.columns:
+        raise ValueError(f"Canonical schema missing required date column: {canonical_path}")
     df["date"] = pd.to_datetime(df["date"])
     if "available_at" in df.columns:
         df["available_at"] = pd.to_datetime(df["available_at"])
@@ -268,6 +274,21 @@ def read_canonical(canonical_path: Path) -> Optional[pd.DataFrame]:
     ticker_count = df["ticker"].nunique() if "ticker" in df.columns else 0
     logger.info(f"Canonical loaded: {len(df)} rows, {ticker_count} tickers")
     return df
+
+
+def _canonical_metadata(canonical_df: Optional[pd.DataFrame]) -> Tuple[Optional[pd.Timestamp], Dict[str, pd.Timestamp]]:
+    """Return canonical dates only when the frame has the required schema."""
+    if canonical_df is None or canonical_df.empty:
+        return None, {}
+    if "date" not in canonical_df.columns:
+        raise ValueError("Canonical schema missing required date column")
+    canonical_max = canonical_df["date"].max()
+    canonical_terminals = (
+        canonical_df.groupby("ticker")["date"].max().to_dict()
+        if "ticker" in canonical_df.columns
+        else {}
+    )
+    return canonical_max, canonical_terminals
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1494,11 +1515,16 @@ def atomic_write_with_backup(
                 os.fsync(stream.fileno())
 
             # 3. Validation
-            readback = pd.read_parquet(temp_path)
-            if len(readback) != len(df):
-                raise ValueError(
-                    f"Temp parquet verification failed: expected {len(df)} rows, got {len(readback)}"
-                )
+            for column in df.columns:
+                readback = pd.read_parquet(temp_path, columns=[column])
+                readback_rows = len(readback)
+                del readback
+                gc.collect()
+                if readback_rows != len(df):
+                    raise ValueError(
+                        f"Temp parquet verification failed for {column}: "
+                        f"expected {len(df)} rows, got {readback_rows}"
+                    )
 
             # 4. Backup (only after temp write, fsync, and readback validation succeed)
             if backup and had_existing:
@@ -2542,14 +2568,17 @@ def run_updater(
     requested_symbols = sorted(symbol_filter or set(all_symbols))
     # 2. Determine incremental date range
     symbol_max_dates: Dict[str, pd.Timestamp] = {}
+    canonical_df: Optional[pd.DataFrame] = None
     if start_date:
         fetch_start = pd.Timestamp(start_date)
     else:
-        if canonical_path.exists():
-            df_dates = pd.read_parquet(canonical_path, columns=["ticker", "date"])
-            df_dates["date"] = pd.to_datetime(df_dates["date"])
-            symbol_max_dates = df_dates.groupby("ticker")["date"].max().to_dict()
-            global_max = max(symbol_max_dates.values()) if symbol_max_dates else None
+        try:
+            canonical_df = read_canonical(canonical_path)
+            global_max, symbol_max_dates = _canonical_metadata(canonical_df)
+        except ValueError as exc:
+            logger.error("Invalid canonical schema: %s", exc)
+            return {"status": "canonical_schema_invalid", "errors": [str(exc)]}
+        if canonical_df is not None:
             fetch_start = global_max + timedelta(days=1) if global_max else MIN_DATE
         else:
             fetch_start = MIN_DATE
@@ -2613,6 +2642,14 @@ def run_updater(
         logger.warning("No new data fetched. Nothing to update.")
         return {"status": "no_new_data", "fetch_stats": fetch_stats}
 
+    try:
+        if canonical_df is None:
+            canonical_df = read_canonical(canonical_path)
+        canonical_max, canonical_terminals = _canonical_metadata(canonical_df)
+    except ValueError as exc:
+        logger.error("Invalid canonical schema: %s", exc)
+        return {"status": "canonical_schema_invalid", "errors": [str(exc)]}
+
     # 4a. Anomaly detection: compare new data boundary against canonical
     refetch_stats: Dict = {}
     full_refetch_stats: Dict = {}
@@ -2622,8 +2659,7 @@ def run_updater(
     if not skip_refetch:
         logger.info("─" * 50)
         logger.info("Overlap mismatch scan: shared-date close validation")
-        canonical_for_detect = read_canonical(canonical_path)
-        anomalies = detect_price_anomalies(new_data, canonical_for_detect)
+        anomalies = detect_price_anomalies(new_data, canonical_df)
 
         if anomalies:
             logger.info(
@@ -2700,22 +2736,24 @@ def run_updater(
 
     # 5. Merge with existing canonical (if writing to canonical path)
     if target_path == canonical_path and canonical_path.exists():
-        existing = read_canonical(canonical_path)
-        if existing is not None:
+        if canonical_df is not None:
             # Delete old history for full-history-refetched symbols
             # (corporate-action phase shift → old data is out-of-phase)
             if full_history_symbols:
-                before_delete = len(existing)
-                existing = existing[
-                    ~existing["ticker"].isin(full_history_symbols)
+                before_delete = len(canonical_df)
+                canonical_df = canonical_df[
+                    ~canonical_df["ticker"].isin(full_history_symbols)
                 ].copy()
-                deleted = before_delete - len(existing)
+                deleted = before_delete - len(canonical_df)
                 logger.info(
                     f"Deleted {deleted} old canonical rows for "
                     f"{len(full_history_symbols)} phase-shifted symbols: "
                     f"{sorted(full_history_symbols)}"
                 )
-            combined, overlap_errors = merge_canonical_and_new(existing, new_data)
+            combined, overlap_errors = merge_canonical_and_new(canonical_df, new_data)
+            del canonical_df
+            canonical_df = None
+            gc.collect()
             if overlap_errors:
                 return {
                     "status": "dry_run" if dry_run else "validation_failed",
@@ -2728,6 +2766,10 @@ def run_updater(
     else:
         combined = new_data.sort_values(["ticker", "date"]).reset_index(drop=True)
 
+    if canonical_df is not None:
+        del canonical_df
+        gc.collect()
+
     # 6. Validate combined data
     combined_valid, combined_errors = validate_dataframe(combined, "combined")
     if not combined_valid:
@@ -2736,8 +2778,6 @@ def run_updater(
             logger.warning(f"  - {err}")
         return {"status": "dry_run" if dry_run else "validation_failed", "errors": combined_errors, "dry_run": dry_run, "rejected_rows": int(len(combined))}
 
-    canonical_max = read_canonical_max_date(canonical_path) if canonical_path.exists() else None
-    canonical_terminals = _canonical_terminal_by_ticker(canonical_path)
     sparse_terminal_evidence = _load_ticker_lifecycle() if not skip_refetch else {}
     gates_ok, gate_errors, gate_report = validate_release_gates(
         combined, fetch_stats, requested_symbols, end_ts, canonical_max,
@@ -2787,9 +2827,13 @@ def run_updater(
         logger.info(f"  Date range: {combined['date'].min()} to {combined['date'].max()}")
         logger.info(f"  Exchange split: {combined['exchange'].value_counts().to_dict()}")
         summary["exchange_split"] = combined["exchange"].value_counts().to_dict()
+        del new_data, terminal_candidate, combined
+        gc.collect()
         return summary
 
     # 8. Stage and publish only after every gate passes. Production parquet is read-only.
+    del new_data, terminal_candidate
+    gc.collect()
     publication = publish_candidate(
         combined,
         canonical_path,
@@ -2805,6 +2849,8 @@ def run_updater(
     summary["status"] = "published"
     summary["output_path"] = publication["candidate_path"]
 
+    del combined
+    gc.collect()
     return summary
 
 
