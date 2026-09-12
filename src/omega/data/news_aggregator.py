@@ -1,8 +1,11 @@
 """PIT-safe VN news aggregation via vnstock, Vietstock, and Vietcap."""
 
 import hashlib
+import io
 import json
 import logging
+import os
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -19,6 +22,18 @@ import requests
 from bs4 import BeautifulSoup
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_utf8_stdio() -> None:
+    if os.name != "nt":
+        return
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        if stream is not None and hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
+
+
+_configure_utf8_stdio()
 
 VIETSTOCK_HTML_URL = "https://vietstock.vn/chung-khoan.htm"
 CAFEF_HTML_URL = "https://cafef.vn/thi-truong-chung-khoan.chn"
@@ -69,7 +84,6 @@ COMMON_TICKERS = (
 )
 ICT = ZoneInfo("Asia/Ho_Chi_Minh")
 AMBIGUOUS_TICKER_WORDS = {"HCM", "HN", "VND"}
-
 
 def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None:
@@ -381,9 +395,9 @@ class NewsAggregator:
                     break
             return ticker_results
 
-        tickers = self._load_universe_tickers()
+        universe_tickers = self._load_universe_tickers()
         with ThreadPoolExecutor(max_workers=NEWS_WORKERS) as executor:
-            for ticker_results in executor.map(fetch_ticker, tickers):
+            for ticker_results in executor.map(fetch_ticker, universe_tickers):
                 results.extend(ticker_results)
                 if len(results) >= self.max_articles_per_source:
                     break

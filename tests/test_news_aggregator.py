@@ -6,7 +6,19 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from omega.data.news_aggregator import NewsAggregator, SentimentInput
+from omega.data.news_aggregator import NewsAggregator, SentimentInput, _configure_utf8_stdio
+
+
+def test_configure_utf8_stdio_windows_safe():
+    _configure_utf8_stdio()
+
+
+def test_vnstock_exception_resilience_falls_back_to_html():
+    aggregator = NewsAggregator()
+    with patch.object(NewsAggregator, "_load_universe_tickers", return_value=["VCB"]), patch("vnstock.Company") as company:
+        company.side_effect = RuntimeError("RateLimitExceeded")
+        result = aggregator._scrape_vnstock_news(datetime.now(timezone.utc), hours_back=24)
+    assert isinstance(result, list)
 
 
 @pytest.fixture
@@ -211,3 +223,37 @@ def test_empty_results_on_network_failure(mock_get, mock_universe, mock_vnecon, 
 
     assert news == []
     mock_universe.assert_called_once_with()
+
+
+def test_vnstock_exception_resilience_and_html_fallback():
+    agg = NewsAggregator()
+    as_of = datetime.now(timezone.utc)
+    fallback = [SentimentInput(text="fallback", source="Vietstock", timestamp=as_of)]
+    with patch.object(NewsAggregator, "_load_universe_tickers", return_value=["VCB"]), patch("vnstock.Company", side_effect=RuntimeError("RateLimitExceeded")), patch.object(NewsAggregator, "_scrape_vietstock", return_value=fallback):
+        assert agg._scrape_vnstock_news(as_of_time=as_of) == []
+        assert agg._scrape_vietstock(as_of_time=as_of) == fallback
+
+
+def test_fetch_recent_news_survives_vnstock_exception_and_retains_html_fallback():
+    agg = NewsAggregator()
+    as_of = datetime.now(timezone.utc)
+    fallback = [SentimentInput(text="html fallback", source="Vietstock", timestamp=as_of - timedelta(minutes=1))]
+    with patch.object(NewsAggregator, "_scrape_vnstock_news", side_effect=RuntimeError("RateLimitExceeded")), patch.object(NewsAggregator, "_scrape_vietstock", return_value=fallback), patch.object(NewsAggregator, "_scrape_cafef", return_value=[]), patch.object(NewsAggregator, "_scrape_tinnhanhck", return_value=[]), patch.object(NewsAggregator, "_scrape_vneconomy", return_value=[]):
+        news = agg.fetch_recent_news(as_of_time=as_of)
+
+    assert news == fallback
+
+
+def test_utf8_stdio_config_safe():
+    from omega.data.news_aggregator import _configure_utf8_stdio
+    _configure_utf8_stdio()
+
+    assert True
+
+
+def test_vnstock_cursor_failure_uses_narrow_exception_contract():
+    agg = NewsAggregator()
+    as_of = datetime.now(timezone.utc)
+    with patch.object(NewsAggregator, "_fetch_vnstock_page", side_effect=KeyboardInterrupt()):
+        with pytest.raises(KeyboardInterrupt):
+            agg._scrape_vnstock_news(as_of_time=as_of)
