@@ -99,6 +99,7 @@ class MacroDataPipeline:
         if not records:
             raise RuntimeError("Macro fetch returned no records from any provider")
         frame = pd.DataFrame(records, columns=SCHEMA)
+        frame = frame.drop_duplicates("revision_id", keep="first").reset_index(drop=True)
         self._validate_store(frame)
         return frame.sort_values(["indicator", "observation_date", "published_at"]).reset_index(drop=True)
 

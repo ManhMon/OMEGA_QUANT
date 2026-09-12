@@ -111,6 +111,15 @@ def test_fetch_maps_yahoo_close_to_same_day_schedule():
     assert records.iloc[0]["published_at"].isoformat() == "2026-08-08T15:15:00+07:00"
 
 
+def test_fetch_deduplicates_intraday_revision_ids_before_validation():
+    session = RecordingSession()
+    payload = {"chart": {"result": [{"timestamp": [1786147200, 1786147260], "indicators": {"quote": [{"close": [26000, 26000]}]}}]}}
+    with patch.object(session, "get", return_value=FetchResponse(payload=payload)):
+        records = MacroDataPipeline(session=session, urls={"usd_vnd": DEFAULT_URLS["usd_vnd"]}).fetch()
+    assert len(records) == 1
+    assert records["revision_id"].nunique() == 1
+
+
 def test_next_tradable_session_skips_weekend_and_holidays():
     pipeline = MacroDataPipeline(urls={})
     assert next_tradable_session("2024-04-27", pipeline.holidays).date().isoformat() == "2024-04-29"
