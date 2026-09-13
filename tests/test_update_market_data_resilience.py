@@ -19,6 +19,8 @@ import json
 import os
 import re
 import sys
+import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -37,6 +39,7 @@ from omega.data.vnstock_client import (
     CircuitState,
     RateLimiter,
     UpstreamThrottledException,
+    UpstreamTransportException,
     VciCircuitBreaker,
 )
 from scripts import update_gate, update_market_data
@@ -378,6 +381,127 @@ def test_deterministic_symbol_total_attempt_ceiling():
         )
 
     assert call_count == 4
+
+
+@pytest.mark.parametrize("error_type", [TimeoutError, ConnectionError])
+def test_vnstock_transport_errors_propagate_as_typed_upstream_errors(monkeypatch, error_type):
+    """F-001: Adapter must not turn unrecovered network failure into empty data."""
+    from omega.data import vnstock_client
+
+    class QuoteStub:
+        def __init__(self, **_kwargs):
+            pass
+
+        def history(self, **_kwargs):
+            raise error_type("https://user:secret@example.com/?api_key=secret")
+
+    monkeypatch.setattr(vnstock_client, "Quote", QuoteStub)
+    client = vnstock_client.VnstockClient(
+        source="VCI",
+        direct_vci=True,
+        rate_limiter=RateLimiter(jitter_min_seconds=0, jitter_max_seconds=0),
+    )
+
+    with pytest.raises(UpstreamTransportException) as excinfo:
+        client.fetch_history("VCB", "2026-01-01", "2026-01-02")
+    assert isinstance(excinfo.value.__cause__, error_type)
+
+
+def test_updater_fails_closed_on_unrecovered_transport_failure(monkeypatch, tmp_path):
+    """F-001: Transport exhaustion must not report clean no_new_data or publish."""
+    monkeypatch.setattr(update_market_data, "load_universe_from_json", lambda _: {"hsx": ["VCB"]})
+    monkeypatch.setattr(update_market_data, "_create_vnstock_client", lambda: object())
+    monkeypatch.setattr(
+        update_market_data,
+        "fetch_symbols",
+        lambda *_args, **_kwargs: (
+            pd.DataFrame(columns=update_market_data.CANONICAL_COLUMNS),
+            {"rows": 0, "fetched": 0, "empty": 0, "errors": 1,
+             "errors_list": [{"symbol": "VCB", "error": "transport failed", "transport": True}],
+             "empty_tickers": []},
+        ),
+    )
+
+    result = update_market_data.run_updater(
+        canonical_path=tmp_path / "canonical.parquet",
+        start_date="2026-01-01",
+        end_date="2026-01-02",
+    )
+
+    assert result["status"] == "transport_failed"
+    assert result["transport_failure_symbols"] == ["VCB"]
+
+
+def test_updater_cli_returns_nonzero_for_transport_failure(monkeypatch):
+    """F-001: CLI must fail closed when the updater reports transport exhaustion."""
+    monkeypatch.setattr(
+        update_market_data,
+        "run_updater",
+        lambda **_kwargs: {"status": "transport_failed"},
+    )
+
+    assert update_market_data.main(["--dry-run"]) == 1
+
+
+def test_fetch_symbols_timeout_fails_closed_through_updater_and_cli(monkeypatch, tmp_path):
+    """F-001: A real fetch timeout must retain transport type through the CLI exit."""
+    class TimeoutClient:
+        source = "VCI"
+        direct_vci = False
+
+        def fetch_history(self, **_kwargs):
+            raise TimeoutError("VCI request timed out")
+
+    client = TimeoutClient()
+    monkeypatch.setattr(update_market_data, "load_universe_from_json", lambda _: {"hsx": ["VCB"]})
+    monkeypatch.setattr(update_market_data, "_create_vnstock_client", lambda: client)
+    monkeypatch.setattr(update_market_data.time, "sleep", lambda _: None)
+
+    _, stats = update_market_data.fetch_symbols(
+        client, ["VCB"], {"VCB": "HOSE"}, "2026-01-01", "2026-01-02"
+    )
+    assert stats["errors_list"][0]["symbol"] == "VCB"
+    assert stats["errors_list"][0]["transport"] is True
+    assert "Required chunk" in stats["errors_list"][0]["error"]
+
+    result = update_market_data.run_updater(
+        canonical_path=tmp_path / "canonical.parquet",
+        start_date="2026-01-01",
+        end_date="2026-01-02",
+    )
+    assert result["status"] == "transport_failed"
+    assert result["transport_failure_symbols"] == ["VCB"]
+    assert update_market_data.main([
+        "--dry-run", "--canonical", str(tmp_path / "canonical.parquet"),
+        "--start", "2026-01-01", "--end", "2026-01-02",
+    ]) == 1
+
+
+def test_vnstock_exception_logs_redact_credentials(monkeypatch, caplog):
+    """F-002: Upstream exception logs never expose URL, API key, or bearer credentials."""
+    from omega.data import vnstock_client
+
+    secret = "https://user:secret_pass@example.com/?api_key=" + "api_secret Authorization Bearer bearer_secret"
+
+    class QuoteStub:
+        def __init__(self, **_kwargs):
+            pass
+
+        def history(self, **_kwargs):
+            raise RuntimeError(secret)
+
+    monkeypatch.setattr(vnstock_client, "Quote", QuoteStub)
+    client = vnstock_client.VnstockClient(
+        source="VCI",
+        direct_vci=True,
+        rate_limiter=RateLimiter(jitter_min_seconds=0, jitter_max_seconds=0),
+    )
+
+    with caplog.at_level("ERROR", logger="omega.data.vnstock_client"):
+        assert client.fetch_history("VCB", "2026-01-01", "2026-01-02").empty
+    assert "secret_pass" not in caplog.text
+    assert "api_secret" not in caplog.text
+    assert "bearer_secret" not in caplog.text
 
 
 # ── F-003: PIT Provenance & Zero-Lookahead Integrity ──────────────────────────
@@ -1213,6 +1337,66 @@ def test_rate_limiter_thread_safety_under_concurrency():
     assert not errors
     assert len(limiter.window) <= 100
     assert limiter.last_request is not None
+
+
+def test_direct_vci_fetches_symbols_in_bounded_parallel_workers():
+    """Direct VCI mode bypasses wrapper pacing without exceeding the worker ceiling."""
+    active = 0
+    peak_active = 0
+    lock = threading.Lock()
+
+    class DirectClient:
+        source = "VCI"
+        direct_vci = True
+
+        def fetch_history(self, *, symbol, **_kwargs):
+            nonlocal active, peak_active
+            with lock:
+                active += 1
+                peak_active = max(peak_active, active)
+            time.sleep(0.02)
+            with lock:
+                active -= 1
+            return pd.DataFrame(
+                {"date": ["2026-01-02"], "open": [50_000.0], "high": [51_000.0],
+                 "low": [49_000.0], "close": [50_500.0], "volume": [100]}
+            )
+
+    symbols = [f"S{i:02d}" for i in range(update_market_data.VCI_FETCH_WORKERS + 3)]
+    frame, stats = update_market_data.fetch_symbols(
+        DirectClient(), symbols, {symbol: "HOSE" for symbol in symbols}, "2026-01-01", "2026-01-02"
+    )
+
+    assert stats["fetched"] == len(symbols)
+    assert len(frame) == len(symbols)
+    assert 1 < peak_active <= update_market_data.VCI_FETCH_WORKERS
+
+
+def test_direct_vci_bypasses_wrapper_rate_limiter(monkeypatch):
+    """Direct VCI requests must not inherit the vnai 60 request/min limiter."""
+    from omega.data import vnstock_client
+
+    calls = []
+
+    class QuoteStub:
+        def __init__(self, **_kwargs):
+            pass
+
+        def history(self, **_kwargs):
+            return pd.DataFrame(
+                {"time": ["2026-01-02"], "open": [50.0], "high": [51.0],
+                 "low": [49.0], "close": [50.5], "volume": [100]}
+            )
+
+    monkeypatch.setattr(vnstock_client, "Quote", QuoteStub)
+    limiter = RateLimiter(sleep_fn=lambda _seconds: calls.append("limited"))
+    client = vnstock_client.VnstockClient(source="VCI", rate_limiter=limiter, direct_vci=True)
+
+    frame = client.fetch_history("VCB", "2026-01-01", "2026-01-02")
+
+    assert not frame.empty
+    assert calls == []
+    assert frame.loc[0, "close"] == 50_500.0
 
 
 # ── F-010: Anti-Drip Contract Binding Verification ────────────────────────────

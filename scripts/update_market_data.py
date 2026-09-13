@@ -82,6 +82,7 @@ import time
 import traceback
 import uuid
 import io
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -142,6 +143,7 @@ EXCHANGE_WHITELIST = {"HOSE", "HNX"}
 MAX_RETRIES = 3
 RATE_LIMIT_SECONDS = 1.0
 BATCH_SIZE = 50
+VCI_FETCH_WORKERS = 8
 
 # ── Price-scale compatibility note ──────────────────────────────────────────
 # The existing canonical data uses price_scale label "VND" while the actual
@@ -301,6 +303,7 @@ def _create_vnstock_client():
         from omega.data.vnstock_client import VnstockClient, RateLimiter
         return VnstockClient(
             source="VCI",
+            direct_vci=True,
             rate_limiter=RateLimiter(max_requests=55, period_seconds=60.0),
         )
     except ImportError:
@@ -649,6 +652,16 @@ def fetch_one_symbol(
     return df[existing].copy()
 
 
+def _is_transport_error(exc: BaseException) -> bool:
+    """Identify transport failures through retry wrappers and exception chaining."""
+    current: Optional[BaseException] = exc
+    while current is not None:
+        if isinstance(current, (TimeoutError, ConnectionError)) or type(current).__name__ == "UpstreamTransportException":
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _vci_available_at(dates: pd.Series) -> pd.Series:
     """Return canonical start-of-next-day dissemination time in Vietnam time."""
     return (pd.to_datetime(dates).dt.normalize() + timedelta(days=1)).dt.tz_localize(VN_TZ)
@@ -710,7 +723,7 @@ def fetch_symbols(
     symbol_filter: Optional[Set[str]] = None,
     symbol_max_dates: Optional[Dict[str, pd.Timestamp]] = None,
 ) -> Tuple[pd.DataFrame, Dict]:
-    """Fetch OHLCV for a list of symbols with retry and rate limiting.
+    """Fetch OHLCV for symbols, parallelizing direct VCI requests only.
 
     Returns:
         (combined_df, stats_dict)
@@ -724,11 +737,11 @@ def fetch_symbols(
     empty_tickers: List[str] = []
     t0 = time.time()
 
-    for i, symbol in enumerate(symbols):
+    def fetch_symbol(symbol: str) -> Tuple[str, pd.DataFrame, Optional[BaseException]]:
         exchange = exchange_map.get(symbol, "UNKNOWN")
         if exchange not in EXCHANGE_WHITELIST:
             logger.debug(f"[{symbol}] Skipping: exchange={exchange} not in whitelist")
-            continue
+            return symbol, pd.DataFrame(), None
 
         symbol_start = start_date
         if symbol_max_dates and symbol in symbol_max_dates:
@@ -737,25 +750,29 @@ def fetch_symbols(
                 overlap_dt = MIN_DATE
             symbol_start = overlap_dt.strftime("%Y-%m-%d")
 
-        retries = 0
-        df = pd.DataFrame()
-        while retries < MAX_RETRIES:
+        for retries in range(MAX_RETRIES):
             try:
-                df = fetch_one_symbol(client, symbol, symbol_start, end_date, exchange)
-                break
+                return symbol, fetch_one_symbol(client, symbol, symbol_start, end_date, exchange), None
             except Exception as e:
-                retries += 1
-                if retries < MAX_RETRIES:
-                    wait = 2 ** retries
+                if retries + 1 < MAX_RETRIES:
+                    wait = 2 ** (retries + 1)
                     logger.warning(
-                        f"[{symbol}] Retry {retries}/{MAX_RETRIES}: {e}, wait {wait}s"
+                        f"[{symbol}] Retry {retries + 1}/{MAX_RETRIES}: {e}, wait {wait}s"
                     )
                     time.sleep(wait)
                 else:
                     logger.error(f"[{symbol}] FAILED after {MAX_RETRIES} retries: {e}")
-                    stats["errors"] += 1
-                    errors.append({"symbol": symbol, "error": str(e)})
+                    return symbol, pd.DataFrame(), e
+        raise AssertionError("unreachable")
 
+    def record_result(index: int, symbol: str, df: pd.DataFrame, error: Optional[BaseException]) -> None:
+        if error is not None:
+            stats["errors"] += 1
+            errors.append({
+                "symbol": symbol,
+                "error": str(error),
+                "transport": _is_transport_error(error),
+            })
         if df.empty:
             stats["empty"] += 1
             empty_tickers.append(symbol)
@@ -778,21 +795,31 @@ def fetch_symbols(
                 stats["empty"] += 1
                 empty_tickers.append(symbol)
 
-        # Progress logging
-        if (i + 1) % 10 == 0 or i == len(symbols) - 1:
+        if (index + 1) % 10 == 0 or index == len(symbols) - 1:
             elapsed = time.time() - t0
-            rate = (i + 1) / elapsed if elapsed > 0 else 0
-            eta = (len(symbols) - i - 1) / rate if rate > 0 else 0
+            rate = (index + 1) / elapsed if elapsed > 0 else 0
+            eta = (len(symbols) - index - 1) / rate if rate > 0 else 0
             logger.info(
-                f"[{i+1}/{len(symbols)}] {symbol}: {len(df)} rows | "
+                f"[{index + 1}/{len(symbols)}] {symbol}: {len(df)} rows | "
                 f"Fetched: {stats['fetched']}, Empty: {stats['empty']}, "
                 f"Errors: {stats['errors']} | Total rows: {stats['rows']} | "
                 f"Rate: {rate:.2f}/s | ETA: {eta:.0f}s"
             )
 
-        # Rate limit between symbols
-        if i < len(symbols) - 1:
-            time.sleep(RATE_LIMIT_SECONDS)
+    direct_vci = getattr(client, "direct_vci", False) and getattr(client, "source", "").upper() == "VCI"
+    if direct_vci:
+        with ThreadPoolExecutor(max_workers=min(VCI_FETCH_WORKERS, max(1, len(symbols)))) as executor:
+            futures = {executor.submit(fetch_symbol, symbol): index for index, symbol in enumerate(symbols)}
+            results = {}
+            for future in as_completed(futures):
+                results[futures[future]] = future.result()
+        for index in range(len(symbols)):
+            record_result(index, *results[index])
+    else:
+        for index, symbol in enumerate(symbols):
+            record_result(index, *fetch_symbol(symbol))
+            if index < len(symbols) - 1:
+                time.sleep(RATE_LIMIT_SECONDS)
 
     if all_frames:
         combined = pd.concat(all_frames, ignore_index=True)
@@ -2617,6 +2644,19 @@ def run_updater(
         f"{fetch_stats['fetched']} symbols "
         f"({fetch_stats['empty']} empty, {fetch_stats['errors']} errors)"
     )
+
+    transport_failures = [
+        failure["symbol"]
+        for failure in fetch_stats.get("errors_list", [])
+        if failure.get("transport")
+    ]
+    if transport_failures:
+        logger.error("BLOCKED: unrecovered upstream transport failures; no write will be performed.")
+        return {
+            "status": "transport_failed",
+            "transport_failure_symbols": sorted(set(transport_failures)),
+            "fetch_stats": fetch_stats,
+        }
 
     unresolved_lifecycle_symbols = (
         fetch_stats.get("empty_tickers", []) +

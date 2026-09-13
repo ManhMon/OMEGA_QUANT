@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import os
 import random
+import re
 import shutil
 import tempfile
 import threading
@@ -59,6 +60,25 @@ logger = logging.getLogger(__name__)
 
 class UpstreamThrottledException(RuntimeError):
     """Raised when VCI rejects requests due to throttling/WAF behavior."""
+
+
+class UpstreamTransportException(RuntimeError):
+    """Raised when the upstream provider cannot be reached."""
+
+
+_CREDENTIAL_PATTERNS = (
+    (re.compile(r"(?i)(https?://)[^/@\s:]+:[^/@\s]+@"), r"\1[REDACTED]@"),
+    (re.compile(r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password)=)[^&\s,]+"), r"\1[REDACTED]"),
+    (re.compile(r"(?i)(\bauthorization\s+(?:bearer\s+)?|\bbearer\s+)[^\s,]+"), r"\1[REDACTED]"),
+)
+
+
+def _redact_exception_text(exc: BaseException) -> str:
+    """Remove credentials from upstream error text before logging."""
+    text = str(exc)
+    for pattern, replacement in _CREDENTIAL_PATTERNS:
+        text = pattern.sub(replacement, text)
+    return text
 
 
 class CircuitState(str, Enum):
@@ -216,10 +236,12 @@ class VnstockClient:
         source: str = "VCI",
         rate_limiter: Optional[RateLimiter] = None,
         breaker: Optional[VciCircuitBreaker] = None,
+        direct_vci: bool = False,
     ) -> None:
         self.source = source
         self.rate_limiter = rate_limiter or RateLimiter()
         self.breaker = breaker
+        self.direct_vci = direct_vci and source.upper() == "VCI"
 
         # Ensure VNSTOCK_API_KEY is set (env var takes precedence)
         api_key = os.getenv("VNSTOCK_API_KEY")
@@ -252,7 +274,8 @@ class VnstockClient:
         """
         if self.breaker:
             self.breaker.before_request()
-        self.rate_limiter.throttle()
+        if not self.direct_vci:
+            self.rate_limiter.throttle()
         try:
             quote = Quote(source=self.source, symbol=symbol)
             df = quote.history(start=start_date, end=end_date, interval=interval)
@@ -260,14 +283,17 @@ class VnstockClient:
                 self.breaker.success()
         except UpstreamThrottledException:
             raise
+        except (TimeoutError, ConnectionError) as exc:
+            logger.error("fetch_history(%s) transport failure: %s", symbol, _redact_exception_text(exc))
+            raise UpstreamTransportException(f"Upstream transport failure for {symbol}") from exc
         except Exception as exc:
             msg = str(exc).lower()
             if any(k in msg for k in ("429", "too many requests", "rate limit", "waf", "blocked", "forbidden", "challenge")):
                 if self.breaker:
                     self.breaker.throttle()
-                logger.error(f"fetch_history({symbol}) throttled/WAF: {exc}")
-                raise UpstreamThrottledException(f"Upstream throttled for {symbol}: {exc}") from exc
-            logger.error(f"fetch_history({symbol}): {exc}")
+                logger.error("fetch_history(%s) throttled/WAF: %s", symbol, _redact_exception_text(exc))
+                raise UpstreamThrottledException(f"Upstream throttled for {symbol}") from exc
+            logger.error("fetch_history(%s): %s", symbol, _redact_exception_text(exc))
             return pd.DataFrame()
 
         if df is None or df.empty:
@@ -307,7 +333,7 @@ class VnstockClient:
             quote = Quote(source=self.source, symbol=symbol)
             df = quote.intraday(symbol=symbol, page_size=page_size)
         except Exception as exc:
-            logger.error(f"fetch_intraday({symbol}): {exc}")
+            logger.error("fetch_intraday(%s): %s", symbol, _redact_exception_text(exc))
             return pd.DataFrame()
 
         if df is None or df.empty:
@@ -341,7 +367,7 @@ class VnstockClient:
                     )
                     return symbols
             except Exception as exc:
-                logger.warning(f"list_symbols({exchange}) source={src} failed: {exc}")
+                logger.warning("list_symbols(%s) source=%s failed: %s", exchange, src, _redact_exception_text(exc))
         logger.error(f"list_symbols({exchange}): all sources exhausted")
         return []
 
@@ -354,7 +380,7 @@ class VnstockClient:
                 if symbols:
                     return symbols
             except Exception as exc:
-                logger.warning(f"all_symbols() source={src} failed: {exc}")
+                logger.warning("all_symbols() source=%s failed: %s", src, _redact_exception_text(exc))
         return []
 
     def industries_icb(self) -> pd.DataFrame:
@@ -366,7 +392,7 @@ class VnstockClient:
                 if df is not None and not df.empty:
                     return df
             except Exception as exc:
-                logger.warning(f"industries_icb() source={src} failed: {exc}")
+                logger.warning("industries_icb() source=%s failed: %s", src, _redact_exception_text(exc))
         return pd.DataFrame()
 
     def symbols_by_industries(self) -> pd.DataFrame:
@@ -378,7 +404,7 @@ class VnstockClient:
                 if df is not None and not df.empty:
                     return df
             except Exception as exc:
-                logger.warning(f"symbols_by_industries() source={src} failed: {exc}")
+                logger.warning("symbols_by_industries() source=%s failed: %s", src, _redact_exception_text(exc))
         return pd.DataFrame()
 
     # ── Trading helpers (foreign / prop flow) ─────────────────────────────
@@ -396,7 +422,7 @@ class VnstockClient:
             df = tr.foreign_trade(start=start_date, end=end_date)
             return df if df is not None else pd.DataFrame()
         except Exception as exc:
-            logger.error(f"fetch_foreign_trade({symbol}): {exc}")
+            logger.error("fetch_foreign_trade(%s): %s", symbol, _redact_exception_text(exc))
             return pd.DataFrame()
 
     def fetch_prop_trade(
@@ -412,7 +438,7 @@ class VnstockClient:
             df = tr.prop_trade(start=start_date, end=end_date)
             return df if df is not None else pd.DataFrame()
         except Exception as exc:
-            logger.error(f"fetch_prop_trade({symbol}): {exc}")
+            logger.error("fetch_prop_trade(%s): %s", symbol, _redact_exception_text(exc))
             return pd.DataFrame()
 
     # ── Market helper ─────────────────────────────────────────────────────
@@ -431,7 +457,7 @@ class VnstockClient:
             mkt = Market()
             df = mkt.equity(ticker).ohlcv(start=start_date, end=end_date)
         except Exception as exc:
-            logger.error(f"fetch_equity_ohlcv({ticker}): {exc}")
+            logger.error("fetch_equity_ohlcv(%s): %s", ticker, _redact_exception_text(exc))
             return pd.DataFrame()
 
         if df is None or df.empty:
@@ -461,7 +487,7 @@ class VnstockClient:
                         return profile
             return pd.DataFrame()
         except Exception as exc:
-            logger.error(f"fetch_company_profile({symbol}): {exc}")
+            logger.error("fetch_company_profile(%s): %s", symbol, _redact_exception_text(exc))
             return pd.DataFrame()
 
     # ── Probe / diagnostics ───────────────────────────────────────────────
