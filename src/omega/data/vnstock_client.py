@@ -22,6 +22,7 @@ Gate: VNSTOCK_LATEST_STANDARDIZATION_20260612
 from __future__ import annotations
 
 import logging
+import json
 import os
 import random
 import re
@@ -31,10 +32,12 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Deque, Dict, List, Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 from filelock import FileLock
@@ -210,6 +213,8 @@ class RateLimiter:
 
 # Source preference for Listing: VCI is the richest; KBS is a lightweight fallback.
 _LISTING_SOURCES = ("VCI", "KBS")
+_VCI_HISTORY_URL = "https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart"
+_VCI_RESPONSE_LIMIT = 16 * 1024 * 1024
 
 
 class VnstockClient:
@@ -250,6 +255,70 @@ class VnstockClient:
 
     # ── Quote helpers ─────────────────────────────────────────────────────
 
+    @staticmethod
+    def _fetch_direct_vci_history(
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        interval: str,
+    ) -> pd.DataFrame:
+        """Fetch VCI OHLCV without invoking vnstock/vnai wrappers."""
+        normalized_symbol = symbol.strip().upper() if isinstance(symbol, str) else ""
+        if not re.fullmatch(r"[A-Z0-9]{1,16}", normalized_symbol):
+            raise ValueError("Invalid VCI symbol")
+        if interval != "1D":
+            raise ValueError(f"Direct VCI supports only 1D interval, got: {interval}")
+
+        start = datetime.strptime(start_date, "%Y-%m-%d")
+        end = datetime.strptime(end_date, "%Y-%m-%d")
+        if start > end:
+            raise ValueError("start_date must not exceed end_date")
+        business_days = len(pd.bdate_range(start=start, end=end)) + 1
+        payload = json.dumps({
+            "timeFrame": "ONE_DAY",
+            "symbols": [normalized_symbol],
+            "to": int((end + timedelta(days=1)).replace(tzinfo=timezone.utc).timestamp()),
+            "countBack": max(1, business_days),
+        }).encode("utf-8")
+        request = Request(
+            _VCI_HISTORY_URL,
+            data=payload,
+            headers={"Content-Type": "application/json", "User-Agent": "OMEGA_QUANT/1.0"},
+            method="POST",
+        )
+        with urlopen(request, timeout=30) as response:
+            raw = response.read(_VCI_RESPONSE_LIMIT + 1)
+        if len(raw) > _VCI_RESPONSE_LIMIT:
+            raise ValueError("VCI response exceeds size limit")
+        decoded = json.loads(raw.decode("utf-8"))
+        if isinstance(decoded, dict):
+            decoded = decoded.get("data")
+        if not isinstance(decoded, list):
+            raise ValueError("Invalid VCI OHLCV response schema")
+        if not decoded:
+            return pd.DataFrame()
+
+        data = decoded[0]
+        required = ("t", "o", "h", "l", "c", "v")
+        if not isinstance(data, dict) or any(not isinstance(data.get(key), list) for key in required):
+            raise ValueError("Invalid VCI OHLCV response schema")
+        lengths = {len(data[key]) for key in required}
+        if len(lengths) != 1:
+            raise ValueError("Inconsistent VCI OHLCV vector lengths")
+
+        frame = pd.DataFrame({
+            "date": pd.to_datetime(data["t"], unit="s", utc=True, errors="coerce").tz_localize(None),
+            "open": pd.to_numeric(data["o"], errors="coerce"),
+            "high": pd.to_numeric(data["h"], errors="coerce"),
+            "low": pd.to_numeric(data["l"], errors="coerce"),
+            "close": pd.to_numeric(data["c"], errors="coerce"),
+            "volume": pd.to_numeric(data["v"], errors="coerce"),
+        })
+        numeric = frame[["open", "high", "low", "close", "volume"]]
+        finite = numeric.replace([float("inf"), float("-inf")], pd.NA).notna().all(axis=1)
+        frame = frame.loc[finite & frame["date"].notna()]
+        return frame.loc[frame["date"].between(start, end)].reset_index(drop=True)
+
     def fetch_history(
         self,
         symbol: str,
@@ -277,15 +346,30 @@ class VnstockClient:
         if not self.direct_vci:
             self.rate_limiter.throttle()
         try:
-            quote = Quote(source=self.source, symbol=symbol)
-            df = quote.history(start=start_date, end=end_date, interval=interval)
+            if self.direct_vci:
+                df = self._fetch_direct_vci_history(symbol, start_date, end_date, interval)
+            else:
+                quote = Quote(source=self.source, symbol=symbol)
+                df = quote.history(start=start_date, end=end_date, interval=interval)
             if self.breaker:
                 self.breaker.success()
         except UpstreamThrottledException:
             raise
-        except (TimeoutError, ConnectionError) as exc:
+        except HTTPError as exc:
+            if exc.code == 429 or exc.code == 403:
+                if self.breaker:
+                    self.breaker.throttle()
+                logger.error("fetch_history(%s) throttled/WAF: HTTP %s", symbol, exc.code)
+                raise UpstreamThrottledException(f"Upstream throttled for {symbol}") from exc
+            logger.error("fetch_history(%s) transport failure: HTTP %s", symbol, exc.code)
+            raise UpstreamTransportException(f"Upstream transport failure for {symbol}") from exc
+        except (TimeoutError, ConnectionError, URLError) as exc:
             logger.error("fetch_history(%s) transport failure: %s", symbol, _redact_exception_text(exc))
             raise UpstreamTransportException(f"Upstream transport failure for {symbol}") from exc
+        except ValueError:
+            if self.direct_vci:
+                raise
+            return pd.DataFrame()
         except Exception as exc:
             msg = str(exc).lower()
             if any(k in msg for k in ("429", "too many requests", "rate limit", "waf", "blocked", "forbidden", "challenge")):

@@ -22,6 +22,7 @@ import sys
 import threading
 import time
 from datetime import datetime, timedelta
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import List, Optional
@@ -388,14 +389,13 @@ def test_vnstock_transport_errors_propagate_as_typed_upstream_errors(monkeypatch
     """F-001: Adapter must not turn unrecovered network failure into empty data."""
     from omega.data import vnstock_client
 
-    class QuoteStub:
-        def __init__(self, **_kwargs):
-            pass
-
-        def history(self, **_kwargs):
-            raise error_type("https://user:secret@example.com/?api_key=secret")
-
-    monkeypatch.setattr(vnstock_client, "Quote", QuoteStub)
+    monkeypatch.setattr(
+        vnstock_client,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            error_type("https://user:secret@example.com/?api_key=secret")
+        ),
+    )
     client = vnstock_client.VnstockClient(
         source="VCI",
         direct_vci=True,
@@ -483,14 +483,11 @@ def test_vnstock_exception_logs_redact_credentials(monkeypatch, caplog):
 
     secret = "https://user:secret_pass@example.com/?api_key=" + "api_secret Authorization Bearer bearer_secret"
 
-    class QuoteStub:
-        def __init__(self, **_kwargs):
-            pass
-
-        def history(self, **_kwargs):
-            raise RuntimeError(secret)
-
-    monkeypatch.setattr(vnstock_client, "Quote", QuoteStub)
+    monkeypatch.setattr(
+        vnstock_client,
+        "urlopen",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError(secret)),
+    )
     client = vnstock_client.VnstockClient(
         source="VCI",
         direct_vci=True,
@@ -1373,30 +1370,123 @@ def test_direct_vci_fetches_symbols_in_bounded_parallel_workers():
 
 
 def test_direct_vci_bypasses_wrapper_rate_limiter(monkeypatch):
-    """Direct VCI requests must not inherit the vnai 60 request/min limiter."""
+    """Direct VCI requests bypass both vnstock/vnai and wrapper pacing."""
     from omega.data import vnstock_client
 
     calls = []
 
-    class QuoteStub:
-        def __init__(self, **_kwargs):
-            pass
+    class Response(BytesIO):
+        def __enter__(self):
+            return self
 
-        def history(self, **_kwargs):
-            return pd.DataFrame(
-                {"time": ["2026-01-02"], "open": [50.0], "high": [51.0],
-                 "low": [49.0], "close": [50.5], "volume": [100]}
-            )
+        def __exit__(self, *_args):
+            self.close()
 
-    monkeypatch.setattr(vnstock_client, "Quote", QuoteStub)
+    payload = [{"symbol": "VCB", "t": [1767312000], "o": [50.0], "h": [51.0],
+                "l": [49.0], "c": [50.5], "v": [100]}]
+    monkeypatch.setattr(vnstock_client, "Quote", lambda **_kwargs: pytest.fail("Quote invoked"))
+    monkeypatch.setattr(
+        vnstock_client,
+        "urlopen",
+        lambda request, timeout: calls.append((request, timeout)) or Response(json.dumps(payload).encode()),
+    )
     limiter = RateLimiter(sleep_fn=lambda _seconds: calls.append("limited"))
     client = vnstock_client.VnstockClient(source="VCI", rate_limiter=limiter, direct_vci=True)
 
     frame = client.fetch_history("VCB", "2026-01-01", "2026-01-02")
 
     assert not frame.empty
-    assert calls == []
+    assert len(calls) == 1
+    request, timeout = calls[0]
+    assert request.full_url == vnstock_client._VCI_HISTORY_URL
+    assert timeout == 30
     assert frame.loc[0, "close"] == 50_500.0
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"unexpected": []},
+        [{"t": [1767312000], "o": [50.0], "h": [], "l": [49.0], "c": [50.5], "v": [100]}],
+    ],
+)
+def test_direct_vci_schema_drift_fails_closed(monkeypatch, payload):
+    """Malformed endpoint payload cannot become partial market data."""
+    from omega.data import vnstock_client
+
+    class Response(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(
+        vnstock_client, "urlopen", lambda *_args, **_kwargs: Response(json.dumps(payload).encode())
+    )
+    client = vnstock_client.VnstockClient(source="VCI", direct_vci=True)
+
+    with pytest.raises(ValueError, match="VCI OHLCV response|VCI OHLCV vector"):
+        client.fetch_history("VCB", "2026-01-01", "2026-01-02")
+
+
+def test_direct_vci_rejects_invalid_inputs_before_network(monkeypatch):
+    """Invalid symbols, intervals, and date ranges never reach VCI."""
+    from omega.data import vnstock_client
+
+    monkeypatch.setattr(vnstock_client, "urlopen", lambda *_args, **_kwargs: pytest.fail("network invoked"))
+    client = vnstock_client.VnstockClient(source="VCI", direct_vci=True)
+
+    for args in (("--help", "2026-01-01", "2026-01-02", "1D"),
+                 ("VCB", "2026-01-02", "2026-01-01", "1D"),
+                 ("VCB", "2026-01-01", "2026-01-02", "BAD")):
+        with pytest.raises(ValueError):
+            client.fetch_history(*args)
+
+
+def test_direct_vci_429_opens_circuit_breaker(monkeypatch):
+    """VCI 429 is typed as throttling and freezes subsequent requests."""
+    from urllib.error import HTTPError
+    from omega.data import vnstock_client
+
+    calls = 0
+
+    def reject(request, timeout):
+        nonlocal calls
+        calls += 1
+        raise HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
+
+    monkeypatch.setattr(vnstock_client, "urlopen", reject)
+    breaker = VciCircuitBreaker(cooldown_seconds=60)
+    client = vnstock_client.VnstockClient(source="VCI", direct_vci=True, breaker=breaker)
+
+    with pytest.raises(UpstreamThrottledException):
+        client.fetch_history("VCB", "2026-01-01", "2026-01-02")
+    with pytest.raises(UpstreamThrottledException, match="circuit breaker open"):
+        client.fetch_history("VCB", "2026-01-01", "2026-01-02")
+    assert calls == 1
+    assert breaker.state == CircuitState.OPEN
+
+
+def test_direct_vci_response_size_is_bounded(monkeypatch):
+    """Oversized VCI responses fail closed before JSON parsing."""
+    from omega.data import vnstock_client
+
+    class Response(BytesIO):
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.close()
+
+    monkeypatch.setattr(vnstock_client, "_VCI_RESPONSE_LIMIT", 16)
+    monkeypatch.setattr(
+        vnstock_client, "urlopen", lambda *_args, **_kwargs: Response(b"[" + b" " * 16 + b"]")
+    )
+    client = vnstock_client.VnstockClient(source="VCI", direct_vci=True)
+
+    with pytest.raises(ValueError, match="response exceeds size limit"):
+        client.fetch_history("VCB", "2026-01-01", "2026-01-02")
 
 
 # ── F-010: Anti-Drip Contract Binding Verification ────────────────────────────
