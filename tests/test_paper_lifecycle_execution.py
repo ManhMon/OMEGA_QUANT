@@ -55,6 +55,23 @@ def _clean_engine(tmp_path: Path):
     reset_paper_engine()
 
 
+@pytest.fixture(autouse=True)
+def _freeze_trading_session(monkeypatch):
+    """Keep order tests inside a known Vietnam trading session."""
+    frozen_now = datetime.datetime(2026, 9, 9, 3, 0, tzinfo=timezone.utc)
+
+    class FrozenDatetime(datetime.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return frozen_now.astimezone(tz) if tz is not None else frozen_now
+
+    import omega.quant.execution.paper_trading as paper_trading
+
+    monkeypatch.setattr(paper_trading, "datetime", FrozenDatetime)
+    test_datetime = datetime
+    monkeypatch.setattr(test_datetime, "datetime", FrozenDatetime)
+
+
 @pytest.fixture
 def client():
     return TestClient(app)
