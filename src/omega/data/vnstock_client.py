@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import json
+import math
 import os
 import random
 import re
@@ -47,6 +48,7 @@ from vnstock.api.quote import Quote  # noqa: F401  (re-export)
 from vnstock.api.listing import Listing  # noqa: F401  (re-export)
 from vnstock.api.trading import Trading  # noqa: F401  (re-export)
 from vnstock.api.company import Company  # noqa: F401  (re-export)
+from vnstock import Fundamental, Reference  # noqa: F401  (re-export)
 from vnstock.ui.market import Market  # noqa: F401  (re-export)
 from vnstock.core.types import TimeFrame  # noqa: F401
 
@@ -74,6 +76,7 @@ _CREDENTIAL_PATTERNS = (
     (re.compile(r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password)=)[^&\s,]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(\bauthorization\s+(?:bearer\s+)?|\bbearer\s+)[^\s,]+"), r"\1[REDACTED]"),
 )
+from omega.data.vci_direct import DirectVCIClient
 
 
 def _redact_exception_text(exc: BaseException) -> str:
@@ -164,6 +167,10 @@ class RateLimiter:
     random_fn: Callable[[float, float], float] = random.uniform
 
     def __post_init__(self) -> None:
+        if not isinstance(self.max_requests, int) or isinstance(self.max_requests, bool) or self.max_requests <= 0:
+            raise ValueError("max_requests must be a positive integer")
+        if not isinstance(self.period_seconds, (int, float)) or isinstance(self.period_seconds, bool) or not math.isfinite(float(self.period_seconds)) or self.period_seconds <= 0:
+            raise ValueError("period_seconds must be positive and finite")
         self.window: Deque[float] = deque()
         self.min_interval: float = self.period_seconds / self.max_requests
         self.last_request: Optional[float] = None
@@ -242,11 +249,15 @@ class VnstockClient:
         rate_limiter: Optional[RateLimiter] = None,
         breaker: Optional[VciCircuitBreaker] = None,
         direct_vci: bool = False,
+        direct_vci_client: Optional[DirectVCIClient] = None,
     ) -> None:
         self.source = source
         self.rate_limiter = rate_limiter or RateLimiter()
         self.breaker = breaker
         self.direct_vci = direct_vci and source.upper() == "VCI"
+        self.direct_vci_client = direct_vci_client or DirectVCIClient(
+            timeout=30, opener=urlopen, max_payload_bytes=_VCI_RESPONSE_LIMIT, max_attempts=1
+        )
 
         # Ensure VNSTOCK_API_KEY is set (env var takes precedence)
         api_key = os.getenv("VNSTOCK_API_KEY")
@@ -255,69 +266,22 @@ class VnstockClient:
 
     # ── Quote helpers ─────────────────────────────────────────────────────
 
-    @staticmethod
     def _fetch_direct_vci_history(
+        self,
         symbol: str,
         start_date: str,
         end_date: str,
         interval: str,
     ) -> pd.DataFrame:
-        """Fetch VCI OHLCV without invoking vnstock/vnai wrappers."""
-        normalized_symbol = symbol.strip().upper() if isinstance(symbol, str) else ""
-        if not re.fullmatch(r"[A-Z0-9]{1,16}", normalized_symbol):
-            raise ValueError("Invalid VCI symbol")
+        """Fetch VCI OHLCV through the shared direct client."""
         if interval != "1D":
             raise ValueError(f"Direct VCI supports only 1D interval, got: {interval}")
-
-        start = datetime.strptime(start_date, "%Y-%m-%d")
-        end = datetime.strptime(end_date, "%Y-%m-%d")
-        if start > end:
-            raise ValueError("start_date must not exceed end_date")
-        business_days = len(pd.bdate_range(start=start, end=end)) + 1
-        payload = json.dumps({
-            "timeFrame": "ONE_DAY",
-            "symbols": [normalized_symbol],
-            "to": int((end + timedelta(days=1)).replace(tzinfo=timezone.utc).timestamp()),
-            "countBack": max(1, business_days),
-        }).encode("utf-8")
-        request = Request(
-            _VCI_HISTORY_URL,
-            data=payload,
-            headers={"Content-Type": "application/json", "User-Agent": "OMEGA_QUANT/1.0"},
-            method="POST",
-        )
-        with urlopen(request, timeout=30) as response:
-            raw = response.read(_VCI_RESPONSE_LIMIT + 1)
-        if len(raw) > _VCI_RESPONSE_LIMIT:
-            raise ValueError("VCI response exceeds size limit")
-        decoded = json.loads(raw.decode("utf-8"))
-        if isinstance(decoded, dict):
-            decoded = decoded.get("data")
-        if not isinstance(decoded, list):
-            raise ValueError("Invalid VCI OHLCV response schema")
-        if not decoded:
-            return pd.DataFrame()
-
-        data = decoded[0]
-        required = ("t", "o", "h", "l", "c", "v")
-        if not isinstance(data, dict) or any(not isinstance(data.get(key), list) for key in required):
-            raise ValueError("Invalid VCI OHLCV response schema")
-        lengths = {len(data[key]) for key in required}
-        if len(lengths) != 1:
-            raise ValueError("Inconsistent VCI OHLCV vector lengths")
-
-        frame = pd.DataFrame({
-            "date": pd.to_datetime(data["t"], unit="s", utc=True, errors="coerce").tz_localize(None),
-            "open": pd.to_numeric(data["o"], errors="coerce"),
-            "high": pd.to_numeric(data["h"], errors="coerce"),
-            "low": pd.to_numeric(data["l"], errors="coerce"),
-            "close": pd.to_numeric(data["c"], errors="coerce"),
-            "volume": pd.to_numeric(data["v"], errors="coerce"),
-        })
-        numeric = frame[["open", "high", "low", "close", "volume"]]
-        finite = numeric.replace([float("inf"), float("-inf")], pd.NA).notna().all(axis=1)
-        frame = frame.loc[finite & frame["date"].notna()]
-        return frame.loc[frame["date"].between(start, end)].reset_index(drop=True)
+        frame = self.direct_vci_client.fetch_history(symbol, start_date, end_date)
+        if frame.empty:
+            return frame
+        return frame.rename(columns={"time": "date"})[
+            ["date", "open", "high", "low", "close", "volume"]
+        ]
 
     def fetch_history(
         self,
@@ -366,6 +330,17 @@ class VnstockClient:
         except (TimeoutError, ConnectionError, URLError) as exc:
             logger.error("fetch_history(%s) transport failure: %s", symbol, _redact_exception_text(exc))
             raise UpstreamTransportException(f"Upstream transport failure for {symbol}") from exc
+        except RuntimeError as exc:
+            cause = exc.__cause__
+            if isinstance(cause, HTTPError) and cause.code in (403, 429):
+                if self.breaker:
+                    self.breaker.throttle()
+                raise UpstreamThrottledException(f"Upstream throttled for {symbol}") from cause
+            if isinstance(cause, (TimeoutError, ConnectionError, URLError)):
+                logger.error("fetch_history(%s) transport failure: %s", symbol, _redact_exception_text(cause))
+                raise UpstreamTransportException(f"Upstream transport failure for {symbol}") from cause
+            logger.error("fetch_history(%s): %s", symbol, _redact_exception_text(exc))
+            return pd.DataFrame()
         except ValueError:
             if self.direct_vci:
                 raise
@@ -634,7 +609,7 @@ def _fsync_directory(path: Path) -> None:
             os.fsync(fd)
         finally:
             os.close(fd)
-    except (AttributeError, OSError):
+    except AttributeError:
         pass
 
 
@@ -709,7 +684,7 @@ def atomic_write_with_backup(
             logger.info(f"Atomic write complete: {target_path} ({len(df)} rows)")
         except Exception as exc:
             # Rollback: if target was lost during replacement but backup exists, restore target
-            if had_existing and backup_path is not None and backup_path.exists() and not target_path.exists():
+            if had_existing and backup_path is not None and backup_path.exists():
                 try:
                     shutil.copy2(str(backup_path), str(target_path))
                     with target_path.open("rb+") as rstream:

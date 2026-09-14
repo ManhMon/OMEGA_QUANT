@@ -2,8 +2,13 @@
 
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
 import sys
+import time
+from typing import Any
+from urllib.error import HTTPError, URLError
 
 import pandas as pd
 import pytest
@@ -21,10 +26,249 @@ from omega.data.vci_direct import (
     unpack_vietcap_columnar,
     validate_price_bounds,
 )
+from omega.data.market_flow import VNMarketFlowDataSource
+from omega.data.vnstock_client import RateLimiter, UpstreamTransportException, VnstockClient, atomic_write_with_backup
+from omega.quant.graph.fetcher import GraphFetcher, slice_vci_statement_envelope
 
 
 def payload():
     return {"t": [1704067200000], "o": [27], "h": [28], "l": [26], "c": [27.5], "v": [100]}
+
+
+def test_direct_client_is_wired_into_data_adapters():
+    direct = DirectVCIClient()
+    assert VnstockClient(direct_vci=True, direct_vci_client=direct).direct_vci_client is direct
+    assert VNMarketFlowDataSource(vci_client=direct).vci_client is direct
+    assert GraphFetcher(vci_client=direct).vci_client is direct
+
+
+def test_market_flow_uses_injected_vci_client():
+    class Client:
+        def foreign_trade(self, **kwargs):
+            return pd.DataFrame([{"trading_date": "2026-01-02"}])
+
+    rows = VNMarketFlowDataSource(vci_client=Client()).fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")
+    assert rows[0]["timestamp"]
+
+
+def test_market_flow_propagates_injected_transport_error():
+    class Client:
+        def foreign_trade(self, **kwargs):
+            raise TimeoutError("VCI timeout")
+
+    with pytest.raises(TimeoutError):
+        VNMarketFlowDataSource(vci_client=Client()).fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")
+
+
+@pytest.mark.parametrize("bad_value", [math.nan, math.inf, -math.inf])
+def test_market_flow_rejects_non_finite_numeric_fields(bad_value):
+    class Client:
+        def foreign_trade(self, **kwargs):
+            return pd.DataFrame([{"trading_date": "2026-01-02", "fr_buy_value_matched": bad_value}])
+
+    with pytest.raises(ValueError, match="finite"):
+        VNMarketFlowDataSource(vci_client=Client()).fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")
+
+
+def test_market_flow_converts_ict_date_to_utc():
+    class Client:
+        def foreign_trade(self, **kwargs):
+            return pd.DataFrame([{"trading_date": "2026-01-02"}])
+
+    row = VNMarketFlowDataSource(vci_client=Client()).fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")[0]
+    assert row["timestamp"] == int(pd.Timestamp("2026-01-01 17:00:00", tz="UTC").timestamp())
+
+
+def test_graph_fetcher_uses_injected_vci_client():
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            if "statistics-financial" in self.url:
+                return {"data": [{"value": 1}]}
+            return {"data": {"years": [2026], "quarters": [1]}}
+
+    class Client:
+        def get(self, *args, **kwargs):
+            response = Response()
+            response.url = args[0]
+            return response
+
+    result = GraphFetcher(vci_client=Client()).vci_financial_raw("HPG")
+    assert set(result) == {"income_statement", "balance_sheet", "cash_flow", "ratios"}
+
+
+def test_graph_fetcher_retry_exhaustion_does_not_make_extra_call(monkeypatch):
+    calls = 0
+
+    def rate_limited():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("HTTP 429 rate limit")
+
+    monkeypatch.setattr("omega.quant.graph.fetcher.time.sleep", lambda _: None)
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        GraphFetcher(max_retry_wall_time=0.001, retry_delay=60.0)._call(rate_limited)
+    assert calls == 2
+
+
+@pytest.mark.parametrize("symbol", [None, "", " ", 123, math.nan, math.inf, "HPG/../x", "HPG?x=1", "HPG#x", "A" * 17])
+def test_graph_fetcher_vci_financial_raw_rejects_invalid_tickers(symbol):
+    calls = 0
+
+    class Client:
+        def get(self, *_args, **_kwargs):
+            nonlocal calls
+            calls += 1
+            raise AssertionError("HTTP dispatch must not occur for invalid ticker")
+
+    with pytest.raises(ValueError, match="Invalid ticker"):
+        GraphFetcher(vci_client=Client()).vci_financial_raw(symbol)
+    assert calls == 0
+
+
+def test_graph_fetcher_vci_financial_raw_normalizes_and_escapes_ticker():
+    urls = []
+
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": [{"value": 1}]} if "statistics-financial" in urls[-1] else {"data": {"years": [2026], "quarters": [1]}}
+
+    class Client:
+        def get(self, url, **_kwargs):
+            urls.append(url)
+            return Response()
+
+    GraphFetcher(vci_client=Client()).vci_financial_raw("  hpg  ")
+    assert all("/HPG/" in url for url in urls)
+    assert all("?" not in url.split("?")[0] for url in urls)
+
+
+def test_graph_fetcher_retry_wall_time_is_bounded_with_injected_clock():
+    now = 0.0
+    sleeps = []
+    calls = 0
+
+    def clock():
+        return now
+
+    def sleep(delay):
+        nonlocal now
+        sleeps.append(delay)
+        now += delay
+
+    def rate_limited():
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("HTTP 429 rate limit")
+
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        GraphFetcher(max_retry_wall_time=120.0, retry_delay=60.0, time_fn=clock, sleep_fn=sleep)._call(rate_limited)
+    assert calls == 3
+    assert sleeps == [60.0, 60.0]
+
+
+def test_graph_fetcher_does_not_retry_non_rate_limit_errors(monkeypatch):
+    calls = 0
+    sleeps = 0
+
+    def failed():
+        nonlocal calls
+        calls += 1
+        raise ValueError("invalid response")
+
+    def sleep(_):
+        nonlocal sleeps
+        sleeps += 1
+
+    monkeypatch.setattr("omega.quant.graph.fetcher.time.sleep", sleep)
+    with pytest.raises(ValueError, match="invalid response"):
+        GraphFetcher()._call(failed)
+    assert calls == 1
+    assert sleeps == 0
+
+
+@pytest.mark.parametrize("error", [KeyboardInterrupt(), SystemExit()])
+def test_graph_fetcher_propagates_base_exception(error):
+    calls = 0
+
+    def halted():
+        nonlocal calls
+        calls += 1
+        raise error
+
+    with pytest.raises(type(error)):
+        GraphFetcher()._call(halted)
+    assert calls == 1
+
+
+def test_direct_client_rejects_invalid_dates_before_http_dispatch():
+    calls = 0
+
+    def opener(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        raise AssertionError("HTTP must not be called")
+
+    client = DirectVCIClient(opener=opener)
+    for start, end in [(None, "2026-01-02"), ("", "2026-01-02"), ("2026-02-01", "2026-1-1"), ("bad-date", "2026-01-02"), ("NaN", "2026-01-02")]:
+        with pytest.raises(ValueError, match="date range"):
+            client.fetch_history("HPG", start, end)
+    assert calls == 0
+
+
+def test_direct_client_normalizes_date_bounds_in_request():
+    request_data = None
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def read(self, *_args):
+            return json.dumps({"data": payload()}).encode()
+
+    def opener(request, **_kwargs):
+        nonlocal request_data
+        request_data = json.loads(request.data)
+        return Response()
+
+    client = DirectVCIClient(opener=opener)
+    with pytest.raises(ValueError, match="trading-session"):
+        client.fetch_history("HPG", "2026-01-01T07:00:00+07:00", "2026-01-02T07:00:00+07:00")
+    assert request_data["from"] == "2026-01-01T00:00:00+00:00"
+    assert request_data["to"] == "2026-01-02T00:00:00+00:00"
+
+
+def test_vnstock_direct_transport_error_is_typed(monkeypatch):
+    from omega.data import vnstock_client
+
+    monkeypatch.setattr(vnstock_client, "urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(TimeoutError("timeout")))
+    client = VnstockClient(direct_vci=True)
+    with pytest.raises(UpstreamTransportException):
+        client.fetch_history("VCB", "2026-01-01", "2026-01-02")
+
+
+def test_ingest_cli_bootstraps_src_path_from_external_cwd(tmp_path):
+    script = REPO_ROOT / "scripts" / "ingest_all_market_data.py"
+    env = dict(os.environ)
+    env.pop("PYTHONPATH", None)
+    result = subprocess.run(
+        [sys.executable, str(script), "--help"],
+        cwd=REPO_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "usage:" in result.stdout
 
 
 def test_unpack_normalizes_vnd_full_and_preserves_contract():
@@ -51,6 +295,63 @@ def test_client_rejects_credentialed_endpoint_and_invalid_timeout():
         DirectVCIClient("https://user:secret@example.test")
     with pytest.raises(ValueError):
         DirectVCIClient(timeout=0)
+
+
+@pytest.mark.parametrize("endpoint", [None, 123, ""])
+def test_direct_client_rejects_invalid_endpoint_types(endpoint):
+    with pytest.raises(ValueError):
+        DirectVCIClient(endpoint=endpoint)
+
+
+@pytest.mark.parametrize("timeout", [None, "15", math.nan, math.inf])
+def test_direct_client_rejects_invalid_timeout_types(timeout):
+    with pytest.raises(ValueError):
+        DirectVCIClient(timeout=timeout)
+
+
+def test_unpack_normalizes_integer_valued_kvnd_prices():
+    integer_payload = {"t": [1704067200000], "o": [27], "h": [28], "l": [26], "c": [27], "v": [100]}
+    assert unpack_vietcap_columnar("HPG", integer_payload).raw_close.iloc[0] == 27000
+
+
+@pytest.mark.parametrize("max_requests,period_seconds", [(0, 60), (-1, 60), (60, 0), (60, math.nan), (60, math.inf), ("60", 60)])
+def test_rate_limiter_rejects_invalid_settings(max_requests, period_seconds):
+    with pytest.raises(ValueError):
+        RateLimiter(max_requests=max_requests, period_seconds=period_seconds)
+
+
+def test_vnstock_client_atomic_write_restores_backup_on_dir_fsync_failure(tmp_path, monkeypatch):
+    import omega.data.vnstock_client as vsc
+    target = tmp_path / "market.parquet"
+    atomic_write_with_backup(pd.DataFrame({"value": [1]}), target)
+    monkeypatch.setattr(vsc.os, "open", lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("directory fsync failure")))
+    with pytest.raises(OSError, match="directory fsync failure"):
+        atomic_write_with_backup(pd.DataFrame({"value": [2]}), target)
+    assert pd.read_parquet(target)["value"].tolist() == [1]
+
+
+@pytest.mark.parametrize("start,end", [("2026-01-02", "2026-01-01"), (None, "2026-01-01"), ("bad", "2026-01-01")])
+def test_market_flow_rejects_invalid_date_range_before_dispatch(start, end):
+    class Client:
+        def foreign_trade(self, **kwargs):
+            raise AssertionError("provider dispatch must not occur")
+    with pytest.raises(ValueError, match="date range"):
+        VNMarketFlowDataSource(vci_client=Client()).fetch_foreign_flow("HPG", start, end)
+
+
+def test_archive_fallback_validates_ticker_and_bounds(tmp_path):
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    pd.DataFrame({"time": pd.to_datetime(["2026-01-01", "2026-02-01"], utc=True), "ticker": ["VIC", "VIC"], "close": [1, 2]}).to_parquet(archive_dir / "HPG.parquet", index=False)
+    with pytest.raises(ValueError, match="ticker mismatch"):
+        iam._validated_archive_frame(pd.read_parquet(archive_dir / "HPG.parquet"), "HPG", "2026-01-01", "2026-01-31")
+
+
+def test_archive_fallback_rejects_stale_rows(tmp_path):
+    archive_dir = tmp_path / "archive"
+    archive_dir.mkdir()
+    pd.DataFrame({"time": pd.to_datetime(["2020-01-01"], utc=True), "ticker": ["HPG"], "close": [27000]}).to_parquet(archive_dir / "HPG.parquet", index=False)
+    assert iam._validated_archive_frame(pd.read_parquet(archive_dir / "HPG.parquet"), "HPG", "2026-01-01", "2026-01-31").empty
 
 
 def test_token_bucket_rejects_non_finite_rate():
@@ -87,6 +388,19 @@ def test_unpack_rejects_nested_timestamp_types():
         bad = {"t": bad_t, "o": [27], "h": [28], "l": [26], "c": [27.5], "v": [100]}
         with pytest.raises(ValueError):
             unpack_vietcap_columnar("HPG", bad)
+
+
+def test_unpack_rejects_mixed_unit_duplicate_timestamps():
+    bad = {"t": [1704067200, 1704067200000], "o": [27, 27], "h": [28, 28], "l": [26, 26], "c": [27.5, 27.5], "v": [100, 100]}
+    with pytest.raises(ValueError, match="Duplicate timestamps"):
+        unpack_vietcap_columnar("HPG", bad)
+
+
+def test_unpack_rejects_non_integral_timestamps():
+    bad = payload()
+    bad["t"] = [1704067200.5]
+    with pytest.raises(ValueError, match="timestamps"):
+        unpack_vietcap_columnar("HPG", bad)
 
 
 def test_redact_sanitizes_url_userinfo():
@@ -177,7 +491,7 @@ def test_production_atomic_write_post_replace_failure_reports_rollback(tmp_path)
     assert target.read_bytes() == original
 
 
-def test_production_fetch_history_http_error_falls_back_to_tcbs(monkeypatch):
+def test_production_fetch_history_propagates_provider_transport_error(monkeypatch):
     class FailedVCI:
         def __init__(self, **kwargs):
             pass
@@ -193,12 +507,71 @@ def test_production_fetch_history_http_error_falls_back_to_tcbs(monkeypatch):
             return None
 
         def read(self):
-            return json.dumps({"data": [{"time": 1, "open": 27, "high": 28, "low": 26, "close": 27, "volume": 100}]}).encode()
+            return json.dumps({"data": [
+                {"time": "2026-01-01", "open": 27, "high": 28, "low": 26, "close": 27, "volume": 100},
+            ]}).encode()
+
+    monkeypatch.setattr(iam, "DirectVCIClient", FailedVCI)
+    with pytest.raises(OSError, match="VCI unavailable"):
+        iam.fetch_history("hpg", "2026-01-01", "2026-01-02")
+
+
+def test_production_fetch_history_does_not_fallback_on_provider_transport_error(monkeypatch):
+    class FailedVCI:
+        def __init__(self, **kwargs):
+            pass
+
+        def fetch_history(self, *args):
+            raise OSError("VCI unavailable")
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return json.dumps({"data": [
+                {"time": "2025-12-31", "close": 26},
+                {"time": "2026-01-01", "close": 27},
+                {"time": "2026-01-02", "close": 28},
+                {"time": "2026-01-03", "close": 29},
+            ]}).encode()
+
+    monkeypatch.setattr(iam, "DirectVCIClient", FailedVCI)
+    with pytest.raises(OSError, match="VCI unavailable"):
+        iam.fetch_history("HPG", "2026-01-01", "2026-01-02")
+
+
+def test_production_tcbs_fallback_rejects_unparseable_dates(monkeypatch):
+    class FailedVCI:
+        def __init__(self, **kwargs):
+            pass
+
+        def fetch_history(self, *args):
+            return pd.DataFrame()
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def read(self):
+            return b'{"data": [{"time": "not-a-date", "close": 27}]}'
 
     monkeypatch.setattr(iam, "DirectVCIClient", FailedVCI)
     monkeypatch.setattr(iam, "urlopen", lambda request, timeout: Response())
-    frame = iam.fetch_history("hpg", "2026-01-01", "2026-01-02")
-    assert frame.loc[0, "ticker"] == "HPG"
+    with pytest.raises(ValueError, match="unparseable dates"):
+        iam.fetch_history("HPG", "2026-01-01", "2026-01-02")
+
+
+@pytest.mark.parametrize("start,end", [(None, "2026-01-02"), ("bad-date", "2026-01-02"), ("2026-01-03", "2026-01-02")])
+def test_production_fetch_history_rejects_invalid_date_bounds(start, end):
+    with pytest.raises(ValueError, match="date range|date"):
+        iam.fetch_history("HPG", start, end)
 
 
 def test_production_ingest_empty_remote_preserves_cache(tmp_path, monkeypatch):
@@ -229,6 +602,18 @@ def test_production_ingest_empty_remote_preserves_cache(tmp_path, monkeypatch):
     with pytest.raises(ValueError, match="delisted=True"):
         iam.ingest_symbol("FLC", "2026-01-01", "2026-01-02", target, registry=registry, archive_dir=tmp_path / "archive")
     assert target.read_bytes() == original
+
+
+def test_ingest_symbol_propagates_provider_transport_error_without_archive(tmp_path, monkeypatch):
+    target = tmp_path / "HPG.parquet"
+    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionError("provider down")))
+    with pytest.raises(ConnectionError, match="provider down"):
+        iam.ingest_symbol("HPG", "2026-01-01", "2026-01-02", target, archive_dir=tmp_path)
+
+
+def test_ingest_fetch_history_rejects_malformed_symbol_without_tcbs_fallback():
+    with pytest.raises(ValueError, match="Invalid ticker"):
+        iam.fetch_history("HPG/../x", "2026-01-01", "2026-01-02")
 
 
 def test_production_ingest_uses_delisted_archive_when_provider_empty(tmp_path, monkeypatch):
@@ -274,5 +659,246 @@ def test_production_main_routes_through_ingest_symbol(monkeypatch, tmp_path):
         "ingest_all_market_data.py", "HPG", "2026-01-01", "2026-01-02",
         "--output", str(target), "--registry", str(registry), "--archive-dir", str(archive_dir),
     ])
+    monkeypatch.setattr(iam, "fetch_history", lambda *args, **kwargs: pd.DataFrame())
     assert iam.main() == 0
     pd.testing.assert_frame_equal(pd.read_parquet(target), archived)
+
+
+class _FakeTransportResponse:
+    def __init__(self, raw: bytes, status: int = 200):
+        self._raw = raw
+        self.status = status
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        pass
+
+    def read(self, *args):
+        return self._raw
+
+
+def test_graph_fetcher_vci_financial_raw_exercises_genuine_direct_vci_client_get():
+    recorded_urls = []
+    recorded_timeouts = []
+
+    def fake_transport_opener(request, timeout=None):
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        recorded_urls.append(url)
+        recorded_timeouts.append(timeout)
+        assert request.get_method() == "GET"
+        user_agent = request.headers.get("User-agent", request.headers.get("User-Agent", ""))
+        assert "Mozilla" in user_agent or "OMEGA_QUANT" in user_agent
+        if "statistics-financial" in url:
+            data = {"data": [{"ticker": "HPG", "pe": 10.5, "pb": 1.2}]}
+        else:
+            data = {"data": {"years": [2025, 2026], "quarters": [1, 2]}}
+        return _FakeTransportResponse(json.dumps(data).encode(), status=200)
+
+    client = DirectVCIClient(opener=fake_transport_opener)
+    fetcher = GraphFetcher(vci_client=client)
+    res = fetcher.vci_financial_raw("HPG", timeout=22)
+
+    assert set(res.keys()) == {"income_statement", "balance_sheet", "cash_flow", "ratios"}
+    assert res["ratios"]["data"][0]["pe"] == 10.5
+    assert res["income_statement"]["data"]["years"] == [2025, 2026]
+    assert len(recorded_urls) == 4
+    assert all(t == 22 for t in recorded_timeouts)
+    assert all("/HPG/" in u for u in recorded_urls)
+
+
+def test_graph_fetcher_vci_financial_raw_direct_vci_timeout_error():
+    def timing_out_opener(request, timeout=None):
+        raise TimeoutError("connection timed out to Vietcap gateway")
+
+    client = DirectVCIClient(opener=timing_out_opener)
+    fetcher = GraphFetcher(vci_client=client)
+    with pytest.raises(RuntimeError, match="VCI request failed: connection timed out"):
+        fetcher.vci_financial_raw("HPG")
+
+
+def test_graph_fetcher_vci_financial_raw_direct_vci_http_404_error():
+    def not_found_opener(request, timeout=None):
+        raise HTTPError(request.full_url, 404, "Not Found", {}, None)
+
+    client = DirectVCIClient(opener=not_found_opener)
+    fetcher = GraphFetcher(vci_client=client)
+    with pytest.raises(RuntimeError, match="HTTP Error 404"):
+        fetcher.vci_financial_raw("HPG")
+
+
+def test_graph_fetcher_vci_financial_raw_direct_vci_http_429_retry_exhaustion(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    def rate_limited_opener(request, timeout=None):
+        nonlocal calls
+        calls += 1
+        raise HTTPError(request.full_url, 429, "Too Many Requests", {"Retry-After": "0.5"}, None)
+
+    monkeypatch.setattr(time, "sleep", lambda delay: sleeps.append(delay))
+    client = DirectVCIClient(opener=rate_limited_opener, max_attempts=3)
+    fetcher = GraphFetcher(vci_client=client)
+
+    with pytest.raises(RuntimeError, match="429"):
+        fetcher.vci_financial_raw("HPG")
+
+    assert calls == 3
+    assert sleeps == [0.5, 0.5]
+
+
+def test_direct_client_get_retries_normal_429_response(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    def opener(request, timeout=None):
+        nonlocal calls
+        calls += 1
+        return _FakeTransportResponse(b"{}", status=429 if calls == 1 else 200)
+
+    monkeypatch.setattr(time, "sleep", lambda delay: sleeps.append(delay))
+    response = DirectVCIClient(opener=opener).get("https://iq.vietcap.com.vn/api/iq-insight-service/v1/test")
+    assert response.status_code == 200
+    assert calls == 2
+    assert sleeps == [1]
+
+
+@pytest.mark.parametrize("url", [
+    "https://example.com/api/test",
+    "https://iq.vietcap.com.vn/private/test",
+    "https://127.0.0.1/api/test",
+])
+def test_direct_client_get_rejects_unapproved_origins_and_paths(url):
+    with pytest.raises(ValueError, match="approved VCI"):
+        DirectVCIClient().get(url)
+
+
+def test_graph_fetcher_vci_financial_raw_direct_vci_payload_size_limit():
+    def huge_payload_opener(request, timeout=None):
+        return _FakeTransportResponse(b"X" * 1024)
+
+    client = DirectVCIClient(opener=huge_payload_opener, max_payload_bytes=512)
+    fetcher = GraphFetcher(vci_client=client)
+    with pytest.raises(ValueError, match="exceeds size limit"):
+        fetcher.vci_financial_raw("HPG")
+
+
+@pytest.mark.parametrize("bad_envelope,expected_err", [
+    ({"data": {"years": [], "quarters": [1]}}, "VCI_STATEMENT_CONTRACT_VIOLATION"),
+    ({"data": {"years": [2026], "quarters": []}}, "VCI_STATEMENT_CONTRACT_VIOLATION"),
+    ({"data": None}, "VCI_STATEMENT_CONTRACT_VIOLATION"),
+    ({}, "VCI_STATEMENT_CONTRACT_VIOLATION"),
+    ({"data": {"years": [2026], "quarters": [1]}, "error": "upstream fault"}, "VCI_STATEMENT_CONTRACT_VIOLATION"),
+    ({"data": {"years": [2026], "quarters": [1]}, "truncated": True}, "VCI_STATEMENT_CONTRACT_VIOLATION"),
+])
+def test_graph_fetcher_vci_financial_raw_statement_contract_violations(bad_envelope, expected_err):
+    def opener(request, timeout=None):
+        return _FakeTransportResponse(json.dumps(bad_envelope).encode())
+
+    client = DirectVCIClient(opener=opener)
+    fetcher = GraphFetcher(vci_client=client)
+    with pytest.raises(ValueError, match=expected_err):
+        fetcher.vci_financial_raw("HPG")
+
+
+@pytest.mark.parametrize("bad_ratios", [
+    {"data": []},
+    {"data": None},
+    {"data": {}},
+    {},
+])
+def test_graph_fetcher_vci_financial_raw_ratio_contract_violations(bad_ratios):
+    def opener(request, timeout=None):
+        url = request.full_url if hasattr(request, "full_url") else str(request)
+        if "statistics-financial" in url:
+            data = bad_ratios
+        else:
+            data = {"data": {"years": [2026], "quarters": [1]}}
+        return _FakeTransportResponse(json.dumps(data).encode())
+
+    client = DirectVCIClient(opener=opener)
+    fetcher = GraphFetcher(vci_client=client)
+    with pytest.raises(ValueError, match="VCI_RATIO_CONTRACT_VIOLATION"):
+        fetcher.vci_financial_raw("HPG")
+
+
+@pytest.mark.parametrize("bad_endpoint", [
+    None,
+    "",
+    "http://insecure.vietcap.com.vn",
+    "ftp://vietcap.com.vn",
+    "https://user:pass@iq.vietcap.com.vn",
+])
+def test_direct_client_get_rejects_invalid_endpoints(bad_endpoint):
+    client = DirectVCIClient()
+    with pytest.raises((ValueError, TypeError)):
+        client.get(bad_endpoint)
+
+
+@pytest.mark.parametrize("bad_timeout", [
+    math.nan,
+    math.inf,
+    -1.0,
+    0,
+    0.0,
+])
+def test_direct_client_get_and_init_rejects_non_finite_or_non_positive_timeout(bad_timeout):
+    with pytest.raises(ValueError, match="timeout must be positive and finite"):
+        DirectVCIClient(timeout=bad_timeout)
+
+    client = DirectVCIClient()
+    with pytest.raises(ValueError, match="timeout must be positive and finite"):
+        client.get("https://iq.vietcap.com.vn/api/test", timeout=bad_timeout)
+
+
+@pytest.mark.parametrize("bad_rate,bad_cap", [
+    (math.nan, 10.0),
+    (math.inf, 10.0),
+    (-1.0, 10.0),
+    (0.0, 10.0),
+    (10.0, math.nan),
+    (10.0, math.inf),
+    (10.0, -1.0),
+    (10.0, 0.0),
+])
+def test_token_bucket_boundary_rejections(bad_rate, bad_cap):
+    with pytest.raises(ValueError):
+        TokenBucket(rate=bad_rate, capacity=bad_cap)
+
+
+@pytest.mark.parametrize("raw_c,prev_c", [
+    (math.nan, 10000),
+    (math.inf, 10000),
+    (10000, math.nan),
+    (10000, math.inf),
+    (None, 10000),
+    (10000, None),
+])
+def test_validate_price_bounds_rejects_non_finite_or_none(raw_c, prev_c):
+    assert not validate_price_bounds(raw_c, prev_c, "HOSE")
+
+
+@pytest.mark.parametrize("bad_val", [math.nan, math.inf, 0, -1.0])
+def test_graph_fetcher_retry_timing_boundaries_reject_non_finite_or_non_positive(bad_val):
+    with pytest.raises(ValueError, match="max_retry_wall_time must be positive and finite"):
+        GraphFetcher(max_retry_wall_time=bad_val)
+    with pytest.raises(ValueError, match="retry_delay must be positive and finite"):
+        GraphFetcher(retry_delay=bad_val)
+
+
+def test_production_atomic_write_frame_rollback_cleans_temporary_files_on_failure(tmp_path):
+    target = tmp_path / "protected_target.parquet"
+    original_frame = _sample_frame("HPG", n=3)
+    iam.atomic_write_frame(original_frame, target)
+    original_bytes = target.read_bytes()
+
+    corrupt_frame = _sample_frame("HPG", n=2)
+    corrupt_frame.loc[0, "close"] = math.nan
+
+    with pytest.raises(ValueError, match="NaN or Inf"):
+        iam.atomic_write_frame(corrupt_frame, target)
+
+    assert target.read_bytes() == original_bytes
+    tmp_files = list(tmp_path.glob("*.tmp")) + list(tmp_path.glob(".*.tmp"))
+    assert tmp_files == []

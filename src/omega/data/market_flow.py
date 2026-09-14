@@ -3,10 +3,15 @@ VN Market Flow Datasource - Khối ngoại & Tự doanh
 """
 
 import time
-from datetime import datetime
+import math
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
+
+from omega.data.vci_direct import DirectVCIClient
+from omega.data.vnstock_client import Trading
 
 class FlowRateLimiter:
     """Simple rate limiter for vnstock (60 req/min)."""
@@ -32,18 +37,54 @@ class FlowRateLimiter:
 
 
 class VNMarketFlowDataSource:
-    def __init__(self, rate_limiter: Optional[FlowRateLimiter] = None):
+    def __init__(self, rate_limiter: Optional[FlowRateLimiter] = None,
+                 vci_client: Optional[DirectVCIClient] = None):
         self.rate_limiter = rate_limiter
+        self.vci_client = vci_client
         self._cache: Dict[str, Any] = {}
         
         try:
-            from vnstock import Trading
             self.Trading = Trading
         except ImportError:
             self.Trading = None
     
+    def _trading_data(self, symbol: str, method: str, start_date: str, end_date: str) -> Any:
+        if not isinstance(symbol, str) or not symbol.strip():
+            raise ValueError("symbol must be a non-empty string")
+        try:
+            start_bound = pd.Timestamp(start_date)
+            end_bound = pd.Timestamp(end_date)
+        except (TypeError, ValueError, OverflowError) as exc:
+            raise ValueError("Invalid date range") from exc
+        if pd.isna(start_bound) or pd.isna(end_bound) or start_bound > end_bound:
+            raise ValueError("Invalid date range")
+        if self.vci_client is not None:
+            fetch = getattr(self.vci_client, method, None)
+            if fetch is None:
+                raise AttributeError(f"Injected VCI client lacks {method}")
+            return fetch(symbol=symbol, start=start_date, end=end_date)
+        if not self.Trading and self.vci_client is None:
+            return None
+        return getattr(self.Trading(symbol=symbol, source='VCI'), method)(start=start_date, end=end_date)
+
+    @staticmethod
+    def _timestamp(value: Any) -> int:
+        dt = datetime.strptime(value, '%Y-%m-%d') if isinstance(value, str) else value
+        if not isinstance(dt, datetime):
+            raise ValueError("trading_date must be a datetime")
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=ZoneInfo("Asia/Ho_Chi_Minh"))
+        return int(dt.astimezone(timezone.utc).timestamp())
+
+    @staticmethod
+    def _finite(value: Any) -> float:
+        number = float(value)
+        if not math.isfinite(number):
+            raise ValueError("market-flow numeric field must be finite")
+        return number
+
     def fetch_foreign_flow(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
-        if not self.Trading:
+        if not self.Trading and self.vci_client is None:
             return []
             
         cache_key = f"foreign_{symbol}_{start_date}_{end_date}"
@@ -53,44 +94,34 @@ class VNMarketFlowDataSource:
         if self.rate_limiter:
             self.rate_limiter.wait_if_needed()
         
-        try:
-            tr = self.Trading(symbol=symbol, source='VCI')
-            df = tr.foreign_trade(start=start_date, end=end_date)
+        df = self._trading_data(symbol, "foreign_trade", start_date, end_date)
             
-            if df is None or df.empty:
-                return []
-            
-            rows = []
-            for _, row in df.iterrows():
-                trading_date = row.get('trading_date')
-                if isinstance(trading_date, str):
-                    dt = datetime.strptime(trading_date, '%Y-%m-%d')
-                else:
-                    dt = trading_date
-                
-                ts = int(dt.timestamp())
-                
-                rows.append({
-                    'timestamp': ts,
-                    'buy_value': float(row.get('fr_buy_value_matched', 0)),
-                    'sell_value': float(row.get('fr_sell_value_matched', 0)),
-                    'net_value': float(row.get('fr_net_value_total', 0)),
-                    'buy_volume': float(row.get('fr_buy_volume_matched', 0)),
-                    'sell_volume': float(row.get('fr_sell_volume_matched', 0)),
-                    'net_volume': float(row.get('fr_net_volume_total', 0)),
-                    'ownership': float(row.get('fr_ownership', 0)),
-                    'room_total': float(row.get('fr_total_room', 0)),
-                    'room_current': float(row.get('fr_current_room', 0)),
-                })
-            
-            self._cache[cache_key] = rows
-            return rows
-            
-        except Exception:
+        if df is None or df.empty:
             return []
-    
+            
+        rows = []
+        for _, row in df.iterrows():
+            trading_date = row.get('trading_date')
+            ts = self._timestamp(trading_date)
+                
+            rows.append({
+                    'timestamp': ts,
+                    'buy_value': self._finite(row.get('fr_buy_value_matched', 0)),
+                    'sell_value': self._finite(row.get('fr_sell_value_matched', 0)),
+                    'net_value': self._finite(row.get('fr_net_value_total', 0)),
+                    'buy_volume': self._finite(row.get('fr_buy_volume_matched', 0)),
+                    'sell_volume': self._finite(row.get('fr_sell_volume_matched', 0)),
+                    'net_volume': self._finite(row.get('fr_net_volume_total', 0)),
+                    'ownership': self._finite(row.get('fr_ownership', 0)),
+                    'room_total': self._finite(row.get('fr_total_room', 0)),
+                    'room_current': self._finite(row.get('fr_current_room', 0)),
+            })
+            
+        self._cache[cache_key] = rows
+        return rows
+            
     def fetch_prop_flow(self, symbol: str, start_date: str, end_date: str) -> List[Dict]:
-        if not self.Trading:
+        if not self.Trading and self.vci_client is None:
             return []
             
         cache_key = f"prop_{symbol}_{start_date}_{end_date}"
@@ -100,40 +131,30 @@ class VNMarketFlowDataSource:
         if self.rate_limiter:
             self.rate_limiter.wait_if_needed()
         
-        try:
-            tr = self.Trading(symbol=symbol, source='VCI')
-            df = tr.prop_trade(start=start_date, end=end_date)
+        df = self._trading_data(symbol, "prop_trade", start_date, end_date)
             
-            if df is None or df.empty:
-                return []
-            
-            rows = []
-            for _, row in df.iterrows():
-                trading_date = row.get('trading_date')
-                if isinstance(trading_date, str):
-                    dt = datetime.strptime(trading_date, '%Y-%m-%d')
-                else:
-                    dt = trading_date
-                
-                ts = int(dt.timestamp())
-                
-                rows.append({
-                    'timestamp': ts,
-                    'buy_volume': float(row.get('total_buy_trade_volume', 0)),
-                    'sell_volume': float(row.get('total_sell_trade_volume', 0)),
-                    'net_volume': float(row.get('total_trade_net_volume', 0)),
-                    'buy_value': float(row.get('total_buy_trade_value', 0)),
-                    'sell_value': float(row.get('total_sell_trade_value', 0)),
-                    'net_value': float(row.get('total_trade_net_value', 0)),
-                    'pct_buy_volume': float(row.get('percent_buy_trade_volume', 0)),
-                })
-            
-            self._cache[cache_key] = rows
-            return rows
-            
-        except Exception:
+        if df is None or df.empty:
             return []
-    
+            
+        rows = []
+        for _, row in df.iterrows():
+            trading_date = row.get('trading_date')
+            ts = self._timestamp(trading_date)
+                
+            rows.append({
+                    'timestamp': ts,
+                    'buy_volume': self._finite(row.get('total_buy_trade_volume', 0)),
+                    'sell_volume': self._finite(row.get('total_sell_trade_volume', 0)),
+                    'net_volume': self._finite(row.get('total_trade_net_volume', 0)),
+                    'buy_value': self._finite(row.get('total_buy_trade_value', 0)),
+                    'sell_value': self._finite(row.get('total_sell_trade_value', 0)),
+                    'net_value': self._finite(row.get('total_trade_net_value', 0)),
+                    'pct_buy_volume': self._finite(row.get('percent_buy_trade_volume', 0)),
+            })
+            
+        self._cache[cache_key] = rows
+        return rows
+            
     def fetch_batch(self, symbols: List[str], start_date: str, end_date: str,
                     fetch_foreign: bool = True, fetch_prop: bool = True) -> Dict[str, Dict]:
         result = {'foreign': {}, 'prop': {}}
