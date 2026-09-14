@@ -48,6 +48,9 @@ SCHEMA = pa.schema([
     ("item_value", pa.float64()), ("fiscal_period_end", pa.date32()),
     ("source_publish_at", pa.timestamp("ns", tz="UTC")),
     ("available_at", pa.timestamp("ns", tz="UTC")),
+    ("is_audited", pa.bool_()),
+    ("is_restated", pa.bool_()),
+    ("version", pa.int64()),
 ])
 METADATA_COLUMNS = {"symbol", "ticker", "year", "fiscal_year", "quarter", "fiscal_quarter", "date", "period", "fiscal_period_end", "publish_date", "published_at", "source_publish_at"}
 PRIMARY_KEY = ("symbol", "endpoint", "period_type", "fiscal_year", "fiscal_quarter", "item_code")
@@ -157,8 +160,8 @@ def _period_end(row: dict[str, Any], period: str) -> date:
 
 
 def available_at(fiscal_period_end: date, source_publish_at: Any, period: str) -> pd.Timestamp:
-    embargo = 45 if period == "quarter" else 90
-    fallback = pd.Timestamp(fiscal_period_end, tz="UTC") + pd.Timedelta(days=embargo)
+    embargo_days = 45 if period == "quarter" else 90
+    fallback = pd.Timestamp(fiscal_period_end, tz="UTC") + pd.Timedelta(days=embargo_days)
     source = _timestamp(source_publish_at)
     return max(source, fallback) if source is not None else fallback
 
@@ -217,6 +220,7 @@ def normalize_statement(symbol: str, endpoint: str, period: str, raw: Any) -> li
                         "fiscal_period_end": fiscal_end,
                         "source_publish_at": None,
                         "available_at": available_at(fiscal_end, None, period_type),
+                        "is_audited": False, "is_restated": False, "version": 1,
                     })
         return rows
     for source_row in frame.to_dict("records"):
@@ -244,6 +248,9 @@ def normalize_statement(symbol: str, endpoint: str, period: str, raw: Any) -> li
                 "fiscal_period_end": fiscal_end,
                 "source_publish_at": source_publish_at,
                 "available_at": available_at(fiscal_end, source_publish_at, period),
+                "is_audited": bool(source_row.get("is_audited", False)),
+                "is_restated": bool(source_row.get("is_restated", False)),
+                "version": int(source_row.get("version", 1) or 1),
             })
     return rows
 
@@ -272,7 +279,7 @@ def write_parquet(rows: list[dict[str, Any]], target: Path = OUTPUT_PATH) -> Non
     temp = Path(name)
     try:
         with os.fdopen(descriptor, "wb") as handle:
-            pq.write_table(table, handle)
+            pq.write_table(table, handle, row_group_size=50_000)
             handle.flush()
             os.fsync(handle.fileno())
         durable_replace(temp, target)
