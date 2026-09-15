@@ -81,6 +81,8 @@ def test_market_flow_converts_ict_date_to_utc():
 
 def test_graph_fetcher_uses_injected_vci_client():
     class Response:
+        offset = 0
+
         def raise_for_status(self):
             pass
 
@@ -222,28 +224,34 @@ def test_direct_client_rejects_invalid_dates_before_http_dispatch():
 
 
 def test_direct_client_normalizes_date_bounds_in_request():
-    request_data = None
+    requests = []
 
     class Response:
+        offset = 0
+
         def __enter__(self):
             return self
 
         def __exit__(self, *_args):
             return None
 
-        def read(self, *_args):
-            return json.dumps({"data": payload()}).encode()
+        def read(self, amount):
+            raw = json.dumps({"data": payload()}).encode()
+            chunk = raw[self.offset:self.offset + amount]
+            self.offset += len(chunk)
+            return chunk
 
     def opener(request, **_kwargs):
-        nonlocal request_data
-        request_data = json.loads(request.data)
+        requests.append(json.loads(request.data))
         return Response()
 
     client = DirectVCIClient(opener=opener)
     with pytest.raises(ValueError, match="trading-session"):
         client.fetch_history("HPG", "2026-01-01T07:00:00+07:00", "2026-01-02T07:00:00+07:00")
-    assert request_data["from"] == "2026-01-01T00:00:00+00:00"
-    assert request_data["to"] == "2026-01-02T00:00:00+00:00"
+    request_data = requests[-1]
+    assert "from" not in request_data
+    assert request_data["to"] == int(pd.Timestamp("2026-01-02T00:00:00+00:00").timestamp())
+    assert request_data["countBack"] == 2
 
 
 def test_vnstock_direct_transport_error_is_typed(monkeypatch):
@@ -427,14 +435,18 @@ def test_client_enforces_ict_1530_same_day_boundary(monkeypatch):
     body = json.dumps({"data": [{"t": [day_start_ms], "o": [27], "h": [28], "l": [26], "c": [27.5], "v": [100]}]}).encode()
 
     class _MockResponse:
+        offset = 0
+
         def __enter__(self):
             return self
 
         def __exit__(self, *args):
             pass
 
-        def read(self, *args):
-            return body
+        def read(self, amount):
+            chunk = body[self.offset:self.offset + amount]
+            self.offset += len(chunk)
+            return chunk
 
     client = DirectVCIClient(opener=lambda req, timeout: _MockResponse())
     monkeypatch.setattr(pd.Timestamp, "now", classmethod(lambda cls, tz=None: pd.Timestamp("2026-09-14 02:20:00", tz="UTC")))
@@ -667,6 +679,7 @@ def test_production_main_routes_through_ingest_symbol(monkeypatch, tmp_path):
 class _FakeTransportResponse:
     def __init__(self, raw: bytes, status: int = 200):
         self._raw = raw
+        self._offset = 0
         self.status = status
 
     def __enter__(self):
@@ -676,7 +689,12 @@ class _FakeTransportResponse:
         pass
 
     def read(self, *args):
-        return self._raw
+        amount = args[0] if args else -1
+        if amount < 0:
+            amount = len(self._raw) - self._offset
+        chunk = self._raw[self._offset:self._offset + amount]
+        self._offset += len(chunk)
+        return chunk
 
 
 def test_graph_fetcher_vci_financial_raw_exercises_genuine_direct_vci_client_get():
@@ -762,6 +780,36 @@ def test_direct_client_get_retries_normal_429_response(monkeypatch):
     assert response.status_code == 200
     assert calls == 2
     assert sleeps == [1]
+
+
+@pytest.mark.parametrize("status_code", [300, 301, 302, 400, 404, 500, 503])
+def test_direct_client_get_rejects_all_non_success_statuses(status_code):
+    calls = 0
+
+    def opener(request, timeout=None):
+        nonlocal calls
+        calls += 1
+        return _FakeTransportResponse(b"{}", status=status_code)
+
+    with pytest.raises(RuntimeError, match=f"HTTP Error {status_code}"):
+        DirectVCIClient(opener=opener, max_attempts=10).get("https://iq.vietcap.com.vn/api/test")
+    assert calls == 1
+
+
+def test_direct_client_get_bounds_normal_429_retry(monkeypatch):
+    calls = 0
+    sleeps = []
+
+    def opener(request, timeout=None):
+        nonlocal calls
+        calls += 1
+        return _FakeTransportResponse(b"{}", status=429)
+
+    monkeypatch.setattr(time, "sleep", lambda delay: sleeps.append(delay))
+    with pytest.raises(RuntimeError, match="HTTP 429"):
+        DirectVCIClient(opener=opener, max_attempts=3).get("https://iq.vietcap.com.vn/api/test")
+    assert calls == 3
+    assert sleeps == [1, 2]
 
 
 @pytest.mark.parametrize("url", [
@@ -852,6 +900,100 @@ def test_direct_client_get_and_init_rejects_non_finite_or_non_positive_timeout(b
         client.get("https://iq.vietcap.com.vn/api/test", timeout=bad_timeout)
 
 
+def test_direct_client_init_rejects_unapproved_post_endpoint():
+    for bad_endpoint in (
+        "https://evil.example/api/chart/OHLCChart/gap-chart",
+        "https://trading.vietcap.com.vn/private/chart",
+        "http://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart",
+    ):
+        with pytest.raises(ValueError):
+            DirectVCIClient(endpoint=bad_endpoint)
+
+
+def test_direct_client_get_rejects_bool_timeout():
+    for bad_timeout in (True, False):
+        with pytest.raises(ValueError, match="timeout must be positive and finite"):
+            DirectVCIClient().get("https://iq.vietcap.com.vn/api/test", timeout=bad_timeout)
+
+
+def test_unpack_vietcap_columnar_rejects_bool_scalars():
+    for key in ("t", "o", "h", "l", "c", "v"):
+        bad = payload()
+        bad[key] = [True]
+        with pytest.raises(ValueError):
+            unpack_vietcap_columnar("HPG", bad)
+    with pytest.raises(ValueError):
+        unpack_vietcap_columnar("HPG", payload(), adj_ratio=True)
+
+
+def test_f001_oversized_integer_scalars_fail_closed():
+    for key in ("t", "o", "h", "l", "c", "v"):
+        bad = payload()
+        bad[key] = [10**400]
+        with pytest.raises(ValueError):
+            unpack_vietcap_columnar("HPG", bad)
+
+
+def test_f001_oversized_price_bound_scalars_fail_closed():
+    assert not validate_price_bounds(10**400, 10_000, "HOSE")
+    assert not validate_price_bounds(10_000, 10**400, "HOSE")
+
+
+def test_f002_url_validation_rejects_traversal_query_and_fragment():
+    for url in (
+        "https://trading.vietcap.com.vn/api/../private",
+        "https://trading.vietcap.com.vn/api/%2e%2e/private",
+        "https://trading.vietcap.com.vn/api/%252e%252e/private",
+        "https://iq.vietcap.com.vn/v1/test?smuggled=1",
+        "https://iq.vietcap.com.vn/v1/test#fragment",
+    ):
+        with pytest.raises(ValueError, match="approved VCI"):
+            DirectVCIClient().get(url)
+
+
+@pytest.mark.parametrize("bad_ratio", [None, "1", 0.0, -1.0, math.nan, math.inf, 1000.0001])
+def test_unpack_rejects_invalid_or_unbounded_adjustment_ratio(bad_ratio):
+    with pytest.raises((ValueError, TypeError), match="adjustment ratio|float"):
+        unpack_vietcap_columnar("HPG", payload(), adj_ratio=bad_ratio)
+
+
+@pytest.mark.parametrize("ratio", [0.01, 1000.0])
+def test_unpack_rejects_adjusted_prices_outside_vnd_full_bounds(ratio):
+    with pytest.raises(ValueError, match="VND_FULL bounds"):
+        unpack_vietcap_columnar("HPG", payload(), adj_ratio=ratio)
+
+
+def test_direct_client_enforces_hard_resource_ceilings():
+    with pytest.raises(ValueError):
+        DirectVCIClient(max_payload_bytes=64 * 1024 * 1024 + 1)
+    with pytest.raises(ValueError):
+        DirectVCIClient(max_attempts=11)
+    client = DirectVCIClient(max_payload_bytes=64 * 1024 * 1024, max_attempts=10)
+    assert client.max_payload_bytes == 64 * 1024 * 1024
+    assert client.max_attempts == 10
+
+
+def test_unpack_vietcap_columnar_rejects_unsorted_timestamps():
+    bad = payload()
+    bad.update({key: [value[0], value[0]] for key, value in bad.items()})
+    bad["t"] = [1704067200000, 1703980800000]
+    with pytest.raises(ValueError, match="chronological"):
+        unpack_vietcap_columnar("HPG", bad)
+
+
+def test_direct_client_fetch_history_checks_http_status():
+    def opener(request, timeout=None):
+        return _FakeTransportResponse(b'{"data": {}}', status=500)
+
+    with pytest.raises(RuntimeError, match="HTTP Error 500"):
+        DirectVCIClient(opener=opener, max_attempts=1).fetch_history("HPG", "2026-01-01", "2026-01-02")
+
+
+def test_direct_client_fetch_history_rejects_countback_overflow():
+    with pytest.raises(ValueError, match="countBack"):
+        DirectVCIClient().fetch_history("HPG", "1800-01-01", "2026-01-01")
+
+
 @pytest.mark.parametrize("bad_rate,bad_cap", [
     (math.nan, 10.0),
     (math.inf, 10.0),
@@ -877,6 +1019,86 @@ def test_token_bucket_boundary_rejections(bad_rate, bad_cap):
 ])
 def test_validate_price_bounds_rejects_non_finite_or_none(raw_c, prev_c):
     assert not validate_price_bounds(raw_c, prev_c, "HOSE")
+
+
+@pytest.mark.parametrize("bad_bool", [True, False])
+def test_f001_numeric_limits_reject_booleans(bad_bool):
+    with pytest.raises(ValueError):
+        DirectVCIClient(max_payload_bytes=bad_bool)
+    with pytest.raises(ValueError):
+        DirectVCIClient(max_attempts=bad_bool)
+    with pytest.raises(ValueError):
+        TokenBucket(rate=bad_bool)
+    with pytest.raises(ValueError):
+        TokenBucket(capacity=bad_bool)
+
+
+@pytest.mark.parametrize("raw_c,prev_c,exchange", [(True, 10000, "HOSE"), (10000, True, "HOSE"), (10000, 10000, None), (10000, 10000, 123)])
+def test_f001_validate_price_bounds_rejects_bool_and_invalid_exchange(raw_c, prev_c, exchange):
+    assert not validate_price_bounds(raw_c, prev_c, exchange)
+
+
+@pytest.mark.parametrize("flag_name", ["is_corporate_action_date", "is_first_listing_date"])
+@pytest.mark.parametrize("flag", [0, 1, "true", "false", 1.0, None])
+def test_f001_validate_price_bounds_rejects_non_bool_flags(flag_name, flag):
+    flags = {flag_name: flag}
+    assert not validate_price_bounds(10_000, 10_000, "HOSE", **flags)
+
+
+@pytest.mark.parametrize("exchange", ["", " ", "BOGUS", "NYSE", "NASDAQ", "hose_extra", None, 123])
+def test_f001_validate_price_bounds_rejects_unknown_exchanges(exchange):
+    assert not validate_price_bounds(10_000, 10_000, exchange)
+
+
+def test_f002_url_validation_rejects_oversized_url_before_request():
+    client = DirectVCIClient(opener=lambda *_args, **_kwargs: pytest.fail("HTTP dispatch must not occur"))
+    oversized_url = "https://iq.vietcap.com.vn/api/" + ("a" * 2020)
+    with pytest.raises(ValueError, match="approved VCI"):
+        client.get(oversized_url)
+
+
+def test_f002_url_validation_rejects_oversized_query_before_parse():
+    client = DirectVCIClient(opener=lambda *_args, **_kwargs: pytest.fail("HTTP dispatch must not occur"))
+    oversized_query = "https://iq.vietcap.com.vn/api/test?" + ("a" * 1025)
+    with pytest.raises(ValueError, match="approved VCI"):
+        client.get(oversized_query)
+
+
+def test_f002_fetch_history_returns_explicit_pit_fields():
+    bar_ms = 1704153600000
+    raw = json.dumps({"data": [{"t": [bar_ms], "o": [27], "h": [28], "l": [26], "c": [27.5], "v": [100]}]}).encode()
+    client = DirectVCIClient(opener=lambda request, timeout=None: _FakeTransportResponse(raw))
+    frame = client.fetch_history("HPG", "2024-01-01", "2024-01-05", as_of="2024-01-03T15:30:00Z")
+    assert {"as_of", "available_at"}.issubset(frame.columns)
+    assert (frame["as_of"] <= frame["available_at"]).all()
+    assert (frame["available_at"] <= pd.Timestamp("2024-01-03T15:30:00Z")).all()
+
+
+@pytest.mark.parametrize("cli_args", [["--unknown-flag"], ["--malicious=true"], ["-x"], ["--output", "target.parquet", "--bogus"]])
+def test_f003_ingest_cli_rejects_unknown_and_flag_smuggling(cli_args):
+    script = REPO_ROOT / "scripts" / "ingest_all_market_data.py"
+    result = subprocess.run([sys.executable, str(script), "HPG", "2026-01-01", "2026-01-02", *cli_args], cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+    assert result.returncode != 0
+    assert "unrecognized arguments" in result.stderr
+
+
+def test_f004_capped_reader_reads_chunks_and_rejects_oversized_stream():
+    class Stream(_FakeTransportResponse):
+        def __init__(self):
+            super().__init__(b"", 200)
+            self.calls = []
+            self.remaining = 3
+
+        def read(self, amount):
+            self.calls.append(amount)
+            self.remaining -= 1
+            return b"x" * 1024 if self.remaining >= 0 else b""
+
+    stream = Stream()
+    client = DirectVCIClient(opener=lambda request, timeout=None: stream, max_payload_bytes=2048)
+    with pytest.raises(ValueError, match="exceeds size limit"):
+        client.get("https://iq.vietcap.com.vn/api/test")
+    assert stream.calls == [2048, 1024]
 
 
 @pytest.mark.parametrize("bad_val", [math.nan, math.inf, 0, -1.0])

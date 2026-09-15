@@ -7,7 +7,7 @@ import json
 import math
 import re
 import time
-from urllib.parse import urlsplit
+from urllib.parse import parse_qsl, unquote, urlsplit
 from dataclasses import dataclass
 from typing import Any, Callable, Mapping
 from urllib.error import HTTPError, URLError
@@ -21,10 +21,59 @@ _SYMBOL = re.compile(r"^[A-Z0-9]{1,16}$")
 _REDACTION = re.compile(r"(?i)(https?://)([^/@\s:]+):([^/@\s]+)@|((?:authorization\s*[:=]\s*)?(?:bearer|basic)\s+|api[_-]?key[=:]\s*|token[=:]\s*|password[=:]\s*)[^\s,;&]+")
 OHLCV_COLUMNS = ("time", "ticker", "raw_open", "raw_high", "raw_low", "raw_close", "adj_ratio", "open", "high", "low", "close", "volume", "value")
 MAX_PAYLOAD_BYTES = 16 * 1024 * 1024
+MAX_PAYLOAD_BYTES_HARD_LIMIT = 64 * 1024 * 1024
+MAX_ATTEMPTS_HARD_LIMIT = 10
 MAX_ROWS = 50_000
 MAX_INT64 = 2**63 - 1
+_READ_CHUNK_BYTES = 64 * 1024
 _ALLOWED_GET_HOSTS = {"trading.vietcap.com.vn", "iq.vietcap.com.vn"}
 _ALLOWED_GET_PREFIXES = ("/api/", "/v1/")
+MAX_VCI_URL_LENGTH = 2048
+MAX_VCI_QUERY_LENGTH = 1024
+
+
+def _is_finite_number(value: Any) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
+
+
+def _canonical_vci_path(path: str) -> str | None:
+    decoded = path
+    for _ in range(3):
+        next_path = unquote(decoded)
+        if next_path == decoded:
+            break
+        decoded = next_path
+    if any(part in {"..", "."} for part in decoded.replace("\\", "/").split("/")):
+        return None
+    canonical = "/" + "/".join(part for part in decoded.split("/") if part)
+    return canonical if any(canonical.startswith(prefix) for prefix in _ALLOWED_GET_PREFIXES) else None
+
+
+def _is_allowed_vci_url(url: str) -> bool:
+    if not isinstance(url, str) or len(url) > MAX_VCI_URL_LENGTH:
+        return False
+    raw_query = url.split("?", 1)[1].split("#", 1)[0] if "?" in url else ""
+    if len(raw_query) > MAX_VCI_QUERY_LENGTH:
+        return False
+    parsed = urlsplit(url)
+    canonical_path = _canonical_vci_path(parsed.path) if parsed is not None else None
+    query = parse_qsl(parsed.query, keep_blank_values=True) if parsed is not None else []
+    allowed_query = bool(parsed is not None and (not parsed.query or (query and len(query) == 1 and query[0][0] == "section" and query[0][1] in {"INCOME_STATEMENT", "BALANCE_SHEET", "CASH_FLOW"})))
+    return bool(
+        parsed is not None
+        and parsed.scheme == "https"
+        and parsed.hostname in _ALLOWED_GET_HOSTS
+        and parsed.username is None
+        and parsed.password is None
+        and allowed_query
+        and parsed.fragment == ""
+        and canonical_path == parsed.path
+    )
 
 
 class _VCIResponse:
@@ -46,12 +95,19 @@ def redact(text: str) -> str:
 
 
 def validate_price_bounds(raw_close: int, prev_close: int, exchange: str, *, is_corporate_action_date: bool = False, is_first_listing_date: bool = False) -> bool:
-    if not all(isinstance(v, (int, float)) and math.isfinite(float(v)) for v in (raw_close, prev_close)):
+    if not isinstance(exchange, str) or not exchange.strip():
+        return False
+    if not isinstance(is_corporate_action_date, bool) or not isinstance(is_first_listing_date, bool):
+        return False
+    if not all(_is_finite_number(v) for v in (raw_close, prev_close)):
+        return False
+    normalized_exchange = exchange.upper()
+    if normalized_exchange not in {"HOSE", "HNX", "UPCOM"}:
         return False
     if prev_close <= 0 or is_corporate_action_date:
         return True
     limits = {"HOSE": 0.205 if is_first_listing_date else 0.075, "HNX": 0.305 if is_first_listing_date else 0.105, "UPCOM": 0.405 if is_first_listing_date else 0.155}
-    return abs(raw_close - prev_close) / prev_close <= limits.get(exchange.upper(), 0.155)
+    return abs(raw_close - prev_close) / prev_close <= limits[normalized_exchange]
 
 
 def unpack_vietcap_columnar(ticker: str, payload: Mapping[str, Any], adj_ratio: float = 1.0) -> pd.DataFrame:
@@ -70,13 +126,21 @@ def unpack_vietcap_columnar(ticker: str, payload: Mapping[str, Any], adj_ratio: 
         raise ValueError("VCI payload contains no records")
     if row_count > MAX_ROWS:
         raise ValueError("VCI payload exceeds 50,000 row limit")
-    if not all(isinstance(value, (int, float)) and math.isfinite(float(value)) and float(value).is_integer() for value in payload["t"]):
+    if not all(_is_finite_number(value) and float(value).is_integer() for value in payload["t"]):
         raise ValueError("VCI timestamps must be finite scalar numbers")
     timestamps = [int(value) * 1000 if value < 10**12 else int(value) for value in payload["t"]]
     if len(timestamps) != len(set(timestamps)):
         raise ValueError("Duplicate timestamps in VCI payload")
-    if not math.isfinite(float(adj_ratio)) or adj_ratio <= 0:
+    if any(previous >= current for previous, current in zip(timestamps, timestamps[1:])):
+        raise ValueError("VCI timestamps must be strictly chronological")
+    if not _is_finite_number(adj_ratio) or not 0.0 < adj_ratio <= 1000.0:
         raise ValueError("Invalid VCI adjustment ratio")
+    if not all(
+        _is_finite_number(value)
+        for key in ("o", "h", "l", "c", "v")
+        for value in payload[key]
+    ):
+        raise ValueError("VCI payload contains invalid numeric scalars")
     frame = pd.DataFrame({"time": pd.to_datetime(timestamps, unit="ms", utc=True, errors="coerce"), "ticker": ticker.strip().upper()})
     for name, source in (("raw_open", "o"), ("raw_high", "h"), ("raw_low", "l"), ("raw_close", "c"), ("volume", "v")):
         frame[name] = pd.to_numeric(payload[source], errors="coerce")
@@ -97,8 +161,9 @@ def unpack_vietcap_columnar(ticker: str, payload: Mapping[str, Any], adj_ratio: 
     frame[["raw_open", "raw_high", "raw_low", "raw_close"]] = price.round().astype("int64")
     for name in ("open", "high", "low", "close"):
         frame[name] = frame["raw_" + name].astype(float) * adj_ratio
-    if not frame[["open", "high", "low", "close"]].map(math.isfinite).all().all():
-        raise ValueError("Adjusted VCI prices are not finite")
+    adjusted_prices = frame[["open", "high", "low", "close"]]
+    if not adjusted_prices.map(math.isfinite).all().all() or (adjusted_prices < 500).any().any() or (adjusted_prices > 10_000_000).any().any():
+        raise ValueError("Adjusted VCI prices are not finite or outside VND_FULL bounds")
     frame["adj_ratio"] = float(adj_ratio)
     frame["volume"] = frame["volume"].round().astype("int64")
     turnover = frame.raw_close.astype("float64") * frame.volume.astype("float64")
@@ -114,10 +179,10 @@ class TokenBucket:
     capacity: float | None = None
 
     def __post_init__(self) -> None:
-        if not math.isfinite(self.rate) or self.rate <= 0:
+        if not _is_finite_number(self.rate) or self.rate <= 0:
             raise ValueError("rate must be positive and finite")
         self.capacity = self.rate if self.capacity is None else self.capacity
-        if not math.isfinite(float(self.capacity)) or self.capacity <= 0:
+        if not _is_finite_number(self.capacity) or self.capacity <= 0:
             raise ValueError("capacity must be positive and finite")
         self.tokens = float(self.capacity)
         self.updated = time.monotonic()
@@ -140,19 +205,39 @@ class DirectVCIClient:
     """Small synchronous VCI client; no vnstock dependency."""
 
     def __init__(self, endpoint: str = "https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart", *, timeout: float = 15.0, opener: Callable[..., Any] | None = None, max_payload_bytes: int = MAX_PAYLOAD_BYTES, max_attempts: int = 3):
-        if not isinstance(endpoint, str) or not endpoint.strip() or not endpoint.startswith("https://") or "@" in endpoint:
+        if not _is_allowed_vci_url(endpoint):
             raise ValueError("endpoint must be HTTPS without credentials")
-        if not isinstance(timeout, (int, float)) or isinstance(timeout, bool) or not math.isfinite(float(timeout)) or timeout <= 0:
+        if not _is_finite_number(timeout) or timeout <= 0:
             raise ValueError("timeout must be positive and finite")
-        if not isinstance(max_payload_bytes, int) or max_payload_bytes <= 0:
+        if not isinstance(max_payload_bytes, int) or isinstance(max_payload_bytes, bool) or not 0 < max_payload_bytes <= MAX_PAYLOAD_BYTES_HARD_LIMIT:
             raise ValueError("max_payload_bytes must be positive")
-        if not isinstance(max_attempts, int) or max_attempts <= 0:
+        if not isinstance(max_attempts, int) or isinstance(max_attempts, bool) or not 0 < max_attempts <= MAX_ATTEMPTS_HARD_LIMIT:
             raise ValueError("max_attempts must be positive")
         self.endpoint, self.timeout = endpoint, timeout
         self.opener = urllib.request.urlopen if opener is None else opener
         self.max_payload_bytes, self.max_attempts = max_payload_bytes, max_attempts
 
-    def fetch_history(self, ticker: str, start: str, end: str) -> pd.DataFrame:
+    def _read_capped(self, response: Any) -> bytes:
+        chunks: list[bytes] = []
+        total = 0
+        while total <= self.max_payload_bytes:
+            requested = min(_READ_CHUNK_BYTES, self.max_payload_bytes - total)
+            if requested == 0:
+                raise ValueError("VCI response exceeds size limit")
+            chunk = response.read(requested)
+            if not isinstance(chunk, (bytes, bytearray)):
+                raise ValueError("VCI response stream returned invalid bytes")
+            if not chunk:
+                return b"".join(chunks)
+            if len(chunk) > requested:
+                raise ValueError("VCI response exceeds size limit")
+            total += len(chunk)
+            if total > self.max_payload_bytes:
+                raise ValueError("VCI response exceeds size limit")
+            chunks.append(bytes(chunk))
+        raise ValueError("VCI response exceeds size limit")
+
+    def fetch_history(self, ticker: str, start: str, end: str, *, as_of: str | pd.Timestamp | None = None) -> pd.DataFrame:
         normalized = ticker.strip().upper() if isinstance(ticker, str) else ""
         if not _SYMBOL.fullmatch(normalized):
             raise ValueError("Invalid ticker or date range")
@@ -173,12 +258,28 @@ class DirectVCIClient:
             raise ValueError("Invalid ticker or date range") from None
         if start_ts > end_ts:
             raise ValueError("Invalid ticker or date range")
-        payload = json.dumps({"timeFrame": "ONE_DAY", "symbols": [normalized], "from": start_ts.isoformat(), "to": end_ts.isoformat()}).encode()
+        if as_of is None:
+            as_of_ts = pd.Timestamp.now(tz="UTC")
+        else:
+            try:
+                as_of_ts = pd.Timestamp(as_of)
+                as_of_ts = as_of_ts.tz_localize("UTC") if as_of_ts.tzinfo is None else as_of_ts.tz_convert("UTC")
+            except (TypeError, ValueError, OverflowError):
+                raise ValueError("Invalid as_of timestamp") from None
+        if pd.isna(as_of_ts):
+            raise ValueError("Invalid as_of timestamp")
+        count_back = (end_ts.normalize() - start_ts.normalize()).days + 1
+        if count_back < 1 or count_back > MAX_ROWS:
+            raise ValueError("date range exceeds safe countBack limit")
+        payload = json.dumps({"timeFrame": "ONE_DAY", "symbols": [normalized], "to": int(end_ts.timestamp()), "countBack": count_back}).encode()
         request = Request(self.endpoint, data=payload, headers={"Content-Type": "application/json", "User-Agent": "OMEGA_QUANT/1.0"}, method="POST")
         for attempt in range(self.max_attempts):
             try:
                 with self.opener(request, timeout=self.timeout) as response:
-                    raw = response.read(self.max_payload_bytes + 1)
+                    raw = self._read_capped(response)
+                    status_code = int(getattr(response, "status", getattr(response, "status_code", 200)))
+                if status_code >= 300:
+                    raise HTTPError(self.endpoint, status_code, f"HTTP Error {status_code}", hdrs=None, fp=None)
                 if len(raw) > self.max_payload_bytes:
                     raise ValueError("VCI response exceeds size limit")
                 decoded = json.loads(raw.decode("utf-8"))
@@ -187,20 +288,25 @@ class DirectVCIClient:
                     data = data[0] if data else {}
                 frame = unpack_vietcap_columnar(normalized, data)
                 end_bound = end_ts + pd.Timedelta(days=1) - pd.Timedelta(nanoseconds=1)
-                now = pd.Timestamp.now(tz="UTC")
+                now = as_of_ts
                 local_now = now.tz_convert(ZoneInfo("Asia/Ho_Chi_Minh"))
                 cutoff = local_now.normalize() + pd.Timedelta(hours=15, minutes=30)
                 available_end = min(end_bound, now)
                 frame = frame.loc[frame["time"].between(start_ts, available_end)]
+                frame["as_of"] = frame["time"]
+                frame["available_at"] = frame["time"].dt.tz_convert(ZoneInfo("Asia/Ho_Chi_Minh")).dt.normalize() + pd.Timedelta(days=1, hours=9)
+                frame = frame.loc[frame["available_at"] <= as_of_ts]
                 if local_now < cutoff:
                     local_dates = frame["time"].dt.tz_convert(ZoneInfo("Asia/Ho_Chi_Minh")).dt.date
                     frame = frame.loc[local_dates != local_now.date()]
                 from omega.data.calendar import VNTradingCalendar
-                if frame.empty or not frame["time"].map(lambda value: VNTradingCalendar.is_trading_day(value.to_pydatetime())).all():
+                if frame.empty or not (frame["as_of"] <= frame["available_at"]).all() or not frame["time"].map(lambda value: VNTradingCalendar.is_trading_day(value.to_pydatetime())).all():
                     raise ValueError("VCI payload has no valid PIT trading-session records")
                 return frame.reset_index(drop=True)
             except HTTPError as exc:
                 if exc.code != 429 or attempt == self.max_attempts - 1:
+                    if exc.code == 429:
+                        raise RuntimeError("VCI request failed: HTTP 429") from exc
                     raise RuntimeError(redact(f"VCI request failed: {exc}")) from exc
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
                 try:
@@ -212,30 +318,26 @@ class DirectVCIClient:
                 raise RuntimeError(redact(f"VCI request failed: {exc}")) from exc
 
     def get(self, url: str, headers: Mapping[str, str] | None = None, timeout: float | None = None) -> _VCIResponse:
-        parsed = urlsplit(url) if isinstance(url, str) else None
-        if (parsed is None or parsed.scheme != "https" or parsed.hostname not in _ALLOWED_GET_HOSTS
-                or parsed.username is not None or parsed.password is not None
-                or not any(parsed.path.startswith(prefix) for prefix in _ALLOWED_GET_PREFIXES)):
+        if not _is_allowed_vci_url(url):
             raise ValueError("endpoint must be an approved VCI HTTPS path")
         effective_timeout = self.timeout if timeout is None else timeout
-        if not isinstance(effective_timeout, (int, float)) or not math.isfinite(effective_timeout) or effective_timeout <= 0:
+        if not _is_finite_number(effective_timeout) or effective_timeout <= 0:
             raise ValueError("timeout must be positive and finite")
         request = Request(url, headers=dict(headers or {}), method="GET")
         for attempt in range(self.max_attempts):
             try:
                 with self.opener(request, timeout=effective_timeout) as response:
-                    raw = response.read(self.max_payload_bytes + 1)
+                    raw = self._read_capped(response)
                     status_code = int(getattr(response, "status", getattr(response, "status_code", 200)))
-                if status_code == 429:
-                    if attempt == self.max_attempts - 1:
-                        raise RuntimeError("VCI request failed: HTTP 429")
-                    time.sleep(2**attempt)
-                    continue
+                if status_code >= 300:
+                    raise HTTPError(url, status_code, f"HTTP Error {status_code}", getattr(response, "headers", None), None)
                 if len(raw) > self.max_payload_bytes:
                     raise ValueError("VCI response exceeds size limit")
                 return _VCIResponse(raw, status_code, url)
             except HTTPError as exc:
                 if exc.code != 429 or attempt == self.max_attempts - 1:
+                    if exc.code == 429:
+                        raise RuntimeError("VCI request failed: HTTP 429") from exc
                     raise RuntimeError(redact(f"VCI request failed: {exc}")) from exc
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
                 try:
