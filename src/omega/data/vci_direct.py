@@ -126,9 +126,25 @@ def unpack_vietcap_columnar(ticker: str, payload: Mapping[str, Any], adj_ratio: 
         raise ValueError("VCI payload contains no records")
     if row_count > MAX_ROWS:
         raise ValueError("VCI payload exceeds 50,000 row limit")
-    if not all(_is_finite_number(value) and float(value).is_integer() for value in payload["t"]):
-        raise ValueError("VCI timestamps must be finite scalar numbers")
-    timestamps = [int(value) * 1000 if value < 10**12 else int(value) for value in payload["t"]]
+    timestamps: list[int] = []
+    for value in payload["t"]:
+        if isinstance(value, bool):
+            raise ValueError("VCI timestamps must be finite scalar numbers")
+        if isinstance(value, str):
+            if not value or not value.isdigit() or len(value) > 19:
+                raise ValueError("VCI timestamps must be finite scalar numbers")
+            timestamp = int(value)
+        elif _is_finite_number(value) and float(value).is_integer():
+            timestamp = int(value)
+        else:
+            raise ValueError("VCI timestamps must be finite scalar numbers")
+        if not 0 <= timestamp <= MAX_INT64:
+            raise ValueError("VCI timestamps must be finite scalar numbers")
+        if timestamp < 10**12:
+            if timestamp > MAX_INT64 // 1000:
+                raise ValueError("VCI timestamps must be finite scalar numbers")
+            timestamp *= 1000
+        timestamps.append(timestamp)
     if len(timestamps) != len(set(timestamps)):
         raise ValueError("Duplicate timestamps in VCI payload")
     if any(previous >= current for previous, current in zip(timestamps, timestamps[1:])):

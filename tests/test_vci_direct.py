@@ -322,6 +322,21 @@ def test_unpack_normalizes_integer_valued_kvnd_prices():
     assert unpack_vietcap_columnar("HPG", integer_payload).raw_close.iloc[0] == 27000
 
 
+@pytest.mark.parametrize("timestamp", ["1704067200", "1704067200000"])
+def test_unpack_accepts_numeric_string_timestamps(timestamp):
+    string_payload = payload()
+    string_payload["t"] = [timestamp]
+    assert unpack_vietcap_columnar("HPG", string_payload).time.iloc[0] == pd.Timestamp("2024-01-01", tz="UTC")
+
+
+@pytest.mark.parametrize("timestamp", ["", "abc", "1704067200.5", str(2**63), True, False])
+def test_unpack_rejects_invalid_string_timestamps(timestamp):
+    invalid_payload = payload()
+    invalid_payload["t"] = [timestamp]
+    with pytest.raises(ValueError, match="timestamps"):
+        unpack_vietcap_columnar("HPG", invalid_payload)
+
+
 @pytest.mark.parametrize("max_requests,period_seconds", [(0, 60), (-1, 60), (60, 0), (60, math.nan), (60, math.inf), ("60", 60)])
 def test_rate_limiter_rejects_invalid_settings(max_requests, period_seconds):
     with pytest.raises(ValueError):
