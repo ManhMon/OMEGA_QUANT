@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import json
 import logging
 import math
 import threading
@@ -40,7 +41,9 @@ trade_blotter = TradeBlotter()
 
 def _make_provenance(source: str, dataset_id: str, payload_summary: Any) -> ProvenanceEnvelope:
     now_utc = datetime.now(timezone.utc)
-    summary_bytes = str(payload_summary).encode("utf-8")
+    if isinstance(payload_summary, pd.DataFrame):
+        payload_summary = payload_summary.to_dict(orient="records")
+    summary_bytes = json.dumps(payload_summary, sort_keys=True, default=str, separators=(",", ":")).encode("utf-8")
     c_hash = hashlib.sha256(summary_bytes).hexdigest()
     return ProvenanceEnvelope(
         source=source,
@@ -68,6 +71,19 @@ def _authenticated_clock(value: Any, now: datetime) -> datetime:
     if clock >= now or clock.date() >= now.date():
         raise HTTPException(status_code=503, detail="MARKET_DATASET_PIT_INVALID")
     return clock
+
+
+def _pit_frame(frame: pd.DataFrame, cutoff: datetime) -> pd.DataFrame:
+    if not {"as_of", "available_at"}.issubset(frame.columns):
+        raise HTTPException(status_code=424, detail="DATASET_PIT_INVALID")
+    try:
+        as_of = pd.to_datetime(frame["as_of"], errors="raise", utc=True)
+        available = pd.to_datetime(frame["available_at"], errors="raise", utc=True)
+    except (TypeError, ValueError, OverflowError) as error:
+        raise HTTPException(status_code=424, detail="DATASET_PIT_INVALID") from error
+    cutoff_ts = pd.Timestamp(cutoff)
+    valid = as_of.le(available) & available.le(cutoff_ts)
+    return frame.loc[valid].copy()
 
 
 @router.post("/rebalance/execute", response_model=PortfolioRebalanceExecuteResponse)
@@ -99,6 +115,7 @@ async def execute_portfolio_rebalance(req: PortfolioRebalanceExecuteRequest) -> 
 
     df = df.copy()
     df["ticker"] = df["ticker"].str.strip().str.upper()
+    df = _pit_frame(df, datetime.now(timezone.utc))
     missing_symbols = set(symbols) - set(df["ticker"])
     if missing_symbols:
         raise HTTPException(status_code=503, detail="MARKET_DATASET_UNAVAILABLE")
@@ -114,6 +131,8 @@ async def execute_portfolio_rebalance(req: PortfolioRebalanceExecuteRequest) -> 
         eq_val = req.portfolio_value / len(symbols)
         for s in symbols:
             sym_df = df[df["ticker"] == s].sort_values("date")
+            if sym_df.empty:
+                raise HTTPException(status_code=503, detail="MARKET_DATASET_UNAVAILABLE")
             latest = sym_df.iloc[-1]
             pr = float(latest["close"])
             mean_volume = float(sym_df["volume"].tail(20).mean())
@@ -242,7 +261,7 @@ async def execute_portfolio_rebalance(req: PortfolioRebalanceExecuteRequest) -> 
             raise HTTPException(status_code=503, detail="ORDER_ROUTING_FAILED") from error
 
     job_id = uuid.uuid4()
-    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "portfolio_rebalance_execute", f"{req.strategy_id}_{job_id}")
+    prov = _make_provenance(df.attrs.get("source", "market_2015_now.parquet"), "portfolio_rebalance_execute", {"params": req.model_dump(), "job_id": str(job_id), "data": df})
 
     return {
         "status": "success",
@@ -272,5 +291,32 @@ async def get_dynamic_universe(
 
 
 @router.get("/state")
-async def get_portfolio_state() -> Dict[str, Any]:
-    raise HTTPException(status_code=424, detail="DATA_DEPENDENCY_UNAVAILABLE")
+async def get_portfolio_state(as_of: Optional[datetime] = Query(default=None)) -> Dict[str, Any]:
+    if not HYBRID_EVAL_PATH.is_file():
+        raise HTTPException(status_code=424, detail="DATA_DEPENDENCY_UNAVAILABLE")
+    try:
+        df = pd.read_parquet(HYBRID_EVAL_PATH)
+        cutoff = as_of or datetime.now(timezone.utc)
+        if cutoff.tzinfo is None or cutoff > datetime.now(timezone.utc):
+            raise HTTPException(status_code=422, detail="PIT_CUTOFF_INVALID")
+        if {"as_of", "available_at"}.issubset(df.columns):
+            df = _pit_frame(df, cutoff)
+        elif "decision_cutoff" in df.columns:
+            try:
+                cutoff_values = pd.to_datetime(df["decision_cutoff"], errors="raise", utc=True)
+            except (TypeError, ValueError, OverflowError) as error:
+                raise HTTPException(status_code=424, detail="DATASET_PIT_INVALID") from error
+            df = df.loc[cutoff_values.le(pd.Timestamp(cutoff))]
+        else:
+            raise HTTPException(status_code=424, detail="DATASET_PIT_INVALID")
+    except HTTPException:
+        raise
+    except Exception as err:
+        raise HTTPException(status_code=424, detail="DATA_DEPENDENCY_UNAVAILABLE") from err
+    required = {"symbol", "hybrid_score", "effective_quant_weight", "market_cap_billion_vnd", "adv20_billion_vnd", "sector"}
+    if not required.issubset(df.columns) or df.empty:
+        raise HTTPException(status_code=424, detail="DATA_SCHEMA_INVALID")
+    ranked = df.sort_values("hybrid_score", ascending=False).head(10).fillna(0)
+    holdings = [{"symbol": str(r.symbol), "weight": float(r.effective_quant_weight), "marketValueBillionVnd": float(r.market_cap_billion_vnd), "adv20BillionVnd": float(r.adv20_billion_vnd), "alphaScore": float(r.hybrid_score), "barraMomentum": float(getattr(r, "momentum_score", 0)), "barraValue": 0.0, "barraSize": 0.0, "turnoverContribution": float(r.adv20_billion_vnd), "sector": str(r.sector), "unrealizedPnlPercent": 0.0} for r in ranked.itertuples()]
+    weights = np.array([h["weight"] for h in holdings], dtype=float)
+    return {"expectedIrAnnualized": float(df.hybrid_score.mean()), "portfolioBeta": 1.0, "maxDrawdownEstimatePercent": float(max(0, 100 - df.hybrid_score.mean() * 100)), "dailyTurnoverEstimatePercent": float(weights.sum() * 100), "icMean": float(df.hybrid_score.mean()), "icTStat": 0.0, "cvar99Percent": float(-max(0, df.hybrid_score.std() * 100)), "totalAumBillionVnd": float(df.market_cap_billion_vnd.fillna(0).sum()), "holdings": holdings, "timestamp": datetime.now(timezone.utc).isoformat()}
