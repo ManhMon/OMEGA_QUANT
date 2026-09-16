@@ -9,7 +9,7 @@ from typing import List
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DASHBOARD_ROOT = REPO_ROOT / "apps" / "dashboard"
 SESSION_DIR = REPO_ROOT / ".ly_state" / "session"
-DATA_DIR = REPO_ROOT / "data"
+DATA_DIR = REPO_ROOT.resolve() / "data"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
 SRC_DIR = REPO_ROOT / "src"
 
