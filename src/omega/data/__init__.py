@@ -1,123 +1,17 @@
 ﻿# omega.data package
 
-# Auto-wired submodules and subpackages
-try:
-    from . import calendar
-except ImportError:
-    pass
+# Active modules fail closed: internal import failures must remain visible.
+from . import calendar, corporate_action, data_quality, data_validator
+from . import datasource_config, deployment_flow, live_ingestor, loader
+from . import market_flow, news_aggregator, production_data_pipeline, registry
+from . import sanitizer, validator, vnstock_client, vnstock_vci
+from . import vnd_price_contract, exchange_resolver, pipeline
+from .sanitizer import DataSanitizer
 
-try:
-    from . import corporate_action
-except ImportError:
-    pass
-
-try:
-    from . import data_quality
-except ImportError:
-    pass
-
-try:
-    from . import data_validator
-except ImportError:
-    pass
-
-try:
-    from . import datasource_config
-except ImportError:
-    pass
-
-try:
-    from . import deployment_flow
-except ImportError:
-    pass
-
-try:
-    from . import live_ingestor
-except ImportError:
-    pass
-
-try:
-    from . import loader
-except ImportError:
-    pass
-
-try:
-    from . import market_flow
-except ImportError:
-    pass
-
-try:
-    from . import news_aggregator
-except ImportError:
-    pass
-
-try:
-    from . import production_data_pipeline
-except ImportError:
-    pass
-
-try:
-    from . import registry
-except ImportError:
-    pass
-
-try:
-    from . import sanitizer
-except ImportError:
-    pass
-
-try:
-    from . import validator
-except ImportError:
-    pass
-
-try:
-    from . import vci_bridge
-except ImportError:
-    pass
-
-try:
-    from . import vnstock_client
-except ImportError:
-    pass
-
-try:
-    from . import vnstock_adapter
-except ImportError:
-    pass
-
-try:
-    from . import vnstock_ingest
-except ImportError:
-    pass
-
-try:
-    from . import vnstock_live
-except ImportError:
-    pass
-
-try:
-    from . import vnstock_vci
-except ImportError:
-    pass
-
-try:
-    from . import vnd_price_contract
-except ImportError:
-    pass
-
-try:
-    from . import exchange_resolver
-except ImportError:
-    pass
-
-try:
-    from . import pipeline
-except ImportError:
-    pass
-
-# Explicit re-exports for test collection and public API
-try:
-    from .sanitizer import DataSanitizer
-except ImportError:
-    pass
+# These modules intentionally raise ImportError because they are archived.
+for _archived_name in ("vci_bridge", "vnstock_adapter", "vnstock_ingest"):
+    try:
+        __import__(f"{__name__}.{_archived_name}")
+    except ImportError as exc:
+        if "archived" not in str(exc).lower():
+            raise

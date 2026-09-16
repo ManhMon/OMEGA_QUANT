@@ -492,7 +492,6 @@ class TestAdvCapacityZeroVolume:
 
     def test_adv_with_zero_volume_rows(self):
         """ADV computation handles zero-volume rows correctly."""
-        from omega.data.vnstock_live import VnStockLiveDataProvider
         # Simulate price data with some zero-volume days
         df = pd.DataFrame({
             "ticker": ["VCB"] * 5,
