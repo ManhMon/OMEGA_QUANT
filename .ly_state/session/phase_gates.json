@@ -6720,7 +6720,7 @@
   },
   "GATE_SCRIPTS_CLEANUP_ARCHIVE_20260916": {
     "phase_name": "GATE_SCRIPTS_CLEANUP_ARCHIVE_20260916",
-    "l2_session_id": "l2_role15_scripts_cleanup_archive_20260916",
+    "l2_session_id": "l2_role15_scripts_cleanup_archive_hash_sync_20260916",
     "l2_role_id": 15,
     "l2_role_name": "data-engineer",
     "l3_session_id": "l3_role21_gate_scripts_cleanup_archive_20260916",
