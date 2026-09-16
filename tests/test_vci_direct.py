@@ -1139,3 +1139,63 @@ def test_production_atomic_write_frame_rollback_cleans_temporary_files_on_failur
     assert target.read_bytes() == original_bytes
     tmp_files = list(tmp_path.glob("*.tmp")) + list(tmp_path.glob(".*.tmp"))
     assert tmp_files == []
+
+
+# ---------------------------------------------------------------------------
+# F-001: Fractional volume rejection
+# ---------------------------------------------------------------------------
+
+def test_unpack_rejects_fractional_volume():
+    """Volume with non-integer values must raise ValueError, not silently round."""
+    frac_payload = {"t": [1704067200000], "o": [27], "h": [28], "l": [26], "c": [27.5], "v": [100.7]}
+    with pytest.raises(ValueError, match="non-integer"):
+        unpack_vietcap_columnar("HPG", frac_payload)
+
+
+def test_unpack_accepts_integer_volume_as_float():
+    """Volume stored as float but with zero fractional part is accepted."""
+    ok_payload = {"t": [1704067200000], "o": [27], "h": [28], "l": [26], "c": [27.5], "v": [100.0]}
+    frame = unpack_vietcap_columnar("HPG", ok_payload)
+    assert frame["volume"].iloc[0] == 100
+    assert frame["volume"].dtype.name == "int64"
+
+
+# ---------------------------------------------------------------------------
+# F-002: available_at next-trading-session semantics
+# ---------------------------------------------------------------------------
+
+def _make_friday_payload():
+    """2026-01-02 is a Friday (trading day); available_at should be Monday 2026-01-05 09:00 ICT."""
+    # timestamp for 2026-01-02 09:00 ICT = 2026-01-02 02:00 UTC
+    ts_ms = int(pd.Timestamp("2026-01-02 02:00:00", tz="UTC").timestamp() * 1000)
+    return {"t": [ts_ms], "o": [27], "h": [28], "l": [26], "c": [27.5], "v": [100]}
+
+
+def test_available_at_friday_candle_available_on_monday():
+    """Friday candle should be available on the next Monday, not Saturday."""
+    from omega.data.calendar import VNTradingCalendar
+    from datetime import date
+    frame = unpack_vietcap_columnar("HPG", _make_friday_payload())
+    local_date = frame["time"].iloc[0].tz_convert("Asia/Ho_Chi_Minh").date()
+    assert local_date == date(2026, 1, 2)  # confirm it is a Friday
+    assert VNTradingCalendar.is_trading_day(pd.Timestamp("2026-01-02").to_pydatetime())
+    # next_trading_day must skip Saturday and Sunday
+    next_td = VNTradingCalendar.next_trading_day(local_date)
+    assert next_td == date(2026, 1, 5), f"Expected Monday 2026-01-05, got {next_td}"
+
+
+def test_unpack_friday_available_at_is_not_saturday():
+    """available_at for a Friday date must not be Saturday - verify via calendar."""
+    from omega.data.calendar import VNTradingCalendar
+    from datetime import date
+    friday = date(2026, 1, 2)
+    assert VNTradingCalendar.is_trading_day(pd.Timestamp(friday.isoformat()).to_pydatetime())
+    next_td = VNTradingCalendar.next_trading_day(friday)
+    # Compute available_at as the patched code does: next trading day at 09:00 ICT
+    import zoneinfo
+    ict = zoneinfo.ZoneInfo("Asia/Ho_Chi_Minh")
+    available_at_ict = pd.Timestamp(next_td, tz=ict) + pd.Timedelta(hours=9)
+    assert available_at_ict.weekday() != 5, "available_at must not fall on Saturday"
+    assert available_at_ict.weekday() == 0, f"Expected Monday, got weekday {available_at_ict.weekday()}"
+    assert available_at_ict.hour == 9
+

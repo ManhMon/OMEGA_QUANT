@@ -181,7 +181,10 @@ def unpack_vietcap_columnar(ticker: str, payload: Mapping[str, Any], adj_ratio: 
     if not adjusted_prices.map(math.isfinite).all().all() or (adjusted_prices < 500).any().any() or (adjusted_prices > 10_000_000).any().any():
         raise ValueError("Adjusted VCI prices are not finite or outside VND_FULL bounds")
     frame["adj_ratio"] = float(adj_ratio)
-    frame["volume"] = frame["volume"].round().astype("int64")
+    vol_raw = frame["volume"].astype("float64")
+    if (vol_raw - vol_raw.round()).abs().gt(1e-9).any():
+        raise ValueError("VCI volume contains non-integer values; provider data corrupted")
+    frame["volume"] = vol_raw.round().astype("int64")
     turnover = frame.raw_close.astype("float64") * frame.volume.astype("float64")
     if not turnover.map(math.isfinite).all() or (turnover < 0).any() or (turnover > MAX_INT64).any():
         raise ValueError("Turnover calculation overflows int64")
@@ -310,13 +313,21 @@ class DirectVCIClient:
                 available_end = min(end_bound, now)
                 frame = frame.loc[frame["time"].between(start_ts, available_end)]
                 frame["as_of"] = frame["time"]
-                frame["available_at"] = frame["time"].dt.tz_convert(ZoneInfo("Asia/Ho_Chi_Minh")).dt.normalize() + pd.Timedelta(days=1, hours=9)
+                from omega.data.calendar import VNTradingCalendar as _Cal  # noqa: PLC0415
+                _ict = ZoneInfo("Asia/Ho_Chi_Minh")
+                _local_dates = frame["time"].dt.tz_convert(_ict).dt.date
+                frame["available_at"] = pd.array(
+                    [
+                        (pd.Timestamp(_Cal.next_trading_day(d), tz=_ict) + pd.Timedelta(hours=9)).tz_convert("UTC")
+                        for d in _local_dates
+                    ],
+                    dtype="datetime64[ns, UTC]",
+                )
                 frame = frame.loc[frame["available_at"] <= as_of_ts]
                 if local_now < cutoff:
                     local_dates = frame["time"].dt.tz_convert(ZoneInfo("Asia/Ho_Chi_Minh")).dt.date
                     frame = frame.loc[local_dates != local_now.date()]
-                from omega.data.calendar import VNTradingCalendar
-                if frame.empty or not (frame["as_of"] <= frame["available_at"]).all() or not frame["time"].map(lambda value: VNTradingCalendar.is_trading_day(value.to_pydatetime())).all():
+                if frame.empty or not (frame["as_of"] <= frame["available_at"]).all() or not frame["time"].map(lambda value: _Cal.is_trading_day(value.to_pydatetime())).all():
                     raise ValueError("VCI payload has no valid PIT trading-session records")
                 return frame.reset_index(drop=True)
             except HTTPError as exc:
