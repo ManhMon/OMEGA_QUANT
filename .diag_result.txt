@@ -1,0 +1,211 @@
+﻿python : \U0001f4e6 Vnstock 4.0.4 is available
+At line:1 char:48
++ ... EGA_QUANT'; python scripts/llm_nested_fold_diagnostic.py --provider m ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (\U0001f4e6 Vnstock 4.0.4 is available:String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+Current: 4.0.2 (Python 3.14)
+Update: pip install vnstock --upgrade
+Release: https://vnstocks.com/docs/tai-lieu/lich-su-phien-ban
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) 
+(Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:llm_nested_fold_diagnostic:============================================================
+INFO:llm_nested_fold_diagnostic:LLM Nested Fold Diagnostic
+INFO:llm_nested_fold_diagnostic:============================================================
+INFO:llm_nested_fold_diagnostic:provider=mock budget=20 top_k=3 outer=2 inner=2
+INFO:llm_nested_fold_diagnostic:Panel shape: (90, 6), labels shape: (90,)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v3_closed_loop max_candidates=6
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.hybrid_alpha_miner:Generated 16 candidates from 5 sources (budget=20)
+INFO:omega.quant.evolution.hybrid_alpha_miner:Generated 16 total candidates
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:FormulaCache initialized: 
+C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\llm_cache
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:Using MockProvider (offline mode)
+INFO:omega.quant.evolution.llm_symbolic_synthesizer:LLMSymbolicSynthesizer initialized: 
+prompt_version=vn_alpha_search_v2 max_candidates=10
+INFO:omega.quant.evolution.hybrid_alpha_miner:Hybrid mining complete: 16 candidates, 3 selected, deploy_ready=True
+INFO:llm_nested_fold_diagnostic:============================================================
+INFO:llm_nested_fold_diagnostic:RESULTS
+INFO:llm_nested_fold_diagnostic:============================================================
+INFO:llm_nested_fold_diagnostic:Total generated: 16
+INFO:llm_nested_fold_diagnostic:Total selected: 3
+INFO:llm_nested_fold_diagnostic:Deployment ready: True
+INFO:llm_nested_fold_diagnostic:Source proportions: {'llm_v3': 3, 'template': 3, 'gp_mutation': 4, 'gp_crossover': 3, 
+'random_safe': 3}
+INFO:llm_nested_fold_diagnostic:Formula memory: {'unique_formulas': 16, 'total_generated': 17, 'total_duplicates': 1, 
+'total_parse_errors': 0, 'total_safety_rejected': 0, 'top_motifs': {'sqrt': 2, 'abs': 1}}
+INFO:llm_nested_fold_diagnostic:  [1] (ret_1d decay_linear 5) | source=llm_v3 | obj=0.8283 | ic=0.5159 | cov=1.00
+INFO:llm_nested_fold_diagnostic:  [2] ((sqrt(close) decay_linear 20) - close) | source=gp_mutation | obj=0.6372 | 
+ic=-0.3331 | cov=1.00
+INFO:llm_nested_fold_diagnostic:  [3] (((volume ts_std 5) min open) decay_linear 10) | source=gp_crossover | 
+obj=0.6224 | ic=-0.0826 | cov=1.00
+INFO:omega.quant.evolution.hybrid_alpha_miner:Evidence saved to 
+.ly_state\session\hybrid_alpha_nested_diagnostic_20260612.json
+INFO:llm_nested_fold_diagnostic:Evidence saved to .ly_state\session\hybrid_alpha_nested_diagnostic_20260612.json
+Validation successful: All files present and accounted for in .ly_state/

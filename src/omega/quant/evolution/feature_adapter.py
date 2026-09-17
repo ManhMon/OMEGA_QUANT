@@ -2,7 +2,7 @@
 
 Purpose
 -------
-Loads 200+ existing alphas (ultimate_alpha_arsenal, phase34_microstructure)
+Loads 200+ existing alphas (ultimate_alpha_arsenal, phase34_microstructure, vn_specific)
 plus base OHLCV + engineered features, returns a dict[name -> np.ndarray]
 suitable as input features for genetic-program evolution.
 
@@ -10,15 +10,16 @@ Sources (best-effort, never hard-fail on missing module)
 --------------------------------------------------------
 - omega.quant.ultimate_alpha_arsenal.compute_ultimate_alphas (~132 alphas)
 - omega.quant.phase34_microstructure_alphas.compute_phase34_microstructure_alphas (~17 alphas)
+- omega.quant.alpha.vn_specific (27 VN-specific compute_ + alpha_ functions)
 - Base OHLCV: open / high / low / close / volume
 - Engineered: ret_1d, ret_5d, vol_ratio, hl_range, oc_range
 
 PIT Safety
 ----------
 This module is a thin orchestrator. PIT correctness is the responsibility of
-each underlying alpha source (ultimate / phase34). We only forward the input
-DataFrame and apply purely-pointwise / past-only transforms (rolling means,
-pct_change) on the engineered base features.
+each underlying alpha source (ultimate / phase34 / vn_specific). We only forward
+the input DataFrame and apply purely-pointwise / past-only transforms (rolling
+means, pct_change) on the engineered base features.
 
 Role
 ----
@@ -27,10 +28,11 @@ Role
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import sys
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -65,21 +67,22 @@ class GPFeatureAdapter:
     def __init__(self) -> None:
         self.sources: Dict[str, Callable[..., pd.DataFrame]] = {}
         self._load_sources()
+        self._cache: Optional[Tuple[str, int, Dict[str, np.ndarray]]] = None
 
     # ---------------------------------------------------------------- loading
     def _load_sources(self) -> None:
         """Best-effort import of each alpha module. Never raise."""
         try:
-            from omega.quant.ultimate_alpha_arsenal import compute_ultimate_alphas  # type: ignore
+            from omega.quant.alpha.arsenal import compute_ultimate_alphas  # type: ignore
             self.sources["ultimate"] = compute_ultimate_alphas
-            logger.info("Loaded ultimate_alpha_arsenal (132 alphas)")
+            logger.info("Loaded alpha.arsenal (132 alphas)")
         except ImportError as e:
             logger.warning(f"ultimate_alpha_arsenal not available: {e}")
         except Exception as e:  # noqa: BLE001 — defensive on import-time errors
             logger.warning(f"ultimate_alpha_arsenal import error: {e}")
 
         try:
-            from omega.quant.phase34_microstructure_alphas import (  # type: ignore
+            from omega.quant.alpha.phase34 import (  # type: ignore
                 compute_phase34_microstructure_alphas,
             )
             self.sources["phase34"] = compute_phase34_microstructure_alphas
@@ -89,7 +92,55 @@ class GPFeatureAdapter:
         except Exception as e:  # noqa: BLE001
             logger.warning(f"phase34 import error: {e}")
 
+        # --- source: vn_specific ---
+        try:
+            import omega.quant.alpha.vn_specific as vns  # type: ignore
+            vn_funcs = [
+                name for name in dir(vns)
+                if (name.startswith("compute_") or name.startswith("alpha_"))
+                and callable(getattr(vns, name))
+            ]
+            if vn_funcs:
+                def _run_vn_specific(df: pd.DataFrame) -> pd.DataFrame:
+                    result = pd.DataFrame(index=df.index)
+                    for func_name in vn_funcs:
+                        fn = getattr(vns, func_name)
+                        try:
+                            col_name = f"alpha_vnspec_{func_name}"
+                            result[col_name] = fn(df).astype(np.float64)
+                        except Exception as exc:
+                            logger.debug("vn_specific.%s failed: %s", func_name, exc)
+                            result[col_name] = 0.0
+                    return result
+                self.sources["vn_specific"] = _run_vn_specific
+                logger.info("Loaded vn_specific (%d functions: %s)", len(vn_funcs), vn_funcs)
+        except ImportError as e:
+            logger.warning(f"vn_specific not available: {e}")
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"vn_specific import error: {e}")
+
     # -------------------------------------------------------------- main API
+    @staticmethod
+    def _fingerprint(df: pd.DataFrame, top_n_features: int) -> str:
+        """Robust hash of full DataFrame content for cache lookup.
+
+        Uses ``pd.util.hash_pandas_object`` to hash every cell in every row,
+        ensuring that middle-row mutations produce a different fingerprint.
+        Previously used only shape/columns/first/last rows (O(1) but unsafe —
+        stale cache returned on interior data changes).
+
+        FIX: PERFORMANCE_PARALLELIZATION_AUDIT_FIX1_20260613 — Finding 1
+        """
+        h = hashlib.sha256()
+        # Hash full data content: every row, every column.
+        # pd.util.hash_pandas_object returns a uint64 Series (one per row);
+        # we concatenate and feed the raw bytes for a complete content digest.
+        row_hashes = pd.util.hash_pandas_object(df, index=True)
+        h.update(row_hashes.values.tobytes())
+        h.update(str(sorted(df.columns.tolist())).encode())
+        h.update(str(top_n_features).encode())
+        return h.hexdigest()[:16]
+
     def compute_all(
         self,
         df: pd.DataFrame,
@@ -101,7 +152,18 @@ class GPFeatureAdapter:
         ----------
         df : DataFrame with at minimum (ticker, date, open, high, low, close, volume).
         top_n_features : keep only the top-N highest-variance features.
+
+        Caching
+        -------
+        Results are cached by input fingerprint (full-content hash via
+        ``pd.util.hash_pandas_object``).  Repeated calls with the identical
+        DataFrame skip recomputation.  Any change — including a single
+        middle-row mutation — invalidates the cache.
         """
+        fp = self._fingerprint(df, top_n_features)
+        if self._cache is not None and self._cache[0] == fp and self._cache[1] == len(df):
+            logger.info("Feature cache hit (fingerprint=%s), returning cached result", fp)
+            return self._cache[2]
         all_alphas: List[Tuple[str, np.ndarray]] = []
 
         # --- source: ultimate_alpha_arsenal ---
@@ -119,12 +181,25 @@ class GPFeatureAdapter:
         if "phase34" in self.sources:
             try:
                 p34_df = self.sources["phase34"](df)
-                alpha_cols = [c for c in p34_df.columns if c not in ("ticker", "date")]
+                # Only select alpha columns — phase34 returns full df copy
+                # which may include non-numeric cols (exchange, ticker, etc.)
+                alpha_cols = [c for c in p34_df.columns if c.startswith("alpha_p34_")]
                 logger.info(f"phase34 produced {len(alpha_cols)} alphas")
                 for col in alpha_cols:
                     all_alphas.append((col, np.asarray(p34_df[col].values)))
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"phase34 failed: {e}")
+
+        # --- source: vn_specific ---
+        if "vn_specific" in self.sources:
+            try:
+                vns_df = self.sources["vn_specific"](df)
+                vns_cols = [c for c in vns_df.columns if c.startswith("alpha_vnspec_")]
+                logger.info(f"vn_specific produced {len(vns_cols)} alphas")
+                for col in vns_cols:
+                    all_alphas.append((col, np.asarray(vns_df[col].values)))
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"vn_specific failed: {e}")
 
         # --- base OHLCV (raw) ---
         base_features = ["open", "high", "low", "close", "volume"]
@@ -147,15 +222,24 @@ class GPFeatureAdapter:
 
         logger.info(f"Total features: {len(all_alphas)}")
 
-        # --- variance filter (strip constants / all-NaN columns) ---
+        # --- variance filter (strip constants / all-NaN / non-numeric columns) ---
         filtered: List[Tuple[str, np.ndarray]] = []
         for name, values in all_alphas:
-            values = np.nan_to_num(
-                np.asarray(values, dtype=np.float64),
-                nan=0.0,
-                posinf=0.0,
-                neginf=0.0,
-            )
+            try:
+                arr = np.asarray(values)
+                if not np.issubdtype(arr.dtype, np.number):
+                    # Coerce non-numeric arrays safely; drop if unconvertible
+                    coerced = pd.to_numeric(pd.Series(arr.ravel()), errors="coerce")
+                    arr = coerced.values.reshape(arr.shape)
+                values = np.nan_to_num(
+                    np.asarray(arr, dtype=np.float64),
+                    nan=0.0,
+                    posinf=0.0,
+                    neginf=0.0,
+                )
+            except (ValueError, TypeError):
+                logger.warning(f"Dropping non-numeric feature '{name}'")
+                continue
             if np.std(values) > 1e-6:
                 filtered.append((name, values))
 
@@ -167,7 +251,9 @@ class GPFeatureAdapter:
             filtered = filtered[:top_n_features]
             logger.info(f"Truncated to top {top_n_features} by std")
 
-        return {name: values for name, values in filtered}
+        result = {name: values for name, values in filtered}
+        self._cache = (fp, len(df), result)
+        return result
 
     # --------------------------------------------------------------- helpers
     def available_sources(self) -> List[str]:

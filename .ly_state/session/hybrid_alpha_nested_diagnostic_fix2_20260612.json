@@ -1,0 +1,151 @@
+{
+  "config": {
+    "candidate_budget": 20,
+    "top_k": 5,
+    "n_outer_folds": 3,
+    "n_inner_folds": 2,
+    "llm_provider": "mock"
+  },
+  "source_proportions": {
+    "llm_v3": 3,
+    "template": 3,
+    "gp_mutation": 4,
+    "gp_crossover": 3,
+    "random_safe": 3
+  },
+  "total_generated": 16,
+  "total_selected": 5,
+  "n_outer_folds_evaluated": 3,
+  "deployment_ready": true,
+  "requires_full_cpcv": true,
+  "formula_memory": {
+    "unique_formulas": 16,
+    "total_generated": 17,
+    "total_duplicates": 1,
+    "total_parse_errors": 0,
+    "total_safety_rejected": 0,
+    "top_motifs": {
+      "neg": 2,
+      "sqrt": 1,
+      "log": 1
+    }
+  },
+  "selected_candidates": [
+    {
+      "source": "llm_v3",
+      "formula_str": "(ret_1d decay_linear 5)",
+      "formula_hash": "31871a58a9211394",
+      "inner_metrics": {
+        "ic": 0.4969858395490156,
+        "signed_ic": 0.4969858395490156,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.0,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 2,
+        "mean_fold_max_correlation": 0.0
+      },
+      "objective_score": 0.8490957518647047,
+      "is_selected": true
+    },
+    {
+      "source": "gp_mutation",
+      "formula_str": "neg(((close max (ret_1d * ret_1d)) ts_rank 20))",
+      "formula_hash": "38b9f17ecb6dc873",
+      "inner_metrics": {
+        "ic": 0.056578270622002096,
+        "signed_ic": 0.056578270622002096,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.050656477941486755,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 2,
+        "mean_fold_max_correlation": 0.024150224499462
+      },
+      "objective_score": 0.7068421855983034,
+      "is_selected": true
+    },
+    {
+      "source": "random_safe",
+      "formula_str": "log(ret_1d)",
+      "formula_hash": "c339de091842a5ca",
+      "inner_metrics": {
+        "ic": 0.051337712770831566,
+        "signed_ic": 0.051337712770831566,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.0871764859904167,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 2,
+        "mean_fold_max_correlation": 0.049003449968464556
+      },
+      "objective_score": 0.697966016633166,
+      "is_selected": true
+    },
+    {
+      "source": "random_safe",
+      "formula_str": "(ret_1d ts_mean 10)",
+      "formula_hash": "217bf2742e293eab",
+      "inner_metrics": {
+        "ic": 0.1278932459351869,
+        "signed_ic": 0.1278932459351869,
+        "sign_consistency": 0.8333333333333334,
+        "dsr_proxy": 0.8333333333333334,
+        "coverage": 1.0,
+        "max_correlation": 0.6122486276455504,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 2,
+        "mean_fold_max_correlation": 0.583486491331867
+      },
+      "objective_score": 0.5575849149181127,
+      "is_selected": true
+    },
+    {
+      "source": "llm_v3",
+      "formula_str": "((close ts_std 20) / (volume ts_mean 10))",
+      "formula_hash": "58f8099f14e0f02b",
+      "inner_metrics": {
+        "ic": -0.018984160097426313,
+        "signed_ic": 0.01367553521818793,
+        "sign_consistency": 0.6666666666666666,
+        "dsr_proxy": 0.6666666666666666,
+        "coverage": 1.0,
+        "max_correlation": 0.7160628342045372,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 2,
+        "mean_fold_max_correlation": 0.5492759704129364
+      },
+      "objective_score": 0.44422342705788226,
+      "is_selected": true
+    }
+  ],
+  "objective_weights": {
+    "w_ic": 0.3,
+    "w_sign_consistency": 0.15,
+    "w_dsr_proxy": 0.2,
+    "w_coverage": 0.15,
+    "w_low_correlation": 0.2
+  },
+  "deploy_thresholds": {
+    "min_deploy_ic": 0.05,
+    "min_deploy_sign_consistency": 0.6,
+    "min_deploy_dsr": 0.5,
+    "min_deploy_coverage": 0.9,
+    "max_deploy_correlation": 0.7
+  },
+  "pit_safety": {
+    "panel_sliced_per_outer_fold": true,
+    "ts_operators_cannot_see_outer_test": true,
+    "inner_splits_use_local_indices": true,
+    "ic_uses_signed_positive_only": true
+  },
+  "correlation_gate": {
+    "max_pairwise_correlation": 0.7160628342045372,
+    "mean_pairwise_correlation": 0.2932288851563982,
+    "correlation_threshold": 0.7,
+    "correlation_blocked": true
+  }
+}

@@ -13,9 +13,11 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from typing import Dict, Any
 import threading
 
-# Setup workspace paths
-WORKSPACE = Path("C:/Users/GHC/.openclaw/workspace/omega")
-sys.path.insert(0, str(WORKSPACE))
+# Setup workspace paths (PATH-01 FIX: repo-relative instead of hardcoded .openclaw)
+_REPO_ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE = _REPO_ROOT
+if str(WORKSPACE / 'src') not in sys.path:
+    sys.path.insert(0, str(WORKSPACE / 'src'))
 
 def _setup_logger():
     logger = logging.getLogger(__name__)

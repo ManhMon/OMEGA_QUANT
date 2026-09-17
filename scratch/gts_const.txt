@@ -1,0 +1,23 @@
+57:GB = 1024 ** 3
+60:MEMORY_HEADROOM_RESERVE_BYTES = int(1.5 * GB)
+61:WORKER_MEMORY_ESTIMATE_BYTES = int(1.0 * GB)
+62:PARENT_MEMORY_BUDGET_BYTES = int(12.0 * GB)
+181:    parallel_backend: str = "loky"
+195:    memory_headroom_reserve_bytes: int = MEMORY_HEADROOM_RESERVE_BYTES
+196:    worker_memory_estimate_bytes: int = WORKER_MEMORY_ESTIMATE_BYTES
+197:    parent_memory_budget_bytes: int = PARENT_MEMORY_BUDGET_BYTES
+676:def _is_process_backend(backend: str) -> bool:
+677:    return backend in {"loky", "multiprocessing"}
+680:def _normalize_parallel_backend(backend: str) -> str:
+681:    return "threading" if backend == "threads" else backend
+806:        self._parallel_pool_backend: Optional[str] = None
+811:        backend = _normalize_parallel_backend(self.config.parallel_backend)
+815:            and self._parallel_pool_backend == backend
+820:        kwargs = {"n_jobs": n_jobs, "backend": backend, "pre_dispatch": "2*n_jobs"}
+829:        self._parallel_pool_backend = backend
+843:        self._parallel_pool_backend = None
+902:            backend = _normalize_parallel_backend(self.config.parallel_backend)
+903:            use_process_pool = _is_process_backend(backend)
+1085:            "Diverse evaluation parallelism: backend=%s requested_n_jobs=%d seed=%d",
+1086:            _normalize_parallel_backend(self.config.parallel_backend),
+1136:                    if _is_process_backend(_normalize_parallel_backend(self.config.parallel_backend)):

@@ -1,0 +1,17 @@
+{
+  "prompt_hash": "f274582a440c2b4735bbe605100cfaaf445d387eac717e223309302290e3e639",
+  "prompt_version": "vn_alpha_search_v3_closed_loop",
+  "formulas": [
+    "rank(ret_1d)",
+    "rank(ret_5d)",
+    "rank(ret_20d)",
+    "neg(rank(ret_1d))",
+    "neg(rank(ret_5d))",
+    "neg(rank(ret_20d))",
+    "ts_rank(ret_1d, 3)",
+    "ts_rank(ret_1d, 5)",
+    "ts_rank(ret_1d, 10)",
+    "ts_rank(ret_5d, 5)"
+  ],
+  "timestamp": "2026-07-24T09:47:22.753933"
+}

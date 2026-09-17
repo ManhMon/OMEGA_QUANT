@@ -52,12 +52,6 @@ class StructuredLogger:
         self.logger.warning(json.dumps(entry, default=str))
         return entry["correlation_id"]
     
-    def error(self, message: str, **kwargs) -> str:
-        """Log ERROR level with structured data."""
-        entry = self._build_log_entry("ERROR", message, **kwargs)
-        self.logger.error(json.dumps(entry, default=str))
-        return entry["correlation_id"]
-    
     def debug(self, message: str, **kwargs) -> str:
         """Log DEBUG level with structured data."""
         entry = self._build_log_entry("DEBUG", message, **kwargs)

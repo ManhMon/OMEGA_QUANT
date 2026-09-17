@@ -1,0 +1,9 @@
+{
+  "rank": 1,
+  "round": 1,
+  "train_IC": 0.2005,
+  "test_IC": 0.0418,
+  "hit_rate": 0.5366,
+  "expression": "((log(open) decay_linear 5) ts_std 10)",
+  "serialized_tree": "GPNode(operator='ts_std', children=[GPNode(operator='decay_linear', children=[GPNode(operator='log', children=[GPNode(operator='terminal', children=[], value='open')], value=None), GPNode(operator='terminal', children=[], value='5')], value=None), GPNode(operator='terminal', children=[], value='10')], value=None)"
+}

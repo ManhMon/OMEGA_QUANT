@@ -1,0 +1,100 @@
+{
+  "gate": "SIMULATED_TRADING_INTEGRATION_20260619",
+  "timestamp": "2026-07-01T05:36:11.898970+00:00",
+  "signal_date": "2026-06-30",
+  "signal_source": "STRONG_ALPHAS_INTEGRATION_20260618",
+  "total_diffs": 8,
+  "total_executed": 8,
+  "completed": 8,
+  "failed": 0,
+  "results": [
+    {
+      "symbol": "ANV",
+      "side": "SELL",
+      "quantity": 8000,
+      "price": 21350.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_F0F3E132406F",
+      "error": null,
+      "target_weight": 0.0,
+      "current_weight": 0.0854
+    },
+    {
+      "symbol": "DRC",
+      "side": "SELL",
+      "quantity": 2700,
+      "price": 11800.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_70011F5C1A87",
+      "error": null,
+      "target_weight": 0.0,
+      "current_weight": 0.01593
+    },
+    {
+      "symbol": "EVF",
+      "side": "SELL",
+      "quantity": 1000,
+      "price": 13400.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_CD38F7D60241",
+      "error": null,
+      "target_weight": 0.0,
+      "current_weight": 0.0067
+    },
+    {
+      "symbol": "HDB",
+      "side": "SELL",
+      "quantity": 18700,
+      "price": 26550.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_336AF6A2552C",
+      "error": null,
+      "target_weight": 0.0,
+      "current_weight": 0.24824
+    },
+    {
+      "symbol": "HHV",
+      "side": "BUY",
+      "quantity": 7000,
+      "price": 11400.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_D21DBC9FAE40",
+      "error": null,
+      "target_weight": 0.0399,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "SSI",
+      "side": "SELL",
+      "quantity": 3700,
+      "price": 26850.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_EF5FF076F229",
+      "error": null,
+      "target_weight": 0.0,
+      "current_weight": 0.04967
+    },
+    {
+      "symbol": "TCB",
+      "side": "SELL",
+      "quantity": 31700,
+      "price": 34350.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_FBD4991C8BA5",
+      "error": null,
+      "target_weight": 0.0,
+      "current_weight": 0.54445
+    },
+    {
+      "symbol": "VCG",
+      "side": "BUY",
+      "quantity": 5700,
+      "price": 20800.0,
+      "pipeline_state": "COMPLETED",
+      "order_id": "ORD_51F1186128CB",
+      "error": null,
+      "target_weight": 0.0801,
+      "current_weight": 0.0208
+    }
+  ]
+}

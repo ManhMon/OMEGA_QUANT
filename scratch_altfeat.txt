@@ -1,0 +1,167 @@
+def _generate_alternative_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Generate alternative features via AlternativeFeatureGenerator and AlternativeDataFetcher.
+
+    Converts flat DataFrame (ticker, date columns) to MultiIndex [date, symbol] for
+    the generator APIs, then returns only date/ticker keys plus 'alt_' prefixed columns.
+
+    PIT Safety: Generators use only past data internally. T-1 lag applied by caller.
+    """
+    essential_cols = ["date", "ticker", "open", "high", "low", "close", "volume"]
+    available_essential = [c for c in essential_cols if c in df.columns]
+    narrow_df = df[available_essential].copy()
+    result_keys = narrow_df[["date", "ticker"]].copy()
+    narrow_df["date"] = pd.to_datetime(narrow_df["date"])
+
+    # Intentionally fatal: fail-fast on duplicate (date, ticker) keys rather than silently
+    # degrading, as duplicate keys would corrupt training data by inflating row counts
+    # and producing ambiguous feature/target alignment in GP evolution.
+    dup_mask = narrow_df.duplicated(subset=["date", "ticker"], keep=False)
+    if dup_mask.any():
+        raise ValueError(
+            f"Duplicate (date, ticker) rows in narrow_df: "
+            f"{narrow_df[dup_mask].head()}"
+        )
+
+    # Build MultiIndex panel [date, symbol] as expected by generators
+    try:
+        panel = narrow_df.set_index(["date", "ticker"]).sort_index()
+        # Generators expect level named 'symbol', not 'ticker'
+        panel.index.names = ["date", "symbol"]
+    except Exception as e:
+        logger.warning(f"Failed to build MultiIndex for alternative features: {e}")
+        return result_keys
+
+    # --- AlternativeFeatureGenerator ---
+    alt_features_df = pd.DataFrame(columns=["date", "ticker"])
+    try:
+        feat_gen = AlternativeFeatureGenerator()
+        alt_panel = feat_gen.generate_all(panel)
+        alt_feat_names = feat_gen.get_feature_names()
+
+        # OPTIMIZATION: Select, rename, and merge alt features directly without intermediate pd.concat of Series lists (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION)
+        available_feat = [f for f in alt_feat_names if f in alt_panel.columns]
+        if available_feat:
+            alt_features_df = alt_panel[available_feat].rename(
+                columns={f: f"alt_{f}" for f in available_feat}
+            ).reset_index().rename(columns={"symbol": "ticker"})
+
+        logger.info(f"AlternativeFeatureGenerator: {len(alt_feat_names)} features generated")
+    except Exception as e:
+        logger.warning(f"AlternativeFeatureGenerator failed: {e}")
+
+    # --- AlternativeDataFetcher ---
+    alt_data_features_df = pd.DataFrame(columns=["date", "ticker"])
+    try:
+        alt_fetcher = AlternativeDataFetcher(use_api=False)
+        alt_data_panel = alt_fetcher.generate_all(panel)
+        alt_data_names = alt_fetcher.get_feature_names()
+
+        # OPTIMIZATION: Select, rename, and merge alt data features directly without intermediate pd.concat of Series lists (GP_WEEKLY_EVOLUTION_ALT_CONCAT_OPTIMIZATION)
+        available_data_feat = [f for f in alt_data_names if f in alt_data_panel.columns]
+        if available_data_feat:
+            alt_data_features_df = alt_data_panel[available_data_feat].rename(
+                columns={f: f"alt_{f}" for f in available_data_feat}
+            ).reset_index().rename(columns={"symbol": "ticker"})
+
+        logger.info(f"AlternativeDataFetcher: {len(alt_data_names)} signals generated")
+    except Exception as e:
+        logger.warning(f"AlternativeDataFetcher failed: {e}")
+
+    if not alt_features_df.empty or not alt_data_features_df.empty:
+        result_keys["date"] = pd.to_datetime(result_keys["date"])
+        result_keys_mi = pd.MultiIndex.from_arrays(
+            [result_keys["date"].to_numpy(copy=False), result_keys["ticker"].to_numpy(copy=False)]
+        )
+
+        for source_df in (alt_features_df, alt_data_features_df):
+            if source_df.empty:
+                continue
+
+            source_cols = [c for c in source_df.columns if c not in {"date", "ticker"}]
+            source_indexed = source_df.assign(date=pd.to_datetime(source_df["date"])).set_index(["date", "ticker"])
+            for col in source_cols:
+                result_keys[col] = source_indexed[col].reindex(result_keys_mi).to_numpy(copy=False)
+
+    return result_keys
+
+
+def _build_ortho_baseline_set(
+    df: pd.DataFrame,
+    baseline_source: str = "promoted",
+    custom_baseline_path: str = None
+) -> Dict[str, np.ndarray]:
+    """
+    Build the orthogonalization baseline set for Option D.
+
+    Args:
+        df: Prepared DataFrame with FEATURE_COLUMNS available.
+        baseline_source: One of:
+            - "promoted": Load previously promoted alpha formulas from evolved_alphas.json
+              and evaluate them on current features to produce baseline signals.
+            - "momentum": Use simple momentum features as baselines (returns_5d, returns_10d, etc.)
+            - "file": Load baseline signals from a custom JSON file at custom_baseline_path.
+            - "none": Return empty dict (no orthogonalization).
+        custom_baseline_path: Path to custom baseline JSON (used when baseline_source="file").
+
+    Returns:
+        Dict mapping baseline_name -> np.ndarray of baseline signal values.
+    """
+    baseline_set: Dict[str, np.ndarray] = {}
+
+    if baseline_source == "none" or baseline_source is None:
+        logger.info("Ortho baseline: disabled (source='none')")
+        return baseline_set
+
+    if baseline_source == "momentum":
+        # Use simple momentum features as baselines — ensures new alphas
+        # are not just rediscoveries of raw momentum signals.
+        momentum_cols = ["returns_1d", "returns_5d", "returns_10d", "rsi_14", "ma_ratio_5_20"]
+        for col in momentum_cols:
+            if col in df.columns:
+                baseline_set[f"momentum_{col}"] = df[col].values.astype(np.float64)
+        logger.info(f"Ortho baseline: {len(baseline_set)} momentum baselines")
+        return baseline_set
+
+    if baseline_source == "file" and custom_baseline_path:
+        try:
+            with open(custom_baseline_path, "r") as f:
+                custom_data = json.load(f)
+            for name, values in custom_data.items():
+                baseline_set[name] = np.array(values, dtype=np.float64)
+            logger.info(f"Ortho baseline: {len(baseline_set)} custom baselines from {custom_baseline_path}")
+        except Exception as e:
+            logger.warning(f"Failed to load custom baseline from {custom_baseline_path}: {e}")
+        return baseline_set
+
+    if baseline_source == "promoted":
+        # Load previously promoted alphas and evaluate their formulas on current features
+        if not ORTHO_BASELINE_PATH.exists():
+            logger.info(f"Ortho baseline: no promoted alphas file at {ORTHO_BASELINE_PATH}, skipping")
+            return baseline_set
+        try:
+            with open(ORTHO_BASELINE_PATH, "r") as f:
+                promoted_data = json.load(f)
+            promoted_alphas = promoted_data.get("alphas", [])
+            if not promoted_alphas:
+                logger.info("Ortho baseline: no promoted alphas found, skipping")
+                return baseline_set
+
+            # Evaluate each promoted formula on current features to get baseline signal
+            # Include both base and alternative features so promoted alphas that
+            # reference alt_* columns can be properly re-evaluated for orthogonalization.
+            all_baseline_cols = list(FEATURE_COLUMNS)
+            for col in ALTERNATIVE_FEATURE_COLUMNS:
+                if col not in all_baseline_cols:
+                    all_baseline_cols.append(col)
+            features_dict = {col: df[col].values for col in all_baseline_cols if col in df.columns}
+            from omega.quant.evolution.genetic_engine import GPNode
+            import ast
+
+            for alpha_info in promoted_alphas:
+                alpha_id = alpha_info.get("alpha_id", "unknown")
+                formula = alpha_info.get("formula", "")
+                if not formula:
+                    continue
+                try:
+                    # Re-evaluate the formula using GP tree execution

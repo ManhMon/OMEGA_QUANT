@@ -1,0 +1,101 @@
+{
+  "gate": "HOSE_HNX_DATA_REBUILD_PHASE12_AUDIT_20260612",
+  "date": "2026-06-12T19:45:00+07:00",
+  "role": "15 data-engineer",
+  "tier": 2,
+  "status": "AWAITING_L3_REVIEW",
+  "canonical_price_unit_contract": {
+    "name": "VND_FULL",
+    "description": "All prices in OMEGA_QUANT pipeline are stored as whole Vietnamese Dong (e.g. 50000.0 = 50,000 VND)",
+    "raw_source_price_unit": "THOUSANDS",
+    "raw_source_description": "VCI 4.x returns prices in thousands (e.g. 50.0 = 50,000 VND)",
+    "conversion_factor": 1000.0,
+    "detection_threshold": "median(close) < 1000.0 implies THOUSANDS"
+  },
+  "centralized_guard": {
+    "module": "src/omega/data/vnd_price_contract.py",
+    "function": "ensure_vnd_scale(df, price_cols, ref_col, inplace)",
+    "behavior": "Detects THOUSANDS via median heuristic, multiplies by 1000 to VND_FULL. No-op if already VND_FULL."
+  },
+  "ingestion_write_boundaries_guarded": [
+    {
+      "file": "src/omega/data/vnstock_adapter.py",
+      "method": "VnstockVCIDataSource.fetch_price_data()",
+      "guard": "_normalize_price_vnd() using centralized constants",
+      "previously_guarded": false
+    },
+    {
+      "file": "src/omega/data/vnstock_live.py",
+      "method": "VnStockLiveDataProvider._fetch_price_data_single()",
+      "guard": "ensure_vnd_scale() called after fetching",
+      "previously_guarded": false
+    },
+    {
+      "file": "src/omega/data/vnstock_vci.py",
+      "method": "VnstockVCIDataSource._normalize_price_vnd()",
+      "guard": "Refactored to use centralized VND_FULL constants",
+      "previously_guarded": true
+    },
+    {
+      "file": "src/omega/data/vnstock_ingest.py",
+      "method": "normalize_price_columns_to_vnd()",
+      "guard": "Delegates to ensure_vnd_scale()",
+      "previously_guarded": true
+    },
+    {
+      "file": "src/omega/data/live_ingestor.py",
+      "method": "LiveDataIngestor._normalize_price_columns_to_vnd()",
+      "guard": "Delegates to ensure_vnd_scale()",
+      "previously_guarded": true
+    },
+    {
+      "file": "scripts/update_market_data.py",
+      "method": "fetch_and_append_data()",
+      "guard": "Replaced inline scaling with ensure_vnd_scale()",
+      "previously_guarded": true
+    },
+    {
+      "file": "scripts/batch_market_loader_resume.py",
+      "method": "load_batch()",
+      "guard": "Uses VnstockVCIDataSource (vnstock_vci.py) which normalizes",
+      "previously_guarded": true
+    }
+  ],
+  "execution_pnl_fixes": [
+    {
+      "file": "src/omega/execution/order_generator.py",
+      "changes": [
+        "convert_signal_to_order(): added price_unit param (default VND_FULL), uses get_price_multiplier()",
+        "validate_compliance(): added price_unit param, computes price_vnd via multiplier",
+        "Fixed ADV=0 check: now rejects orders for zero-ADV (no liquidity) tickers"
+      ],
+      "backward_compatible": true,
+      "backward_compat_param": "price_unit='THOUSANDS'"
+    },
+    {
+      "file": "src/omega/execution/trade_blotter.py",
+      "changes": [
+        "record_trade(): added price_unit param (default VND_FULL), uses get_price_multiplier()",
+        "notional = quantity * price * get_price_multiplier(price_unit)"
+      ],
+      "backward_compatible": true,
+      "backward_compat_param": "price_unit='THOUSANDS'"
+    },
+    {
+      "file": "src/omega/quant/monitoring/pnl_monitor.py",
+      "changes": [
+        "__init__(): default price_scale=1.0 (was 1000.0)",
+        "Added price_unit param; if THOUSANDS, uses get_price_multiplier()",
+        "All internal *self.price_scale uses remain unchanged (now default 1.0)"
+      ],
+      "backward_compatible": true,
+      "backward_compat_param": "price_unit='THOUSANDS' or explicit price_scale=1000.0"
+    }
+  ],
+  "test_coverage": {
+    "new_tests": 39,
+    "updated_existing_tests": 15,
+    "total_tests_passing": 54,
+    "test_file": "tests/data_test_vnd_full_exchange_fix.py"
+  }
+}

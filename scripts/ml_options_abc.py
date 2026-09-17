@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 from omega.quant.evolution.unified_feature_adapter import UnifiedFeatureAdapter
 from omega.quant.evolution.regime_detector import RegimeDetector
 from omega.quant.evolution.hrp_weighter import HRPWeighter
-from omega.quant.parallel_backtest import ParallelBacktestRunner
+from omega.quant.backtest.parallel import ParallelBacktestRunner
 
 # ============================================================
 # DATA (same as all versions)

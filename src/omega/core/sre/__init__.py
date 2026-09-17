@@ -9,7 +9,8 @@ Exports:
     kill_switch       : Global emergency kill-switch with graceful shutdown.
 """
 
-from omega.core.sre.kill_switch import KillSwitch, get_kill_switch, reset_kill_switch
+from omega.core.sre.kill_switch import KillSwitch, get_kill_switch
+from omega.core.sre.kill_switch import _reset_kill_switch_for_testing
 from omega.core.sre.metrics_collector import (
     Counter,
     Gauge,
@@ -36,7 +37,8 @@ __all__ = [
     # kill switch
     "KillSwitch",
     "get_kill_switch",
-    "reset_kill_switch",
+    # LIVE-04: reset_kill_switch removed from public API
+    # Use _reset_kill_switch_for_testing(auth_token="OMEGA_TEST") in tests
 ]
 
 # Auto-wired submodules and subpackages

@@ -1,0 +1,254 @@
+{
+  "config": {
+    "candidate_budget": 200,
+    "top_k": 10,
+    "n_outer_folds": 3,
+    "n_inner_folds": 3,
+    "llm_provider": "openai-compatible"
+  },
+  "source_proportions": {
+    "llm_v3": 3,
+    "template": 9,
+    "gp_mutation": 40,
+    "gp_crossover": 28,
+    "random_safe": 26
+  },
+  "total_generated": 106,
+  "total_selected": 10,
+  "n_outer_folds_evaluated": 3,
+  "deployment_ready": false,
+  "requires_full_cpcv": true,
+  "formula_memory": {
+    "unique_formulas": 106,
+    "total_generated": 113,
+    "total_duplicates": 7,
+    "total_parse_errors": 0,
+    "total_safety_rejected": 0,
+    "top_motifs": {
+      "abs": 7,
+      "sqrt": 7,
+      "neg": 7,
+      "sigmoid": 4,
+      "log": 4,
+      "rank": 3
+    }
+  },
+  "selected_candidates": [
+    {
+      "source": "random_safe",
+      "formula_str": "(open * ret_1d)",
+      "formula_hash": "90d5ad8b414ee4a9",
+      "inner_metrics": {
+        "ic": 0.7299430187245101,
+        "signed_ic": 0.7299430187245101,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.0,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.7299430187245101,
+        "mean_fold_max_correlation": 0.0
+      },
+      "objective_score": 0.9189829056173531,
+      "is_selected": true
+    },
+    {
+      "source": "gp_mutation",
+      "formula_str": "sigmoid(ret_1d)",
+      "formula_hash": "72e6eaacf15d640d",
+      "inner_metrics": {
+        "ic": 0.728696559891076,
+        "signed_ic": 0.728696559891076,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.9994592933947771,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.728696559891076,
+        "mean_fold_max_correlation": 0.9982875895621423
+      },
+      "objective_score": 0.7187171092883673,
+      "is_selected": true
+    },
+    {
+      "source": "gp_crossover",
+      "formula_str": "(ret_1d min 20)",
+      "formula_hash": "075811248d5f73f6",
+      "inner_metrics": {
+        "ic": 0.728696559891076,
+        "signed_ic": 0.728696559891076,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 1.0,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.728696559891076,
+        "mean_fold_max_correlation": 0.9999999999999999
+      },
+      "objective_score": 0.7186089679673228,
+      "is_selected": true
+    },
+    {
+      "source": "gp_mutation",
+      "formula_str": "(volume min abs(rank((ret_1d / sqrt(open)))))",
+      "formula_hash": "fd393fae9fc6cfde",
+      "inner_metrics": {
+        "ic": 0.7244221192002182,
+        "signed_ic": 0.7244221192002182,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.997096775342351,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.7244221192002182,
+        "mean_fold_max_correlation": 0.9935549697322371
+      },
+      "objective_score": 0.7179072806915953,
+      "is_selected": true
+    },
+    {
+      "source": "gp_mutation",
+      "formula_str": "((((volume - ret_1d) + (close max volume)) ts_std 5) min ret_1d)",
+      "formula_hash": "6dd286c86fd06118",
+      "inner_metrics": {
+        "ic": 0.7027428397484874,
+        "signed_ic": 0.7027428397484874,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.987592360421423,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.7027428397484874,
+        "mean_fold_max_correlation": 0.9851668266008531
+      },
+      "objective_score": 0.7133043798402616,
+      "is_selected": true
+    },
+    {
+      "source": "llm_v3",
+      "formula_str": "(ret_1d decay_linear 5)",
+      "formula_hash": "31871a58a9211394",
+      "inner_metrics": {
+        "ic": 0.49322815091345534,
+        "signed_ic": 0.49322815091345534,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.6758610349927209,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.49322815091345534,
+        "mean_fold_max_correlation": 0.6566209026499554
+      },
+      "objective_score": 0.7127962382754924,
+      "is_selected": true
+    },
+    {
+      "source": "gp_mutation",
+      "formula_str": "rank(((rank(ret_1d) ts_mean 20) min ret_1d))",
+      "formula_hash": "a610de4630a4f243",
+      "inner_metrics": {
+        "ic": 0.6681883524749864,
+        "signed_ic": 0.6681883524749864,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.9575242690798158,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.6681883524749864,
+        "mean_fold_max_correlation": 0.9509973075688004
+      },
+      "objective_score": 0.7089516519265328,
+      "is_selected": true
+    },
+    {
+      "source": "gp_mutation",
+      "formula_str": "(((ret_1d ts_rank 10) min open) + (sigmoid(close) ts_mean sqrt((open decay_linear 5))))",
+      "formula_hash": "ee12fe8640626d26",
+      "inner_metrics": {
+        "ic": 0.5604287456684099,
+        "signed_ic": 0.5604287456684099,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.8149308467283646,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.5604287456684099,
+        "mean_fold_max_correlation": 0.7822755360745978
+      },
+      "objective_score": 0.70514245435485,
+      "is_selected": true
+    },
+    {
+      "source": "random_safe",
+      "formula_str": "(ret_1d ts_rank 5)",
+      "formula_hash": "9dea8d10d9bb8a10",
+      "inner_metrics": {
+        "ic": 0.5435723966978719,
+        "signed_ic": 0.5435723966978719,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.8429627434182557,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.5435723966978719,
+        "mean_fold_max_correlation": 0.8178346356756364
+      },
+      "objective_score": 0.6944791703257105,
+      "is_selected": true
+    },
+    {
+      "source": "gp_crossover",
+      "formula_str": "(((volume ts_std 10) + 20) * ((volume / ret_1d) / (open * open)))",
+      "formula_hash": "74ee79bdd0189dd5",
+      "inner_metrics": {
+        "ic": 0.3368846350862471,
+        "signed_ic": 0.3368846350862471,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.6411857499602128,
+        "n_outer_folds_scored": 3,
+        "n_inner_folds_scored": 3,
+        "per_fold_positive_ic_diagnostic": 0.3368846350862471,
+        "mean_fold_max_correlation": 0.6339283754918962
+      },
+      "objective_score": 0.6728282405338316,
+      "is_selected": true
+    }
+  ],
+  "objective_weights": {
+    "w_ic": 0.3,
+    "w_sign_consistency": 0.15,
+    "w_dsr_proxy": 0.2,
+    "w_coverage": 0.15,
+    "w_low_correlation": 0.2
+  },
+  "deploy_thresholds": {
+    "min_deploy_ic": 0.05,
+    "min_deploy_sign_consistency": 0.6,
+    "min_deploy_dsr": 0.5,
+    "min_deploy_coverage": 0.9,
+    "max_deploy_correlation": 0.7
+  },
+  "pit_safety": {
+    "panel_sliced_per_outer_fold": true,
+    "ts_operators_cannot_see_outer_test": true,
+    "inner_splits_use_local_indices": true,
+    "ic_uses_signed_positive_only": true
+  },
+  "correlation_gate": {
+    "max_pairwise_correlation": 1.0,
+    "mean_pairwise_correlation": 0.7916613073337921,
+    "correlation_threshold": 0.7,
+    "correlation_blocked": true
+  }
+}

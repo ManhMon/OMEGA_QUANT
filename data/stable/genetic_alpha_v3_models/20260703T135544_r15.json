@@ -1,0 +1,9 @@
+{
+  "rank": 15,
+  "round": 9,
+  "train_IC": 0.4948,
+  "test_IC": 0.0305,
+  "hit_rate": 0.4402,
+  "expression": "(20 - close)",
+  "serialized_tree": "GPNode(operator='-', children=[GPNode(operator='terminal', children=[], value='20'), GPNode(operator='terminal', children=[], value='close')], value=None)"
+}

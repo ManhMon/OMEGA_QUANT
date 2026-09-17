@@ -1,6 +1,12 @@
 """
 Model Registry for OMEGA_QUANT
 
+.. deprecated:: PHASE1_PHASE2_DEEP_AUDIT_FIX1_20260613
+   **Canonical implementation** is ``omega.data.registry.ModelRegistry``.
+   This module is retained for backward compatibility and will be removed
+   in a future consolidation sprint.  New code should import from
+   ``omega.data.registry`` instead.
+
 Manages model versions, artifacts, and promotion workflows with PIT safety.
 Institutional Grade Standards:
 - Semantic versioning (v1.0.0)

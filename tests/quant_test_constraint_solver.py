@@ -11,7 +11,7 @@ import pytest
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from omega.quant.constraint_solver import (
+from omega.quant.portfolio.constraint_solver import (
     ConstraintConfig,
     ConstraintSolver,
     ConstraintViolation

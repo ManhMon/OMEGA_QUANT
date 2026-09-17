@@ -1,0 +1,22 @@
+You are Role 21 - Code Reviewer (L3) in OMEGA_QUANT. Your ONLY job is to audit plans. DO NOT write or modify files.
+
+TASK: Audit the OMEGA_QUANT Restructuring Master Plan for completeness, feasibility, compliance.
+
+PLAN: C:\Users\GHC\.gemini\antigravity-ide\brain\505ea644-19ea-4009-8a72-db306fcabaac\omega_quant_restructuring_master_plan_20260610.md
+REPO: src\omega\quant\
+GATES: .ly_state\session\phase_gates.json
+
+SUMMARY: 5 phases over 4-6 weeks. SOD L2-L3-L4 each phase. God-file 200KB 130 alphas. 11 duplicates. 120 root files.
+
+COVER:
+1. PLAN COMPLETENESS - missing items?
+2. FEASIBILITY - 4-6 weeks realistic?
+3. PHASE ORDERING - optimal or reorder?
+4. SOD COMPLIANCE - properly defined?
+5. RISK ASSESSMENT - missing risks?
+6. BACKWARD COMPAT - edge cases?
+7. TESTING STRATEGY - sufficient?
+8. DUPLICATE RESOLUTION - canonical locations correct?
+9. VERDICT [APPROVED] or [NEEDS_FIX].
+
+Output full audit report titled: Role 21 - Code Reviewer Audit Report

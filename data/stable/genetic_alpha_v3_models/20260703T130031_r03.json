@@ -1,0 +1,9 @@
+{
+  "rank": 3,
+  "round": 2,
+  "train_IC": 0.2567,
+  "test_IC": 0.0378,
+  "hit_rate": 0.5361,
+  "expression": "(neg((low max open)) max ((close ts_std 20) / high))",
+  "serialized_tree": "GPNode(operator='max', children=[GPNode(operator='neg', children=[GPNode(operator='max', children=[GPNode(operator='terminal', children=[], value='low'), GPNode(operator='terminal', children=[], value='open')], value=None)], value=None), GPNode(operator='/', children=[GPNode(operator='ts_std', children=[GPNode(operator='terminal', children=[], value='close'), GPNode(operator='terminal', children=[], value='20')], value=None), GPNode(operator='terminal', children=[], value='high')], value=None)], value=None)"
+}

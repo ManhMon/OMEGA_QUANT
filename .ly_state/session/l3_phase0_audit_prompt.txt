@@ -1,0 +1,22 @@
+You are Role 20 - Compliance Officer (L3) in OMEGA_QUANT. Your task is to audit the Phase 0 implementation completed by L2 OpenCode.
+
+PLAN: C:\Users\GHC\.gemini\antigravity-ide\brain\505ea644-19ea-4009-8a72-db306fcabaac\omega_quant_restructuring_master_plan_20260610.md
+REPO: src/omega/quant/
+
+TASK:
+Audit the new `src/omega/quant/alpha/primitives.py`, `src/omega/quant/ultimate_alpha_arsenal.py`, and `src/omega/quant/promoted_alphas.py`.
+
+Your audit report MUST cover:
+1. POINT-IN-TIME (PIT) SAFETY: Confirm that `compute_returns` and `compute_rsi` in primitives.py preserve the T-1 shift logic and do same-day look-ahead check.
+2. FUNCTIONAL PARITY: Check if the functions in primitives.py are functionally identical to the deleted ones.
+3. CIRCULAR DEPENDENCY: Confirm that the dependency cycle between promoted_alphas and ultimate_alpha_arsenal has been successfully broken.
+4. AUDIT COMPLIANCE VERDICT: [APPROVED] or [NEEDS_FIX]
+
+Output format:
+# Role 20 - Compliance Officer Audit Report
+## Date: 2026-06-10
+## Phase: Phase 0 - Primitives Extraction & Circular Import Resolution
+
+[Audit details]
+
+## Final Verdict: [APPROVED] or [NEEDS_FIX]

@@ -1,0 +1,204 @@
+{
+  "session_id": "l2_role9_llm_closed_loop_cpcv_selection_fix_20260612",
+  "role_id": 9,
+  "role_name": "backend-engineer",
+  "tier": 2,
+  "platform": "OpenCode",
+  "date": "2026-06-12",
+  "task": "Fix closed-loop CPCV issues discovered in real run",
+  "issues_fixed": [
+    {
+      "id": 1,
+      "priority": "P0",
+      "description": "Count bug showing total_candidates_generated=10, accepted=24, rejected=-14",
+      "root_cause": "Mixing per-iteration counts with accumulated counts across mismatched scopes",
+      "fix": "Implemented stage-by-stage count tracking with separate fields for each stage",
+      "status": "FIXED"
+    },
+    {
+      "id": 2,
+      "priority": "P0",
+      "description": "Missing train-fold supervised candidate selection before adding LLM features",
+      "root_cause": "Labels not passed to run_search, no supervised thresholds applied",
+      "fix": "Pass labels to run_search, use supervised scorer config with IC/DSR thresholds",
+      "status": "FIXED"
+    },
+    {
+      "id": 3,
+      "priority": "P0",
+      "description": "All accumulated candidates added as features, not limited to top K",
+      "root_cause": "No top-K selection mechanism implemented",
+      "fix": "Added select_top_k_candidates method with CLI/env config support",
+      "status": "FIXED"
+    },
+    {
+      "id": 4,
+      "priority": "P1",
+      "description": "Iteration objective not using IC/DSR proxy for candidate evaluation",
+      "root_cause": "Scorer using unsupervised-only mode",
+      "fix": "Use supervised thresholds when labels available, persist aggregate IC/DSR metrics",
+      "status": "FIXED"
+    },
+    {
+      "id": 5,
+      "priority": "P2",
+      "description": "Deployment flag verification",
+      "root_cause": "None - existing implementation correct",
+      "fix": "Verified deployment_ready=False, requires_full_cpcv=True",
+      "status": "VERIFIED"
+    },
+    {
+      "id": 6,
+      "priority": "P0",
+      "description": "No test coverage for new functionality",
+      "root_cause": "Tests not written",
+      "fix": "Added 8 comprehensive tests covering all issues",
+      "status": "FIXED"
+    }
+  ],
+  "files_modified": {
+    "src/omega/quant/evolution/llm_formula_search.py": {
+      "changes": [
+        "Updated FormulaSearchState with stage-by-stage count fields",
+        "Modified run_search to track counts at each stage",
+        "Added dynamic scorer config based on label availability",
+        "Added select_top_k_candidates method for supervised/unsupervised ranking",
+        "Updated to_dict/from_dict with backward compatibility"
+      ],
+      "lines_modified": 150,
+      "backward_compatible": true
+    },
+    "scripts/backtest_v2_cpcv.py": {
+      "changes": [
+        "Added --llm-top-k CLI parameter",
+        "Added OMEGA_LLM_TOP_K env var support",
+        "Updated to pass labels to run_search for supervised scoring",
+        "Integrated top-K selection into both closed-loop and simple paths",
+        "Modified scorer config to use supervised thresholds"
+      ],
+      "lines_modified": 80,
+      "backward_compatible": true
+    },
+    "tests/quant_test_closed_loop_cpcv_fixes.py": {
+      "changes": [
+        "Created new test file with 8 comprehensive tests",
+        "Tests cover count correctness, top-K selection, supervised metadata",
+        "Tests verify PIT safety and negative count prevention"
+      ],
+      "lines_added": 680,
+      "backward_compatible": true
+    }
+  },
+  "testing": {
+    "unit_tests": {
+      "file": "tests/quant_test_closed_loop_cpcv_fixes.py",
+      "tests_added": 8,
+      "tests_passed": 8,
+      "tests_failed": 0,
+      "coverage": [
+        "test_count_correctness_no_negatives",
+        "test_topk_selection_supervised",
+        "test_topk_selection_unsupervised",
+        "test_supervised_selection_metadata",
+        "test_no_test_label_leakage",
+        "test_no_negative_rejected_counts",
+        "test_count_tracking_across_iterations",
+        "test_topk_selection_with_env_var"
+      ]
+    },
+    "syntax_validation": {
+      "tool": "py_compile",
+      "files_validated": [
+        "src/omega/quant/evolution/llm_formula_search.py",
+        "scripts/backtest_v2_cpcv.py",
+        "tests/quant_test_closed_loop_cpcv_fixes.py"
+      ],
+      "result": "PASS",
+      "errors": 0
+    },
+    "sod_gate_enforcer": {
+      "command": "python scripts/sod_gate_enforcer.py",
+      "result": "PASS",
+      "phases_verified": 106,
+      "audit_evidence_present": true,
+      "role_boundary_validated": true,
+      "safe_to_push": true
+    }
+  },
+  "verification_evidence": {
+    "count_correctness": {
+      "verified": true,
+      "stage_counts_tracked": [
+        "total_raw_generated",
+        "total_safety_validated",
+        "total_unique_after_dedup",
+        "total_scoring_input",
+        "total_scoring_accepted",
+        "total_scoring_rejected"
+      ],
+      "logical_relationships": [
+        "safety_validated <= raw_generated",
+        "unique_after_dedup <= safety_validated",
+        "scoring_input == unique_after_dedup",
+        "scoring_accepted + scoring_rejected == scoring_input"
+      ],
+      "no_negative_counts": true
+    },
+    "supervised_selection": {
+      "verified": true,
+      "scorer_thresholds": {
+        "min_absolute_ic": 0.01,
+        "min_dsr_proxy": -0.5
+      },
+      "aggregate_stats_persisted": [
+        "median_train_ic",
+        "median_dsr",
+        "mean_train_ic",
+        "mean_dsr"
+      ],
+      "stats_passed_to_next_iteration": true
+    },
+    "topk_limiting": {
+      "verified": true,
+      "cli_parameter": "--llm-top-k",
+      "env_var": "OMEGA_LLM_TOP_K",
+      "default_value": 10,
+      "supervised_ranking": "absolute_ic",
+      "unsupervised_ranking": "variance",
+      "integrated_paths": ["closed_loop", "simple_synthesis"]
+    },
+    "pit_safety": {
+      "verified": true,
+      "labels_usage": "train_only",
+      "no_test_label_leakage": true,
+      "aggregate_stats_only": true,
+      "deployment_flag_requires_cpcv": true
+    }
+  },
+  "deployment_readiness": {
+    "status": "READY_FOR_L3_AUDIT",
+    "all_fixes_implemented": true,
+    "all_tests_passing": true,
+    "syntax_validation_passed": true,
+    "sod_gate_enforcer_passed": true,
+    "backward_compatible": true,
+    "no_breaking_changes": true,
+    "next_steps": [
+      "L3 audit by independent reviewer (role_id 17-25, Codex platform)",
+      "Full CPCV validation on real data",
+      "Verify deployment_ready flag logic with actual thresholds"
+    ]
+  },
+  "compliance": {
+    "sod": "L2 implementation only, no audit functions",
+    "pit_safety": "All label usage is train-only, no future data leakage",
+    "role_boundary": "Backend engineer role, no cross-role violations",
+    "testing": "Comprehensive coverage with regression tests",
+    "documentation": "Inline comments added, L2 report completed"
+  },
+  "artifacts": {
+    "l2_report": ".ly_state/session/l2_role9_llm_closed_loop_cpcv_selection_fix_20260612.md",
+    "evidence_json": ".ly_state/session/llm_closed_loop_cpcv_selection_fix_20260612.json",
+    "test_file": "tests/quant_test_closed_loop_cpcv_fixes.py"
+  }
+}

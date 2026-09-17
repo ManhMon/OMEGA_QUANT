@@ -1,0 +1,143 @@
+{
+  "gate_id": "AUTOMATED_ALPHA_DISCOVERY_DYNAMIC_20260615",
+  "candidates_evaluated": 5,
+  "candidates_recommended": 3,
+  "diagnostics": [
+    {
+      "alpha_name": "auto_mom_ret_5",
+      "marginal_ic": 0.019401,
+      "marginal_icir": 0.0607,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.0112,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.019400616572285593,
+          "candidate_icir": 0.06068189922313419,
+          "composite_ic": 0.019400616572285593,
+          "composite_icir": 0.06068189922313419,
+          "marginal_ic": 0.019400616572285593
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_mom_ret_20",
+      "marginal_ic": -0.015074,
+      "marginal_icir": -0.0443,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3305,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "SKIP_LOW_IC",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": -0.015073815073815076,
+          "candidate_icir": -0.04431395565075383,
+          "composite_ic": -0.015073815073815076,
+          "composite_icir": -0.04431395565075383,
+          "marginal_ic": -0.015073815073815076
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_mr_zscore_20",
+      "marginal_ic": 0.027839,
+      "marginal_icir": 0.0814,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.0135,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.02783872098320203,
+          "candidate_icir": 0.08141989469530028,
+          "composite_ic": 0.02783872098320203,
+          "composite_icir": 0.08141989469530028,
+          "marginal_ic": 0.02783872098320203
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_vol_ratio_5_20",
+      "marginal_ic": 0.058861,
+      "marginal_icir": 0.1794,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3352,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "RECOMMEND",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": 0.05886080624257543,
+          "candidate_icir": 0.1794382309673525,
+          "composite_ic": 0.05886080624257543,
+          "composite_icir": 0.1794382309673525,
+          "marginal_ic": 0.05886080624257543
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    },
+    {
+      "alpha_name": "auto_vol_close_loc",
+      "marginal_ic": -0.018788,
+      "marginal_icir": -0.056,
+      "max_corr_existing": 0.0,
+      "mean_corr_existing": 0.0,
+      "turnover_estimate": 0.3205,
+      "diversification_benefit": 1.0,
+      "transfer_verdict": "SKIP_LOW_IC",
+      "evidence": {
+        "ic_detail": {
+          "candidate_ic": -0.018787878787878777,
+          "candidate_icir": -0.05595518965302786,
+          "composite_ic": -0.018787878787878777,
+          "composite_icir": -0.05595518965302786,
+          "marginal_ic": -0.018787878787878777
+        },
+        "corr_detail": {
+          "max_corr": 0.0,
+          "mean_corr": 0.0,
+          "per_signal": {}
+        },
+        "pit_safe": true,
+        "train_only": true
+      }
+    }
+  ],
+  "summary": {
+    "total_evaluated": 5,
+    "total_recommended": 3,
+    "avg_marginal_ic": 0.014447689987273842,
+    "avg_max_corr": 0.0
+  }
+}

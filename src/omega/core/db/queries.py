@@ -24,6 +24,11 @@ from .models import (
 T = TypeVar('T')
 
 
+def get_task(session: Session, task_id: str) -> Optional[Task]:
+    """Return one persisted task without creating fallback state."""
+    return session.query(Task).filter(Task.task_id == task_id).one_or_none()
+
+
 def pit_query(
     session: Session,
     model_class: Type[T],

@@ -69,6 +69,17 @@ if risk_status:
             st.markdown(f"- {reason}")
     else:
         st.success("🟢 All circuit breakers NORMAL")
+
+    reconciliation = risk_status.get("market_data_reconciliation")
+    if reconciliation:
+        st.markdown("---")
+        st.markdown("### Market Data Health")
+        status = reconciliation.get("status", "unknown").upper()
+        (st.error if status == "CRITICAL" else st.warning if status == "WARNING" else st.success)(status)
+        st.json(reconciliation.get("aggregate_by_exchange", {}), expanded=False)
+        findings = reconciliation.get("findings", [])
+        if findings:
+            st.dataframe(findings, width="stretch", hide_index=True)
     
     # Risk gauges
     st.markdown("---")

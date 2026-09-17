@@ -1,0 +1,15 @@
+REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: 14 data-scientist - OpenCode L2 Implementation Work. TASK: Fix exactly two forbidden-path wording lines in existing L2 report to satisfy sod_gate_enforcer. GATE: HYBRID_REGIME_P2FULL_NARROW_SWEEP_PLAN_20260630. SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\data-scientist.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result.
+SCOPE: .ly_state/session/l2_role14_p2full_narrow_sweep_plan_20260630.md, scripts/sod_gate_enforcer.py.
+REQUIREMENTS:
+- Use repo-relative paths from REPO_ROOT only.
+- Update only .ly_state/session/l2_role14_p2full_narrow_sweep_plan_20260630.md.
+- You MUST change these exact two lines if present:
+  1) `- `C:/Users/GHC/.agents` -> present`
+     to
+     `- `C:/Users/GHC/.agents` -> present, non-authoritative, not used as source`
+  2) `Result: no forbidden path used as authoritative source. Global path `C:/Users/GHC/.agents` exists but was not read for role/skill loading.`
+     to
+     `Result: no forbidden path used as authoritative source. Global path `C:/Users/GHC/.agents` exists, is non-authoritative, and was not read for role/skill loading.`
+- After editing, re-read lines 31-37 of the file and print them in your final output as proof.
+- Preserve all other content unchanged.
+- Stop after report update. Do not audit or approve.

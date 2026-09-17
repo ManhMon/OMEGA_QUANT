@@ -1,0 +1,48 @@
+{
+  "date": "2026-06-18",
+  "portfolio": [
+    {
+      "ticker": "BID",
+      "weight": 0.0791,
+      "shares": 3700
+    },
+    {
+      "ticker": "MSB",
+      "weight": 0.0589,
+      "shares": 7500
+    },
+    {
+      "ticker": "VSC",
+      "weight": 0.0547,
+      "shares": 5500
+    },
+    {
+      "ticker": "TPB",
+      "weight": 0.0535,
+      "shares": 6600
+    },
+    {
+      "ticker": "CTG",
+      "weight": 0.0475,
+      "shares": 2800
+    },
+    {
+      "ticker": "VHM",
+      "weight": 0.0433,
+      "shares": 600
+    },
+    {
+      "ticker": "STB",
+      "weight": 0.0425,
+      "shares": 1200
+    },
+    {
+      "ticker": "EVF",
+      "weight": 0.0398,
+      "shares": 5700
+    }
+  ],
+  "capital": 2000000000.0,
+  "num_positions": 8,
+  "total_weight": 0.4193
+}

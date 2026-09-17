@@ -1,0 +1,28 @@
+    def _fetch_news(
+        self, from_date: str = None, to_date: str = None, page: int = 0, size: int = 50
+    ) -> List:
+        """
+        Fetch news from REST API (alternative endpoint with more data).
+
+        Returns:
+            List: News data.
+        """
+        if from_date is None:
+            from_date = (datetime.now() - timedelta(days=365 * 10)).strftime("%Y%m%d")
+        if to_date is None:
+            to_date = datetime.now().strftime("%Y%m%d")
+
+        url = f"{_VCIQ_URL}/v1/news?ticker={self.symbol}&fromDate={from_date}&toDate={to_date}&languageId=1&page={page}&size={size}"
+
+        if self.show_log:
+            logger.debug(f"Requesting news for {self.symbol} from {url}")
+
+        response_data = send_request(
+            url=url, headers=self.headers, method="GET", show_log=self.show_log
+        )
+
+        # Extract content from paginated response
+        data = response_data.get("data", {})
+        if isinstance(data, dict):
+            return data.get("content", [])
+        return []

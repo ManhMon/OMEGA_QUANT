@@ -1,0 +1,9 @@
+{
+  "rank": 5,
+  "round": 1,
+  "train_IC": 0.3571,
+  "test_IC": 0.036,
+  "hit_rate": 0.44,
+  "expression": "log(returns_5d)",
+  "serialized_tree": "GPNode(operator='log', children=[GPNode(operator='terminal', children=[], value='returns_5d')], value=None)"
+}

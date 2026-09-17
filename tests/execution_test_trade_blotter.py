@@ -44,7 +44,7 @@ class TestTradeBlotter:
             symbol="VNM",
             side="BUY",
             quantity=100,
-            price=50.0,
+            price=50000.0,  # VND_FULL: 50,000 VND
             commission_rate=0.0015
         )
         
@@ -52,8 +52,8 @@ class TestTradeBlotter:
         assert record.symbol == "VNM"
         assert record.side == "BUY"
         assert record.quantity == 100
-        assert record.price == 50.0
-        # Notional = 100 * 50 * 1000 = 5,000,000 VND
+        assert record.price == 50000.0
+        # Notional = 100 * 50000 * 1.0 = 5,000,000 VND
         assert record.notional_value == 5_000_000.0
         # Commission = 5,000,000 * 0.0015 = 7,500 VND
         assert record.commission == 7_500.0
@@ -133,16 +133,16 @@ class TestTradeBlotter:
         """Test aggregate trade statistics."""
         blotter = TradeBlotter()
         
-        blotter.record_trade("SSI_001", "CLI_001", "VNM", "BUY", 100, 50.0)
-        blotter.record_trade("SSI_002", "CLI_002", "VNM", "BUY", 200, 50.0)
-        blotter.record_trade("SSI_003", "CLI_003", "HPG", "SELL", 300, 25.0)
+        blotter.record_trade("SSI_001", "CLI_001", "VNM", "BUY", 100, 50000.0)
+        blotter.record_trade("SSI_002", "CLI_002", "VNM", "BUY", 200, 50000.0)
+        blotter.record_trade("SSI_003", "CLI_003", "HPG", "SELL", 300, 25000.0)
         
         stats = blotter.get_summary_stats()
         
         assert stats["total_trades"] == 3
-        # BUY value = (100 + 200) * 50 * 1000 = 15,000,000 VND
+        # BUY value = (100 + 200) * 50000 * 1.0 = 15,000,000 VND
         assert stats["total_buy_value_vnd"] == 15_000_000.0
-        # SELL value = 300 * 25 * 1000 = 7,500,000 VND
+        # SELL value = 300 * 25000 * 1.0 = 7,500,000 VND
         assert stats["total_sell_value_vnd"] == 7_500_000.0
         assert stats["total_turnover_vnd"] == 22_500_000.0
         

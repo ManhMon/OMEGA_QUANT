@@ -1,0 +1,45 @@
+{
+  "run_date": "2026-06-17T12:14:51.369269",
+  "total_promoted": 1,
+  "target_horizon": 5,
+  "multi_target_horizons": [
+    3,
+    5,
+    10
+  ],
+  "multi_target_weights": [
+    0.5,
+    0.3,
+    0.2
+  ],
+  "train_ratio": 0.7,
+  "pit_safety": {
+    "t1_lag": true,
+    "chronological_split": true,
+    "no_lookahead": true
+  },
+  "orthogonalization": {
+    "enabled": true
+  },
+  "alternative_features": {
+    "enabled": true,
+    "expected_columns": 35
+  },
+  "alphas": [
+    {
+      "alpha_id": "gp_alpha_20260617_000",
+      "formula": "(sigmoid(target_h10) ts_rank 20)",
+      "ic": 0.340005,
+      "sharpe": 0.140553,
+      "fitness": 0.601468,
+      "horizon": 5,
+      "multi_target_horizons": [
+        3,
+        5,
+        10
+      ],
+      "train_end_date": "2026-06-17 00:00:00",
+      "promoted_at": "2026-06-17T12:14:51.346659"
+    }
+  ]
+}

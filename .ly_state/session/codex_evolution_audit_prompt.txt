@@ -1,0 +1,30 @@
+ROLE: Code Reviewer (Role 21) - Codex L3 Audit.
+GATE: INFINITE_FEATURE_SPACE_EVOLUTION_20260611.
+SCOPE:
+1. src/omega/quant/evolution/llm_symbolic_synthesizer.py
+2. src/omega/quant/models/latent_encoder.py
+3. src/omega/quant/evolution/unified_feature_adapter.py
+4. scripts/backtest_v2_cpcv.py
+5. tests/quant_test_infinite_evolution.py
+
+CHECKS:
+A. Import resolution: Check all imports are correct and resolved.
+B. PIT safety (Point-in-Time): Verify there is no look-ahead bias or future leakage in either LLM formula synthesis or unsupervised latent encoder training. Ensure training is strictly on historical fold train set.
+C. PEP 8 compliance.
+D. Backward compatibility: Ensure existing CPCV backtesting arguments and flows are unaffected if option flags are omitted.
+E. Pytest baseline: Verify that tests in tests/quant_test_infinite_evolution.py pass successfully.
+F. SOD: Implementer is OpenCode L2 (or Antigravity L2), auditor is Codex L3. No self-approval.
+
+VERDICT:
+Write a detailed audit report to `.ly_state/session/audit_reports/role21_evolution_audit_20260611.md`.
+The report must contain:
+1. Status: [APPROVED] or [NEEDS_FIX]
+2. All fields required by the OMEGA SOD protocol:
+   - l3_session_id: "codex-l3-evolution-20260611-001"
+   - l3_session_key: "codex:role21:infinite-evolution:20260611T175000+07:00"
+   - audit_report_path: ".ly_state/session/audit_reports/role21_evolution_audit_20260611.md"
+   - final_verdict: "[APPROVED]" or "[NEEDS_FIX]"
+   - status: "APPROVED" or "NEEDS_FIX"
+3. Analysis of checks (A-F).
+
+Please update `.ly_state/session/phase_gates.json` with this entry if APPROVED.

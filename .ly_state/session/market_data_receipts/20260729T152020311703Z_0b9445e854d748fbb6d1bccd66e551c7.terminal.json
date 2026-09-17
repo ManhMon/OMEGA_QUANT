@@ -1,0 +1,19 @@
+{
+  "as_of_date": null,
+  "attempt_id": "20260729T152020311703Z_0b9445e854d748fbb6d1bccd66e551c7",
+  "calendar_status": "unknown",
+  "completed_at": "2026-07-29T15:20:20+00:00",
+  "execution_allowed": false,
+  "expected_session_date": null,
+  "provenance": {
+    "projection_error": null,
+    "publication_run_id": null,
+    "result_status": "published"
+  },
+  "published": true,
+  "reason": "published",
+  "schema_version": 1,
+  "stale": false,
+  "started_at": "2026-07-29T15:20:20+00:00",
+  "state": "terminal"
+}

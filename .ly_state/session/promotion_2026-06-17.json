@@ -1,0 +1,21 @@
+{
+  "date": "2026-06-17",
+  "criteria": {
+    "ic_min": 0.05,
+    "sharpe_min": 0.5,
+    "oos_ratio_min": 0.5,
+    "corr_max": 0.7,
+    "ic_drop_threshold": 0.5
+  },
+  "gate_backend": "fallback",
+  "promoted": [],
+  "demoted": [],
+  "rejected": [],
+  "totals": {
+    "evolved_evaluated": 0,
+    "promoted": 0,
+    "demoted": 0,
+    "rejected": 0,
+    "active_after": 0
+  }
+}

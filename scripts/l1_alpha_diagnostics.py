@@ -7,7 +7,7 @@ os.chdir(os.path.join(os.path.dirname(__file__), '..'))
 
 import pandas as pd
 import numpy as np
-from omega.quant.phase34_microstructure_alphas import compute_phase34_microstructure_alphas
+from omega.quant.alpha.phase34 import compute_phase34_microstructure_alphas
 from phase35_data_loader import Phase35DataLoader
 
 print("=== L1 ALPHA DIAGNOSTICS ===")

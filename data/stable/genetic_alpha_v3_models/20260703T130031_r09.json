@@ -1,0 +1,9 @@
+{
+  "rank": 9,
+  "round": 9,
+  "train_IC": 0.3571,
+  "test_IC": 0.036,
+  "hit_rate": 0.5369,
+  "expression": "rank(log((returns_5d min high)))",
+  "serialized_tree": "GPNode(operator='rank', children=[GPNode(operator='log', children=[GPNode(operator='min', children=[GPNode(operator='terminal', children=[], value='returns_5d'), GPNode(operator='terminal', children=[], value='high')], value=None)], value=None)], value=None)"
+}

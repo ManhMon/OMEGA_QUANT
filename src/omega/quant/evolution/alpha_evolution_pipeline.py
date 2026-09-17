@@ -31,13 +31,13 @@ import numpy as np
 import pandas as pd
 
 from omega.quant.evolution.genetic_alpha import Genome, enforce_t_minus_1_lag
-from omega.quant.alpha_discovery import (
+from omega.quant.alpha.discovery import (
     AlphaDecayMonitor,
     AlphaPromoter,
     OrthogonalityChecker,
     FeatureUniverseManager,
 )
-from omega.quant.parallel_backtest import ParallelBacktestRunner
+from omega.quant.backtest.parallel import ParallelBacktestRunner
 
 logger = logging.getLogger(__name__)
 

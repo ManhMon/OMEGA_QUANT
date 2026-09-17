@@ -21,7 +21,7 @@ class TestPhase35EngineStage2Params(unittest.TestCase):
     """Verify Phase35WalkForwardEngine accepts and stores Stage 2 params."""
 
     def _get_engine_class(self):
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         return Phase35WalkForwardEngine
 
     def test_engine_accepts_top_n_stocks(self):
@@ -178,7 +178,7 @@ class TestRunFoldStage2BehavioralEnforcement(unittest.TestCase):
     """
 
     def _make_engine(self, top_n_stocks=3, rebalance_freq=2, sector_cap_pct=0.30):
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
 
         class _FakeAlphaModule:
             """Minimal alpha module: passes df through, adds a dummy alpha col."""
@@ -302,7 +302,7 @@ class TestRunFoldStage2BehavioralEnforcement(unittest.TestCase):
         """
         import pandas as pd
         import numpy as np
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
 
         rebal_freq = 3
         engine = self._make_engine(top_n_stocks=2, rebalance_freq=rebal_freq, sector_cap_pct=1.0)
@@ -388,7 +388,7 @@ class TestRunFoldStage2BehavioralEnforcement(unittest.TestCase):
         """
         import pandas as pd
         import numpy as np
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
 
         sector_cap = 0.60
         # 4 tickers: A,B in SectorX; C,D in SectorY

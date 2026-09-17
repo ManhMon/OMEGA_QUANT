@@ -199,6 +199,36 @@ def run_daily_oracle():
     else:
         logger.info("Ensemble signals generated successfully.")
 
+    # 3.15. Sentiment Alpha Blend (combine ensemble + T-1 sentiment, PIT safe)
+    logger.info("--> STEP 3.15: Sentiment Alpha Blend (PIT T-1 scan)")
+    blend_script = PROJECT_ROOT / "scripts" / "run_sentiment_blend.py"
+    if blend_script.exists():
+        try:
+            blend_result = subprocess.run(
+                [sys.executable, str(blend_script), "--date", target_date],
+                capture_output=True, text=True,
+            )
+            if blend_result.returncode == 0:
+                logger.info("Sentiment alpha blend completed (T-1 scan, ensemble updated).")
+            else:
+                logger.warning(
+                    "Sentiment blend exited with code %d (non-blocking). Using raw ensemble.",
+                    blend_result.returncode,
+                )
+                if blend_result.stderr:
+                    logger.warning("Sentiment blend stderr: %s", blend_result.stderr.strip()[-300:])
+        except Exception as e:
+            logger.warning("Sentiment blend error (non-blocking): %s", e)
+    else:
+        logger.info("Sentiment blend script not found, skipping.")
+
+    # 3.45. Conformal price ladder (non-blocking)
+    logger.info("--> STEP 3.45: Generating Conformal Price Ladder")
+    if not run_step("generate_price_ladder.py", ["--date", target_date]):
+        logger.warning("Price ladder failed (non-blocking).")
+    else:
+        logger.info("Price ladder generated.")
+
     # 3.2. Transaction Cost Optimization
     logger.info("--> STEP 3.2: Optimizing Transaction Costs")
     if not run_step("run_cost_optimizer.py", ["--date", target_date]):
@@ -274,7 +304,7 @@ def run_daily_oracle():
     else:
         logger.info("Attribution computed")
 
-    # 3.5. Load sentiment data if available (informational)
+    # 3.16. Log sentiment availability (informational)
     sentiment_file = PROJECT_ROOT / '.ly_state' / 'session' / 'sentiment_scores.json'
     if sentiment_file.exists():
         try:
@@ -282,7 +312,7 @@ def run_daily_oracle():
                 _sent_data = json.load(_sf)
             if _sent_data.get('date') == target_date and _sent_data.get('scores'):
                 num_tickers = len(_sent_data['scores'])
-                logger.info(f"Sentiment data available for {num_tickers} tickers (will be wired into signals next sprint)")
+                logger.info(f"Sentiment data for {num_tickers} tickers (today's enrichment archived for T+1 use)")
             else:
                 logger.info("Sentiment file exists but no scores for today.")
         except Exception as e:

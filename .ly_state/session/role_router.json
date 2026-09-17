@@ -1,0 +1,258 @@
+{
+  "version": "2.0",
+  "generated_at": "2026-06-11T10:59:46+07:00",
+  "description": "OMEGA_QUANT 25-role routing registry. Ly routes tasks to OpenCode L2 implementers and Codex L3 auditors with strict SOD boundaries.",
+  "role_files_root": ".agents/agent",
+  "roles": {
+    "1": {
+      "name": "project-manager",
+      "tier": "L1",
+      "platform": "Ly",
+      "role_file": ".agents/agent/project-manager.md",
+      "focus": "strategic orchestration and resource allocation",
+      "allowed_actions": ["orchestrate", "prioritize", "route", "gate_decision"],
+      "forbidden_actions": ["implement_code", "issue_l3_verdict"],
+      "cli": "ly"
+    },
+    "2": {
+      "name": "product-owner",
+      "tier": "L1",
+      "platform": "Ly",
+      "role_file": ".agents/agent/product-owner.md",
+      "focus": "feature prioritization and stakeholder alignment",
+      "allowed_actions": ["prioritize", "define_acceptance", "scope"],
+      "forbidden_actions": ["implement_code", "issue_l3_verdict"],
+      "cli": "ly"
+    },
+    "3": {
+      "name": "scrum-master",
+      "tier": "L1",
+      "platform": "Ly",
+      "role_file": ".agents/agent/scrum-master.md",
+      "focus": "process, blockers, delivery cadence",
+      "allowed_actions": ["coordinate", "unblock", "track_process"],
+      "forbidden_actions": ["implement_code", "issue_l3_verdict"],
+      "cli": "ly"
+    },
+    "4": {
+      "name": "release-manager",
+      "tier": "L1",
+      "platform": "Ly",
+      "role_file": ".agents/agent/release-manager.md",
+      "focus": "release coordination and deployment gates",
+      "allowed_actions": ["release_gate", "deploy_authorize", "rollback_decision"],
+      "forbidden_actions": ["implement_code", "issue_l3_verdict"],
+      "cli": "ly"
+    },
+    "5": {
+      "name": "delivery-manager",
+      "tier": "L1",
+      "platform": "Ly",
+      "role_file": ".agents/agent/delivery-manager.md",
+      "focus": "timeline and delivery tracking",
+      "allowed_actions": ["track_delivery", "status_report", "handover"],
+      "forbidden_actions": ["implement_code", "issue_l3_verdict"],
+      "cli": "ly"
+    },
+    "6": {
+      "name": "system-architect",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/system-architect.md",
+      "focus": "system design and interface definition",
+      "allowed_actions": ["design", "refactor_plan", "interface_definition", "implement_architecture"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "7": {
+      "name": "tech-lead",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/tech-lead.md",
+      "focus": "technical leadership and code standards",
+      "allowed_actions": ["implement", "review_l2", "standardize", "coordinate_l2"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "8": {
+      "name": "frontend-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/frontend-engineer.md",
+      "focus": "web UI implementation",
+      "allowed_actions": ["implement_ui", "style", "accessibility_fix", "frontend_tests"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "9": {
+      "name": "backend-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/backend-engineer.md",
+      "focus": "API, Python services, business logic",
+      "allowed_actions": ["implement", "fix", "test", "refactor_backend"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "10": {
+      "name": "database-admin",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/database-admin.md",
+      "focus": "schema design and database performance",
+      "allowed_actions": ["schema_change", "migration", "index_tuning", "db_tests"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "11": {
+      "name": "devops-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/devops-engineer.md",
+      "focus": "CI/CD and automation",
+      "allowed_actions": ["ci_fix", "automation", "deploy_script", "infra_test"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "12": {
+      "name": "cloud-infra-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/cloud-infra-engineer.md",
+      "focus": "cloud infrastructure and IaC",
+      "allowed_actions": ["iac", "cloud_config", "capacity_plan", "infra_fix"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "13": {
+      "name": "ui-ux-integrator",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/ui-ux-integrator.md",
+      "focus": "UI integration and styling",
+      "allowed_actions": ["integrate_ui", "style_system", "ux_polish"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "14": {
+      "name": "data-scientist",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/data-scientist.md",
+      "focus": "model research and signal discovery",
+      "allowed_actions": ["research_signal", "validate_model", "experiment", "analysis"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "15": {
+      "name": "data-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/data-engineer.md",
+      "focus": "data pipelines and ETL",
+      "allowed_actions": ["etl", "pipeline_fix", "data_quality", "ingestion"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "16": {
+      "name": "machine-learning-engineer",
+      "tier": "L2",
+      "platform": "OpenCode",
+      "role_file": ".agents/agent/machine-learning-engineer.md",
+      "focus": "model training and deployment",
+      "allowed_actions": ["train_model", "ml_pipeline", "model_deploy", "ml_tests"],
+      "forbidden_actions": ["self_approve", "l3_audit_verdict"],
+      "cli": "opencode"
+    },
+    "17": {
+      "name": "qa-engineer",
+      "tier": "L3",
+      "platform": "Codex",
+      "role_file": ".agents/agent/qa-engineer.md",
+      "focus": "functional testing audit",
+      "allowed_actions": ["audit_tests", "functional_review", "verdict"],
+      "forbidden_actions": ["edit_code", "commit", "fix_bug"],
+      "cli": "codex"
+    },
+    "18": {
+      "name": "sdet",
+      "tier": "L3",
+      "platform": "Codex",
+      "role_file": ".agents/agent/sdet.md",
+      "focus": "test automation audit",
+      "allowed_actions": ["audit_test_framework", "coverage_review", "verdict"],
+      "forbidden_actions": ["edit_code", "commit", "fix_bug"],
+      "cli": "codex"
+    },
+    "19": {
+      "name": "security-auditor",
+      "tier": "L3",
+      "platform": "Codex",
+      "role_file": ".agents/agent/security-auditor.md",
+      "focus": "security audit",
+      "allowed_actions": ["security_review", "threat_model", "verdict"],
+      "forbidden_actions": ["edit_code", "commit", "fix_bug"],
+      "cli": "codex"
+    },
+    "20": {
+      "name": "compliance-officer",
+      "tier": "L3",
+      "platform": "Codex",
+      "role_file": ".agents/agent/compliance-officer.md",
+      "focus": "standards compliance and PIT safety",
+      "allowed_actions": ["compliance_review", "pit_audit", "verdict"],
+      "forbidden_actions": ["edit_code", "commit", "fix_bug"],
+      "cli": "codex"
+    },
+    "21": {
+      "name": "code-reviewer",
+      "tier": "L3",
+      "platform": "Codex",
+      "role_file": ".agents/agent/code-reviewer.md",
+      "focus": "peer code review and audit report",
+      "allowed_actions": ["code_review", "audit", "verdict"],
+      "forbidden_actions": ["edit_code", "commit", "fix_bug"],
+      "cli": "codex"
+    },
+    "22": {
+      "name": "penetration-tester",
+      "tier": "L3",
+      "platform": "Codex",
+      "role_file": ".agents/agent/penetration-tester.md",
+      "focus": "security testing and exploit review",
+      "allowed_actions": ["pentest_review", "attack_surface", "verdict"],
+      "forbidden_actions": ["edit_code", "commit", "fix_bug"],
+      "cli": "codex"
+    },
+    "23": {
+      "name": "performance-tester",
+      "tier": "L3",
+      "platform": "Codex",
+      "role_file": ".agents/agent/performance-tester.md",
+      "focus": "load, stress, and capacity audit",
+      "allowed_actions": ["performance_review", "capacity_audit", "verdict"],
+      "forbidden_actions": ["edit_code", "commit", "fix_bug"],
+      "cli": "codex"
+    },
+    "24": {
+      "name": "uat-validator",
+      "tier": "L3",
+      "platform": "Codex",
+      "role_file": ".agents/agent/uat-validator.md",
+      "focus": "user acceptance validation",
+      "allowed_actions": ["uat_review", "acceptance_validation", "verdict"],
+      "forbidden_actions": ["edit_code", "commit", "fix_bug"],
+      "cli": "codex"
+    },
+    "25": {
+      "name": "it-systems-auditor",
+      "tier": "L3",
+      "platform": "Codex",
+      "role_file": ".agents/agent/it-systems-auditor.md",
+      "focus": "overall system audit",
+      "allowed_actions": ["system_audit", "control_review", "verdict"],
+      "forbidden_actions": ["edit_code", "commit", "fix_bug"],
+      "cli": "codex"
+    }
+  }
+}

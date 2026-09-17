@@ -1,0 +1,33 @@
+def precompute_grouped_ts_structure(
+    tickers: Optional[np.ndarray],
+    dates: Optional[np.ndarray],
+) -> Optional[Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, Optional[np.ndarray]]]:
+    if tickers is None:
+        return None
+
+    ticker_arr = np.asarray(tickers)
+    if ticker_arr.ndim != 1 or ticker_arr.size == 0:
+        return None
+
+    date_arr = None if dates is None else np.asarray(dates)
+    if date_arr is not None and date_arr.shape[0] != ticker_arr.shape[0]:
+        return None
+
+    if date_arr is not None:
+        order = np.lexsort((np.asarray(pd.to_datetime(date_arr), dtype='datetime64[ns]'), ticker_arr))
+    else:
+        order = np.argsort(ticker_arr, kind='mergesort')
+
+    sorted_tickers = ticker_arr[order]
+    _, starts = np.unique(sorted_tickers, return_index=True)
+    stops = np.concatenate((starts[1:], np.array([len(sorted_tickers)])))
+    return (order, starts, stops, ticker_arr, date_arr)
+
+
+def _set_rejected_fitness(individual: "GPIndividual") -> None:
+    individual.fitness = -np.inf
+    individual.ic_score = 0.0
+    individual.complexity_penalty = 0.0
+    individual.diversity_penalty = 0.0
+    individual.transaction_cost_penalty = 0.0
+    individual.orthogonalization_penalty = 0.0

@@ -1,0 +1,385 @@
+{
+  "config": {
+    "max_iterations": 3,
+    "candidates_per_iteration": 10,
+    "prompt_version": "vn_alpha_search_v3_closed_loop",
+    "llm_provider": "mock"
+  },
+  "final_state": {
+    "current_iteration": 2,
+    "total_raw_generated": 9,
+    "total_safety_validated": 9,
+    "total_unique_after_dedup": 7,
+    "total_scoring_input": 7,
+    "total_scoring_accepted": 6,
+    "total_scoring_rejected": 1,
+    "failed_formulas": [
+      "decay_linear(ret_1d,5)"
+    ],
+    "bad_motifs": [
+      "decay_linear(ret_1d",
+      "decay_linear"
+    ],
+    "aggregate_failure_stats": {
+      "median_dsr": 0.046532387327534175,
+      "mean_dsr": 0.046532387327534175
+    },
+    "iteration_results": [
+      {
+        "iteration": 1,
+        "raw_generated": 3,
+        "safety_validated": 3,
+        "unique_after_dedup": 3,
+        "scoring_input": 3,
+        "scoring_accepted": 2,
+        "scoring_rejected": 1,
+        "synthesis_stats": {
+          "prompt_version": "vn_alpha_search_v3_closed_loop",
+          "max_candidates": 10,
+          "provider_type": "MockProvider",
+          "cache_hit": false,
+          "total_raw": 3,
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 0,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "accepted": 3,
+          "rejected_formulas": [],
+          "accepted_formulas": [
+            "mock_formula_0",
+            "mock_formula_1",
+            "mock_formula_2"
+          ]
+        },
+        "scoring_stats": {
+          "total": 3,
+          "accepted": 2,
+          "rejected": 1,
+          "deployable": 2,
+          "unsupervised_only": 0,
+          "accepted_names": [
+            "alpha_llm_1",
+            "alpha_llm_2"
+          ],
+          "rejected_names": [
+            "alpha_llm_0"
+          ],
+          "rejection_reasons": {
+            "alpha_llm_0": [
+              "Weak IC: |IC|=0.0007 < 0.0100"
+            ]
+          },
+          "details": {
+            "alpha_llm_0": {
+              "accepted": false,
+              "coverage": 1.0,
+              "variance": 0.00019253623049444679,
+              "stability": 0.00020412500281468088,
+              "nan_inf_ratio": 0.0,
+              "ic": 0.0006590120267594644,
+              "dsr_proxy": 0.046532387327534175,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "supervised"
+            },
+            "alpha_llm_1": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.09693830521138481,
+              "stability": 0.0974351053602269,
+              "nan_inf_ratio": 0.0,
+              "ic": 0.03619191591399602,
+              "dsr_proxy": 0.10738851370119172,
+              "is_supervised_validated": true,
+              "is_deployable": true,
+              "validation_mode": "supervised"
+            },
+            "alpha_llm_2": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.09158296097196945,
+              "stability": 0.10759151090764885,
+              "nan_inf_ratio": 0.0,
+              "ic": 0.09276981074420215,
+              "dsr_proxy": 0.10738851370119172,
+              "is_supervised_validated": true,
+              "is_deployable": true,
+              "validation_mode": "supervised"
+            }
+          },
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 0,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "synthesis": {
+            "prompt_version": "vn_alpha_search_v3_closed_loop",
+            "max_candidates": 10,
+            "provider_type": "MockProvider",
+            "cache_hit": false,
+            "total_raw": 3,
+            "rejection_taxonomy": {
+              "parse_error": 0,
+              "unsafe_token": 0,
+              "duplicate_formula": 0,
+              "execution_failure": 0,
+              "low_coverage": 0,
+              "near_zero_variance": 0,
+              "unstable": 0,
+              "nan_inf": 0
+            },
+            "accepted": 3,
+            "rejected_formulas": [],
+            "accepted_formulas": [
+              "mock_formula_0",
+              "mock_formula_1",
+              "mock_formula_2"
+            ]
+          }
+        }
+      },
+      {
+        "iteration": 2,
+        "raw_generated": 3,
+        "safety_validated": 3,
+        "unique_after_dedup": 2,
+        "scoring_input": 2,
+        "scoring_accepted": 2,
+        "scoring_rejected": 0,
+        "synthesis_stats": {
+          "prompt_version": "vn_alpha_search_v3_closed_loop",
+          "max_candidates": 10,
+          "provider_type": "MockProvider",
+          "cache_hit": false,
+          "total_raw": 3,
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 0,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "accepted": 3,
+          "rejected_formulas": [],
+          "accepted_formulas": [
+            "mock_formula_0",
+            "mock_formula_1",
+            "mock_formula_2"
+          ]
+        },
+        "scoring_stats": {
+          "total": 2,
+          "accepted": 2,
+          "rejected": 0,
+          "deployable": 2,
+          "unsupervised_only": 0,
+          "accepted_names": [
+            "alpha_llm_0",
+            "alpha_llm_1"
+          ],
+          "rejected_names": [],
+          "rejection_reasons": {},
+          "details": {
+            "alpha_llm_0": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.09693830521138481,
+              "stability": 0.0974351053602269,
+              "nan_inf_ratio": 0.0,
+              "ic": 0.03619191591399602,
+              "dsr_proxy": 0.10738851370119172,
+              "is_supervised_validated": true,
+              "is_deployable": true,
+              "validation_mode": "supervised"
+            },
+            "alpha_llm_1": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.09158296097196945,
+              "stability": 0.10759151090764885,
+              "nan_inf_ratio": 0.0,
+              "ic": 0.09276981074420215,
+              "dsr_proxy": 0.10738851370119172,
+              "is_supervised_validated": true,
+              "is_deployable": true,
+              "validation_mode": "supervised"
+            }
+          },
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 0,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "synthesis": {
+            "prompt_version": "vn_alpha_search_v3_closed_loop",
+            "max_candidates": 10,
+            "provider_type": "MockProvider",
+            "cache_hit": false,
+            "total_raw": 3,
+            "rejection_taxonomy": {
+              "parse_error": 0,
+              "unsafe_token": 0,
+              "duplicate_formula": 0,
+              "execution_failure": 0,
+              "low_coverage": 0,
+              "near_zero_variance": 0,
+              "unstable": 0,
+              "nan_inf": 0
+            },
+            "accepted": 3,
+            "rejected_formulas": [],
+            "accepted_formulas": [
+              "mock_formula_0",
+              "mock_formula_1",
+              "mock_formula_2"
+            ]
+          }
+        }
+      },
+      {
+        "iteration": 3,
+        "raw_generated": 3,
+        "safety_validated": 3,
+        "unique_after_dedup": 2,
+        "scoring_input": 2,
+        "scoring_accepted": 2,
+        "scoring_rejected": 0,
+        "synthesis_stats": {
+          "prompt_version": "vn_alpha_search_v3_closed_loop",
+          "max_candidates": 10,
+          "provider_type": "MockProvider",
+          "cache_hit": false,
+          "total_raw": 3,
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 0,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "accepted": 3,
+          "rejected_formulas": [],
+          "accepted_formulas": [
+            "mock_formula_0",
+            "mock_formula_1",
+            "mock_formula_2"
+          ]
+        },
+        "scoring_stats": {
+          "total": 2,
+          "accepted": 2,
+          "rejected": 0,
+          "deployable": 2,
+          "unsupervised_only": 0,
+          "accepted_names": [
+            "alpha_llm_0",
+            "alpha_llm_1"
+          ],
+          "rejected_names": [],
+          "rejection_reasons": {},
+          "details": {
+            "alpha_llm_0": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.09693830521138481,
+              "stability": 0.0974351053602269,
+              "nan_inf_ratio": 0.0,
+              "ic": 0.03619191591399602,
+              "dsr_proxy": 0.10738851370119172,
+              "is_supervised_validated": true,
+              "is_deployable": true,
+              "validation_mode": "supervised"
+            },
+            "alpha_llm_1": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.09158296097196945,
+              "stability": 0.10759151090764885,
+              "nan_inf_ratio": 0.0,
+              "ic": 0.09276981074420215,
+              "dsr_proxy": 0.10738851370119172,
+              "is_supervised_validated": true,
+              "is_deployable": true,
+              "validation_mode": "supervised"
+            }
+          },
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 0,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "synthesis": {
+            "prompt_version": "vn_alpha_search_v3_closed_loop",
+            "max_candidates": 10,
+            "provider_type": "MockProvider",
+            "cache_hit": false,
+            "total_raw": 3,
+            "rejection_taxonomy": {
+              "parse_error": 0,
+              "unsafe_token": 0,
+              "duplicate_formula": 0,
+              "execution_failure": 0,
+              "low_coverage": 0,
+              "near_zero_variance": 0,
+              "unstable": 0,
+              "nan_inf": 0
+            },
+            "accepted": 3,
+            "rejected_formulas": [],
+            "accepted_formulas": [
+              "mock_formula_0",
+              "mock_formula_1",
+              "mock_formula_2"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "summary": {
+    "total_raw_generated": 9,
+    "total_safety_validated": 9,
+    "total_unique_after_dedup": 7,
+    "total_scoring_input": 7,
+    "total_scoring_accepted": 6,
+    "total_scoring_rejected": 1,
+    "total_candidates_generated": 9,
+    "total_candidates_accepted": 6,
+    "final_candidate_count": 6,
+    "failed_formulas_count": 1,
+    "bad_motifs_count": 2
+  },
+  "requires_full_cpcv": true,
+  "deployment_ready": false,
+  "top_k_selection": {
+    "enabled": false,
+    "top_k": 10
+  }
+}

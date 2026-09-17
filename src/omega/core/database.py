@@ -185,6 +185,43 @@ class Database:
                 details TEXT
             )
         """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS news_articles (
+                article_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                source TEXT NOT NULL,
+                headline TEXT NOT NULL,
+                news_short_content TEXT,
+                public_date TEXT NOT NULL,
+                url TEXT NOT NULL UNIQUE,
+                created_at TEXT NOT NULL,
+                metadata TEXT
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS macro_data (
+                row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                series_key TEXT NOT NULL,
+                observation_date TEXT NOT NULL,
+                value REAL,
+                source TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                metadata TEXT,
+                UNIQUE(series_key, observation_date, source)
+            )
+        """)
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ticker_sectors (
+                ticker TEXT PRIMARY KEY,
+                sector TEXT NOT NULL,
+                source TEXT NOT NULL,
+                effective_date TEXT,
+                updated_at TEXT NOT NULL,
+                metadata TEXT
+            )
+        """)
         
         self.conn.commit()
 
@@ -238,8 +275,31 @@ class Database:
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_timestamp ON audit_logs(timestamp)")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor)")
+
+        # News / macro / sector indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_articles_public_date ON news_articles(public_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_news_articles_source_date ON news_articles(source, public_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_macro_data_series_date ON macro_data(series_key, observation_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_macro_data_source_date ON macro_data(source, observation_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ticker_sectors_source ON ticker_sectors(source)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ticker_sectors_effective_date ON ticker_sectors(effective_date)")
         
         self.conn.commit()
+
+    def _normalize_value(self, value: Any) -> Any:
+        if isinstance(value, datetime):
+            return value.isoformat()
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        return value
+
+    def _insert_row(self, table_name: str, row_data: Dict[str, Any], or_replace: bool = False):
+        columns = ', '.join(row_data.keys())
+        placeholders = ', '.join(['?' for _ in row_data])
+        verb = "INSERT OR REPLACE" if or_replace else "INSERT"
+        query = f"{verb} INTO {table_name} ({columns}) VALUES ({placeholders})"
+        values = tuple(self._normalize_value(value) for value in row_data.values())
+        self.execute_query(query, values)
 
     def close(self):
         """Close database connection."""
@@ -271,10 +331,7 @@ class Database:
     
     def insert_task(self, task_data: Dict[str, Any]):
         """Insert a new task."""
-        columns = ', '.join(task_data.keys())
-        placeholders = ', '.join(['?' for _ in task_data])
-        query = f"INSERT INTO tasks ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(task_data.values()))
+        self._insert_row("tasks", task_data)
 
     def update_task_status(self, task_id: str, status: str):
         """Update task status."""
@@ -297,10 +354,7 @@ class Database:
 
     def insert_task_event(self, event_data: Dict[str, Any]):
         """Insert a task event."""
-        columns = ', '.join(event_data.keys())
-        placeholders = ', '.join(['?' for _ in event_data])
-        query = f"INSERT INTO task_events ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(event_data.values()))
+        self._insert_row("task_events", event_data)
 
     def get_task_events(self, task_id: str) -> List[Dict[str, Any]]:
         """Retrieve events for a task."""
@@ -311,10 +365,7 @@ class Database:
 
     def insert_artifact(self, artifact_data: Dict[str, Any]):
         """Insert artifact metadata."""
-        columns = ', '.join(artifact_data.keys())
-        placeholders = ', '.join(['?' for _ in artifact_data])
-        query = f"INSERT INTO artifacts ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(artifact_data.values()))
+        self._insert_row("artifacts", artifact_data)
 
     def get_artifacts(self, artifact_id: str) -> List[Dict[str, Any]]:
         """Retrieve artifact by ID."""
@@ -333,10 +384,7 @@ class Database:
 
     def insert_dataset(self, dataset_data: Dict[str, Any]):
         """Insert dataset metadata."""
-        columns = ', '.join(dataset_data.keys())
-        placeholders = ', '.join(['?' for _ in dataset_data])
-        query = f"INSERT INTO datasets ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(dataset_data.values()))
+        self._insert_row("datasets", dataset_data)
 
     def get_datasets(self, dataset_name: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retrieve datasets by name."""
@@ -357,10 +405,7 @@ class Database:
 
     def insert_model(self, model_data: Dict[str, Any]):
         """Insert model metadata."""
-        columns = ', '.join(model_data.keys())
-        placeholders = ', '.join(['?' for _ in model_data])
-        query = f"INSERT INTO models ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(model_data.values()))
+        self._insert_row("models", model_data)
 
     def update_model_status(self, model_id: str, status: str):
         """Update model status (Promotion)."""
@@ -383,10 +428,7 @@ class Database:
 
     def insert_experiment(self, experiment_data: Dict[str, Any]):
         """Insert experiment record."""
-        columns = ', '.join(experiment_data.keys())
-        placeholders = ', '.join(['?' for _ in experiment_data])
-        query = f"INSERT INTO experiments ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(experiment_data.values()))
+        self._insert_row("experiments", experiment_data)
 
     def get_experiments(self, experiment_id: str) -> List[Dict[str, Any]]:
         """Retrieve experiment by ID."""
@@ -397,10 +439,7 @@ class Database:
 
     def insert_backtest(self, backtest_data: Dict[str, Any]):
         """Insert backtest record."""
-        columns = ', '.join(backtest_data.keys())
-        placeholders = ', '.join(['?' for _ in backtest_data])
-        query = f"INSERT INTO backtests ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(backtest_data.values()))
+        self._insert_row("backtests", backtest_data)
 
     def get_backtests(self, backtest_id: str) -> List[Dict[str, Any]]:
         """Retrieve backtest by ID."""
@@ -411,10 +450,7 @@ class Database:
 
     def insert_risk_report(self, report_data: Dict[str, Any]):
         """Insert risk report."""
-        columns = ', '.join(report_data.keys())
-        placeholders = ', '.join(['?' for _ in report_data])
-        query = f"INSERT INTO risk_reports ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(report_data.values()))
+        self._insert_row("risk_reports", report_data)
 
     def get_risk_reports(self, report_id: str) -> List[Dict[str, Any]]:
         """Retrieve risk report by ID."""
@@ -425,10 +461,7 @@ class Database:
 
     def insert_execution(self, execution_data: Dict[str, Any]):
         """Insert execution record."""
-        columns = ', '.join(execution_data.keys())
-        placeholders = ', '.join(['?' for _ in execution_data])
-        query = f"INSERT INTO executions ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(execution_data.values()))
+        self._insert_row("executions", execution_data)
 
     def get_executions(self, execution_id: str) -> List[Dict[str, Any]]:
         """Retrieve execution by ID."""
@@ -439,10 +472,7 @@ class Database:
 
     def insert_memory_snapshot(self, snapshot_data: Dict[str, Any]):
         """Insert memory snapshot."""
-        columns = ', '.join(snapshot_data.keys())
-        placeholders = ', '.join(['?' for _ in snapshot_data])
-        query = f"INSERT INTO memory_snapshots ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(snapshot_data.values()))
+        self._insert_row("memory_snapshots", snapshot_data)
 
     def get_memory_snapshots(self, snapshot_id: str) -> List[Dict[str, Any]]:
         """Retrieve snapshot by ID."""
@@ -453,10 +483,101 @@ class Database:
 
     def insert_audit_log(self, log_data: Dict[str, Any]):
         """Insert audit log entry."""
-        columns = ', '.join(log_data.keys())
-        placeholders = ', '.join(['?' for _ in log_data])
-        query = f"INSERT INTO audit_logs ({columns}) VALUES ({placeholders})"
-        self.execute_query(query, tuple(log_data.values()))
+        self._insert_row("audit_logs", log_data)
+
+    # --- News / Macro / Sector Operations ---
+
+    def insert_news_article(self, article_data: Dict[str, Any]):
+        """Insert or replace a news article by URL."""
+        payload = {
+            "source": article_data["source"],
+            "headline": article_data["headline"],
+            "news_short_content": article_data.get("news_short_content"),
+            "public_date": article_data["public_date"],
+            "url": article_data["url"],
+            "created_at": article_data.get("created_at", datetime.now().isoformat()),
+            "metadata": article_data.get("metadata"),
+        }
+        self._insert_row("news_articles", payload, or_replace=True)
+
+    def get_news_articles(
+        self,
+        source: Optional[str] = None,
+        start_date: Optional[Union[str, datetime]] = None,
+        end_date: Optional[Union[str, datetime]] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve news articles with optional filters."""
+        query = "SELECT * FROM news_articles WHERE 1=1"
+        params: List[Any] = []
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        if start_date:
+            query += " AND public_date >= ?"
+            params.append(self._normalize_value(start_date))
+        if end_date:
+            query += " AND public_date <= ?"
+            params.append(self._normalize_value(end_date))
+        query += " ORDER BY public_date DESC"
+        if limit is not None:
+            query += " LIMIT ?"
+            params.append(limit)
+        return self.execute_query(query, tuple(params))
+
+    def insert_macro_row(self, macro_data: Dict[str, Any]):
+        """Insert or replace a macro time-series row."""
+        payload = {
+            "series_key": macro_data["series_key"],
+            "observation_date": macro_data["observation_date"],
+            "value": macro_data.get("value"),
+            "source": macro_data["source"],
+            "created_at": macro_data.get("created_at", datetime.now().isoformat()),
+            "metadata": macro_data.get("metadata"),
+        }
+        self._insert_row("macro_data", payload, or_replace=True)
+
+    def get_macro_data(
+        self,
+        series_key: Optional[str] = None,
+        start_date: Optional[Union[str, datetime]] = None,
+        end_date: Optional[Union[str, datetime]] = None,
+        source: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieve macro rows with optional filters."""
+        query = "SELECT * FROM macro_data WHERE 1=1"
+        params: List[Any] = []
+        if series_key:
+            query += " AND series_key = ?"
+            params.append(series_key)
+        if source:
+            query += " AND source = ?"
+            params.append(source)
+        if start_date:
+            query += " AND observation_date >= ?"
+            params.append(self._normalize_value(start_date))
+        if end_date:
+            query += " AND observation_date <= ?"
+            params.append(self._normalize_value(end_date))
+        query += " ORDER BY observation_date ASC"
+        return self.execute_query(query, tuple(params))
+
+    def insert_ticker_sector(self, sector_data: Dict[str, Any]):
+        """Insert or replace ticker sector mapping."""
+        payload = {
+            "ticker": sector_data["ticker"],
+            "sector": sector_data["sector"],
+            "source": sector_data["source"],
+            "effective_date": sector_data.get("effective_date"),
+            "updated_at": sector_data.get("updated_at", datetime.now().isoformat()),
+            "metadata": sector_data.get("metadata"),
+        }
+        self._insert_row("ticker_sectors", payload, or_replace=True)
+
+    def get_ticker_sector(self, ticker: str) -> Optional[Dict[str, Any]]:
+        """Retrieve sector mapping for a ticker."""
+        results = self.execute_query("SELECT * FROM ticker_sectors WHERE ticker = ?", (ticker,))
+        return results[0] if results else None
 
     def get_audit_logs(self, action: Optional[str] = None) -> List[Dict[str, Any]]:
         """Retrieve audit logs."""

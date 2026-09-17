@@ -1,0 +1,5 @@
+INFO:omega.quant.evolution.diverse_alpha_evolution:Diversity filter (corr<0.5): 0 -> 0 alphas
+INFO:omega.quant.evolution.diverse_alpha_evolution:=== DIVERSE EVOLUTION COMPLETE: 0 alphas, 148.8s ===
+INFO:weekly_evolution:Diverse evolution complete. Hall of Fame size: 0
+WARNING:weekly_evolution:No alphas discovered. Exiting.
+INFO:weekly_evolution:Results saved to: /mnt/c/Users/GHC/repos/OMEGA_QUANT/.ly_state/session/evolved_alphas.json

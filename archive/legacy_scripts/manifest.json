@@ -1,0 +1,188 @@
+{
+    "_fix_forbidden_scan.py.txt":  {
+                                       "sha256":  "8fcefd202ec23f4edc2e7461339d21eb6c1f8df5499ce30b047e704b7076c854",
+                                       "original_path":  "scripts/_fix_forbidden_scan.py",
+                                       "line_count":  58,
+                                       "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                   },
+    "audit_phase38.py.txt":  {
+                                 "sha256":  "600cd5d513cb517287b2fe1e452c1592e76cb807ebfb66f67b61a9bffd83f320",
+                                 "original_path":  "scripts/audit_phase38.py",
+                                 "line_count":  220,
+                                 "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                             },
+    "audit_phase5.py.txt":  {
+                                "sha256":  "7b21237e969c6964fb008a4d1066cc5dc7484a1bf5dbdde4ca3c4820e3ea5095",
+                                "original_path":  "scripts/audit_phase5.py",
+                                "line_count":  194,
+                                "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                            },
+    "audit_phase7.py.txt":  {
+                                "sha256":  "8f14da447e7fa544ab22ce3848b9d5a7e9af8d4e4523132eaa1af92cd9a2ab97",
+                                "original_path":  "scripts/audit_phase7.py",
+                                "line_count":  190,
+                                "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                            },
+    "batch_market_loader_resume.py.txt":  {
+                                              "sha256":  "298cc72c99d1b4ff5b4109b28d5c1c327edba74eb88373ce4b098bf7766d7452",
+                                              "original_path":  "scripts/batch_market_loader_resume.py",
+                                              "line_count":  499,
+                                              "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                          },
+    "call_sov_phase3_4.py.txt":  {
+                                     "sha256":  "8c16e89f724fb1e7e8350c133c0daa494d57a04dc389d86d51c82d384c03935f",
+                                     "original_path":  "scripts/call_sov_phase3_4.py",
+                                     "line_count":  100,
+                                     "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                 },
+    "compare_phase10_ensemble.py.txt":  {
+                                            "sha256":  "4a51a671270fd41fe8b45c06019ed93a8f3f1e40984c7068ed1f302547a62f1b",
+                                            "original_path":  "scripts/compare_phase10_ensemble.py",
+                                            "line_count":  32,
+                                            "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                        },
+    "compare_phase11_realistic.py.txt":  {
+                                             "sha256":  "0ffce1552076e8fb46ea0f225d64a1f67b91d512f559afab0bf5b56d99264eb4",
+                                             "original_path":  "scripts/compare_phase11_realistic.py",
+                                             "line_count":  56,
+                                             "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                         },
+    "compare_phase310_vs_phase39.py.txt":  {
+                                               "sha256":  "f49fd4589fc4aec8f0a2be91feebe3c45707b50c1523cb6b8b7ae7129767200f",
+                                               "original_path":  "scripts/compare_phase310_vs_phase39.py",
+                                               "line_count":  40,
+                                               "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                           },
+    "compare_phase311_vs_phase310.py.txt":  {
+                                                "sha256":  "65b002cc051b61ca0b39a8c93686d0ae9b675586f5e5c8597ad28b94b2c4a289",
+                                                "original_path":  "scripts/compare_phase311_vs_phase310.py",
+                                                "line_count":  34,
+                                                "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                            },
+    "compare_phase38_costs.py.txt":  {
+                                         "sha256":  "8c5c28c8b7dade515f1ca76ccbf59b1914fc4c94b62de438a079b20b41e3de1f",
+                                         "original_path":  "scripts/compare_phase38_costs.py",
+                                         "line_count":  34,
+                                         "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                     },
+    "compare_phase39_dsr.py.txt":  {
+                                       "sha256":  "2d4f3ae884a40ac0d48645aec6f5d7766308d1960c4c80ee4270e0862858a6bf",
+                                       "original_path":  "scripts/compare_phase39_dsr.py",
+                                       "line_count":  38,
+                                       "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                   },
+    "compare_phase5_vs_phase311.py.txt":  {
+                                              "sha256":  "c8238d60b74883a0787b7aa9cdb5058275759bcf2596d6ee32415beba5b0b8a4",
+                                              "original_path":  "scripts/compare_phase5_vs_phase311.py",
+                                              "line_count":  36,
+                                              "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                          },
+    "compare_phase8_h60_capacity.py.txt":  {
+                                               "sha256":  "9f523d04a40e25dcabfd52cf00a9e91c0ca190af9f24ebf8ec62b9649e69816f",
+                                               "original_path":  "scripts/compare_phase8_h60_capacity.py",
+                                               "line_count":  29,
+                                               "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                           },
+    "compare_phase8_h60_falsification.py.txt":  {
+                                                    "sha256":  "cc6859c264112530aef984a3f314d91636378ce888ccaa40ae76046b38d4ee6b",
+                                                    "original_path":  "scripts/compare_phase8_h60_falsification.py",
+                                                    "line_count":  23,
+                                                    "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                                },
+    "compare_phase8_horizons.py.txt":  {
+                                           "sha256":  "2bfcbab3890430fbbdaa82260df6ecc0feefc7e23ef246de5c8601f9c3fbdb4f",
+                                           "original_path":  "scripts/compare_phase8_horizons.py",
+                                           "line_count":  34,
+                                           "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                       },
+    "compare_phase9_horizons.py.txt":  {
+                                           "sha256":  "d093dcc27c7fe7c8621ca3756755e329f69348dc3a44adf19fc989197d2c7805",
+                                           "original_path":  "scripts/compare_phase9_horizons.py",
+                                           "line_count":  36,
+                                           "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                       },
+    "live_test_phase21_smoke.py.txt":  {
+                                           "sha256":  "92b1e6cac6bc35749abaabe2461d742e2872929fb52f4e3cda8b9130143452d0",
+                                           "original_path":  "scripts/live_test_phase21_smoke.py",
+                                           "line_count":  107,
+                                           "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                       },
+    "optuna_phase12.py.txt":  {
+                                  "sha256":  "0a374fcfbbdb21a1288ffce1f5d123288e1703c50e3fff0001f8034f8a1f8f15",
+                                  "original_path":  "scripts/optuna_phase12.py",
+                                  "line_count":  264,
+                                  "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                              },
+    "phase5_capacity_sweep.py.txt":  {
+                                         "sha256":  "361c5fbe8d95391c2f619951ccdf46b6e4fbf94311c0aa627152f844f15a02b5",
+                                         "original_path":  "scripts/phase5_capacity_sweep.py",
+                                         "line_count":  74,
+                                         "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                     },
+    "read_phase12_results.py.txt":  {
+                                        "sha256":  "71c83557b40b7c1fad93c245223ad427c7ef39ae37529d2e15a32f522af3ba83",
+                                        "original_path":  "scripts/read_phase12_results.py",
+                                        "line_count":  26,
+                                        "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                    },
+    "reaudit_phase1_18.py.txt":  {
+                                     "sha256":  "d6f2649b9fa62ecec9b9e51964fd3ca73890e7a50422816070a91103da86fe12",
+                                     "original_path":  "scripts/reaudit_phase1_18.py",
+                                     "line_count":  172,
+                                     "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                 },
+    "run_l2_hook_ingest_703.py.txt":  {
+                                          "sha256":  "3b0f79824a85b08af1f3452196f986279e7e843e46c071dd38a4adfa2357a648",
+                                          "original_path":  "scripts/run_l2_hook_ingest_703.py",
+                                          "line_count":  529,
+                                          "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                      },
+    "run_l3_audit_phase2.py.txt":  {
+                                       "sha256":  "d36901d34d74f4efa62f1d141a335a4e5948c4f22c6b574e7cf3d351c2d3bc4c",
+                                       "original_path":  "scripts/run_l3_audit_phase2.py",
+                                       "line_count":  253,
+                                       "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                   },
+    "run_phase6_continuous_learning.py.txt":  {
+                                                  "sha256":  "402b795a9e28b0ae6ac4fe4589beedc1272f4a6a0ded4c80c92da7f107800fcb",
+                                                  "original_path":  "scripts/run_phase6_continuous_learning.py",
+                                                  "line_count":  163,
+                                                  "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                              },
+    "sensitivity_grid_phase34.py.txt":  {
+                                            "sha256":  "24431cfa0f4b9c2b878d5fdd63773ec13b8883760ff1ac1b95f5d36bcc8537d8",
+                                            "original_path":  "scripts/sensitivity_grid_phase34.py",
+                                            "line_count":  112,
+                                            "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                        },
+    "summarize_phase38.py.txt":  {
+                                     "sha256":  "e6ef31e350410ffe1aaf9174e49b8e8b9eefb32c40ca0e23e9364e841cf00734",
+                                     "original_path":  "scripts/summarize_phase38.py",
+                                     "line_count":  37,
+                                     "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                 },
+    "summarize_phase4.py.txt":  {
+                                    "sha256":  "6c800493c2c106d9a86d8db7c9d16834e6f76cbe375e86e0e02a479e4d7b6880",
+                                    "original_path":  "scripts/summarize_phase4.py",
+                                    "line_count":  25,
+                                    "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                },
+    "test_phase10_pipeline.py.txt":  {
+                                         "sha256":  "5074d4fbbe4d25a3dc290ad398686f78ee5d185abee9990a69c3569b22f9b3b2",
+                                         "original_path":  "scripts/test_phase10_pipeline.py",
+                                         "line_count":  164,
+                                         "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                     },
+    "update_market_data_2026.py.txt":  {
+                                           "sha256":  "87510dc6e278e3f29251c3ba19a27a239b5520db988ada3c2982784f9637a0d5",
+                                           "original_path":  "scripts/update_market_data_2026.py",
+                                           "line_count":  142,
+                                           "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                       },
+    "verify_phase_gaps.py.txt":  {
+                                     "sha256":  "12f0da646ff327a8933540333b3b985c1757f4b9d61cb46c08f265ead95f8d80",
+                                     "original_path":  "scripts/verify_phase_gaps.py",
+                                     "line_count":  273,
+                                     "archived_at":  "2026-09-15T19:52:17.2342933Z"
+                                 }
+}

@@ -1,0 +1,26 @@
+        volume = np.asarray(df.get("volume", pd.Series(np.ones(row_count))), dtype=np.float64)
+        features["__log_market_cap__"] = np.log1p(np.clip(close * volume, a_min=0.0, a_max=None))
+    if "sector" in df.columns:
+        features["__sector__"] = df["sector"].to_numpy()
+    else:
+        features["__sector__"] = np.zeros(row_count, dtype=np.int32)
+    features["__liquidity_mask__"] = np.ones(row_count, dtype=bool)
+    features["__grouped_ts_structure__"] = ge.precompute_grouped_ts_structure(
+        features.get("__ticker__"),
+        features.get("__date__"),
+    )
+    features[ge.FOLD_STRUCTURE_CACHE_KEY] = ge._build_time_fold_structure(features["__date__"], max(2, int(time_folds)))
+    features[ge.NEUTRALIZATION_CACHE_KEY] = ge._build_neutralization_cache(
+        features["__log_market_cap__"],
+        features["__sector__"],
+        features["__date__"],
+    )
+    return features, np.asarray(df[target_col], dtype=np.float64)
+
+
+def _read_int_file(path: str) -> Optional[int]:
+    try:
+        raw = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw or raw == "max":

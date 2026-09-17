@@ -38,7 +38,7 @@ def _make_fake_alpha_module():
 
 def _make_engine(use_xgboost=False, min_ic_threshold=0.0, top_n_alphas=2,
                  top_n_stocks=5, rebalance_freq=1, sector_cap_pct=1.0):
-    from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+    from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
     return Phase35WalkForwardEngine(
         alpha_module=_make_fake_alpha_module(),
         min_ic_threshold=min_ic_threshold,
@@ -109,7 +109,7 @@ class TestUseXgboostToggle(unittest.TestCase):
     """use_xgboost param must be stored and default to False."""
 
     def test_default_use_xgboost_is_false(self):
-        from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+        from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
         engine = Phase35WalkForwardEngine(
             alpha_module=_make_fake_alpha_module(),
         )
@@ -207,8 +207,8 @@ class TestXgboostPathWithMock(unittest.TestCase):
         n_test = len(test_df)
         mock_cls, mock_inst = self._mock_ensemble_cls(n_test)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             try:
                 metrics = engine.run_fold(
                     fold_id=1,
@@ -232,8 +232,8 @@ class TestXgboostPathWithMock(unittest.TestCase):
         n_test = len(test_df)
         mock_cls, mock_inst = self._mock_ensemble_cls(n_test)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             engine.run_fold(
                 fold_id=1,
                 train_df=train_df,
@@ -254,8 +254,8 @@ class TestXgboostPathWithMock(unittest.TestCase):
         n_test = len(test_df)
         mock_cls, mock_inst = self._mock_ensemble_cls(n_test)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             engine.run_fold(
                 fold_id=1,
                 train_df=train_df,
@@ -280,8 +280,8 @@ class TestXgboostPathWithMock(unittest.TestCase):
         n_test = len(test_df)
         mock_cls, mock_inst = self._mock_ensemble_cls(n_test)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             engine.run_fold(
                 fold_id=1,
                 train_df=train_df,
@@ -309,8 +309,8 @@ class TestXgboostPathWithMock(unittest.TestCase):
         n_test = len(test_df)
         mock_cls, mock_inst = self._mock_ensemble_cls(n_test)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             metrics = engine.run_fold(
                 fold_id=1,
                 train_df=train_df,
@@ -337,8 +337,8 @@ class TestXgboostPathWithMock(unittest.TestCase):
         n_test = len(test_df)
         mock_cls, mock_inst = self._mock_ensemble_cls(n_test)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             engine.run_fold(
                 fold_id=1,
                 train_df=train_df,
@@ -362,8 +362,8 @@ class TestXgboostPathWithMock(unittest.TestCase):
         n_test = len(test_df)
         mock_cls, mock_inst = self._mock_ensemble_cls(n_test)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             metrics = engine.run_fold(
                 fold_id=1,
                 train_df=train_df,
@@ -393,8 +393,8 @@ class TestXgboostFallback(unittest.TestCase):
         mock_instance.train.side_effect = RuntimeError("xgboost unavailable")
         mock_cls = MagicMock(return_value=mock_instance)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             try:
                 metrics = _run_fold(engine)
             except Exception as e:
@@ -409,8 +409,8 @@ class TestXgboostFallback(unittest.TestCase):
         mock_instance.train.side_effect = RuntimeError("xgboost unavailable")
         mock_cls = MagicMock(return_value=mock_instance)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             metrics = _run_fold(engine)
 
         self.assertFalse(np.isnan(metrics.portfolio_ic))
@@ -436,8 +436,8 @@ class TestXgboostFallback(unittest.TestCase):
         )
         mock_cls = MagicMock(return_value=mock_instance)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             with patch.object(engine, 'compute_portfolio_signal',
                               wraps=engine.compute_portfolio_signal) as mock_sig:
                 engine.run_fold(
@@ -482,8 +482,8 @@ class TestXgboostPITSafety(unittest.TestCase):
         mock_instance.predict.return_value = pd.Series(np.ones(n_test), index=mi)
         mock_cls = MagicMock(return_value=mock_instance)
 
-        from omega.quant import phase35_walk_forward
-        with patch.object(phase35_walk_forward, 'XGBoostAlphaEnsemble', mock_cls):
+        from omega.quant.alpha import phase35
+        with patch.object(phase35, 'XGBoostAlphaEnsemble', mock_cls):
             engine.run_fold(
                 fold_id=1,
                 train_df=train_df,

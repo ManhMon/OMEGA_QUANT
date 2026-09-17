@@ -15,8 +15,41 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple, Any
 from dataclasses import dataclass
 import logging
+import warnings
 
 logger = logging.getLogger("OmegaAlphaBridge")
+
+CANONICAL_METRIC_KEY = "signal_pnl_score"
+LEGACY_METRIC_ALIASES = {"sharpe": CANONICAL_METRIC_KEY, "annualized_sharpe": CANONICAL_METRIC_KEY}
+
+
+def resolve_metric_config(payload: Dict[str, Any]) -> tuple[str | None, list[str]]:
+    """Return canonical metric selection from JSON-like payload.
+
+    Canonical key wins. Conflicting legacy aliases warn but do not override.
+    """
+    warnings_list: list[str] = []
+    canonical = payload.get(CANONICAL_METRIC_KEY)
+    legacy_values = {key: payload[key] for key in LEGACY_METRIC_ALIASES if key in payload}
+    if canonical is None and legacy_values:
+        canonical = next(iter(legacy_values.values()))
+    elif canonical is not None:
+        for key, value in legacy_values.items():
+            if value != canonical:
+                msg = f"Conflicting metric keys: {CANONICAL_METRIC_KEY} overrides {key}"
+                warnings.warn(msg, RuntimeWarning)
+                warnings_list.append(msg)
+    return canonical, warnings_list
+
+
+def resolve_metric_cli(*, signal_pnl_score: str | None = None, sharpe: str | None = None, annualized_sharpe: str | None = None) -> str | None:
+    values = [value for value in (signal_pnl_score, sharpe, annualized_sharpe) if value is not None]
+    if not values:
+        return None
+    normalized = {str(value) for value in values}
+    if len(normalized) > 1:
+        raise ValueError("Conflicting metric CLI aliases")
+    return values[0]
 
 
 @dataclass
@@ -70,6 +103,7 @@ class AlphaToExecutionBridge:
             "horizon": horizon,
             "train_end_date": train_end_date,
             "ic": ic,
+            CANONICAL_METRIC_KEY: sharpe,
             "sharpe": sharpe,
             "status": "registered"
         }

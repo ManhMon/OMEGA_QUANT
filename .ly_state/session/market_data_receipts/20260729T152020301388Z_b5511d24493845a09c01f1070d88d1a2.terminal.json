@@ -1,0 +1,19 @@
+{
+  "as_of_date": null,
+  "attempt_id": "20260729T152020301388Z_b5511d24493845a09c01f1070d88d1a2",
+  "calendar_status": "unknown",
+  "completed_at": "2026-07-29T15:20:20+00:00",
+  "execution_allowed": false,
+  "expected_session_date": null,
+  "provenance": {
+    "projection_error": null,
+    "publication_run_id": null,
+    "result_status": "dry_run"
+  },
+  "published": false,
+  "reason": "dry_run",
+  "schema_version": 1,
+  "stale": true,
+  "started_at": "2026-07-29T15:20:20+00:00",
+  "state": "terminal"
+}

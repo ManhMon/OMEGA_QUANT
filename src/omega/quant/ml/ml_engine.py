@@ -25,7 +25,7 @@ import numpy as np
 import pandas as pd
 from typing import TYPE_CHECKING
 
-from omega.quant.walk_forward_ensemble import WalkForwardEnsemble, WalkForwardConfig
+from omega.quant.backtest.walk_forward_ensemble import WalkForwardEnsemble, WalkForwardConfig
 
 if TYPE_CHECKING:
     from xgboost import Booster
@@ -37,6 +37,8 @@ class MLModelType(Enum):
     """Supported ML model types."""
     XGBOOST = "xgboost"
     LIGHTGBM = "lightgbm"
+    RANDOM_FOREST = "random_forest"
+    RIDGE = "ridge"
     NEURAL_NET = "neural_net"
     LINEAR = "linear"
 

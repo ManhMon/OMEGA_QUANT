@@ -3,7 +3,7 @@ OMEGA_QUANT VN Trading Calendar - Holiday and session validation for Vietnamese 
 """
 
 import json
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Set, Optional
 from pathlib import Path
 
@@ -16,8 +16,11 @@ def _load_holidays_from_json() -> dict:
         dict: Year -> list of date strings mapping, or empty dict if file not found
     """
     try:
-        # Path relative to package root
-        config_path = Path(__file__).parent.parent.parent.parent.parent.parent / "config" / "vn_holidays.json"
+        # Resolve config/vn_holidays.json relative to repo root.
+        # __file__ = src/omega/data/calendar.py  →  4 parents = repo root.
+        here = Path(__file__).resolve()
+        repo_root = here.parent.parent.parent.parent
+        config_path = repo_root / "config" / "vn_holidays.json"
         
         if not config_path.exists():
             return {}
@@ -122,22 +125,35 @@ class VNTradingCalendar:
     # Cache holidays per year
     _holiday_cache: dict = {}
     
+    SUPPORTED_YEARS = range(2015, 2028)  # 2015 through 2027
+
     @classmethod
     def _get_holidays(cls, year: int) -> Set[date]:
         """Get or create holiday set for a year."""
+        if year not in cls.SUPPORTED_YEARS:
+            raise ValueError(f"no holiday coverage for {year}")
         if year not in cls._holiday_cache:
             cls._holiday_cache[year] = _load_holidays(year)
         return cls._holiday_cache[year]
-    
+
     @classmethod
     def is_trading_day(cls, dt: datetime) -> bool:
-        """Check if date is a trading day (not weekend or holiday)."""
+        """Check if date is a trading day (not weekend or holiday). Fail closed on uncovered year/missing config."""
         d = dt.date()
+        if d.year not in cls.SUPPORTED_YEARS:
+            return False
         # Weekend check
         if d.weekday() >= 5:  # Saturday=5, Sunday=6
             return False
         # Holiday check - dynamic by year
-        year_holidays = cls._get_holidays(d.year)
+        # Fail closed: authoritative json holidays must be loaded and must explicitly cover the queried year
+        json_hols = _get_json_holidays()
+        if not json_hols or str(d.year) not in json_hols:
+            return False
+        try:
+            year_holidays = cls._get_holidays(d.year)
+        except Exception:
+            return False
         if d in year_holidays:
             return False
         return True
@@ -162,6 +178,34 @@ class VNTradingCalendar:
         return False
     
     @classmethod
+    def next_trading_day(cls, dt: datetime | date) -> date:
+        """Return the next active Vietnam trading day strictly after dt."""
+        cur = dt.date() if isinstance(dt, datetime) else dt
+        while True:
+            cur += timedelta(days=1)
+            # Weekend check
+            if cur.weekday() >= 5:
+                continue
+            year_holidays = cls._get_holidays(cur.year)
+            if cur in year_holidays:
+                continue
+            return cur
+
+    @classmethod
+    def prev_trading_day(cls, dt: datetime | date) -> date:
+        """Return the previous active Vietnam trading day strictly before dt."""
+        cur = dt.date() if isinstance(dt, datetime) else dt
+        while True:
+            cur -= timedelta(days=1)
+            # Weekend check
+            if cur.weekday() >= 5:
+                continue
+            year_holidays = cls._get_holidays(cur.year)
+            if cur in year_holidays:
+                continue
+            return cur
+
+    @classmethod
     def validate_timestamps(cls, timestamps: list, strict: bool = False) -> bool:
         """Validate list of timestamps.
         
@@ -184,3 +228,20 @@ class VNTradingCalendar:
                     return False
         
         return True
+
+
+def get_futures_expiry_date(year: int, month: int) -> date:
+    """Return VN index futures expiry date for a contract month.
+
+    Third Thursday. If that day is not a trading day, roll back to the
+    preceding trading day.
+    """
+    if year not in VNTradingCalendar.SUPPORTED_YEARS:
+        raise ValueError(f"no holiday coverage for {year}")
+    first_day = date(year, month, 1)
+    days_to_thursday = (3 - first_day.weekday()) % 7
+    first_thursday = first_day + timedelta(days=days_to_thursday)
+    expiry = first_thursday + timedelta(days=14)
+    while not VNTradingCalendar.is_trading_day(datetime.combine(expiry, datetime.min.time())):
+        expiry -= timedelta(days=1)
+    return expiry

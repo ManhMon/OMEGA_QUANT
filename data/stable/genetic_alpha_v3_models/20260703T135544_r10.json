@@ -1,0 +1,9 @@
+{
+  "rank": 10,
+  "round": 7,
+  "train_IC": 0.4948,
+  "test_IC": 0.0305,
+  "hit_rate": 0.4402,
+  "expression": "neg(close)",
+  "serialized_tree": "GPNode(operator='neg', children=[GPNode(operator='terminal', children=[], value='close')], value=None)"
+}

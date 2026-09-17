@@ -1,0 +1,146 @@
+{
+  "run_date": "2026-06-13T23:49:30.351200",
+  "num_seeds": 2,
+  "results": [
+    {
+      "year": 2017,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": 0.034,
+        "sharpe": 1.9384,
+        "turnover": 0.29
+      },
+      "baseline_mom20": {
+        "ic": -0.0006,
+        "sharpe": 1.9084,
+        "turnover": 0.2151
+      }
+    },
+    {
+      "year": 2018,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": -0.0221,
+        "sharpe": -0.9476,
+        "turnover": 0.2367
+      },
+      "baseline_mom20": {
+        "ic": 0.0216,
+        "sharpe": 0.6957,
+        "turnover": 0.2321
+      }
+    },
+    {
+      "year": 2019,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": -0.0182,
+        "sharpe": 0.3816,
+        "turnover": 0.2232
+      },
+      "baseline_mom20": {
+        "ic": -0.011,
+        "sharpe": -0.0816,
+        "turnover": 0.2324
+      }
+    },
+    {
+      "year": 2020,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": 0.0272,
+        "sharpe": 1.42,
+        "turnover": 0.5366
+      },
+      "baseline_mom20": {
+        "ic": 0.0978,
+        "sharpe": 1.2782,
+        "turnover": 0.2473
+      }
+    },
+    {
+      "year": 2021,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": 0.0619,
+        "sharpe": 1.8714,
+        "turnover": 0.4617
+      },
+      "baseline_mom20": {
+        "ic": -0.0336,
+        "sharpe": 2.3324,
+        "turnover": 0.205
+      }
+    },
+    {
+      "year": 2022,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": -0.0073,
+        "sharpe": -0.1384,
+        "turnover": 0.3967
+      },
+      "baseline_mom20": {
+        "ic": 0.0088,
+        "sharpe": 0.1302,
+        "turnover": 0.1921
+      }
+    },
+    {
+      "year": 2023,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": 0.0636,
+        "sharpe": 1.8715,
+        "turnover": 0.3528
+      },
+      "baseline_mom20": {
+        "ic": -0.0717,
+        "sharpe": 0.6286,
+        "turnover": 0.2229
+      }
+    },
+    {
+      "year": 2024,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": 0.0171,
+        "sharpe": 0.9763,
+        "turnover": 0.3858
+      },
+      "baseline_mom20": {
+        "ic": -0.0855,
+        "sharpe": 0.9737,
+        "turnover": 0.2057
+      }
+    },
+    {
+      "year": 2025,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": -0.0075,
+        "sharpe": -0.0183,
+        "turnover": 0.3993
+      },
+      "baseline_mom20": {
+        "ic": -0.0094,
+        "sharpe": 0.0159,
+        "turnover": 0.2212
+      }
+    },
+    {
+      "year": 2026,
+      "num_seeds": 2,
+      "evolution_ensemble": {
+        "ic": 0.0105,
+        "sharpe": 1.0139,
+        "turnover": 0.3345
+      },
+      "baseline_mom20": {
+        "ic": -0.0708,
+        "sharpe": 1.0987,
+        "turnover": 0.2142
+      }
+    }
+  ]
+}

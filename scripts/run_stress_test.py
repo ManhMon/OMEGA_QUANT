@@ -19,7 +19,7 @@ logger = logging.getLogger("stress_test")
 
 ScenarioStressTester = None
 try:
-    from omega.quant.stress_testing import ScenarioStressTester, StressScenario
+    from omega.quant.risk.stress_testing import ScenarioStressTester, StressScenario
     logger.info("ScenarioStressTester imported")
 except ImportError as e:
     logger.warning(f"ScenarioStressTester not available: {e}, using manual logic")

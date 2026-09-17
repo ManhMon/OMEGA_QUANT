@@ -15,7 +15,7 @@ import pytest
 import time
 import numpy as np
 from datetime import datetime, timedelta, timezone
-from omega.quant.transaction_cost_optimizer import (
+from omega.quant.execution.transaction_cost_optimizer import (
     TransactionCostOptimizer,
     TransactionCostResult,
 )

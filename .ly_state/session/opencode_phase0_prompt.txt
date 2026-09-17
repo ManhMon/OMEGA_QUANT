@@ -1,0 +1,8 @@
+You are Role 9 - Backend Engineer (L2). 
+Implement Phase 0 of the Restructuring Plan. 
+Steps:
+1. Create folder src/omega/quant/alpha/
+2. Create src/omega/quant/alpha/primitives.py containing: _safe_divide, _round_to_board_lot, compute_returns, compute_rsi from ultimate_alpha_arsenal.py.
+3. Update promoted_alphas.py and ultimate_alpha_arsenal.py to import these from omega.quant.alpha.primitives, removing duplicates.
+4. Ensure no circular dependencies remain.
+5. Verify by running pytest tests/quant_test_parity_arsenal.py.

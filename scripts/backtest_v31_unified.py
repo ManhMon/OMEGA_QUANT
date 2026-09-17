@@ -30,7 +30,7 @@ from omega.quant.evolution.unified_feature_adapter import UnifiedFeatureAdapter
 from omega.quant.evolution.regime_detector import RegimeDetector
 from omega.quant.evolution.hrp_weighter import HRPWeighter
 from omega.quant.evolution.genetic_alpha import enforce_t_minus_1_lag
-from omega.quant.parallel_backtest import ParallelBacktestRunner
+from omega.quant.backtest.parallel import ParallelBacktestRunner
 
 # ============================================================
 # PHASE A: DATA + UNIFIED FEATURES

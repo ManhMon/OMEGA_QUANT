@@ -1,0 +1,47 @@
+{
+  "gate": "HOSE_HNX_DATA_REBUILD_PHASE12_AUDIT_20260612",
+  "date": "2026-06-12T19:45:00+07:00",
+  "role": "15 data-engineer",
+  "tier": 2,
+  "status": "AWAITING_L3_REVIEW",
+  "py_compile": {
+    "total_files": 14,
+    "passed": 14,
+    "failed": 0,
+    "files": [
+      {"path": "src/omega/data/vnd_price_contract.py", "status": "PASS"},
+      {"path": "src/omega/data/exchange_resolver.py", "status": "PASS"},
+      {"path": "src/omega/data/vnstock_adapter.py", "status": "PASS"},
+      {"path": "src/omega/data/vnstock_vci.py", "status": "PASS"},
+      {"path": "src/omega/data/vnstock_ingest.py", "status": "PASS"},
+      {"path": "src/omega/data/vnstock_live.py", "status": "PASS"},
+      {"path": "src/omega/data/live_ingestor.py", "status": "PASS"},
+      {"path": "src/omega/data/__init__.py", "status": "PASS"},
+      {"path": "src/omega/execution/order_generator.py", "status": "PASS"},
+      {"path": "src/omega/execution/trade_blotter.py", "status": "PASS"},
+      {"path": "src/omega/quant/monitoring/pnl_monitor.py", "status": "PASS"},
+      {"path": "scripts/update_market_data.py", "status": "PASS"},
+      {"path": "scripts/batch_market_loader_resume.py", "status": "PASS"},
+      {"path": "tests/data_test_vnd_full_exchange_fix.py", "status": "PASS"}
+    ]
+  },
+  "pytest": {
+    "total_tests": 54,
+    "passed": 54,
+    "failed": 0,
+    "errors": 0,
+    "test_files": [
+      {"path": "tests/data_test_vnd_full_exchange_fix.py", "tests": 39, "status": "PASS"},
+      {"path": "tests/execution_test_order_generator.py", "tests": 6, "status": "PASS"},
+      {"path": "tests/execution_test_trade_blotter.py", "tests": 6, "status": "PASS"},
+      {"path": "tests/quant_test_pnl_monitor.py", "tests": 3, "status": "PASS"}
+    ],
+    "runtime_seconds": 6.06,
+    "python_version": "3.14.4",
+    "platform": "win32"
+  },
+  "canonical_parquet_touched": false,
+  "data_market_2015_now_parquet_modified": false,
+  "secrets_found": false,
+  "antigravity_scratch_paths": false
+}

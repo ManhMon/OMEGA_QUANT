@@ -240,7 +240,7 @@ with tab1:
             health["Status"][2] = f"🟢 {st_}" if st_ == "RUNNING" else f"🔴 {st_}"
             if risk.get("breached"):
                 health["Status"][2] = "🔴 EMERGENCY_STOP"
-        st.dataframe(pd.DataFrame(health), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(health), width="stretch", hide_index=True)
 
     with col_right:
         st.markdown("#### 🔐 Circuit Breaker")
@@ -263,7 +263,7 @@ with tab1:
         if "timestamp" in log_df.columns:
             log_df["timestamp"] = log_df["timestamp"].astype(str)
             log_df["timestamp"] = pd.to_datetime(log_df["timestamp"], utc=True, errors="coerce", format="mixed").dt.strftime("%Y-%m-%d %H:%M")
-        st.dataframe(log_df, use_container_width=True, hide_index=True)
+        st.dataframe(log_df, width="stretch", hide_index=True)
     else:
         st.info("No audit log entries.")
 
@@ -298,15 +298,15 @@ with tab2:
                      color_continuous_scale=["#f44336", "#ff9800", "#4caf50"],
                      title="Sharpe Ratio - Top 20 Backtests")
         fig.update_layout(xaxis_tickangle=-45, height=400)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         fig2 = px.scatter(perf_df, x="MaxDD", y="Return", size="Trades",
                           color="Sharpe", hover_data=["Source"],
                           title="Return vs Max Drawdown")
         fig2.update_layout(height=400)
-        st.plotly_chart(fig2, use_container_width=True)
+        st.plotly_chart(fig2, width="stretch")
 
-        st.dataframe(perf_df.sort_values("Sharpe", ascending=False), use_container_width=True, hide_index=True)
+        st.dataframe(perf_df.sort_values("Sharpe", ascending=False), width="stretch", hide_index=True)
     else:
         st.info("No backtest results. Run scripts/run_weekly_evolution.py")
         if risk:
@@ -339,7 +339,7 @@ with tab3:
                     "steps": [{"range":[0,10],"color":"#2ecc71"},{"range":[10,20],"color":"#f39c12"},{"range":[20,30],"color":"#e74c3c"}],
                     "threshold": {"line":{"color":"red","width":4},"thickness":0.75,"value":15}}))
             fig.update_layout(height=300)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
 
         with col_r:
             fig2 = go.Figure(go.Indicator(mode="gauge+number", value=m.get("sharpe_ratio",0),
@@ -348,7 +348,7 @@ with tab3:
                     "steps":[{"range":[-2,0],"color":"#ffebee"},{"range":[0,1],"color":"#fff3e0"},{"range":[1,2],"color":"#e8f5e9"},{"range":[2,4],"color":"#c8e6c9"}],
                     "threshold":{"line":{"color":"green","width":4},"thickness":0.75,"value":1.0}}))
             fig2.update_layout(height=300)
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
 
         if risk.get("breached"):
             st.error(f"🔴 EMERGENCY STOP - {len(risk.get('breached_reasons',[]))} breach(es)")
@@ -382,7 +382,7 @@ with tab4:
 
     if pipeline_data:
         st.metric("Total Orders", len(pipeline_data))
-        st.dataframe(pd.DataFrame(pipeline_data).head(50), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(pipeline_data).head(50), width="stretch", hide_index=True)
     else:
         st.info("No order data in pipeline state.")
 
@@ -418,11 +418,11 @@ with tab5:
                             signal_rows.append({"Regime": rname, "#": i+1, "Fitness": 0, "Type": "Expr", "Expression": a[:80]})
         if signal_rows:
             sig_df = pd.DataFrame(signal_rows)
-            st.dataframe(sig_df, use_container_width=True, hide_index=True)
+            st.dataframe(sig_df, width="stretch", hide_index=True)
             if sig_df["Fitness"].sum() > 0:
                 fig = px.histogram(sig_df, x="Fitness", color="Regime", title="Alpha Fitness by Regime", nbins=30)
                 fig.update_layout(height=350)
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
         else:
             st.json(alphas)
     else:
@@ -440,10 +440,10 @@ with tab5:
             col1, col2 = st.columns(2)
             with col1:
                 st.markdown("**🟢 Top 5**")
-                st.dataframe(qdf.head(5)[["Backtest","Sharpe","WinRate"]], use_container_width=True, hide_index=True)
+                st.dataframe(qdf.head(5)[["Backtest","Sharpe","WinRate"]], width="stretch", hide_index=True)
             with col2:
                 st.markdown("**🔴 Bottom 5**")
-                st.dataframe(qdf.tail(5)[["Backtest","Sharpe","WinRate"]], use_container_width=True, hide_index=True)
+                st.dataframe(qdf.tail(5)[["Backtest","Sharpe","WinRate"]], width="stretch", hide_index=True)
 
 
 # TAB 6: AGENTS
@@ -489,13 +489,13 @@ with tab6:
                           title="25 Agent Hierarchy", color="Tier",
                           color_discrete_map={"L1":"#2196F3","L2":"#4CAF50","L3":"#F44336"})
         fig.update_layout(height=500)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     with col_r:
         st.markdown("### SOD Rules")
         st.markdown("✅ Writer != Auditor\n\n✅ L2 terminates before L3\n\n✅ No self-approval\n\n✅ Gate Contract required:\n- l3_session_id\n- l3_session_key\n- audit_report_path\n- final_verdict = APPROVED")
 
-    st.dataframe(agents_df, use_container_width=True, hide_index=True)
+    st.dataframe(agents_df, width="stretch", hide_index=True)
 
     st.markdown("### Phase Gate Compliance")
     gates_data = load_phase_gates()
@@ -516,9 +516,9 @@ with tab6:
                 fig_g = px.pie(values=vc.values, names=vc.index, title="Gate Verdicts",
                                color_discrete_map={"APPROVED":"#4CAF50","NEEDS_FIX":"#FF9800","PENDING_AUDIT":"#9E9E9E"})
                 fig_g.update_layout(height=350)
-                st.plotly_chart(fig_g, use_container_width=True)
+                st.plotly_chart(fig_g, width="stretch")
             with col_g2:
-                st.dataframe(gate_df, use_container_width=True, hide_index=True)
+                st.dataframe(gate_df, width="stretch", hide_index=True)
 
     st.markdown("### Audit Trail (Last 20)")
     audit_logs = load_audit_log()
@@ -527,7 +527,7 @@ with tab6:
         if "timestamp" in adf.columns:
             adf["timestamp"] = adf["timestamp"].astype(str)
             adf["timestamp"] = pd.to_datetime(adf["timestamp"], utc=True, errors="coerce", format="mixed").dt.strftime("%m-%d %H:%M")
-        st.dataframe(adf, use_container_width=True, hide_index=True)
+        st.dataframe(adf, width="stretch", hide_index=True)
     else:
         st.info("No audit log entries.")
 

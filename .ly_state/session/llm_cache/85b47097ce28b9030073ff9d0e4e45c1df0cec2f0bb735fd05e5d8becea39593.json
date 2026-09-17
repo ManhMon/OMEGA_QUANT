@@ -1,0 +1,13 @@
+{
+  "prompt_hash": "85b47097ce28b9030073ff9d0e4e45c1df0cec2f0bb735fd05e5d8becea39593",
+  "prompt_version": "vn_alpha_search_v3_closed_loop",
+  "formulas": [
+    "sub(ts_rank(ret_1d, 3), ts_rank(ret_20d, 20))",
+    "div(rank(volume), add(ts_mean(volume, 20), sqrt(abs(ret_1d))))",
+    "mul(rank(ret_5d), neg(ts_std(ret_1d, 10)))",
+    "sub(ts_rank(ret_5d, 10), ts_rank(volume, 20))",
+    "div(sub(close, open), add(ts_std(ret_1d, 20), abs(ret_1d)))",
+    "mul(rank(sub(close, low)), neg(rank(sub(high, close))))"
+  ],
+  "timestamp": "2026-06-12T15:56:35.575277"
+}

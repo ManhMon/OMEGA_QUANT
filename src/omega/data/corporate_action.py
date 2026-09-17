@@ -6,34 +6,117 @@ Backward Price Adjustment for Vietnam Stock Market
 Supports: Dividends, Stock Splits, Rights Issues
 """
 
-from typing import Dict, List, Optional, Tuple
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
 import copy
+import logging
+from typing import Any, Dict, List, Optional
+
+import pandas as pd
 
 
+logger = logging.getLogger(__name__)
+
+
+def _default_helper_provenance(ex_date: str, provenance: Dict[str, Any]) -> Dict[str, Any]:
+    ex_timestamp = pd.Timestamp(ex_date, tz="UTC")
+    announced_at = provenance.get("announced_at")
+    if announced_at is None:
+        announced_at = (ex_timestamp - pd.Timedelta(days=7)).to_pydatetime()
+    ingested_at = provenance.get("ingested_at", announced_at)
+    available_at = provenance.get("available_at", announced_at)
+    source = provenance.get("source", "HELPER_DEFAULT")
+    return {
+        **provenance,
+        "announced_at": announced_at,
+        "ingested_at": ingested_at,
+        "available_at": available_at,
+        "source": source,
+    }
+
+
+def _coerce_utc_timestamp(value: Optional[datetime | str], field_name: str) -> Optional[datetime]:
+    if value is None:
+        return None
+    timestamp = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+        raise ValueError(f"{field_name} must be timezone-aware UTC")
+    return timestamp.astimezone(UTC)
+
+
+@dataclass(init=False)
 class CorporateAction:
-    """
-    Represents a single corporate action event.
-    """
-    
-    def __init__(self, symbol: str, ex_date: str, action_type: str, **params):
-        """
-        Args:
-            symbol: Stock symbol
-            ex_date: Ex-date (YYYY-MM-DD or timestamp)
-            action_type: 'dividend', 'split', 'rights'
-            **params: Action-specific parameters
-                - dividend: dividend_amount (VND per share)
-                - split: split_ratio (e.g., 2.0 for 2:1 split)
-                - rights: rights_ratio, rights_price
-        """
+    """Represents a single corporate action event with PIT provenance."""
+
+    symbol: str
+    ex_date: str
+    action_type: str
+    params: Dict[str, Any] = field(default_factory=dict)
+    announced_at: Optional[datetime] = None
+    ingested_at: Optional[datetime] = None
+    available_at: Optional[datetime] = None
+    source: Optional[str] = None
+    quarantine_reason: Optional[str] = None
+
+    def __init__(
+        self,
+        symbol: str,
+        ex_date: str,
+        action_type: str,
+        announced_at: Optional[datetime | str] = None,
+        ingested_at: Optional[datetime | str] = None,
+        available_at: Optional[datetime | str] = None,
+        source: Optional[str] = None,
+        **params: Any,
+    ):
         self.symbol = symbol
         self.ex_date = ex_date
         self.action_type = action_type
         self.params = params
-    
+        self.announced_at = _coerce_utc_timestamp(announced_at, "announced_at")
+        self.ingested_at = _coerce_utc_timestamp(ingested_at, "ingested_at")
+        self.available_at = _coerce_utc_timestamp(available_at, "available_at")
+        self.source = source
+        self.quarantine_reason = None
+        self._validate_provenance()
+
+    def _validate_provenance(self) -> None:
+        if not self.announced_at or not self.ingested_at or not self.available_at or not self.source:
+            self.quarantine_reason = (
+                "missing availability provenance: announced_at, ingested_at, available_at, source required"
+            )
+            logger.warning(
+                "Quarantining corporate action %s %s %s: %s",
+                self.symbol,
+                self.ex_date,
+                self.action_type,
+                self.quarantine_reason,
+            )
+            return
+
+        expected_available_at = max(self.announced_at, self.ingested_at)
+        if self.available_at != expected_available_at:
+            raise ValueError("available_at must equal max(announced_at, ingested_at)")
+        if self.available_at < self.announced_at:
+            raise ValueError("available_at must be >= announced_at")
+
+    @property
+    def is_quarantined(self) -> bool:
+        return self.quarantine_reason is not None
+
+    def is_available_at(self, as_of_time: datetime) -> bool:
+        if self.is_quarantined or self.available_at is None:
+            return False
+        if as_of_time.tzinfo is None or as_of_time.utcoffset() is None:
+            raise ValueError("as_of_time must be timezone-aware UTC")
+        return self.available_at <= as_of_time.astimezone(UTC)
+
     def __repr__(self):
-        return f"CorporateAction({self.symbol}, {self.ex_date}, {self.action_type}, {self.params})"
+        return (
+            f"CorporateAction({self.symbol}, {self.ex_date}, {self.action_type}, {self.params}, "
+            f"announced_at={self.announced_at}, ingested_at={self.ingested_at}, "
+            f"available_at={self.available_at}, source={self.source!r})"
+        )
 
 
 class CorporateActionAdjuster:
@@ -249,16 +332,41 @@ class CorporateActionAdjuster:
         return adjusted_data
 
 
-def create_dividend_action(symbol: str, ex_date: str, dividend_amount: float) -> CorporateAction:
+def create_dividend_action(symbol: str, ex_date: str, dividend_amount: float, **provenance: Any) -> CorporateAction:
     """Helper to create dividend action."""
-    return CorporateAction(symbol, ex_date, 'dividend', dividend_amount=dividend_amount)
+    return CorporateAction(
+        symbol,
+        ex_date,
+        'dividend',
+        dividend_amount=dividend_amount,
+        **_default_helper_provenance(ex_date, provenance),
+    )
 
 
-def create_split_action(symbol: str, ex_date: str, split_ratio: float) -> CorporateAction:
+def create_split_action(symbol: str, ex_date: str, split_ratio: float, **provenance: Any) -> CorporateAction:
     """Helper to create split action."""
-    return CorporateAction(symbol, ex_date, 'split', split_ratio=split_ratio)
+    return CorporateAction(
+        symbol,
+        ex_date,
+        'split',
+        split_ratio=split_ratio,
+        **_default_helper_provenance(ex_date, provenance),
+    )
 
 
-def create_rights_action(symbol: str, ex_date: str, rights_ratio: float, rights_price: float) -> CorporateAction:
+def create_rights_action(
+    symbol: str,
+    ex_date: str,
+    rights_ratio: float,
+    rights_price: float,
+    **provenance: Any,
+) -> CorporateAction:
     """Helper to create rights issue action."""
-    return CorporateAction(symbol, ex_date, 'rights', rights_ratio=rights_ratio, rights_price=rights_price)
+    return CorporateAction(
+        symbol,
+        ex_date,
+        'rights',
+        rights_ratio=rights_ratio,
+        rights_price=rights_price,
+        **_default_helper_provenance(ex_date, provenance),
+    )

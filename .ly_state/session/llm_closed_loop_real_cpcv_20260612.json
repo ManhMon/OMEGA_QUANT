@@ -1,0 +1,665 @@
+{
+  "config": {
+    "max_iterations": 3,
+    "candidates_per_iteration": 10,
+    "prompt_version": "vn_alpha_search_v3_closed_loop",
+    "llm_provider": "openai-compatible"
+  },
+  "final_state": {
+    "current_iteration": 2,
+    "total_candidates_generated": 10,
+    "total_candidates_accepted": 24,
+    "failed_formulas": [
+      "div(sub(close,ts_mean(close,10)),add(ts_std(close,10),abs(ret_1d)))"
+    ],
+    "bad_motifs": [
+      "div",
+      "div(sub(close, ts_mean(close, 10))"
+    ],
+    "aggregate_failure_stats": {},
+    "iteration_results": [
+      {
+        "iteration": 1,
+        "candidates_generated": 9,
+        "candidates_accepted": 8,
+        "candidates_rejected": 1,
+        "synthesis_stats": {
+          "prompt_version": "vn_alpha_search_v3_closed_loop",
+          "max_candidates": 10,
+          "provider_type": "OpenAICompatibleProvider",
+          "cache_hit": false,
+          "total_raw": 10,
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "accepted": 9,
+          "rejected_formulas": [
+            {
+              "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+              "reason": "Execution validation failed",
+              "stage": "validation"
+            }
+          ],
+          "accepted_formulas": [
+            "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+            "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+            "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+            "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+            "sub(ts_rank(high, 7), ts_rank(close, 7))",
+            "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+            "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+            "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+            "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+          ]
+        },
+        "scoring_stats": {
+          "total": 9,
+          "accepted": 8,
+          "rejected": 1,
+          "deployable": 0,
+          "unsupervised_only": 8,
+          "accepted_names": [
+            "alpha_llm_0",
+            "alpha_llm_2",
+            "alpha_llm_3",
+            "alpha_llm_4",
+            "alpha_llm_5",
+            "alpha_llm_6",
+            "alpha_llm_7",
+            "alpha_llm_8"
+          ],
+          "rejected_names": [
+            "alpha_llm_1"
+          ],
+          "rejection_reasons": {
+            "alpha_llm_1": [
+              "Unstable per-ticker: var=2.90e+11 > 1.00e+06"
+            ]
+          },
+          "details": {
+            "alpha_llm_0": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06125220326136684,
+              "stability": 0.061366553999574164,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_1": {
+              "accepted": false,
+              "coverage": 1.0,
+              "variance": 310987870979.88293,
+              "stability": 289580729917.27386,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_2": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06192606845330146,
+              "stability": 0.062102801772916764,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_3": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 2.302747446243957,
+              "stability": 2.315505200059658,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_4": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.03328344831511911,
+              "stability": 0.033264999062456856,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_5": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06359410341902139,
+              "stability": 0.06330167604528032,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_6": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.31305835286549505,
+              "stability": 0.31153107765319304,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_7": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.610826319755655,
+              "stability": 0.5701655101776139,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_8": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.19261370742539263,
+              "stability": 0.19485454797370916,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            }
+          },
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 1,
+            "nan_inf": 0
+          },
+          "synthesis": {
+            "prompt_version": "vn_alpha_search_v3_closed_loop",
+            "max_candidates": 10,
+            "provider_type": "OpenAICompatibleProvider",
+            "cache_hit": false,
+            "total_raw": 10,
+            "rejection_taxonomy": {
+              "parse_error": 0,
+              "unsafe_token": 0,
+              "duplicate_formula": 0,
+              "execution_failure": 1,
+              "low_coverage": 0,
+              "near_zero_variance": 0,
+              "unstable": 0,
+              "nan_inf": 0
+            },
+            "accepted": 9,
+            "rejected_formulas": [
+              {
+                "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+                "reason": "Execution validation failed",
+                "stage": "validation"
+              }
+            ],
+            "accepted_formulas": [
+              "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+              "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+              "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+              "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+              "sub(ts_rank(high, 7), ts_rank(close, 7))",
+              "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+              "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+              "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+              "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+            ]
+          }
+        }
+      },
+      {
+        "iteration": 2,
+        "candidates_generated": 8,
+        "candidates_accepted": 8,
+        "candidates_rejected": 0,
+        "synthesis_stats": {
+          "prompt_version": "vn_alpha_search_v3_closed_loop",
+          "max_candidates": 10,
+          "provider_type": "OpenAICompatibleProvider",
+          "cache_hit": true,
+          "total_raw": 0,
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "accepted": 9,
+          "rejected_formulas": [
+            {
+              "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+              "reason": "Execution validation failed",
+              "stage": "validation"
+            }
+          ],
+          "accepted_formulas": [
+            "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+            "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+            "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+            "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+            "sub(ts_rank(high, 7), ts_rank(close, 7))",
+            "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+            "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+            "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+            "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+          ]
+        },
+        "scoring_stats": {
+          "total": 8,
+          "accepted": 8,
+          "rejected": 0,
+          "deployable": 0,
+          "unsupervised_only": 8,
+          "accepted_names": [
+            "alpha_llm_0",
+            "alpha_llm_1",
+            "alpha_llm_2",
+            "alpha_llm_3",
+            "alpha_llm_4",
+            "alpha_llm_5",
+            "alpha_llm_6",
+            "alpha_llm_7"
+          ],
+          "rejected_names": [],
+          "rejection_reasons": {},
+          "details": {
+            "alpha_llm_0": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06125220326136684,
+              "stability": 0.061366553999574164,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_1": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06192606845330146,
+              "stability": 0.062102801772916764,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_2": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 2.302747446243957,
+              "stability": 2.315505200059658,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_3": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.03328344831511911,
+              "stability": 0.033264999062456856,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_4": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06359410341902139,
+              "stability": 0.06330167604528032,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_5": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.31305835286549505,
+              "stability": 0.31153107765319304,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_6": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.610826319755655,
+              "stability": 0.5701655101776139,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_7": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.19261370742539263,
+              "stability": 0.19485454797370916,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            }
+          },
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "synthesis": {
+            "prompt_version": "vn_alpha_search_v3_closed_loop",
+            "max_candidates": 10,
+            "provider_type": "OpenAICompatibleProvider",
+            "cache_hit": true,
+            "total_raw": 0,
+            "rejection_taxonomy": {
+              "parse_error": 0,
+              "unsafe_token": 0,
+              "duplicate_formula": 0,
+              "execution_failure": 1,
+              "low_coverage": 0,
+              "near_zero_variance": 0,
+              "unstable": 0,
+              "nan_inf": 0
+            },
+            "accepted": 9,
+            "rejected_formulas": [
+              {
+                "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+                "reason": "Execution validation failed",
+                "stage": "validation"
+              }
+            ],
+            "accepted_formulas": [
+              "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+              "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+              "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+              "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+              "sub(ts_rank(high, 7), ts_rank(close, 7))",
+              "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+              "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+              "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+              "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+            ]
+          }
+        }
+      },
+      {
+        "iteration": 3,
+        "candidates_generated": 8,
+        "candidates_accepted": 8,
+        "candidates_rejected": 0,
+        "synthesis_stats": {
+          "prompt_version": "vn_alpha_search_v3_closed_loop",
+          "max_candidates": 10,
+          "provider_type": "OpenAICompatibleProvider",
+          "cache_hit": true,
+          "total_raw": 0,
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "accepted": 9,
+          "rejected_formulas": [
+            {
+              "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+              "reason": "Execution validation failed",
+              "stage": "validation"
+            }
+          ],
+          "accepted_formulas": [
+            "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+            "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+            "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+            "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+            "sub(ts_rank(high, 7), ts_rank(close, 7))",
+            "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+            "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+            "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+            "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+          ]
+        },
+        "scoring_stats": {
+          "total": 8,
+          "accepted": 8,
+          "rejected": 0,
+          "deployable": 0,
+          "unsupervised_only": 8,
+          "accepted_names": [
+            "alpha_llm_0",
+            "alpha_llm_1",
+            "alpha_llm_2",
+            "alpha_llm_3",
+            "alpha_llm_4",
+            "alpha_llm_5",
+            "alpha_llm_6",
+            "alpha_llm_7"
+          ],
+          "rejected_names": [],
+          "rejection_reasons": {},
+          "details": {
+            "alpha_llm_0": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06125220326136684,
+              "stability": 0.061366553999574164,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_1": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06192606845330146,
+              "stability": 0.062102801772916764,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_2": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 2.302747446243957,
+              "stability": 2.315505200059658,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_3": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.03328344831511911,
+              "stability": 0.033264999062456856,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_4": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.06359410341902139,
+              "stability": 0.06330167604528032,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_5": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.31305835286549505,
+              "stability": 0.31153107765319304,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_6": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.610826319755655,
+              "stability": 0.5701655101776139,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            },
+            "alpha_llm_7": {
+              "accepted": true,
+              "coverage": 1.0,
+              "variance": 0.19261370742539263,
+              "stability": 0.19485454797370916,
+              "nan_inf_ratio": 0.0,
+              "ic": null,
+              "dsr_proxy": null,
+              "is_supervised_validated": false,
+              "is_deployable": false,
+              "validation_mode": "unsupervised_only"
+            }
+          },
+          "rejection_taxonomy": {
+            "parse_error": 0,
+            "unsafe_token": 0,
+            "duplicate_formula": 0,
+            "execution_failure": 1,
+            "low_coverage": 0,
+            "near_zero_variance": 0,
+            "unstable": 0,
+            "nan_inf": 0
+          },
+          "synthesis": {
+            "prompt_version": "vn_alpha_search_v3_closed_loop",
+            "max_candidates": 10,
+            "provider_type": "OpenAICompatibleProvider",
+            "cache_hit": true,
+            "total_raw": 0,
+            "rejection_taxonomy": {
+              "parse_error": 0,
+              "unsafe_token": 0,
+              "duplicate_formula": 0,
+              "execution_failure": 1,
+              "low_coverage": 0,
+              "near_zero_variance": 0,
+              "unstable": 0,
+              "nan_inf": 0
+            },
+            "accepted": 9,
+            "rejected_formulas": [
+              {
+                "formula": "mul(ts_rank(ret_20d, 40), neg(ts_rank(volume, 10)))",
+                "reason": "Execution validation failed",
+                "stage": "validation"
+              }
+            ],
+            "accepted_formulas": [
+              "mul(rank(ret_5d), neg(ts_rank(ret_1d, 3)))",
+              "div(sub(close, ts_mean(close, 10)), add(ts_std(close, 10), abs(ret_1d)))",
+              "sub(ts_rank(volume, 5), ts_rank(volume, 30))",
+              "div(ret_5d, add(ts_std(ret_1d, 15), abs(ret_1d)))",
+              "sub(ts_rank(high, 7), ts_rank(close, 7))",
+              "mul(rank(volume), neg(ts_rank(abs(ret_1d), 20)))",
+              "div(sub(close, open), add(sub(high, low), abs(ret_1d)))",
+              "sub(decay_linear(ret_1d, 5), decay_linear(ret_1d, 20))",
+              "mul(rank(ret_1d), div(ts_mean(volume, 3), ts_mean(volume, 20)))"
+            ]
+          }
+        }
+      }
+    ]
+  },
+  "summary": {
+    "total_candidates_generated": 10,
+    "total_candidates_accepted": 24,
+    "final_candidate_count": 24,
+    "failed_formulas_count": 1,
+    "bad_motifs_count": 2
+  },
+  "requires_full_cpcv": true,
+  "deployment_ready": false
+}

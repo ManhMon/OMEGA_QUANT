@@ -27,6 +27,19 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Optional, Any
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from sod_gate_enforcer import (
+    LEGACY_DATE_KEYS,
+    LEGACY_WORKFLOW_KEYS,
+    validate_legacy_reconciliation,
+    validate_audit_report_path,
+    load_canonical_gate_map,
+    resolve_active_legacy_sidecar,
+    resolve_active_legacy_gate,
+)
+
 # Workspace paths
 WORKSPACE_ROOT = Path(__file__).parent.parent
 LY_STATE_DIR = WORKSPACE_ROOT / ".ly_state" / "session"
@@ -35,11 +48,8 @@ AUDIT_LOG_FILE = LY_STATE_DIR / "audit_log.jsonl"
 
 
 def load_phase_gates() -> Dict[str, Any]:
-    """Load phase gates state."""
-    if not PHASE_GATES_FILE.exists():
-        return {}
-    with open(PHASE_GATES_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    """Load the same canonical gate map used by the SOD enforcer."""
+    return load_canonical_gate_map()
 
 
 def save_phase_gates(gates: Dict[str, Any]) -> None:
@@ -65,6 +75,13 @@ def check_phase(phase_id: str) -> bool:
     """
     gates = load_phase_gates()
     gate = gates.get(phase_id, {})
+
+    if phase_id in LEGACY_WORKFLOW_KEYS:
+        gate = resolve_active_legacy_gate(gates, phase_id)
+        if gate is None:
+            valid, message = resolve_active_legacy_sidecar(gates)
+            print(f"[FAIL] Phase {phase_id}: {message}")
+            return False
     
     # Check required fields
     required_fields = ["l3_session_id", "l3_session_key", "audit_report_path", "final_verdict"]
@@ -80,7 +97,18 @@ def check_phase(phase_id: str) -> bool:
     
     # Check audit report file exists
     audit_path = gate.get("audit_report_path")
-    if audit_path and not Path(audit_path).exists():
+    if phase_id in LEGACY_WORKFLOW_KEYS:
+        if not isinstance(gate.get("l3_session_id"), str) or not gate["l3_session_id"]:
+            print(f"[FAIL] Phase {phase_id}: Missing fresh L3 session identity")
+            return False
+        if gate.get("l3_session_key") != gate.get("l3_session_id"):
+            print(f"[FAIL] Phase {phase_id}: l3_session_key must equal l3_session_id")
+            return False
+        path_valid, path_message = validate_audit_report_path(audit_path)
+        if not path_valid:
+            print(f"[FAIL] Phase {phase_id}: Invalid audit report path: {path_message}")
+            return False
+    if audit_path and not (WORKSPACE_ROOT / audit_path).is_file():
         print(f"[FAIL] Phase {phase_id}: Audit report not found: {audit_path}")
         return False
     
@@ -133,6 +161,17 @@ def lock_gate(phase_id: str, stage: str, **evidence_flags) -> bool:
     # Validate verdict
     if evidence_flags.get("final_verdict") not in ["[APPROVED]", "[NEEDS_FIX]"]:
         print(f"[FAIL] Invalid verdict: {evidence_flags.get('final_verdict')}")
+        return False
+
+    if phase_id in LEGACY_DATE_KEYS or phase_id in LEGACY_WORKFLOW_KEYS:
+        print(f"[FAIL] Legacy gate migration is append-only; lock-gate mutation forbidden: {phase_id}")
+        return False
+    if evidence_flags["l3_session_key"] != evidence_flags["l3_session_id"]:
+        print("[FAIL] l3_session_key must equal l3_session_id")
+        return False
+    path_valid, path_message = validate_audit_report_path(evidence_flags["audit_report_path"])
+    if not path_valid:
+        print(f"[FAIL] Invalid audit report path: {path_message}")
         return False
     
     # Create gate entry

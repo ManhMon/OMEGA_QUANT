@@ -25,7 +25,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from omega.core.sre.kill_switch import reset_kill_switch
+from omega.core.sre.kill_switch import _reset_kill_switch_for_testing
 from omega.risk.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 
 
@@ -47,10 +47,10 @@ def _portfolio_df(values: list[float], col: str = "portfolio_value") -> pd.DataF
 
 @pytest.fixture(autouse=True)
 def reset_ks():
-    """Reset the KillSwitch singleton before every test."""
-    reset_kill_switch()
+    """Reset the KillSwitch singleton before every test (LIVE-04: guarded)."""
+    _reset_kill_switch_for_testing(auth_token="OMEGA_TEST")
     yield
-    reset_kill_switch()
+    _reset_kill_switch_for_testing(auth_token="OMEGA_TEST")
 
 
 @pytest.fixture()

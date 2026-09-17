@@ -1,0 +1,9 @@
+{
+  "rank": 1,
+  "round": 1,
+  "train_IC": 0.4945,
+  "test_IC": 0.0305,
+  "hit_rate": 0.4402,
+  "expression": "(neg((close - returns_5d)) + (returns_1d ts_rank 5))",
+  "serialized_tree": "GPNode(operator='+', children=[GPNode(operator='neg', children=[GPNode(operator='-', children=[GPNode(operator='terminal', children=[], value='close'), GPNode(operator='terminal', children=[], value='returns_5d')], value=None)], value=None), GPNode(operator='ts_rank', children=[GPNode(operator='terminal', children=[], value='returns_1d'), GPNode(operator='terminal', children=[], value='5')], value=None)], value=None)"
+}

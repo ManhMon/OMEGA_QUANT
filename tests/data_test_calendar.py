@@ -9,7 +9,7 @@ import pytest
 from datetime import datetime, date
 from pathlib import Path
 from unittest.mock import patch, mock_open
-from omega.data.calendar import VNTradingCalendar, _load_holidays, _get_json_holidays
+from omega.data.calendar import VNTradingCalendar, _load_holidays, _get_json_holidays, get_futures_expiry_date
 
 
 class TestJSONLoading:
@@ -17,13 +17,13 @@ class TestJSONLoading:
     
     def test_json_file_exists(self):
         """Verify vn_holidays.json exists in expected location."""
-        # Path relative to test file: tests -> data -> packages -> OMEGA_QUANT -> config
-        config_path = Path(__file__).parent.parent.parent.parent / "config" / "vn_holidays.json"
+        # tests/data_test_calendar.py -> parent = tests/ -> parent = repo root
+        config_path = Path(__file__).parent.parent / "config" / "vn_holidays.json"
         assert config_path.exists(), f"Holiday JSON not found at {config_path}"
     
     def test_json_structure(self):
         """Verify JSON has correct structure with metadata and holidays."""
-        config_path = Path(__file__).parent.parent.parent.parent / "config" / "vn_holidays.json"
+        config_path = Path(__file__).parent.parent / "config" / "vn_holidays.json"
         
         with open(config_path, 'r', encoding='utf-8') as f:
             data = json.load(f)
@@ -218,6 +218,11 @@ class TestPublicAPI:
         # Monday, not a holiday
         dt = datetime(2024, 3, 4, 10, 0)  # March 4, 2024 is Monday
         assert VNTradingCalendar.is_trading_day(dt) is True
+
+
+def test_futures_expiry_rolls_back_on_holiday():
+    with patch.object(VNTradingCalendar, "is_trading_day", side_effect=lambda dt: dt.date() != date(2024, 9, 19)):
+        assert get_futures_expiry_date(2024, 9) == date(2024, 9, 18)
     
     def test_is_trading_day_weekend(self):
         """Test is_trading_day for weekend."""

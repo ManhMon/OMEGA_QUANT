@@ -19,7 +19,7 @@ logger = logging.getLogger("pnl_monitor")
 
 PnLSlippageMonitor = None
 try:
-    from omega.quant.pnl_monitor import PnLSlippageMonitor, PnLSnapshot, SlippageRecord
+    from omega.quant.monitoring.pnl_monitor import PnLSlippageMonitor, PnLSnapshot, SlippageRecord
     logger.info("PnLSlippageMonitor imported")
 except ImportError as e:
     logger.warning(f"PnLSlippageMonitor not available: {e}")

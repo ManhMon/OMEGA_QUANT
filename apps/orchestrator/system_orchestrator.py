@@ -2,6 +2,13 @@
 V21_QUANT System Orchestrator - Unified API for 7-Layer Architecture
 Institutional Elite Grade
 
+DEPRECATED (ORPHAN-01 FIX, 2026-06-13):
+    This module depends on the legacy ``v21_system`` namespace which is no
+    longer maintained.  All new orchestrator wiring should use the canonical
+    ``omega`` namespace via ``apps.orchestrator.orchestrator``.  This file is
+    retained only for backward compatibility and will be removed in a future
+    release.
+
 This module provides a high-level facade to orchestrate all 7 layers:
 - Layer 01: Core Intelligence (Data, Features, Targets)
 - Layer 02: Strategy Logic (Model Training, Signals)
@@ -14,44 +21,82 @@ This module provides a high-level facade to orchestrate all 7 layers:
 
 from __future__ import annotations
 
+import warnings as _warnings
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any
 from datetime import datetime, date, timezone
 import json
 import pandas as pd
 
-# Layer 01
-from v21_system.layer_01_core_intelligence.data_module import DataModule
-from v21_system.layer_01_core_intelligence.feature_module import FeatureModule, FeatureModuleConfig
-from v21_system.layer_01_core_intelligence.target_module import TargetModule
-from v21_system.layer_01_core_intelligence.vnstock_datasource import VnstockKBSDataSource
-
-# Layer 02
-from v21_system.layer_02_strategy_logic.model_trainer import TrainerConfig
-
-# Layer 03
-from v21_system.layer_03_execution_engine.execution_engine import ExecutionEngine, ExecutionConfig
-from v21_system.layer_03_execution_engine.market_impact import MarketImpactModel
-
-# Layer 04
-from v21_system.layer_04_risk_management.risk_manager import RiskManager, RiskManagerConfig
-
-# Layer 05
-from v21_system.portfolio_management.rebalancer import Rebalancer, RebalanceConfig
-
-# Layer 06
-from v21_system.model_registry import ModelRegistry, PITConfig, ModelMetadata
-
-# Layer 07
-from v21_system.monitoring import (
-    MetricsAggregator, AlertManager, AlertRule, AlertSeverity,
-    AuditLogger, HealthMonitor, HealthStatus
+# ORPHAN-01 FIX: All v21_system imports wrapped in a deprecation guard.
+# Importing this module emits a DeprecationWarning.
+_warnings.warn(
+    "apps.orchestrator.system_orchestrator depends on the legacy v21_system "
+    "namespace and is deprecated. Use apps.orchestrator.orchestrator instead.",
+    DeprecationWarning,
+    stacklevel=2,
 )
 
+# Layer 01
+try:
+    from v21_system.layer_01_core_intelligence.data_module import DataModule
+    from v21_system.layer_01_core_intelligence.feature_module import FeatureModule, FeatureModuleConfig
+    from v21_system.layer_01_core_intelligence.target_module import TargetModule
+    from v21_system.layer_01_core_intelligence.vnstock_datasource import VnstockKBSDataSource
+except ImportError:
+    DataModule = FeatureModule = FeatureModuleConfig = None  # type: ignore[assignment, misc]
+    TargetModule = VnstockKBSDataSource = None  # type: ignore[assignment, misc]
+
+# Layer 02
+try:
+    from v21_system.layer_02_strategy_logic.model_trainer import TrainerConfig
+except ImportError:
+    TrainerConfig = None  # type: ignore[assignment, misc]
+
+# Layer 03
+try:
+    from v21_system.layer_03_execution_engine.execution_engine import ExecutionEngine, ExecutionConfig
+    from v21_system.layer_03_execution_engine.market_impact import MarketImpactModel
+except ImportError:
+    ExecutionEngine = ExecutionConfig = None  # type: ignore[assignment, misc]
+    MarketImpactModel = None  # type: ignore[assignment, misc]
+
+# Layer 04
+try:
+    from v21_system.layer_04_risk_management.risk_manager import RiskManager, RiskManagerConfig
+except ImportError:
+    RiskManager = RiskManagerConfig = None  # type: ignore[assignment, misc]
+
+# Layer 05
+try:
+    from v21_system.portfolio_management.rebalancer import Rebalancer, RebalanceConfig
+except ImportError:
+    Rebalancer = RebalanceConfig = None  # type: ignore[assignment, misc]
+
+# Layer 06
+try:
+    from v21_system.model_registry import ModelRegistry, PITConfig, ModelMetadata
+except ImportError:
+    ModelRegistry = PITConfig = ModelMetadata = None  # type: ignore[assignment, misc]
+
+# Layer 07
+try:
+    from v21_system.monitoring import (
+        MetricsAggregator, AlertManager, AlertRule, AlertSeverity,
+        AuditLogger, HealthMonitor, HealthStatus
+    )
+except ImportError:
+    MetricsAggregator = AlertManager = AlertRule = None  # type: ignore[assignment, misc]
+    AlertSeverity = AuditLogger = HealthMonitor = HealthStatus = None  # type: ignore[assignment, misc]
+
 # Layer 08: SEAE (Self-Evolving High-Alpha Engine)
-from v21_system.layer_08_self_evolving_engine.pit_guardian import PITGuardian
-from v21_system.layer_08_self_evolving_engine.hyperopt_layer import HyperoptLayer, HyperoptConfig
-from v21_system.layer_08_self_evolving_engine.ab_tester import SEAE_AB_Tester, PromotionPack
+try:
+    from v21_system.layer_08_self_evolving_engine.pit_guardian import PITGuardian
+    from v21_system.layer_08_self_evolving_engine.hyperopt_layer import HyperoptLayer, HyperoptConfig
+    from v21_system.layer_08_self_evolving_engine.ab_tester import SEAE_AB_Tester, PromotionPack
+except ImportError:
+    PITGuardian = HyperoptLayer = HyperoptConfig = None  # type: ignore[assignment, misc]
+    SEAE_AB_Tester = PromotionPack = None  # type: ignore[assignment, misc]
 
 
 @dataclass

@@ -1,0 +1,81 @@
+================================================================================
+OMEGA_QUANT PERFORMANCE PROFILING REPORT
+================================================================================
+
+Timestamp: 2026-07-24T19:42:08.543148
+Configuration: 30 tickers, 252 days
+
+================================================================================
+PERFORMANCE METRICS
+================================================================================
+
+Total Execution Time: 6.81 seconds
+Throughput: 4.41 tickers/second
+Time per Ticker: 226.92 ms
+
+Performance Grade: EXCELLENT
+Recommendation: Pipeline meets production requirements (<10s for 100 tickers)
+
+================================================================================
+DETAILED PROFILING (Top 30 Functions)
+================================================================================
+
+         1733433 function calls (1722706 primitive calls) in 6.807 seconds
+
+   Ordered by: cumulative time
+   List reduced from 3061 to 30 due to restriction <30>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      2/1    0.000    0.000    5.568    5.568 C:\Users\GHC\repos\OMEGA_QUANT\src\omega\core\pipeline.py:121(run)
+      2/1    0.000    0.000    5.568    5.568 C:\Users\GHC\repos\OMEGA_QUANT\src\omega\core\pipeline.py:223(_load_data)
+      2/1    0.000    0.000    5.568    5.568 C:\Users\GHC\repos\OMEGA_QUANT\src\omega\data\loader.py:118(load_prices)
+      2/1    0.000    0.000    5.568    5.568 C:\Users\GHC\repos\OMEGA_QUANT\src\omega\data\loader.py:241(_fetch_from_source)
+      2/1    0.000    0.000    5.568    5.568 C:\Users\GHC\repos\OMEGA_QUANT\src\omega\data\vnstock_vci.py:70(fetch_price_data)
+      5/1    0.000    0.000    5.568    5.568 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\vnai\__init__.py:140(wrapper)
+      4/1    0.000    0.000    5.225    5.225 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\vnai\beam\quota.py:347(wrapper)
+        1    0.000    0.000    5.224    5.224 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\tenacity\__init__.py:323(wrapped_f)
+        1    0.000    0.000    5.224    5.224 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\tenacity\__init__.py:460(__call__)
+        2    0.000    0.000    4.001    2.000 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\tenacity\nap.py:25(sleep)
+        5    0.000    0.000    1.743    0.349 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\requests\api.py:14(request)
+        5    0.000    0.000    1.743    0.349 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\requests\sessions.py:503(request)
+        5    0.000    0.000    1.739    0.348 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\requests\sessions.py:676(send)
+        5    0.000    0.000    1.736    0.347 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\requests\adapters.py:591(send)
+        5    0.000    0.000    1.733    0.347 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\urllib3\connectionpool.py:592(urlopen)
+        5    0.000    0.000    1.732    0.346 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\urllib3\connectionpool.py:377(_make_request)
+        4    0.000    0.000    1.481    0.370 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\requests\api.py:103(post)
+        3    0.000    0.000    1.223    0.408 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\vnstock\base.py:22(wrapper)
+        3    0.000    0.000    1.223    0.408 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\vnstock\api\quote.py:87(history)
+        3    0.000    0.000    1.223    0.408 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\vnstock\api\quote.py:218(_delegate_to_provider)
+        3    0.000    0.000    1.222    0.407 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\vnstock\explorer\vci\quote.py:138(history)
+        3    0.004    0.001    1.213    0.404 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\vnstock\core\utils\client.py:117(send_request)
+        3    0.000    0.000    1.208    0.403 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\vnstock\core\utils\client.py:225(send_request_direct)
+        5    0.000    0.000    1.035    0.207 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\urllib3\connectionpool.py:1085(_validate_conn)
+        5    0.000    0.000    1.035    0.207 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\urllib3\connection.py:724(connect)
+        5    0.000    0.000    0.851    0.170 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\urllib3\connection.py:901(_ssl_wrap_socket_and_match_hostname)
+        5    0.000    0.000    0.845    0.169 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\urllib3\util\ssl_.py:413(ssl_wrap_socket)
+        5    0.734    0.147    0.734    0.147 {method 'load_verify_locations' of '_ssl._SSLContext' objects}
+        5    0.000    0.000    0.696    0.139 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\site-packages\urllib3\connection.py:540(getresponse)
+        5    0.000    0.000    0.695    0.139 C:\Users\GHC\AppData\Local\Programs\Python\Python314\Lib\http\client.py:1406(getresponse)
+
+
+
+
+================================================================================
+BOTTLENECK ANALYSIS
+================================================================================
+
+Common bottlenecks to check:
+1. Data Loading: Check if data loader is vectorized
+2. Feature Computation: Ensure no iterrows() or loops over tickers
+3. Alpha Generation: Verify cross-sectional operations are vectorized
+4. Risk Controls: Check if position limits use vectorized operations
+5. Execution Simulation: Ensure batch processing, not row-by-row
+
+Optimization recommendations:
+- Use pandas groupby().transform() for per-ticker operations
+- Use pandas merge() instead of iterative lookups
+- Cache intermediate results when possible
+- Use numpy vectorized operations instead of apply()
+- Profile with cProfile to identify specific slow functions
+
+================================================================================

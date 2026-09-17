@@ -1,0 +1,9 @@
+{
+  "prompt_hash": "b758d5882ec0273b982bcb62876e864b32f4af06dc28611c800c006f2d649d37",
+  "formulas": [
+    "mul(neg(ts_rank(ret_5d, 20)), div(volume, ts_mean(volume, 20)))",
+    "div(sub(close, low), max(sub(high, low), ts_std(close, 10)))",
+    "sub(ts_rank(decay_linear(ret_1d, 5), 20), ts_rank(ts_std(ret_1d, 10), 20))"
+  ],
+  "timestamp": "2026-06-12T09:28:14.951949"
+}

@@ -1,0 +1,23 @@
+Design a fast optimization and performance improvement plan for OMEGA_QUANT's Hybrid Regime pipeline based on E1 results.
+
+Constraints:
+- Full 45-fold CPCV backtests are too slow.
+- We need the FASTEST way to evaluate and validate proposed changes (e.g., using a representative subset of folds, fast multi-processing parameters, local analytical validation, or scaling parameters).
+
+Proposed Levers to Optimize (from prior discussion):
+1. Asymmetric regime gating (Trend-up vs Risk-off).
+2. Conviction-scaled overlay.
+3. Downside volatility targeting (semi-deviation) instead of symmetric vol targeting.
+4. Cost-aware dynamic turnover threshold.
+5. Component ablation (GMM gate, vol target, blend, cost overlay).
+
+Tasks for Claude:
+1. Design a validation methodology that cuts turnaround time by at least 80% (e.g., which 5-10 specific folds represent the full distribution, or how to write a lightweight simulator).
+2. Write concrete Python/Powershell code or commands to implement this fast validation.
+3. Propose the fastest high-impact optimization formula for the GMM/vol target combination that can be implemented in a single file edit.
+4. Prioritize the quick-win experiments that can run in minutes, not hours.
+
+Output format:
+- Concise, structured Markdown.
+- Ready-to-run scripts/commands.
+- Clear, actionable steps.

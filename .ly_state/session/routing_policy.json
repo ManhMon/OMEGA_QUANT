@@ -1,0 +1,151 @@
+{
+  "version": "2.0",
+  "generated_at": "2026-06-11T10:59:46+07:00",
+  "description": "Routing policy for OMEGA_QUANT SOD workflows. L1 orchestrates, L2 implements via OpenCode CLI, L3 audits via Codex CLI.",
+  "global_constraints": {
+    "state_must_persist_to_files": true,
+    "state_root": ".ly_state/session",
+    "no_self_approval": true,
+    "l2_must_finish_before_l3": true,
+    "l3_read_only": true,
+    "gate_contract_required": [
+      "l3_session_id",
+      "l3_session_key",
+      "audit_report_path",
+      "final_verdict"
+    ],
+    "allowed_final_verdicts": ["[APPROVED]", "[NEEDS_FIX]"]
+  },
+  "task_types": {
+    "status": {
+      "primary_roles": [1, 4, 5],
+      "platform": "Ly",
+      "parallel_allowed": false,
+      "requires_l3_after": false
+    },
+    "planning": {
+      "primary_roles": [1, 2, 6, 7],
+      "platform": "Ly",
+      "parallel_allowed": false,
+      "requires_user_approval": true,
+      "requires_l3_after": false
+    },
+    "architecture": {
+      "primary_roles": [6, 7],
+      "platform": "OpenCode",
+      "parallel_allowed": true,
+      "requires_l3_after": true,
+      "recommended_audit_roles": [21, 25]
+    },
+    "implementation_backend": {
+      "primary_roles": [9],
+      "support_roles": [6, 7, 10, 15, 16],
+      "platform": "OpenCode",
+      "parallel_allowed": true,
+      "requires_l3_after": true,
+      "recommended_audit_roles": [20, 21]
+    },
+    "implementation_frontend": {
+      "primary_roles": [8, 13],
+      "support_roles": [7, 11],
+      "platform": "OpenCode",
+      "parallel_allowed": true,
+      "requires_l3_after": true,
+      "recommended_audit_roles": [17, 21, 23, 24]
+    },
+    "data_pipeline": {
+      "primary_roles": [15],
+      "support_roles": [10, 14, 16],
+      "platform": "OpenCode",
+      "parallel_allowed": true,
+      "requires_l3_after": true,
+      "recommended_audit_roles": [20, 21, 23]
+    },
+    "ml_modeling": {
+      "primary_roles": [14, 16],
+      "support_roles": [15],
+      "platform": "OpenCode",
+      "parallel_allowed": true,
+      "requires_l3_after": true,
+      "recommended_audit_roles": [20, 21, 23]
+    },
+    "devops_infra": {
+      "primary_roles": [11, 12],
+      "support_roles": [7],
+      "platform": "OpenCode",
+      "parallel_allowed": true,
+      "requires_l3_after": true,
+      "recommended_audit_roles": [19, 21, 25]
+    },
+    "audit_code": {
+      "primary_roles": [21],
+      "support_roles": [17, 18, 20, 23, 25],
+      "platform": "Codex",
+      "parallel_allowed": true,
+      "read_only": true,
+      "requires_verdict": true
+    },
+    "audit_security": {
+      "primary_roles": [19, 22],
+      "support_roles": [20, 25],
+      "platform": "Codex",
+      "parallel_allowed": true,
+      "read_only": true,
+      "requires_verdict": true
+    },
+    "audit_compliance": {
+      "primary_roles": [20],
+      "support_roles": [21, 25],
+      "platform": "Codex",
+      "parallel_allowed": true,
+      "read_only": true,
+      "requires_verdict": true
+    }
+  },
+  "parallel_rules": {
+    "l2_parallel_allowed_when": [
+      "tasks do not edit the same files",
+      "context is minimal and role-specific",
+      "all outputs go to separate reports or non-conflicting files"
+    ],
+    "l3_parallel_allowed_when": [
+      "all roles are read-only",
+      "each role writes a separate audit report",
+      "final gate waits for all required verdicts"
+    ],
+    "forbidden_parallelism": [
+      "L2 implementation and L3 audit for the same gate at the same time",
+      "multiple L2 writers editing the same file",
+      "L3 auditor writing code",
+      "any agent self-approving its own implementation"
+    ]
+  },
+  "prompt_requirements": {
+    "must_include": [
+      "original_user_request",
+      "selected_role_id",
+      "selected_role_name",
+      "role_file_path",
+      "mandatory_read_role_file_instruction",
+      "loaded_skill_paths",
+      "minimal_context_files",
+      "sod_boundaries",
+      "output_contract"
+    ],
+    "l2_output_contract": [
+      "implementation_summary",
+      "files_changed",
+      "tests_run",
+      "verification_results",
+      "handoff_to_l3_required"
+    ],
+    "l3_output_contract": [
+      "audit_report_path",
+      "l3_session_id",
+      "l3_session_key",
+      "final_verdict",
+      "findings",
+      "compliance_checks"
+    ]
+  }
+}

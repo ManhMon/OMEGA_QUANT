@@ -8,13 +8,18 @@ Architecture Reference: OMEGA_SYSTEM_ARCHITECTURE_V1.md Section 4 (Data Governan
 """
 
 import os
+import time
 import hashlib
+import json
 import logging
-from datetime import datetime, timedelta
+import re
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
 import pandas as pd
 import numpy as np
+
+from omega.data.calendar import VNTradingCalendar, _get_json_holidays
 
 
 logger = logging.getLogger(__name__)
@@ -31,9 +36,9 @@ class DataQualityError(Exception):
 
 
 try:
-    from omega.data.vnstock_vci import VnstockVCIDataSource
+    from omega.data.vci_direct import DirectVCIClient
 except ImportError:
-    VnstockVCIDataSource = None
+    DirectVCIClient = None
 
 try:
     from omega.data.corporate_action import CorporateActionAdjuster, CorporateAction
@@ -42,7 +47,7 @@ except ImportError:
     CorporateAction = None
 
 try:
-    from omega.data.validator import DataValidator, ValidationIssue
+    from omega.data.sanitizer import DataValidator, ValidationIssue
 except ImportError:
     DataValidator = None
     ValidationIssue = None
@@ -98,7 +103,8 @@ class DataLoader:
         self.validate_provenance = validate_provenance
         
         # Initialize vnstock data source
-        self.vnstock_source = VnstockVCIDataSource() if VnstockVCIDataSource else None
+        self.vci_client = DirectVCIClient() if DirectVCIClient else None
+        self.vnstock_source = None
         
         # Initialize corporate action adjuster
         self.corporate_action_adjuster = CorporateActionAdjuster() if CorporateActionAdjuster else None
@@ -123,7 +129,8 @@ class DataLoader:
         as_of_time: datetime,
         force_refresh: bool = False,
         corporate_actions: Optional[List] = None,
-        apply_adjustments: bool = False
+        apply_adjustments: bool = False,
+        source: Optional[str] = None,
     ) -> pd.DataFrame:
         """
         Load EOD prices with PIT safety enforcement and optional corporate action adjustments.
@@ -157,33 +164,31 @@ class DataLoader:
             raise ValueError(f"start_date ({start_date}) must be <= end_date ({end_date})")
 
         # Check cache first
-        cache_key = self._generate_cache_key(ticker, start_date, end_date)
+        cache_key = self._generate_cache_key(ticker, start_date, end_date, source=source)
         cache_path = Path(self.cache_dir) / f"{cache_key}.parquet"
 
         if not force_refresh and cache_path.exists():
             logger.info(f"Loading from cache: {cache_path}")
-            df = pd.read_parquet(cache_path)
-
-            # Validate schema on cache read (protect against corruption)
             try:
+                df = pd.read_parquet(cache_path)
                 self._validate_schema(df)
-            except (KeyError, ValueError) as e:
-                logger.warning(f"Cache validation failed: {e}. Refreshing from source.")
-                df = self._fetch_from_source(ticker, start_date, end_date, as_of_time)
+            except Exception as e:
+                logger.warning(f"Cache load/validation failed ({type(e).__name__}: {e}). Refreshing from source.")
+                df = self._fetch_from_source(ticker, start_date, end_date, as_of_time, source=source)
                 # Only add PIT timestamps if not already present
                 if 'as_of' not in df.columns or 'available_at' not in df.columns:
                     df = self._add_pit_timestamps(df)
-                df.to_parquet(cache_path, index=False)
+                self._write_parquet_atomic(df, cache_path)
         else:
             logger.info(f"Fetching data for {ticker} from {start_date} to {end_date}")
-            df = self._fetch_from_source(ticker, start_date, end_date, as_of_time)
+            df = self._fetch_from_source(ticker, start_date, end_date, as_of_time, source=source)
 
             # Only add PIT timestamps if not already present (for testing/mocking)
             if 'as_of' not in df.columns or 'available_at' not in df.columns:
                 df = self._add_pit_timestamps(df)
 
-            # Save to cache
-            df.to_parquet(cache_path, index=False)
+            # Save to cache atomically
+            self._write_parquet_atomic(df, cache_path)
             logger.info(f"Saved to cache: {cache_path}")
 
         # Enforce PIT safety
@@ -238,48 +243,32 @@ class DataLoader:
         logger.info(f"Loaded {len(df)} rows for {ticker}, quality_score={quality_score:.2f}")
         return df
 
-    def _fetch_from_source(self, ticker: str, start_date: str, end_date: str, as_of_time: Optional[datetime] = None) -> pd.DataFrame:
+    def _fetch_from_source(self, ticker: str, start_date: str, end_date: str, as_of_time: Optional[datetime] = None, source: Optional[str] = None) -> pd.DataFrame:
         """
-        Fetch data from vnstock VCI provider.
+        Fetch data from vnstock provider (VCI, KBS, etc.).
         
         Args:
             ticker: Stock ticker symbol (e.g., "VNM", "VCB")
             start_date: Start date (YYYY-MM-DD)
             end_date: End date (YYYY-MM-DD)
             as_of_time: Query time (optional, for PIT compliance)
+            source: Primary provider source (e.g., "KBS", "VCI")
             
         Returns:
             DataFrame with columns: [ticker, date, open, high, low, close, volume]
         """
-        if self.vnstock_source is None:
-            raise RuntimeError("vnstock package not available. Install with: pip install vnstock")
+        if self.vci_client is None:
+            raise RuntimeError("Direct VCI client not available")
         
         try:
-            # Fetch price data from vnstock
-            data = self.vnstock_source.fetch_price_data(ticker, start_date, end_date)
-            
-            if not data:
+            if source and source.strip().upper().removeprefix("VNSTOCK_") != "VCI":
+                raise ValueError(f"Unsupported direct VCI source: {source}")
+            df = self.vci_client.fetch_history(ticker, start_date, end_date, as_of=as_of_time)
+            if df.empty:
                 raise ValueError(f"No data returned for {ticker} from {start_date} to {end_date}")
-            
-            # Convert to DataFrame
-            df = pd.DataFrame(data)
-            
-            # Rename columns to match expected schema
-            df = df.rename(columns={
-                'symbol': 'ticker',
-                'timestamp': 'date',
-                'open': 'open',
-                'high': 'high',
-                'low': 'low',
-                'close': 'close',
-                'volume': 'volume'
-            })
-            
-            # Convert timestamp to datetime
-            df['date'] = pd.to_datetime(df['date'], unit='s')
-            
-            # Ensure correct column order
-            df = df[['ticker', 'date', 'open', 'high', 'low', 'close', 'volume']]
+            df = df.rename(columns={"time": "date"})
+            df = df[["ticker", "date", "open", "high", "low", "close", "volume"]]
+            df["date"] = pd.to_datetime(df["date"], utc=True)
             
             return df
             
@@ -287,61 +276,108 @@ class DataLoader:
             logger.error(f"Failed to fetch data from vnstock for {ticker}: {e}")
             raise
 
+    def _log_provider_close_deviations(
+        self,
+        ticker: str,
+        selected_rows: List[Dict[str, Any]],
+        provider_results: Dict[str, List[Dict[str, Any]]],
+    ) -> None:
+        if not selected_rows:
+            return
+        selected_source = selected_rows[0]["source_used"]
+        selected_close = {row["timestamp"]: row["close"] for row in selected_rows}
+        for provider, rows in provider_results.items():
+            if provider == selected_source:
+                continue
+            for row in rows:
+                reference = selected_close.get(row["timestamp"])
+                if reference and abs(row["close"] - reference) / abs(reference) > 0.001:
+                    logger.warning(
+                        "Close deviation for %s: selected %s vs %s at %s exceeds 0.1%%",
+                        ticker, selected_source, provider, row["timestamp"],
+                    )
+
     def _add_pit_timestamps(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Add as_of and available_at timestamps for PIT safety.
 
-        Rule: EOD prices are available at T+1 market open (09:00 VN time).
+        Rule: EOD prices are released at T+1 market open (09:00 VN time).
         - as_of: End of trading day (date at 15:00 VN time)
         - available_at: Next trading day at 09:00 VN time
+        Localizes naive timestamps to Asia/Ho_Chi_Minh.
         """
         df = df.copy()
 
         # Handle empty DataFrame
         if len(df) == 0:
-            df['as_of'] = pd.Series([], dtype='datetime64[ns]')
-            df['available_at'] = pd.Series([], dtype='datetime64[ns]')
+            df['as_of'] = pd.Series([], dtype='datetime64[ns, Asia/Ho_Chi_Minh]')
+            df['available_at'] = pd.Series([], dtype='datetime64[ns, Asia/Ho_Chi_Minh]')
             return df
 
-        # as_of: End of trading day (15:00 VN time)
-        df['as_of'] = pd.to_datetime(df['date']) + pd.Timedelta(hours=15)
+        # Localize naive date to Asia/Ho_Chi_Minh if needed
+        date_s = pd.to_datetime(df['date'])
+        if date_s.dt.tz is None:
+            date_hcm = date_s.dt.tz_localize("Asia/Ho_Chi_Minh")
+        else:
+            date_hcm = date_s.dt.tz_convert("Asia/Ho_Chi_Minh")
 
-        # available_at: Next business day at 09:00 VN time (T+1 lag)
-        df['available_at'] = df['as_of'] + pd.Timedelta(days=1)
+        # Normalize first: source timestamps may be UTC midnight or naive ICT dates.
+        df['as_of'] = date_hcm.dt.normalize() + pd.Timedelta(hours=15)
 
-        # Adjust for weekends (if Friday, available on Monday)
-        df['available_at'] = df['available_at'].apply(
-            lambda x: x + pd.Timedelta(days=2) if x.weekday() == 5 else x  # Saturday -> Monday
-        )
-        df['available_at'] = df['available_at'].apply(
-            lambda x: x + pd.Timedelta(days=1) if x.weekday() == 6 else x  # Sunday -> Monday
-        )
+        holidays_cache = _get_json_holidays()
 
-        # Set time to 09:00
-        df['available_at'] = df['available_at'].apply(
-            lambda x: x.replace(hour=9, minute=0, second=0, microsecond=0)
-        )
+        def next_open(timestamp: pd.Timestamp) -> pd.Timestamp:
+            next_day = VNTradingCalendar.next_trading_day(timestamp.date())
+            year_str = str(next_day.year)
+            if year_str not in holidays_cache and next_day.year > 2027:
+                raise ValueError(f"no holiday coverage for {next_day.year}")
+            ts = pd.Timestamp(next_day).replace(hour=9)
+            return ts.tz_localize("Asia/Ho_Chi_Minh") if ts.tzinfo is None else ts.tz_convert("Asia/Ho_Chi_Minh")
+
+        df['available_at'] = df['as_of'].map(next_open)
 
         return df
+
+    @staticmethod
+    def _normalize_to_utc_series(s: pd.Series) -> pd.Series:
+        """Localize naive market timestamps to Asia/Ho_Chi_Minh and convert to true UTC instants."""
+        s_dt = pd.to_datetime(s)
+        if s_dt.dt.tz is None:
+            return s_dt.dt.tz_localize("Asia/Ho_Chi_Minh").dt.tz_convert("UTC")
+        return s_dt.dt.tz_convert("UTC")
+
+    @staticmethod
+    def _normalize_to_utc_instant(ts_val: Any) -> pd.Timestamp:
+        """Localize naive market timestamp to Asia/Ho_Chi_Minh and convert to true UTC instant."""
+        ts = pd.Timestamp(ts_val)
+        if ts.tzinfo is None:
+            return ts.tz_localize("Asia/Ho_Chi_Minh").tz_convert("UTC")
+        return ts.tz_convert("UTC")
 
     def _enforce_pit_safety(self, df: pd.DataFrame, as_of_time: datetime) -> None:
         """
         Enforce PIT safety: as_of <= available_at for all rows.
         Filter out rows where available_at > as_of_time (not yet available).
+        Localizes naive market timestamps to Asia/Ho_Chi_Minh and compares true UTC instants.
 
         Raises:
             ValueError: If any row violates as_of <= available_at (PIT violation)
         """
-        # Check as_of <= available_at
-        violations = df[df['as_of'] > df['available_at']]
+        # Compare true UTC instants
+        as_of_utc = self._normalize_to_utc_series(df['as_of'])
+        avail_utc = self._normalize_to_utc_series(df['available_at'])
+
+        violations = df[as_of_utc > avail_utc]
         if len(violations) > 0:
             raise ValueError(
                 f"PIT violation: Found {len(violations)} rows where as_of > available_at:\n{violations.head()}"
             )
 
-        # Filter out data not yet available at query time
+        # Filter out data not yet available at query time (true UTC instant comparison)
         before_count = len(df)
-        df_filtered = df[df['available_at'] <= as_of_time]
+        as_of_val_utc = self._normalize_to_utc_instant(as_of_time)
+
+        df_filtered = df[avail_utc <= as_of_val_utc]
         after_count = len(df_filtered)
 
         if before_count > after_count:
@@ -434,30 +470,77 @@ class DataLoader:
 
         return max(0.0, quality_score)
 
-    def _generate_cache_key(self, ticker: str, start_date: str, end_date: str) -> str:
-        """Generate cache key from ticker and date range."""
+    def _generate_cache_key(self, ticker: str, start_date: str, end_date: str, source: Optional[str] = None) -> str:
+        """Generate cache key from ticker, date range, and source."""
         key_str = f"{ticker}_{start_date}_{end_date}"
+        if source:
+            key_str += f"_{str(source).strip().upper()}"
         return hashlib.md5(key_str.encode()).hexdigest()
+
+    @staticmethod
+    def _write_parquet_atomic(df: pd.DataFrame, dest_path: Path) -> None:
+        """Write parquet cache to sibling temp file, flush with os.fsync for crash durability, and atomically replace with cleanup on failure."""
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_path = dest_path.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}.parquet")
+        try:
+            df.to_parquet(tmp_path, index=False)
+            # Flush file buffers to disk via os.fsync before atomic replace for crash durability
+            fd = os.open(str(tmp_path), os.O_RDWR)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            os.replace(tmp_path, dest_path)
+        except Exception:
+            if tmp_path.exists():
+                try:
+                    tmp_path.unlink()
+                except Exception:
+                    pass
+            raise
 
     def _validate_schema(self, df: pd.DataFrame) -> None:
         """
-        Validate DataFrame schema against required columns.
+        Validate DataFrame schema against exact canonical columns, strict numeric/date types, and finite values.
 
         Required columns per OMEGA_SYSTEM_ARCHITECTURE_V1.md Section 7.3:
         - ticker, date, open, high, low, close, volume, as_of, available_at
 
         Raises:
-            ValueError: If required columns are missing
+            ValueError: If required columns are missing, unexpected columns exist, types drift, or values are non-finite.
         """
         required_columns = ['ticker', 'date', 'open', 'high', 'low', 'close', 'volume', 'as_of', 'available_at']
-        missing_columns = set(required_columns) - set(df.columns)
+        extra_columns = set(df.columns) - set(required_columns)
+        if extra_columns:
+            raise ValueError(f"Schema drift: unexpected columns in cached data: {extra_columns}")
 
+        missing_columns = set(required_columns) - set(df.columns)
         if missing_columns:
             raise ValueError(f"Missing required columns: {missing_columns}")
 
-        # Validate PIT constraint on cached data
         if len(df) > 0:
-            violations = df[df['as_of'] > df['available_at']]
+            # 1. Validate numeric OHLCV types & finite values
+            numeric_cols = ['open', 'high', 'low', 'close', 'volume']
+            for col in numeric_cols:
+                if not pd.api.types.is_numeric_dtype(df[col]):
+                    raise ValueError(f"Schema drift: column '{col}' has non-numeric dtype '{df[col].dtype}'")
+                if df[col].isna().any() or np.isinf(df[col]).any():
+                    raise ValueError(f"Schema drift: column '{col}' contains NaN or Inf values")
+
+            # Every OHLCV field must be non-negative at the cache boundary.
+            if (df[['open', 'high', 'low', 'close', 'volume']] < 0).any().any():
+                raise ValueError("Negative prices or volume detected in cached data")
+
+            # 2. Strictly parse and validate date and PIT timestamps
+            for col in ['date', 'as_of', 'available_at']:
+                parsed = pd.to_datetime(df[col], errors='coerce')
+                if parsed.isna().any():
+                    raise ValueError(f"Schema drift: timestamp column '{col}' contains invalid date/datetime values or NaT")
+
+            # 3. Validate PIT constraint on cached data
+            as_of_utc = self._normalize_to_utc_series(df['as_of'])
+            avail_utc = self._normalize_to_utc_series(df['available_at'])
+            violations = df[as_of_utc > avail_utc]
             if len(violations) > 0:
                 raise ValueError(f"PIT violation in cached data: {len(violations)} rows")
 
@@ -471,16 +554,25 @@ class DataLoader:
         Returns:
             Number of files deleted
         """
+        if ticker is not None:
+            ticker = self._validate_ticker(ticker)
         deleted = 0
-
-        for cache_file in Path(self.cache_dir).glob("*.parquet"):
-            if ticker is None:
-                cache_file.unlink()
-                deleted += 1
-            else:
-                # Check if ticker is in filename (simple heuristic)
-                # In production, maintain a metadata index
-                cache_file.unlink()
+        candidates = list(Path(self.cache_dir).glob("*.parquet"))
+        for cache_file in candidates:
+            metadata_path = cache_file.with_suffix(".metadata.json")
+            matches = ticker is None or cache_file.stem.upper() == ticker
+            if ticker is not None and not matches and metadata_path.exists():
+                try:
+                    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                    matches = str(metadata.get("ticker", "")).upper() == ticker
+                except (OSError, ValueError, TypeError):
+                    matches = False
+            if not matches:
+                continue
+            cache_file.unlink()
+            deleted += 1
+            if metadata_path.exists():
+                metadata_path.unlink()
                 deleted += 1
 
         logger.info(f"Cleared {deleted} cache files")
@@ -527,54 +619,29 @@ class DataLoader:
         if as_of_time is None:
             raise ValueError("as_of_time is mandatory for PIT compliance")
             
-        if not tickers:
+        if not tickers or not isinstance(tickers, (list, tuple)):
             raise ValueError("tickers list is mandatory")
 
-        from vnstock import Market
-        mkt = Market()
-        
+        normalized_tickers = [self._validate_ticker(ticker) for ticker in tickers]
         all_data = []
-        for ticker in tickers:
-            try:
-                # Try to load from Parquet cache first
-                parquet_path = Path("data/market/parquet") / f"{ticker}.parquet"
-                if parquet_path.exists():
-                    df = pd.read_parquet(parquet_path)
-                    df['time'] = pd.to_datetime(df['time'])
-                    df = df.rename(columns={'time': 'date'})
-                else:
-                    # Fetch real OHLCV data from vnstock Unified UI
-                    df = mkt.equity(ticker).ohlcv(
-                        start=start_date.strftime("%Y-%m-%d"),
-                        end=end_date.strftime("%Y-%m-%d")
-                    )
-                    
-                    if not df.empty:
-                        df['time'] = pd.to_datetime(df['time'])
-                        df = df.rename(columns={'time': 'date'})
-                        # P1 Fix: Add PIT timestamps if missing
-                        if 'available_at' not in df.columns:
-                            df['as_of'] = df['date']
-                            df['available_at'] = df['date'] + pd.Timedelta(days=1)
-                
-                if not df.empty:
-                    df['ticker'] = ticker
-                    
-                    # P1 Audit Fix: Use enforce_pit_safety
-                    self._enforce_pit_safety(df, as_of_time)
-                    
-                    # Filter for only data that is available AT as_of_time
-                    df = df[df['available_at'] <= as_of_time]
-                    
-                    if not df.empty:
-                        df = df.set_index(['date', 'ticker'])
-                        all_data.append(df)
-                        logger.info(f"✓ Loaded {len(df)} rows for {ticker}")
-                else:
-                    logger.warning(f"! No data returned for {ticker}")
-                    
-            except Exception as e:
-                logger.error(f"❌ Failed to load {ticker}: {e}")
+        for ticker in normalized_tickers:
+            df = self._fetch_from_source(
+                ticker,
+                start_date.strftime("%Y-%m-%d"),
+                end_date.strftime("%Y-%m-%d"),
+                as_of_time,
+                source="VCI",
+            )
+            if "as_of" not in df.columns or "available_at" not in df.columns:
+                df = self._add_pit_timestamps(df)
+            df["ticker"] = ticker
+            self._enforce_pit_safety(df, as_of_time)
+            available_at_utc = self._normalize_to_utc_series(df["available_at"])
+            df = df[available_at_utc <= self._normalize_to_utc_instant(as_of_time)]
+            if not df.empty:
+                df = df.set_index(["date", "ticker"])
+                all_data.append(df)
+                logger.info("Loaded %s rows for %s", len(df), ticker)
         
         if not all_data:
             return pd.DataFrame()
@@ -586,6 +653,15 @@ class DataLoader:
             combined['returns'] = combined.groupby(level='ticker')['close'].pct_change()
             
         return combined
+
+    @staticmethod
+    def _validate_ticker(ticker: str) -> str:
+        if not isinstance(ticker, str):
+            raise ValueError("ticker must be a string")
+        normalized = ticker.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9_-]{1,10}", normalized):
+            raise ValueError(f"Invalid ticker: {ticker!r}")
+        return normalized
 
 
     def _apply_corporate_actions(
@@ -615,13 +691,26 @@ class DataLoader:
         if not ticker_actions:
             return df, []
         
-        # PIT Safety: Only apply actions where ex_date <= as_of_time.date()
-        # This ensures we don't apply future corporate actions that weren't known at query time
-        as_of_date = as_of_time.date()
-        ticker_actions = [
-            a for a in ticker_actions 
-            if pd.to_datetime(a.ex_date).date() <= as_of_date
-        ]
+        if as_of_time.tzinfo is None or as_of_time.utcoffset() is None:
+            as_of_time = as_of_time.replace(tzinfo=UTC)
+
+        verified_actions = []
+        for action in ticker_actions:
+            if pd.Timestamp(action.ex_date).date() > as_of_time.date():
+                continue
+            if getattr(action, "is_quarantined", False):
+                logger.warning(
+                    "Quarantined unverified corporate action for %s on %s: %s",
+                    ticker,
+                    action.ex_date,
+                    getattr(action, "quarantine_reason", "unknown provenance failure"),
+                )
+                continue
+            if not action.is_available_at(as_of_time):
+                continue
+            verified_actions.append(action)
+
+        ticker_actions = verified_actions
         if not ticker_actions:
             return df, []
         
@@ -795,6 +884,7 @@ class DataLoader:
             "dataset_version": self.dataset_version,
             "source": "vnstock_vci",
             "cache_file": cache_path.name,
+            "ticker": str(df["ticker"].iloc[0]) if "ticker" in df.columns and len(df) else None,
             "checksum": checksum,
             "checksum_algorithm": "sha256",
             "row_count": len(df),
@@ -808,8 +898,17 @@ class DataLoader:
             }
         }
         
-        with open(metadata_path, 'w') as f:
-            json.dump(metadata, f, indent=2)
+        tmp_path = metadata_path.with_suffix(f".tmp.{os.getpid()}.{time.time_ns()}.json")
+        try:
+            with open(tmp_path, "w", encoding="utf-8", newline="\n") as f:
+                json.dump(metadata, f, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, metadata_path)
+        except Exception:
+            if tmp_path.exists():
+                tmp_path.unlink()
+            raise
         
         logger.info(f"Saved metadata sidecar: {metadata_path}")
     

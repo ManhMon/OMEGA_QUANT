@@ -1,0 +1,56 @@
+{
+  "test_type": "llm_v2_synthesis_smoke",
+  "prompt_version": "vn_alpha_search_v2",
+  "env_config": {
+    "provider_type": "openai-compatible",
+    "api_key_set": true,
+    "model": "cx/gpt-5.5",
+    "base_url": "http://localhost:20128/v1",
+    "max_candidates": 10
+  },
+  "synthesis_stats": {
+    "prompt_version": "vn_alpha_search_v2",
+    "max_candidates": 10,
+    "provider_type": "OpenAICompatibleProvider",
+    "cache_hit": false,
+    "total_raw": 10,
+    "rejection_taxonomy": {
+      "parse_error": 0,
+      "unsafe_token": 0,
+      "duplicate_formula": 0,
+      "execution_failure": 0,
+      "low_coverage": 0,
+      "near_zero_variance": 0,
+      "unstable": 0,
+      "nan_inf": 0
+    },
+    "accepted": 10,
+    "rejected_formulas": [],
+    "accepted_formulas": [
+      "div(ts_rank(volume, 7), ts_rank(volume, 30))",
+      "mul(neg(ts_rank(ret_1d, 3)), div(volume, ts_mean(volume, 20)))",
+      "sub(ts_rank(volume, 5), decay_linear(ts_rank(volume, 20), 10))",
+      "mul(rank(div(volume, ts_mean(volume, 10))), neg(rank(abs(ret_1d))))",
+      "div(ts_std(volume, 5), ts_std(volume, 30))",
+      "mul(decay_linear(rank(volume), 6), neg(ts_rank(ret_1d, 10)))",
+      "sub(ts_rank(abs(ret_1d), 5), ts_rank(volume, 20))",
+      "div(decay_linear(volume, 3), ts_mean(volume, 15))",
+      "mul(rank(ts_std(volume, 10)), neg(ts_rank(ret_1d, 5)))",
+      "sub(ts_rank(div(volume, ts_mean(volume, 20)), 10), ts_rank(abs(ret_1d), 10))"
+    ]
+  },
+  "nodes_generated": 10,
+  "accepted_formulas": [
+    "div(ts_rank(volume, 7), ts_rank(volume, 30))",
+    "mul(neg(ts_rank(ret_1d, 3)), div(volume, ts_mean(volume, 20)))",
+    "sub(ts_rank(volume, 5), decay_linear(ts_rank(volume, 20), 10))",
+    "mul(rank(div(volume, ts_mean(volume, 10))), neg(rank(abs(ret_1d))))",
+    "div(ts_std(volume, 5), ts_std(volume, 30))",
+    "mul(decay_linear(rank(volume), 6), neg(ts_rank(ret_1d, 10)))",
+    "sub(ts_rank(abs(ret_1d), 5), ts_rank(volume, 20))",
+    "div(decay_linear(volume, 3), ts_mean(volume, 15))",
+    "mul(rank(ts_std(volume, 10)), neg(ts_rank(ret_1d, 5)))",
+    "sub(ts_rank(div(volume, ts_mean(volume, 20)), 10), ts_rank(abs(ret_1d), 10))"
+  ],
+  "rejected_formulas": []
+}

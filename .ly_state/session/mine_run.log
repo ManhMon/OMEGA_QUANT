@@ -1,0 +1,53 @@
+2026-06-17 18:03:21,272 - mine_latent_alphas - INFO - ================================================================================
+2026-06-17 18:03:21,272 - mine_latent_alphas - INFO - GATE: LATENT_ALPHA_MINING_64D_20260617
+2026-06-17 18:03:21,272 - mine_latent_alphas - INFO - Latent Alpha Mining — PCA — 5 components
+2026-06-17 18:03:21,272 - mine_latent_alphas - INFO - Features: C:\Users\GHC\repos\OMEGA_QUANT\data\features_advanced_sim.parquet
+2026-06-17 18:03:21,272 - mine_latent_alphas - INFO - ================================================================================
+2026-06-17 18:03:21,272 - mine_latent_alphas - INFO - Step 1: Loading features_advanced_sim.parquet...
+2026-06-17 18:03:21,315 - mine_latent_alphas - INFO -   Shape: (6060, 123)
+2026-06-17 18:03:21,315 - mine_latent_alphas - INFO -   File hash (SHA-256 prefix): a80c73af5a08195c
+2026-06-17 18:03:21,316 - mine_latent_alphas - INFO -   Date range: 2024-01-02 00:00:00 to 2026-06-12 00:00:00
+2026-06-17 18:03:21,316 - mine_latent_alphas - INFO -   Symbols: 10
+2026-06-17 18:03:21,316 - mine_latent_alphas - INFO - Step 2: Identified 114 alpha feature columns
+2026-06-17 18:03:21,316 - mine_latent_alphas - INFO - Step 3: Cross-sectional standardization (PIT-safe)...
+2026-06-17 18:03:21,320 - mine_latent_alphas - INFO -   Rows before NaN drop: 6060, after: 6050
+2026-06-17 18:03:21,375 - mine_latent_alphas - INFO -   Standardized 114 columns per-date
+2026-06-17 18:03:21,375 - mine_latent_alphas - INFO - Step 4: Chronological train/test split...
+2026-06-17 18:03:21,388 - mine_latent_alphas - INFO -   Train: 363 dates, 3630 rows
+2026-06-17 18:03:21,388 - mine_latent_alphas - INFO -   Test:  242 dates, 2420 rows
+2026-06-17 18:03:21,388 - mine_latent_alphas - INFO -   Train end: 2025-06-23 00:00:00, Test start: 2025-06-24 00:00:00
+2026-06-17 18:03:21,388 - mine_latent_alphas - INFO - Step 5: Fitting PCA on training data...
+2026-06-17 18:03:21,392 - mine_latent_alphas - INFO -   Fitting PCA with 5 components...
+2026-06-17 18:03:22,094 - mine_latent_alphas - INFO -     Explained variance (first 5): [0.233107, 0.102557, 0.074477, 0.048174, 0.038903]
+2026-06-17 18:03:22,094 - mine_latent_alphas - INFO -     Total variance explained (5 comp): 0.4972
+2026-06-17 18:03:22,094 - mine_latent_alphas - INFO - Step 6: Projecting train and test data onto latent components...
+2026-06-17 18:03:22,106 - mine_latent_alphas - INFO -   PCA: projected 5 latent columns
+2026-06-17 18:03:22,106 - mine_latent_alphas - INFO - Step 7: Computing per-date Spearman IC on TEST (OOS) data...
+2026-06-17 18:03:22,289 - mine_latent_alphas - INFO -   latent_pca_00: IC=-0.0096, IR=-0.0221, Turnover=0.1095, NetIC=-0.0099 [WEAK]
+2026-06-17 18:03:22,467 - mine_latent_alphas - INFO -   latent_pca_01: IC=-0.0020, IR=-0.0048, Turnover=0.0510, NetIC=-0.0022 [WEAK]
+2026-06-17 18:03:22,640 - mine_latent_alphas - INFO -   latent_pca_02: IC=0.0100, IR=0.0265, Turnover=0.2205, NetIC=0.0094 [WEAK]
+2026-06-17 18:03:22,812 - mine_latent_alphas - INFO -   latent_pca_03: IC=0.0276, IR=0.0742, Turnover=0.2033, NetIC=0.0270 [WEAK]
+2026-06-17 18:03:22,984 - mine_latent_alphas - INFO -   latent_pca_04: IC=0.0388, IR=0.1122, Turnover=0.2385, NetIC=0.0381 [WEAK]
+2026-06-17 18:03:22,984 - mine_latent_alphas - INFO - Step 8: In-sample IC (diagnostic only, NOT for selection)...
+2026-06-17 18:03:24,255 - mine_latent_alphas - INFO - Step 9: Ranked latent alphas by |OOS IR|:
+2026-06-17 18:03:24,256 - mine_latent_alphas - INFO -   #1: latent_pca_04 — IR=0.1122, IC=0.0388, NetIC=0.0381, Turnover=0.2385
+2026-06-17 18:03:24,256 - mine_latent_alphas - INFO -   #2: latent_pca_03 — IR=0.0742, IC=0.0276, NetIC=0.0270, Turnover=0.2033
+2026-06-17 18:03:24,256 - mine_latent_alphas - INFO -   #3: latent_pca_02 — IR=0.0265, IC=0.0100, NetIC=0.0094, Turnover=0.2205
+2026-06-17 18:03:24,256 - mine_latent_alphas - INFO -   #4: latent_pca_00 — IR=-0.0221, IC=-0.0096, NetIC=-0.0099, Turnover=0.1095
+2026-06-17 18:03:24,256 - mine_latent_alphas - INFO -   #5: latent_pca_01 — IR=-0.0048, IC=-0.0020, NetIC=-0.0022, Turnover=0.0510
+2026-06-17 18:03:24,256 - mine_latent_alphas - INFO - Step 10: Persisting artifacts...
+2026-06-17 18:03:24,267 - mine_latent_alphas - INFO -   Saved: C:\Users\GHC\repos\OMEGA_QUANT\data\latent_alphas_components.parquet (2420 rows, 5 latent cols)
+2026-06-17 18:03:24,267 - mine_latent_alphas - INFO -   Saved: C:\Users\GHC\repos\OMEGA_QUANT\data\latent_alphas_model.pkl
+C:\Users\GHC\repos\OMEGA_QUANT\scripts\mine_latent_alphas.py:680: DeprecationWarning: datetime.datetime.utcnow() is deprecated and scheduled for removal in a future version. Use timezone-aware objects to represent datetimes in UTC: datetime.datetime.now(datetime.UTC).
+  "timestamp": datetime.utcnow().isoformat() + "Z",
+2026-06-17 18:03:24,268 - mine_latent_alphas - INFO -   Saved: C:\Users\GHC\repos\OMEGA_QUANT\data\latent_alphas_metrics.json
+2026-06-17 18:03:24,268 - mine_latent_alphas - INFO - Step 11: Generating markdown report...
+2026-06-17 18:03:24,269 - mine_latent_alphas - INFO -   Saved: C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\latent_alphas_report_20260617.md
+2026-06-17 18:03:24,269 - mine_latent_alphas - INFO - 
+2026-06-17 18:03:24,269 - mine_latent_alphas - INFO - ================================================================================
+2026-06-17 18:03:24,269 - mine_latent_alphas - INFO - Mining complete in 3.0s
+2026-06-17 18:03:24,269 - mine_latent_alphas - INFO -   Components evaluated: 5
+2026-06-17 18:03:24,269 - mine_latent_alphas - INFO -   Pass all gates: 0
+2026-06-17 18:03:24,269 - mine_latent_alphas - INFO -   Best OOS IR: 0.1122
+2026-06-17 18:03:24,269 - mine_latent_alphas - INFO -   Best OOS IC: 0.038767
+2026-06-17 18:03:24,269 - mine_latent_alphas - INFO - ================================================================================

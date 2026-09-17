@@ -1,0 +1,22 @@
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:weekly_evolution:=== WEEKLY GP ALPHA EVOLUTION START ===
+INFO:weekly_evolution:Config: regime=all, generations=50, pop=4000, ortho=none, alt_features=ON, workers=12, backend=threads
+INFO:weekly_evolution:Loaded market data: 1776743 rows, columns: ['ticker', 'date', 'exchange', 'open', 'high', 'low', 'close', 'volume', 'as_of', 'available_at', 'source', 'price_scale', 'adjusted', 'rebuild_date']
+INFO:omega.quant.evolution.alternative_features:Generated 25 alternative features
+INFO:weekly_evolution:AlternativeFeatureGenerator: 25 features generated
+INFO:omega.quant.evolution.alternative_data_fetcher:Generated 10 alternative data signals
+INFO:weekly_evolution:AlternativeDataFetcher: 10 signals generated
+INFO:weekly_evolution:Prepared data: 1222680 rows after lag/dropna
+INFO:weekly_evolution:Alternative features available: 35 / 35
+INFO:weekly_evolution:Sliding walk-forward split [Regime: all]: train=647105 rows (up to 2021-12-07), validate=284677 rows (up to 2024-03-07), test=285506 rows (up to 2026-06-16)
+INFO:weekly_evolution:Using n_jobs=12
+INFO:omega.quant.evolution.diverse_alpha_evolution:=== DIVERSE EVOLUTION: 4 islands x 1000 pop x 50 gen ===
+INFO:omega.quant.evolution.diverse_alpha_evolution:Gen 0: Island best ICs: ['0.0260', '0.0260', '0.0201', '0.0172']
+INFO:omega.quant.evolution.diverse_alpha_evolution:Gen 4: Migration. Island best ICs: ['0.0260', '0.0260', '0.0324', '0.0324']
+INFO:omega.quant.evolution.diverse_alpha_evolution:Gen 5: Island best ICs: ['0.0260', '0.0260', '0.0324', '0.0324']
+INFO:omega.quant.evolution.diverse_alpha_evolution:Gen 9: Migration. Island best ICs: ['0.0423', '0.0260', '0.0324', '0.0324']
+INFO:omega.quant.evolution.diverse_alpha_evolution:Gen 10: Island best ICs: ['0.0423', '0.0260', '0.0324', '0.0324']
+INFO:omega.quant.evolution.diverse_alpha_evolution:Gen 14: Migration. Island best ICs: ['0.0576', '0.0260', '0.0324', '0.0324']
+INFO:omega.quant.evolution.diverse_alpha_evolution:Gen 15: Island best ICs: ['0.0576', '0.0260', '0.0324', '0.0324']

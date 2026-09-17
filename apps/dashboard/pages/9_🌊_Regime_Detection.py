@@ -109,7 +109,7 @@ with tab1:
                 height=400
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
             # Market indicators
             st.markdown("### 📈 Chỉ số thị trường")
@@ -228,7 +228,7 @@ with tab2:
                 hovermode='x unified'
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
             # Regime distribution
             st.markdown("### 📊 Phân bố thời gian theo chế độ")
@@ -246,7 +246,7 @@ with tab2:
                     color=list(distribution.keys()),
                     color_discrete_map=color_map
                 )
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
             
             with col2:
                 # Statistics table
@@ -264,7 +264,7 @@ with tab2:
                     })
                 
                 stats_df = pd.DataFrame(stats_data)
-                st.dataframe(stats_df, use_container_width=True, hide_index=True)
+                st.dataframe(stats_df, width="stretch", hide_index=True)
             
             # Regime transitions
             st.markdown("### 🔄 Chuyển đổi chế độ")
@@ -287,7 +287,7 @@ with tab2:
                     aspect='auto'
                 )
                 
-                st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, width="stretch")
                 
                 # Recent transitions
                 st.markdown("**Chuyển đổi gần đây:**")
@@ -305,7 +305,7 @@ with tab2:
                             format='%d'
                         )
                     },
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True
                 )
             else:
@@ -365,7 +365,7 @@ with tab3:
                     'Win Rate': st.column_config.NumberColumn('Win Rate', format='%.1f%%'),
                     'Trades': st.column_config.NumberColumn('Trades', format='%d')
                 },
-                use_container_width=True,
+                width="stretch",
                 hide_index=True
             )
             
@@ -408,7 +408,7 @@ with tab3:
                 hovermode='x unified'
             )
             
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
             # Regime-specific metrics
             st.markdown("### 🔍 Chi tiết theo từng chế độ")
@@ -454,7 +454,7 @@ with tab3:
                                 height=400
                             )
                             
-                            st.plotly_chart(fig, use_container_width=True)
+                            st.plotly_chart(fig, width="stretch")
             
             # Strategy recommendations
             st.markdown("### 💡 Khuyến nghị chiến lược")

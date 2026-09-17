@@ -1,0 +1,82 @@
+﻿[
+    {
+        "config":  "h135_train",
+        "IC":  -0.0004,
+        "RawIC":  0.0041,
+        "CSIC":  0.0065,
+        "Sharpe":  0.8642,
+        "MaxDD":  -8.31,
+        "Fallbacks":  8,
+        "NonEmptyHorizonFolds":  0
+    },
+    {
+        "config":  "h135_validation",
+        "IC":  0.0011,
+        "RawIC":  0.0048,
+        "CSIC":  0.0075,
+        "Sharpe":  0.9906,
+        "MaxDD":  -8.24,
+        "Fallbacks":  8,
+        "NonEmptyHorizonFolds":  0
+    },
+    {
+        "config":  "h15_train",
+        "IC":  0.0049,
+        "RawIC":  0.0044,
+        "CSIC":  0.0075,
+        "Sharpe":  0.9441,
+        "MaxDD":  -8.02,
+        "Fallbacks":  8,
+        "NonEmptyHorizonFolds":  0
+    },
+    {
+        "config":  "h15_validation",
+        "IC":  0.0012,
+        "RawIC":  0.0031,
+        "CSIC":  0.0058,
+        "Sharpe":  0.9998,
+        "MaxDD":  -7.85,
+        "Fallbacks":  8,
+        "NonEmptyHorizonFolds":  0
+    },
+    {
+        "config":  "h35_train",
+        "IC":  0.0041,
+        "RawIC":  0.0025,
+        "CSIC":  0.0044,
+        "Sharpe":  0.955,
+        "MaxDD":  -8.29,
+        "Fallbacks":  8,
+        "NonEmptyHorizonFolds":  0
+    },
+    {
+        "config":  "h35_validation",
+        "IC":  0.0003,
+        "RawIC":  0.0039,
+        "CSIC":  0.0062,
+        "Sharpe":  0.9993,
+        "MaxDD":  -8.03,
+        "Fallbacks":  8,
+        "NonEmptyHorizonFolds":  0
+    },
+    {
+        "config":  "h5_train",
+        "IC":  0.0002,
+        "RawIC":  0.0036,
+        "CSIC":  0.0068,
+        "Sharpe":  1.0195,
+        "MaxDD":  -7.99,
+        "Fallbacks":  8,
+        "NonEmptyHorizonFolds":  0
+    },
+    {
+        "config":  "h5_validation",
+        "IC":  -0.0033,
+        "RawIC":  0.0026,
+        "CSIC":  0.0049,
+        "Sharpe":  0.9813,
+        "MaxDD":  -8.08,
+        "Fallbacks":  8,
+        "NonEmptyHorizonFolds":  0
+    }
+]

@@ -1,0 +1,4 @@
+[
+  {"source_id":"vnstock_vci","display_name":"vnstock VCI","tier":"aggregator","kind":"vnstock","enabled":true,"required":true,"discovery_url":null,"allowed_hosts":["vnstock.site"],"adapter":"vnstock","source_delay_minutes":15,"timestamp_policy":"utc","max_items":1000,"request_interval_seconds":0,"timeout_seconds":15,"max_response_bytes":5000000,"allow_pdf":false,"allow_browser_fallback":false,"disabled_reason":null},
+  {"source_id":"vcbs_research","display_name":"VCBS Research","tier":"institutional_research","kind":"html","enabled":true,"required":true,"discovery_url":"https://www.vcbs.com.vn/vn/Communication/Research","allowed_hosts":["vcbs.com.vn","www.vcbs.com.vn"],"adapter":"vcbs","source_delay_minutes":15,"timestamp_policy":"utc","max_items":200,"request_interval_seconds":0,"timeout_seconds":15,"max_response_bytes":5000000,"allow_pdf":true,"allow_browser_fallback":false,"disabled_reason":null}
+]

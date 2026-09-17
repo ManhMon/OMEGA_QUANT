@@ -1,0 +1,9 @@
+{
+  "rank": 10,
+  "round": 6,
+  "train_IC": 0.5044,
+  "test_IC": 0.0349,
+  "hit_rate": 0.44,
+  "expression": "(volume - (high * (high min close)))",
+  "serialized_tree": "GPNode(operator='-', children=[GPNode(operator='terminal', children=[], value='volume'), GPNode(operator='*', children=[GPNode(operator='terminal', children=[], value='high'), GPNode(operator='min', children=[GPNode(operator='terminal', children=[], value='high'), GPNode(operator='terminal', children=[], value='close')], value=None)], value=None)], value=None)"
+}

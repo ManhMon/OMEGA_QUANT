@@ -38,8 +38,8 @@ def load_real_vn_data(n_days=252, symbols=None):
         # Keep only the last n_days index aligned with overall index
         sym_df = sym_df.reindex(last_dates)
         
-        # Backward fill then forward fill to clean any NaNs
-        sym_df[['open', 'high', 'low', 'close', 'volume']] = sym_df[['open', 'high', 'low', 'close', 'volume']].bfill().ffill()
+        # Forward fill only: backward fill would use a future observation.
+        sym_df[['open', 'high', 'low', 'close', 'volume']] = sym_df[['open', 'high', 'low', 'close', 'volume']].ffill()
         
         data[sym] = pd.DataFrame({
             'open': sym_df['open'],

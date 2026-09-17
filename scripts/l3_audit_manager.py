@@ -18,13 +18,26 @@ REPO_AUDIT_LOG_PATH = Path(".ly_state/session/audit_log.jsonl")
 def load_gates(path=REPO_GATE_PATH):
     if not path.exists():
         return {}
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with open(path, "r", encoding="utf-8-sig") as f:
+        raw = json.load(f)
+        if isinstance(raw, list) and len(raw) > 0 and isinstance(raw[0], dict):
+            return raw[0]
+        return raw
 
 def save_gates(gates, path=REPO_GATE_PATH):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(gates, f, indent=2, ensure_ascii=False)
+    was_list = False
+    if path.exists():
+        with open(path, "r", encoding="utf-8-sig") as f:
+            try:
+                raw = json.load(f)
+                if isinstance(raw, list):
+                    was_list = True
+            except:
+                pass
+    output = [gates] if was_list else gates
+    with open(path, "w", encoding="utf-8-sig") as f:
+        json.dump(output, f, indent=2, ensure_ascii=False)
 
 def sync_gate_entry(gate_key, gate_entry):
     for gate_path in [REPO_GATE_PATH, ROOT_GATE_PATH]:

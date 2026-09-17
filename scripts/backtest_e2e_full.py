@@ -179,7 +179,7 @@ def phase_3_alpha_generation(df):
 
     # Alpha 9-10: Macro Alphas (only momentum + RSI which have positive IC)
     try:
-        from omega.quant.macro_alphas import compute_macro_alphas
+        from omega.quant.alpha.macro import compute_macro_alphas
         macro_df = compute_macro_alphas(df)
         # Only wire the 2 with proven positive IC
         df["alpha_macro_mom"] = macro_df["alpha_macro_momentum_20_60"].groupby(df["ticker"]).shift(1)

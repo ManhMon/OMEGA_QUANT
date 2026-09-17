@@ -1,0 +1,43 @@
+    @optimize_execution("VCI")
+    def news(self) -> pd.DataFrame:
+        """
+        Truy xuất tin tức liên quan đến công ty.
+
+        Returns:
+            pd.DataFrame: DataFrame chứa tin tức liên quan đến công ty.
+        """  # noqa: W293
+        # Try to fetch from the main news endpoint first (has more data)
+        data = self._fetch_news()
+
+        if not data:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(data)
+
+        # Convert to snake_case
+        df.columns = [camel_to_snake(col) for col in df.columns]
+
+        # Drop unnecessary columns
+        cols_to_drop = [
+            col
+            for col in [
+                "organ_code",
+                "symbol",
+                "__typename",
+                "is_event",
+                "event",
+                "create_by",
+                "update_by",
+                "status",
+                "create_date",
+                "update_date",
+                "source_code",
+                "expert_id",
+                "is_tranfer",
+            ]
+            if col in df.columns
+        ]
+        if cols_to_drop:
+            df = df.drop(columns=cols_to_drop)
+
+        return df

@@ -1,0 +1,9 @@
+{
+  "rank": 4,
+  "round": 1,
+  "train_IC": 1.1619,
+  "test_IC": -0.0221,
+  "hit_rate": 0.5364,
+  "expression": "(((hl_range / hl_range) - (hl_range + oc_range)) + (rank(((oc_range max returns_5d) / vol_ratio)) / sigmoid(cs_zscore(returns_1d))))",
+  "serialized_tree": "GPNode(operator='+', children=[GPNode(operator='-', children=[GPNode(operator='/', children=[GPNode(operator='terminal', children=[], value='hl_range'), GPNode(operator='terminal', children=[], value='hl_range')], value=None), GPNode(operator='+', children=[GPNode(operator='terminal', children=[], value='hl_range'), GPNode(operator='terminal', children=[], value='oc_range')], value=None)], value=None), GPNode(operator='/', children=[GPNode(operator='rank', children=[GPNode(operator='/', children=[GPNode(operator='max', children=[GPNode(operator='terminal', children=[], value='oc_range'), GPNode(operator='terminal', children=[], value='returns_5d')], value=None), GPNode(operator='terminal', children=[], value='vol_ratio')], value=None)], value=None), GPNode(operator='sigmoid', children=[GPNode(operator='cs_zscore', children=[GPNode(operator='terminal', children=[], value='returns_1d')], value=None)], value=None)], value=None)], value=None)"
+}

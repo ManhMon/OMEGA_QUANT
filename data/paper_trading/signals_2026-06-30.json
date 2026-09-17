@@ -1,0 +1,80 @@
+{
+  "date": "2026-06-30",
+  "generated_at": "2026-07-01T03:45:17.074449",
+  "gate": "STRONG_ALPHAS_INTEGRATION_20260618",
+  "alpha_sources": {
+    "legacy_alt": 10,
+    "alt_data": 4,
+    "vn_specific_active": 25,
+    "latent_ae_active": 3,
+    "llm_active": 0,
+    "total_signal_candidates": 42
+  },
+  "regime": {
+    "state": "SIDEWAYS",
+    "confidence": 0.8,
+    "exposure": 0.8,
+    "signals": {
+      "ma_cross": -0.0039,
+      "vol_ratio": 0.7763,
+      "drawdown": -0.0962,
+      "momentum_20d": 0.0055
+    }
+  },
+  "hrp_weights": {
+    "distance_from_ma20": 0.0294,
+    "clv_ma": 0.0319,
+    "vp_divergence": 0.0312,
+    "momentum_accel": 0.0295,
+    "realized_vol_5": 0.0284,
+    "clv": 0.0155,
+    "gap": 0.0165,
+    "volume_trend": 0.0141,
+    "volume_momentum": 0.0144,
+    "cs_rank_ret20": 0.0317,
+    "foreign_flow_ma5": 0.0313,
+    "margin_trend": 0.031,
+    "rotation_momentum": 0.031,
+    "order_imbalance": 0.015,
+    "alpha_vn_amihud_liq_reversal": 0.0304,
+    "alpha_vn_illiq_regime_penalty": 0.0313,
+    "alpha_vn_volume_shock_reversal": 0.0179,
+    "alpha_vn_turnover_exhaustion": 0.0181,
+    "alpha_vn_bollinger_snapback": 0.032,
+    "alpha_vn_rsi_divergence_reversal": 0.0325,
+    "alpha_vn_sector_neutral_residual_reversion": 0.0308,
+    "alpha_vn_close_location_reversion": 0.031,
+    "alpha_vn_limit_lock_continuation": 0.0318,
+    "alpha_limit_lock_streak": 0.0322,
+    "alpha_t2_momentum_adj": 0.0326,
+    "alpha_smart_money_lite": 0.0296,
+    "alpha_vn_limit_unlock_exhaustion": 0.0324,
+    "alpha_vn_t2_settlement_supply_overhang": 0.0331,
+    "alpha_vn_t2_cash_recycling_bounce": 0.0311,
+    "alpha_vn_001_post_settlement_momentum": 0.0159,
+    "alpha_vn_002_limit_band_reversion": 0.0335,
+    "alpha_vn_004_intraday_persistence": 0.0293,
+    "alpha_vn_t2_momentum_diff": 0.0326,
+    "latent_ae_00": 0.0308,
+    "latent_ae_01": 0.0319,
+    "latent_ae_11": 0.0279
+  },
+  "universe_size": 50,
+  "positions": {
+    "VCG": {
+      "weight": 0.0801,
+      "shares": 7700,
+      "price": 20800.0,
+      "value_vnd": 160160000.0
+    },
+    "HHV": {
+      "weight": 0.0399,
+      "shares": 7000,
+      "price": 11400.0,
+      "value_vnd": 79800000.0
+    }
+  },
+  "n_positions": 2,
+  "total_exposure": 0.12,
+  "capital": 2000000000.0
+}

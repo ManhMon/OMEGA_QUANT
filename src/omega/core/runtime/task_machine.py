@@ -306,36 +306,36 @@ class TaskStateMachine:
                 # Move to DLQ
                 self.dlq.add(task, error)
                 task.state = TaskState.FAILED
-                
-                self._emit_event(
-                    event_type="TASK_FAILED_DLQ",
-                    source="TaskStateMachine",
-                    target=task_id,
-                    correlation_id=task_id,
-                    severity="ERROR",
-                    payload={"error": error, "retry_count": task.retry_count},
-                )
-                
-                logger.error(f"Task {task_id} moved to DLQ: {error}")
-                return False
+                event_type = "TASK_FAILED_DLQ"
+                severity = "ERROR"
+                payload = {"error": error, "retry_count": task.retry_count}
+                will_retry = False
             else:
                 # Retry with backoff
                 backoff_factor = task.retry_policy.get("backoff_factor", 2.0)
                 wait_time = (backoff_factor ** (task.retry_count - 1))
-                
                 task.state = TaskState.RETRYING
-                
-                self._emit_event(
-                    event_type="TASK_RETRYING",
-                    source="TaskStateMachine",
-                    target=task_id,
-                    correlation_id=task_id,
-                    severity="WARN",
-                    payload={"error": error, "retry_count": task.retry_count, "wait_seconds": wait_time},
-                )
-                
-                logger.warning(f"Task {task_id} will retry in {wait_time}s (attempt {task.retry_count}/{max_retries})")
-                return True
+                event_type = "TASK_RETRYING"
+                severity = "WARN"
+                payload = {"error": error, "retry_count": task.retry_count, "wait_seconds": wait_time}
+                will_retry = True
+
+        # Emit event OUTSIDE the lock to avoid deadlock with _emit_event
+        self._emit_event(
+            event_type=event_type,
+            source="TaskStateMachine",
+            target=task_id,
+            correlation_id=task_id,
+            severity=severity,
+            payload=payload,
+        )
+
+        if will_retry:
+            logger.warning(f"Task {task_id} will retry (attempt {task.retry_count}/{max_retries})")
+        else:
+            logger.error(f"Task {task_id} moved to DLQ: {error}")
+
+        return will_retry
     
     def _dependencies_satisfied(self, task_id: str) -> bool:
         """Check if all dependencies are satisfied."""

@@ -16,13 +16,18 @@ PIT Safety: PASS - T-1 lag enforced via evaluate_vectorized.
 
 from __future__ import annotations
 
+import dataclasses
+from contextlib import ExitStack
+import gc
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+from joblib import Parallel, delayed, parallel_config
+from scipy.stats import rankdata
 
 from omega.quant.evolution.genetic_alpha import Genome, Node
 from omega.quant.evolution.alpha_evolution_pipeline import (
@@ -32,6 +37,65 @@ from omega.quant.evolution.alpha_evolution_pipeline import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+_TARGET_RANKS_CACHE = {}
+
+
+ISLAND_ALTERNATIVE_TERMINALS = [
+    ['alt_cs_rank_volume', 'alt_vp_divergence', 'alt_ad_line'],
+    ['alt_intraday_range', 'alt_gap', 'alt_upper_shadow', 'alt_lower_shadow'],
+    ['alt_volume_momentum', 'alt_ret_5d', 'alt_momentum_accel', 'vn_smart_money_proxy'],
+    ['alt_trend_strength', 'alt_distance_from_ma20', 'alt_sector_rotation', 'vn_foreign_net_flow_5d'],
+]
+
+EARLY_STOPPING_PATIENCE = 50
+
+
+def _precompute_target_ranks(target: pd.Series) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    values = target.to_numpy(dtype=float, copy=False)
+    finite_mask = np.isfinite(values)
+    ranks = np.full(values.shape, np.nan, dtype=float)
+    if finite_mask.any():
+        ranks[finite_mask] = rankdata(values[finite_mask], method="average")
+    return values, finite_mask, ranks
+
+
+def _get_target_ranks(df: pd.DataFrame, target_col: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    cache_key = (id(df), len(df), df.index[0] if len(df) else None, target_col)
+    cached = _TARGET_RANKS_CACHE.get(cache_key)
+    if cached is None:
+        cached = _precompute_target_ranks(df[target_col])
+        _TARGET_RANKS_CACHE[cache_key] = cached
+    return cached
+
+
+def _spearman_corr_from_cached_ranks(
+    signal: pd.Series,
+    target_values: np.ndarray,
+    finite_mask: np.ndarray,
+    target_ranks: np.ndarray,
+) -> float:
+    signal_values = signal.to_numpy(dtype=float, copy=False)
+    signal_finite_mask = np.isfinite(signal_values)
+    if not signal_finite_mask.any():
+        return float("nan")
+
+    if signal_finite_mask.all():
+        if finite_mask.sum() < 2:
+            return float("nan")
+        signal_ranks = rankdata(signal_values[finite_mask], method="average")
+        corr = np.corrcoef(signal_ranks, target_ranks[finite_mask])[0, 1]
+        return float(corr)
+
+    valid_mask = finite_mask & signal_finite_mask
+    if valid_mask.sum() < 2:
+        return float("nan")
+
+    signal_ranks = rankdata(signal_values[valid_mask], method="average")
+    target_valid_ranks = rankdata(target_values[valid_mask], method="average")
+    corr = np.corrcoef(signal_ranks, target_valid_ranks)[0, 1]
+    return float(corr)
 
 
 # ============================================================
@@ -84,18 +148,38 @@ class DiverseEvolutionConfig:
     n_islands: int = 4
     population_per_island: int = 40
     generations: int = 25
-    migration_interval: int = 5
-    migration_count: int = 3
+    migration_interval: int = 10
+    migration_count: int = 1
     max_depth: int = 5
     mutation_rate: float = 0.35
     crossover_rate: float = 0.6
     elitism_count: int = 3
-    corr_threshold: float = 0.5       # Relaxed from 0.7
+    corr_threshold: float = 0.7
+    island_mutation_boost: float = 0.15
     ic_threshold: float = 0.05
-    min_hit_rate: float = 0.53
+    min_hit_rate: float = 0.515
     profit_factor_min: float = 1.3
     max_active_alphas: int = 15
     state_dir: str = "data/diverse_evolution"
+    n_jobs: int = 1
+    n_jobs_island: int = 0
+    parallel_backend: Optional[str] = None
+
+    def __post_init__(self) -> None:
+        if self.n_jobs_island == 0:
+            self.n_jobs_island = max(1, self.n_jobs // self.n_islands)
+
+
+def _evolve_island_job(
+    island_idx: int,
+    population: List[Genome],
+    config: DiverseEvolutionConfig,
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    target_col: str,
+) -> tuple:
+    evolution = DiverseAlphaEvolution(dataclasses.replace(config, n_jobs=config.n_jobs_island))
+    return evolution._evolve_island(population, train_df, val_df, target_col)
 
 
 class DiverseAlphaEvolution:
@@ -134,83 +218,129 @@ class DiverseAlphaEvolution:
         self, population: List[Genome], train_df: pd.DataFrame, val_df: pd.DataFrame, target_col: str
     ) -> List[AlphaCandidate]:
         """Evaluate all genomes, return viable candidates sorted by fitness."""
-        candidates = []
-        for genome in population:
-            try:
-                train_signal = genome.evaluate_vectorized(train_df)
-                val_signal = genome.evaluate_vectorized(val_df)
+        _get_target_ranks(train_df, target_col)
+        _get_target_ranks(val_df, target_col)
 
-                if train_signal.std() < 1e-8 or val_signal.std() < 1e-8:
-                    continue
-
-                train_ic = train_signal.corr(train_df[target_col], method="spearman")
-                val_ic = val_signal.corr(val_df[target_col], method="spearman")
-
-                if np.isnan(train_ic) or np.isnan(val_ic):
-                    continue
-
-                hit_rate = (np.sign(val_signal) == np.sign(val_df[target_col])).mean()
-                turnover = val_signal.diff().abs().mean() / (val_signal.abs().mean() + 1e-10)
-
-                candidates.append(AlphaCandidate(
-                    genome=genome,
-                    expression=repr(genome),
-                    train_ic=float(train_ic),
-                    test_ic=float(val_ic),
-                    hit_rate=float(hit_rate),
-                    turnover=float(turnover),
-                ))
-            except Exception:
-                continue
+        if self.config.n_jobs <= 1 or len(population) <= 1:
+            candidates = [
+                candidate
+                for candidate in (
+                    self._evaluate_genome(genome, train_df, val_df, target_col)
+                    for genome in population
+                )
+                if candidate is not None
+            ]
+        else:
+            with ExitStack() as stack:
+                if self.config.parallel_backend:
+                    stack.enter_context(parallel_config(backend=self.config.parallel_backend))
+                if self.config.n_jobs > 0:
+                    stack.enter_context(parallel_config(n_jobs=self.config.n_jobs))
+                candidates = [
+                    candidate
+                    for candidate in Parallel(n_jobs=self.config.n_jobs)(
+                        delayed(self._evaluate_genome)(
+                            genome,
+                            train_df,
+                            val_df,
+                            target_col,
+                        )
+                        for genome in population
+                    )
+                    if candidate is not None
+                ]
 
         candidates.sort(key=lambda c: c.fitness(), reverse=True)
+        gc.collect()
         return candidates
 
+    def _evaluate_genome(
+        self,
+        genome: Genome,
+        train_df: pd.DataFrame,
+        val_df: pd.DataFrame,
+        target_col: str,
+    ) -> Optional[AlphaCandidate]:
+        try:
+            train_target_cache = _get_target_ranks(train_df, target_col)
+            val_target_cache = _get_target_ranks(val_df, target_col)
+            train_signal = genome.evaluate_vectorized(train_df)
+            val_signal = genome.evaluate_vectorized(val_df)
+
+            if train_signal.std() < 1e-8 or val_signal.std() < 1e-8:
+                return None
+
+            train_ic = _spearman_corr_from_cached_ranks(train_signal, *train_target_cache)
+            val_ic = _spearman_corr_from_cached_ranks(val_signal, *val_target_cache)
+
+            if np.isnan(train_ic) or np.isnan(val_ic):
+                return None
+
+            hit_rate = (
+                np.sign(val_signal - val_signal.mean())
+                == np.sign(val_df[target_col] - val_df[target_col].mean())
+            ).mean()
+            turnover = val_signal.diff().abs().mean() / (val_signal.abs().mean() + 1e-10)
+
+            return AlphaCandidate(
+                genome=genome,
+                expression=repr(genome),
+                train_ic=float(train_ic),
+                test_ic=float(val_ic),
+                hit_rate=float(hit_rate),
+                turnover=float(turnover),
+            )
+        except Exception:
+            return None
+
     def _evolve_island(
-        self, population: List[Genome], train_df: pd.DataFrame, val_df: pd.DataFrame, target_col: str
+        self,
+        population: List[Genome],
+        train_df: pd.DataFrame,
+        val_df: pd.DataFrame,
+        target_col: str,
+        config: Optional[DiverseEvolutionConfig] = None,
     ) -> tuple:
         """Run one generation on an island. Returns (new_population, candidates)."""
+        config = config or self.config
         candidates = self._evaluate_population(population, train_df, val_df, target_col)
         if not candidates:
             return population, []
 
         # Selection + reproduction
-        elite = [c.genome for c in candidates[:self.config.elitism_count]]
+        elite = [c.genome for c in candidates[:config.elitism_count]]
         new_pop = list(elite)
 
-        while len(new_pop) < self.config.population_per_island:
+        while len(new_pop) < config.population_per_island:
             r = np.random.random()
-            if r < self.config.crossover_rate and len(candidates) >= 2:
+            if r < config.crossover_rate and len(candidates) >= 2:
                 parents = np.random.choice(min(15, len(candidates)), size=2, replace=False)
                 child = Genome.crossover(candidates[parents[0]].genome, candidates[parents[1]].genome)
                 new_pop.append(child)
-            elif r < self.config.crossover_rate + self.config.mutation_rate:
+            elif r < config.crossover_rate + config.mutation_rate:
                 idx = np.random.randint(min(10, len(candidates)))
                 new_pop.append(candidates[idx].genome.mutate())
             else:
-                new_pop.append(Genome(max_depth=self.config.max_depth))
+                new_pop.append(Genome(max_depth=config.max_depth))
 
         return new_pop, candidates
 
     def _migrate(self, islands: List[List[Genome]], island_candidates: List[List[AlphaCandidate]]) -> None:
-        """Migrate top individuals between islands (ring topology)."""
+        """Migrate one tournament winner from the previous island into the tail slot."""
         n = len(islands)
-        migrants = []
-        for i in range(n):
-            if island_candidates[i]:
-                top = [c.genome for c in island_candidates[i][:self.config.migration_count]]
-                migrants.append(top)
-            else:
-                migrants.append([])
-
-        # Ring migration: island i receives from island (i-1)
         for i in range(n):
             source = (i - 1) % n
-            if migrants[source]:
-                # Replace worst individuals with migrants
-                for j, migrant in enumerate(migrants[source]):
-                    if j < len(islands[i]):
-                        islands[i][-(j+1)] = migrant
+            source_candidates = island_candidates[source]
+            if not source_candidates or not islands[i]:
+                continue
+
+            pool_size = min(5, len(source_candidates))
+            sampled = np.random.choice(len(source_candidates), size=pool_size, replace=False)
+            winner = max(
+                (source_candidates[int(idx)] for idx in sampled),
+                key=lambda candidate: candidate.train_ic,
+            )
+            islands[i][-1] = winner.genome
 
     def _filter_diverse(
         self, candidates: List[AlphaCandidate], train_df: pd.DataFrame
@@ -262,23 +392,83 @@ class DiverseAlphaEvolution:
         Returns:
             List of diverse, quality-filtered AlphaCandidates.
         """
+        _TARGET_RANKS_CACHE.clear()
         t0 = time.time()
         n_islands = self.config.n_islands
         logger.info("=== DIVERSE EVOLUTION: %d islands x %d pop x %d gen ===",
                     n_islands, self.config.population_per_island, self.config.generations)
 
         # Initialize islands with seeded populations
+        for terminals in ISLAND_TERMINALS:
+            for terminal in terminals:
+                if terminal not in Node.TERMINALS:
+                    Node.TERMINALS.append(terminal)
+
         islands = [self._create_island_population(i) for i in range(n_islands)]
+        island_configs = [self.config for _ in range(n_islands)]
         island_candidates: List[List[AlphaCandidate]] = [[] for _ in range(n_islands)]
         all_candidates: List[AlphaCandidate] = []
+        best_ic_overall = float('-inf')
+        generations_without_improvement = 0
 
         # Evolution loop
         for gen in range(self.config.generations):
-            for i in range(n_islands):
-                islands[i], candidates = self._evolve_island(islands[i], train_df, val_df, target_col)
+            n_parallel_islands = min(n_islands, self.config.n_jobs)
+            if n_parallel_islands <= 1:
+                island_results = [
+                    self._evolve_island(islands[i], train_df, val_df, target_col, island_configs[i])
+                    for i in range(n_islands)
+                ]
+            else:
+                with parallel_config(backend='threading', n_jobs=n_parallel_islands):
+                    island_results = Parallel()(
+                        delayed(_evolve_island_job)(
+                            i,
+                            islands[i],
+                            island_configs[i],
+                            train_df,
+                            val_df,
+                            target_col,
+                        )
+                        for i in range(n_islands)
+                    )
+
+            for i, (new_population, candidates) in enumerate(island_results):
+                islands[i] = new_population
                 island_candidates[i] = candidates
                 if candidates:
                     all_candidates.extend(candidates[:3])  # Top 3 per island per gen
+
+            max_ic = max(
+                (
+                    candidate.train_ic
+                    for candidates in island_candidates
+                    for candidate in candidates
+                ),
+                default=0.0,
+            )
+            next_island_configs = [self.config for _ in range(n_islands)]
+            if max_ic > 0:
+                for i, candidates in enumerate(island_candidates):
+                    island_best_ic = max((candidate.train_ic for candidate in candidates), default=0.0)
+                    if island_best_ic < 0.8 * max_ic:
+                        next_island_configs[i] = dataclasses.replace(
+                            self.config,
+                            mutation_rate=min(0.8, self.config.mutation_rate + self.config.island_mutation_boost),
+                        )
+            island_configs = next_island_configs
+
+            gc.collect()
+
+            current_best_ic = max(
+                (candidates[0].test_ic for candidates in island_candidates if candidates),
+                default=float('-inf'),
+            )
+            if current_best_ic > best_ic_overall:
+                best_ic_overall = current_best_ic
+                generations_without_improvement = 0
+            else:
+                generations_without_improvement += 1
 
             # Migration every N generations
             if (gen + 1) % self.config.migration_interval == 0:
@@ -290,6 +480,10 @@ class DiverseAlphaEvolution:
                 best_per_island = [c[0].test_ic if c else 0 for c in island_candidates]
                 logger.info("Gen %d: Island best ICs: %s",
                             gen, [f"{ic:.4f}" for ic in best_per_island])
+
+            if generations_without_improvement >= EARLY_STOPPING_PATIENCE:
+                logger.info("Early stopping triggered")
+                break
 
         # Collect all unique candidates
         # Deduplicate by expression
@@ -320,10 +514,10 @@ class DiverseAlphaEvolution:
 # ============================================================
 
 ISLAND_TERMINALS = [
-    ['close', 'returns', 'volume'],          # Island 0: Price + Volume
-    ['high', 'low', 'close', 'open'],        # Island 1: OHLC patterns
-    ['volume', 'returns', 'rsi'],            # Island 2: Volume + Momentum
-    ['close', 'open', 'macd', 'volume'],     # Island 3: Trend + Volume
+    ['close', 'returns', 'volume', *ISLAND_ALTERNATIVE_TERMINALS[0]],
+    ['high', 'low', 'close', 'open', *ISLAND_ALTERNATIVE_TERMINALS[1]],
+    ['volume', 'returns', 'rsi', *ISLAND_ALTERNATIVE_TERMINALS[2]],
+    ['close', 'open', 'macd', 'volume', *ISLAND_ALTERNATIVE_TERMINALS[3]],
 ]
 
 

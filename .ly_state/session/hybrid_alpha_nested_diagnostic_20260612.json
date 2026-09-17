@@ -1,0 +1,96 @@
+{
+  "config": {
+    "candidate_budget": 20,
+    "top_k": 3,
+    "n_outer_folds": 2,
+    "n_inner_folds": 2,
+    "llm_provider": "mock"
+  },
+  "source_proportions": {
+    "llm_v3": 3,
+    "template": 3,
+    "gp_mutation": 4,
+    "gp_crossover": 3,
+    "random_safe": 3
+  },
+  "total_generated": 16,
+  "total_selected": 3,
+  "n_outer_folds_evaluated": 2,
+  "deployment_ready": true,
+  "requires_full_cpcv": true,
+  "formula_memory": {
+    "unique_formulas": 16,
+    "total_generated": 17,
+    "total_duplicates": 1,
+    "total_parse_errors": 0,
+    "total_safety_rejected": 0,
+    "top_motifs": {
+      "sqrt": 2,
+      "abs": 1
+    }
+  },
+  "selected_candidates": [
+    {
+      "source": "llm_v3",
+      "formula_str": "(ret_1d decay_linear 5)",
+      "formula_hash": "31871a58a9211394",
+      "inner_metrics": {
+        "ic": 0.5159387157799703,
+        "abs_ic": 0.5159387157799703,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 1.0,
+        "coverage": 1.0,
+        "max_correlation": 0.0,
+        "n_inner_folds_scored": 2
+      },
+      "objective_score": 0.8282998982760864,
+      "is_selected": true
+    },
+    {
+      "source": "gp_mutation",
+      "formula_str": "((sqrt(close) decay_linear 20) - close)",
+      "formula_hash": "9dd82b4c26adf3a6",
+      "inner_metrics": {
+        "ic": -0.33308270676691726,
+        "abs_ic": 0.33308270676691726,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 0.0,
+        "coverage": 1.0,
+        "max_correlation": 0.0,
+        "n_inner_folds_scored": 2
+      },
+      "objective_score": 0.6372351332877648,
+      "is_selected": true
+    },
+    {
+      "source": "gp_crossover",
+      "formula_str": "(((volume ts_std 5) min open) decay_linear 10)",
+      "formula_hash": "26544bc307cc200d",
+      "inner_metrics": {
+        "ic": -0.08261012486015545,
+        "abs_ic": 0.08261012486015545,
+        "sign_consistency": 1.0,
+        "dsr_proxy": 0.0,
+        "coverage": 1.0,
+        "max_correlation": 0.0,
+        "n_inner_folds_scored": 2
+      },
+      "objective_score": 0.6223915187290233,
+      "is_selected": true
+    }
+  ],
+  "objective_weights": {
+    "w_ic": 0.3,
+    "w_sign_consistency": 0.15,
+    "w_dsr_proxy": 0.2,
+    "w_coverage": 0.15,
+    "w_low_correlation": 0.2
+  },
+  "deploy_thresholds": {
+    "min_deploy_ic": 0.05,
+    "min_deploy_sign_consistency": 0.6,
+    "min_deploy_dsr": 0.5,
+    "min_deploy_coverage": 0.9,
+    "max_deploy_correlation": 0.7
+  }
+}

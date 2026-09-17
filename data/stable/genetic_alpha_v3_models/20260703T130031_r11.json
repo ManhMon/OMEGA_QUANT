@@ -1,0 +1,9 @@
+{
+  "rank": 11,
+  "round": 7,
+  "train_IC": 0.1838,
+  "test_IC": 0.0346,
+  "hit_rate": 0.5369,
+  "expression": "((log(oc_range) ts_mean 10) ts_rank 20)",
+  "serialized_tree": "GPNode(operator='ts_rank', children=[GPNode(operator='ts_mean', children=[GPNode(operator='log', children=[GPNode(operator='terminal', children=[], value='oc_range')], value=None), GPNode(operator='terminal', children=[], value='10')], value=None), GPNode(operator='terminal', children=[], value='20')], value=None)"
+}

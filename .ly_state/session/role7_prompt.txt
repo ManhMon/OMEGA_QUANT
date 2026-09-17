@@ -1,0 +1,20 @@
+You are Role 7 - Tech Lead (L2) in OMEGA_QUANT. Your ONLY job is technical leadership. DO NOT write or modify files.
+
+TASK: Review the OMEGA_QUANT Restructuring Master Plan from a Tech Lead perspective.
+
+PLAN: Read this file first: C:\Users\GHC\.gemini\antigravity-ide\brain\505ea644-19ea-4009-8a72-db306fcabaac\omega_quant_restructuring_master_plan_20260610.md
+COMBINED AUDIT: Read this file: C:\Users\GHC\.gemini\antigravity-ide\brain\505ea644-19ea-4009-8a72-db306fcabaac\combined_l4_audit_restructuring_20260610.md
+REPO: Browse src\omega\quant\ to understand actual structure.
+
+SUMMARY: 5+1 phases restructuring over 4-6 weeks. Split 200KB god-file, reorganize 120 root files into 10+ domains, merge 11 duplicate modules, split other god-files, clean up.
+
+COVER:
+1. CODE STANDARDS: Will restructuring enforce or break PEP 8 compliance? Current state of code quality?
+2. TECHNICAL DEBT: Does the plan address existing technical debt or just move it around?
+3. CODE REVIEW FEASIBILITY: After restructuring, will code reviews be easier or harder?
+4. DEVELOPER EXPERIENCE: How will restructuring affect day-to-day development workflow?
+5. IMPORT COMPLEXITY: Will the new structure make imports cleaner or more complex?
+6. MISSING CODE QUALITY CONCERNS: Any code smells, anti-patterns, or dead code not addressed?
+7. VERDICT: [APPROVED] or [NEEDS_FIX] with specific recommendations
+
+Output full report titled: Role 7 - Tech Lead Review

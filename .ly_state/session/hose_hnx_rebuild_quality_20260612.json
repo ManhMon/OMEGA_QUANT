@@ -1,0 +1,385 @@
+{
+  "shape": [
+    3233304,
+    14
+  ],
+  "columns": [
+    "ticker",
+    "date",
+    "exchange",
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "as_of",
+    "available_at",
+    "source",
+    "price_scale",
+    "adjusted",
+    "rebuild_date"
+  ],
+  "dtypes": {
+    "ticker": "object",
+    "date": "datetime64[ns]",
+    "exchange": "object",
+    "open": "float64",
+    "high": "float64",
+    "low": "float64",
+    "close": "float64",
+    "volume": "int64",
+    "as_of": "object",
+    "available_at": "datetime64[ns]",
+    "source": "object",
+    "price_scale": "object",
+    "adjusted": "object",
+    "rebuild_date": "object"
+  },
+  "date_min": "2015-01-05 00:00:00",
+  "date_max": "2026-06-12 00:00:00",
+  "date_range_days": 4176,
+  "date_unique_count": 2855,
+  "ticker_count": 1444,
+  "canon_ticker_count": 1534,
+  "tickers_in_rebuilt_only": [],
+  "tickers_in_canon_only": [
+    "TNH",
+    "TOT",
+    "TPB",
+    "TPC",
+    "TPP",
+    "TPS",
+    "TQN",
+    "TQW",
+    "TR1",
+    "TRA",
+    "TRC",
+    "TRS",
+    "TS3",
+    "TSA",
+    "TTA",
+    "TTB",
+    "TTF",
+    "TTT",
+    "TTZ",
+    "TVB"
+  ],
+  "tickers_in_both": 1444,
+  "exchange_ticker_counts": {
+    "HNX": 26,
+    "HOSE": 172,
+    "UNKNOWN": 1017,
+    "UPCOM": 229
+  },
+  "exchange_row_counts": {
+    "UNKNOWN": 2264195,
+    "UPCOM": 460684,
+    "HOSE": 436118,
+    "HNX": 72307
+  },
+  "null_counts": {
+    "ticker": 0,
+    "date": 0,
+    "exchange": 0,
+    "open": 0,
+    "high": 0,
+    "low": 0,
+    "close": 0,
+    "volume": 0,
+    "as_of": 0,
+    "available_at": 0,
+    "source": 0,
+    "price_scale": 0,
+    "adjusted": 0,
+    "rebuild_date": 0
+  },
+  "null_date_count": 0,
+  "duplicate_ticker_date": 0,
+  "ohlc_violations": 0,
+  "negative_volume": 0,
+  "zero_volume_rows": 1018451,
+  "zero_volume_pct": 31.5,
+  "close_median": 9570.0,
+  "close_mean": 14595.756381088819,
+  "close_min": 10.0,
+  "close_max": 450000.0,
+  "close_q25": 5500.0,
+  "close_q75": 16880.0,
+  "close_below_1000_frac": 0.017,
+  "price_scale_assessment": "VND_FULL",
+  "discontinuity_scan_top20": [
+    {
+      "ticker": "SHB",
+      "rows": 2852,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.10191082802547768
+    },
+    {
+      "ticker": "HPG",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.072072072072072
+    },
+    {
+      "ticker": "SSI",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07071622846781511
+    },
+    {
+      "ticker": "STB",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07000000000000006
+    },
+    {
+      "ticker": "VIX",
+      "rows": 2848,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.10526315789473695
+    },
+    {
+      "ticker": "MBB",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.0708333333333333
+    },
+    {
+      "ticker": "VPB",
+      "rows": 2202,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07023411371237454
+    },
+    {
+      "ticker": "HAG",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07000000000000006
+    },
+    {
+      "ticker": "DXG",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07095046854082998
+    },
+    {
+      "ticker": "SHS",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.10068365444375393
+    },
+    {
+      "ticker": "NVL",
+      "rows": 2359,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07055961070559613
+    },
+    {
+      "ticker": "HQC",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07000000000000006
+    },
+    {
+      "ticker": "DIG",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.0718562874251496
+    },
+    {
+      "ticker": "HSG",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07246376811594213
+    },
+    {
+      "ticker": "GEX",
+      "rows": 2652,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.13655462184873945
+    },
+    {
+      "ticker": "TCB",
+      "rows": 2005,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07054871220604708
+    },
+    {
+      "ticker": "POW",
+      "rows": 2057,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.10215053763440851
+    },
+    {
+      "ticker": "CTG",
+      "rows": 2855,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.07064364207221341
+    },
+    {
+      "ticker": "BSR",
+      "rows": 2061,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.13606911447084236
+    },
+    {
+      "ticker": "ACB",
+      "rows": 2850,
+      "moves_gt_20pct": 0,
+      "moves_gt_50pct": 0,
+      "max_daily_return": 0.09870550161812297
+    }
+  ],
+  "adv_sanity_check": [
+    {
+      "ticker": "SHB",
+      "adv_20_shares": 51245825.0,
+      "adv_20_vnd": 704501979188.0,
+      "adv_20_vnd_billions": 704.5
+    },
+    {
+      "ticker": "HPG",
+      "adv_20_shares": 19966083.0,
+      "adv_20_vnd": 476061301203.0,
+      "adv_20_vnd_billions": 476.06
+    },
+    {
+      "ticker": "SSI",
+      "adv_20_shares": 15294265.0,
+      "adv_20_vnd": 415965772338.0,
+      "adv_20_vnd_billions": 415.97
+    },
+    {
+      "ticker": "STB",
+      "adv_20_shares": 5466560.0,
+      "adv_20_vnd": 381675219200.0,
+      "adv_20_vnd_billions": 381.68
+    },
+    {
+      "ticker": "VIX",
+      "adv_20_shares": 37287310.0,
+      "adv_20_vnd": 669866524150.0,
+      "adv_20_vnd_billions": 669.87
+    },
+    {
+      "ticker": "MBB",
+      "adv_20_shares": 14325630.0,
+      "adv_20_vnd": 357281212200.0,
+      "adv_20_vnd_billions": 357.28
+    },
+    {
+      "ticker": "VPB",
+      "adv_20_shares": 12590597.0,
+      "adv_20_vnd": 336231883538.0,
+      "adv_20_vnd_billions": 336.23
+    },
+    {
+      "ticker": "HAG",
+      "adv_20_shares": 2393310.0,
+      "adv_20_vnd": 36833040900.0,
+      "adv_20_vnd_billions": 36.83
+    },
+    {
+      "ticker": "DXG",
+      "adv_20_shares": 12249625.0,
+      "adv_20_vnd": 160721208093.0,
+      "adv_20_vnd_billions": 160.72
+    },
+    {
+      "ticker": "SHS",
+      "adv_20_shares": 14202195.0,
+      "adv_20_vnd": 255284455125.0,
+      "adv_20_vnd_billions": 255.28
+    }
+  ],
+  "canonical_close_median": 10000.0,
+  "canonical_shape": [
+    3392283,
+    10
+  ],
+  "canonical_date_range": [
+    "2015-01-05 00:00:00",
+    "2026-06-01 00:00:00"
+  ],
+  "scale_ratio_rebuilt_vs_canon": {
+    "median": 1.0,
+    "mean": 0.9432,
+    "min": 0.0017,
+    "max": 1.0433,
+    "sample_size": 50
+  },
+  "yearly_coverage": {
+    "2015": {
+      "rows": 173022,
+      "tickers": 752
+    },
+    "2016": {
+      "rows": 198179,
+      "tickers": 860
+    },
+    "2017": {
+      "rows": 250558,
+      "tickers": 1119
+    },
+    "2018": {
+      "rows": 292560,
+      "tickers": 1230
+    },
+    "2019": {
+      "rows": 295538,
+      "tickers": 1278
+    },
+    "2020": {
+      "rows": 308617,
+      "tickers": 1316
+    },
+    "2021": {
+      "rows": 322924,
+      "tickers": 1361
+    },
+    "2022": {
+      "rows": 341350,
+      "tickers": 1380
+    },
+    "2023": {
+      "rows": 344806,
+      "tickers": 1393
+    },
+    "2024": {
+      "rows": 324126,
+      "tickers": 1411
+    },
+    "2025": {
+      "rows": 278017,
+      "tickers": 1395
+    },
+    "2026": {
+      "rows": 103607,
+      "tickers": 1363
+    }
+  },
+  "target_5d_sanity": {
+    "total_checked": 27837,
+    "outliers_gt_100pct": 0,
+    "outlier_pct": 0.0
+  }
+}

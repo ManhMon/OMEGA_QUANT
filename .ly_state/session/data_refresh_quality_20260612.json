@@ -1,0 +1,103 @@
+{
+  "audit_date": "2026-06-12",
+  "canonical": {
+    "file": "data/market_2015_now.parquet",
+    "checksum_sha256": "E9B0B4F1754DB11378AA7BE6CC46B4A28CCFE2DC5C47612893AE1CCCDA8CAB5F",
+    "size_bytes": 35513722,
+    "total_rows": 3392283,
+    "total_columns": 10,
+    "columns": ["ticker", "date", "open", "high", "low", "close", "volume", "as_of", "available_at", "time"],
+    "tickers": 1534,
+    "date_min": "2015-01-05",
+    "date_max": "2026-06-01",
+    "price_scale_vnd": {
+      "close_median": 10000.0,
+      "close_min": 1000.0,
+      "close_max": 990000.0,
+      "close_mean": 24242.45
+    }
+  },
+  "validation_canonical": {
+    "duplicate_ticker_date": {
+      "rows_with_duplicates": 0,
+      "duplicate_pairs": 0,
+      "verdict": "CLEAN"
+    },
+    "ohlc_structure_violations": {
+      "count": 0,
+      "verdict": "CLEAN"
+    },
+    "nonpositive_prices": {
+      "open": 0,
+      "high": 0,
+      "low": 0,
+      "close": 0,
+      "verdict": "CLEAN"
+    },
+    "volume": {
+      "zero_count": 1075868,
+      "zero_pct": 31.72,
+      "negative_count": 0,
+      "verdict": "WARNING - 31.7% zero-volume rows (expected for suspended/illiquid stocks; backtest masks these)"
+    },
+    "nulls": {
+      "date": 20,
+      "as_of": 300,
+      "available_at": 300,
+      "time": 3392263,
+      "verdict": "WARNING - 20 null dates (1 per VN30 TOP_SYMBOLS), time column 99.9% null (dead column)"
+    },
+    "null_date_detail": {
+      "affected_tickers": ["VCB", "HPG", "FPT", "VIC", "MSN", "MWG", "VNM", "SAB", "VHM", "GAS", "BID", "VPB", "ACB", "TCB", "MBB", "HDB", "STB", "VIB", "CTG", "TPB"],
+      "count_per_ticker": 1,
+      "likely_cause": "Failed append from update_market_data.py where date normalization produced NaT for one row per symbol"
+    },
+    "close_ratio_extremes": {
+      "ratio_gt_20": 920,
+      "ratio_lt_0_05": 899,
+      "total_ratios_computed": 3390749,
+      "pct_extreme": 0.054,
+      "verdict": "WARNING - 1819 extreme ratio rows suggest unadjusted corporate actions or data errors"
+    },
+    "target_5d": {
+      "total_valid": 3384614,
+      "abs_gt_10": 2260,
+      "abs_gt_0_5": 11773,
+      "mean": 0.579,
+      "std": 22.34,
+      "median": 0.0,
+      "verdict": "ALERT - std=22.34 is dangerously high; 2260 rows with abs(target)>10 are extreme outliers that corrupt model training"
+    }
+  },
+  "refreshed_sample": {
+    "file": "data/market_2015_now_refreshed_20260612.parquet",
+    "rows": 192,
+    "symbols": ["SBS", "HHV", "DTD", "VCB", "HPG", "FPT"],
+    "date_range": "2026-04-28 to 2026-06-12",
+    "price_scale": "thousands (raw VCI)",
+    "needs_vnd_scaling": true,
+    "validation": {
+      "ohlc_violations": 0,
+      "duplicates": 0,
+      "nulls": 0,
+      "volume_zero": 0,
+      "verdict": "CLEAN (sample only)"
+    },
+    "per_ticker": {
+      "SBS": {"rows": 32, "close_first": 5.1, "close_last": 4.5},
+      "HHV": {"rows": 32, "close_first": 12.5, "close_last": 11.4},
+      "DTD": {"rows": 32, "close_first": 17.2, "close_last": 14.7},
+      "VCB": {"rows": 32, "close_first": 59.8, "close_last": 61.6},
+      "HPG": {"rows": 32, "close_first": 24.77, "close_last": 23.2},
+      "FPT": {"rows": 32, "close_first": 73.39, "close_last": 73.5}
+    }
+  },
+  "py_compile": {
+    "scripts/update_market_data.py": "OK",
+    "scripts/update_recent_portfolio_data.py": "OK",
+    "scripts/backtest_v2_cpcv.py": "OK",
+    "src/omega/data/vnstock_ingest.py": "OK",
+    "src/omega/quant/data/vci_ingest.py": "OK",
+    "src/omega/data/validator.py": "OK"
+  }
+}

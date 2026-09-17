@@ -1,0 +1,4 @@
+﻿timestamp=2026-07-27T21:10:12.4351650+07:00
+scheduler_evidence=.ly_state/session/paper_trading_task_disable_20260727.json
+{"TaskName":"OMEGA_QUANT_PaperTrading","State":1,"Enabled":false}
+

@@ -1,0 +1,47 @@
+2026-08-03 21:20:01,322 [INFO] update_market_data: ======================================================================
+2026-08-03 21:20:01,322 [INFO] update_market_data: Canonical VCI Updater / Backfill
+2026-08-03 21:20:01,322 [INFO] update_market_data: Gate: CANONICAL_UPDATER_FULL_OVERLAP_RELOAD_20260626
+2026-08-03 21:20:01,322 [INFO] update_market_data: Canonical: C:\Users\GHC\repos\OMEGA_QUANT\data\market_2015_now.parquet
+2026-08-03 21:20:01,322 [INFO] update_market_data: Output: C:\Users\GHC\repos\OMEGA_QUANT\data\market_2015_now.parquet
+2026-08-03 21:20:01,322 [INFO] update_market_data: Dry-run: False
+2026-08-03 21:20:01,322 [INFO] update_market_data: ======================================================================
+2026-08-03 21:20:01,323 [INFO] update_market_data: Universe loaded from vci_universe_hsx_hnx.json: 403 HSX + 300 HNX = 703 total
+2026-08-03 21:20:01,323 [INFO] update_market_data: Universe: 703 symbols
+2026-08-03 21:20:01,478 [INFO] update_market_data: Fetch window: 2026-07-01 to 2026-07-31
+\U0001f4e6 Vnstock 4.0.5 is available
+Current: 4.0.4 (Python 3.14)
+Update: pip install vnstock --upgrade
+Release: https://vnstocks.com/docs/tai-lieu/lich-su-phien-ban
+\U0001f4e6 Vnai 2.5.6 is available
+Current: 2.4.8 (Python 3.14)
+Update: pip install vnai --upgrade
+Release: https://pypi.org/project/vnai/#history
+2026-08-03 21:20:06,455 [INFO] omega.quant.alpha.promoted: Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+2026-08-03 21:20:08,705 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:10,017 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:11,343 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:12,646 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:13,974 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:15,252 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:16,558 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:17,850 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:19,269 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:20,555 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:20,558 [INFO] update_market_data: [10/703] ACG: 39 rows | Fetched: 10, Empty: 0, Errors: 0 | Total rows: 387 | Rate: 0.73/s | ETA: 950s
+2026-08-03 21:20:21,860 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:23,218 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:24,497 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:25,808 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:27,207 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:28,478 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:29,775 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:31,074 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:32,394 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:33,724 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:33,727 [INFO] update_market_data: [20/703] AMC: 41 rows | Fetched: 20, Empty: 0, Errors: 0 | Total rows: 782 | Rate: 0.74/s | ETA: 918s
+2026-08-03 21:20:35,136 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:36,502 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:38,203 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)
+2026-08-03 21:20:39,500 [INFO] omega.data.vnd_price_contract: ensure_vnd_scale: converted 4 price columns from THOUSANDS to VND_FULL (×1000)

@@ -12,7 +12,7 @@ from datetime import datetime
 # Add paths
 sys.path.insert(0, 'src')
 
-from omega.quant.attribution import PerformanceAttribution, AttributionConfig
+from omega.quant.monitoring.attribution import PerformanceAttribution, AttributionConfig
 
 def main():
     print("=" * 60)

@@ -32,6 +32,21 @@ app = Flask(__name__)
 WORKSPACE_ROOT = Path(os.getenv("WORKSPACE_ROOT", "."))
 STATE_DIR = WORKSPACE_ROOT / ".ly_state"
 
+# ---------------------------------------------------------------------------
+# Metrics wiring (PHASE1_PHASE2_DEEP_AUDIT_FIX1_20260613)
+#
+# Attempt to import the real MetricsCollector from the observability layer.
+# If the import fails or no metrics have been recorded, the endpoint returns
+# a clearly-labelled development snapshot rather than silently serving stale
+# placeholder values.
+# ---------------------------------------------------------------------------
+_metrics_collector = None
+try:
+    from omega.observability.metrics import MetricsCollector
+    _metrics_collector = MetricsCollector()
+except Exception:
+    pass
+
 @app.route("/health", methods=["GET"])
 def health():
     """System health check endpoint."""
@@ -65,12 +80,34 @@ def list_gates():
 
 @app.route("/metrics", methods=["GET"])
 def get_metrics():
-    """Get summarized pipeline metrics."""
-    # Dummy metrics for now, will connect to MetricsEngine later
+    """Get summarized pipeline metrics.
+
+    When the observability MetricsCollector is available and has recorded
+    data, live metrics are returned.  Otherwise the endpoint clearly labels
+    itself as a development stub so that monitoring integrations do not
+    silently consume placeholder values.
+    """
+    if _metrics_collector is not None:
+        live = _metrics_collector.get_all_metrics()
+        if live:
+            return jsonify({
+                "source": "MetricsCollector",
+                "production_ready": True,
+                "timestamp": datetime.utcnow().isoformat() + "Z",
+                "metrics": live,
+            })
+
+    # Fallback: non-production development stub
     return jsonify({
-        "pipeline_latency_ms": 1250.5,
-        "active_alphas": 42,
-        "daily_return_pct": 1.25
+        "source": "development_stub",
+        "production_ready": False,
+        "timestamp": datetime.utcnow().isoformat() + "Z",
+        "metrics": {
+            "pipeline_latency_ms": None,
+            "active_alphas": None,
+            "daily_return_pct": None,
+        },
+        "note": "Wire to MetricsEngine for production use.",
     })
 
 if __name__ == "__main__":

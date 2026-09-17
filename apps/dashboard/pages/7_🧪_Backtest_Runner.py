@@ -108,7 +108,7 @@ with st.sidebar:
     
     st.markdown("---")
     
-    run_button = st.button("🚀 Chạy Backtest", type="primary", use_container_width=True)
+    run_button = st.button("🚀 Chạy Backtest", type="primary", width="stretch")
 
 # Main content
 if run_button:
@@ -272,7 +272,7 @@ if run_button:
                 height=450,
                 legend=dict(x=0.01, y=0.99)
             )
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width="stretch")
             
             # Drawdown & Return Comparison
             st.markdown("### 📉 Drawdown & Lợi nhuận theo Folds")
@@ -298,7 +298,7 @@ if run_button:
                 height=400,
                 legend=dict(x=0.01, y=0.99)
             )
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
             
         # Alpha average IC bar chart
         alpha_ics = results.get("alpha_ics", {})
@@ -330,7 +330,7 @@ if run_button:
                 yaxis_title="Average IC",
                 height=400
             )
-            st.plotly_chart(fig_alpha, use_container_width=True)
+            st.plotly_chart(fig_alpha, width="stretch")
             
         # Detailed table
         if fold_details:
@@ -355,7 +355,7 @@ if run_button:
                         "Số mẫu Train": "{:,}",
                         "Số mẫu Test": "{:,}"
                     }),
-                    use_container_width=True
+                    width="stretch"
                 )
         
         # Export options

@@ -8,8 +8,8 @@ import pandas as pd
 import numpy as np
 import pytest
 
-from omega.quant.alpha_discovery import build_alpha_signals
-from omega.quant.pit_guard import verify_no_lookahead
+from omega.quant.alpha.discovery import build_alpha_signals
+from omega.quant.risk.pit_guard import verify_no_lookahead
 
 def run_alpha_discovery_pipeline(price_df: pd.DataFrame) -> pd.DataFrame:
     required = {"timestamp", "close"}

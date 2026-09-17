@@ -1,0 +1,32 @@
+{
+  "(min (add (mean (mul returns (delay returns))) (min (div (mul high close) (delay": {
+    "feature_name": "(min (add (mean (mul returns (delay returns))) (min (div (mul high close) (delay",
+    "ic_score": 0.3116490553024397,
+    "coverage": 0.5633421093387022,
+    "category": "evolved",
+    "expression": "(min (add (mean (mul returns (delay returns))) (min (div (mul high close) (delay high)))))",
+    "status": "active",
+    "discovered_date": "2026-06-24",
+    "updated_date": "2026-06-24"
+  },
+  "(delay (add (mean (mul returns (delay returns))) (min (div (mul high close) (del": {
+    "feature_name": "(delay (add (mean (mul returns (delay returns))) (min (div (mul high close) (del",
+    "ic_score": 0.2737994415348631,
+    "coverage": 0.5632646739972124,
+    "category": "evolved",
+    "expression": "(delay (add (mean (mul returns (delay returns))) (min (div (mul high close) (delay high)))))",
+    "status": "active",
+    "discovered_date": "2026-06-24",
+    "updated_date": "2026-06-24"
+  },
+  "(min (min (mean low)))": {
+    "feature_name": "(min (min (mean low)))",
+    "ic_score": 0.21318566730782393,
+    "coverage": 0.5633421093387022,
+    "category": "evolved",
+    "expression": "(min (min (mean low)))",
+    "status": "active",
+    "discovered_date": "2026-06-24",
+    "updated_date": "2026-06-24"
+  }
+}

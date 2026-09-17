@@ -5,7 +5,7 @@ import logging
 from datetime import datetime, UTC, timedelta, timezone
 from unittest.mock import patch, MagicMock
 
-from omega.quant.dashboard import DashboardManager, ProductionMonitor, SystemState
+from omega.quant.monitoring.dashboard import DashboardManager, ProductionMonitor, SystemState
 
 logger = logging.getLogger(__name__)
 

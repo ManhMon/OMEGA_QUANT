@@ -27,54 +27,57 @@ from omega.quant.pipeline_v2 import (
     RegimeAwareWFOverlay,
     RegimeOverlay,
     ThompsonSamplingWeightOverlay,
+    WeightSmoothingOverlay,
 )
+from omega.quant.pipeline.overlays.drawdown_control import DrawdownControlOverlay
+from omega.quant.portfolio.execution_sim import adv_tiered_half_spread
 
-def test_pipeline_state_manager():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = Path(tmpdir)
-        manager = PipelineStateManager(tmp_path)
-        
-        test_state = {
-            "last_weights": {"HPG": 0.5, "SSI": -0.5},
-            "portfolio_returns_history": np.array([0.01, -0.02, 0.015]),
-            "warmup_history": [0.01, -0.02, 0.015]
-        }
-        manager.save_state("test_run", test_state)
-        
-        loaded = manager.load_state("test_run")
-        assert loaded["last_weights"] == {"HPG": 0.5, "SSI": -0.5}
-        assert loaded["portfolio_returns_history"] == [0.01, -0.02, 0.015]
-        
-        assert manager.load_state("non_existent") == {}
+def test_pipeline_state_manager(tmp_path):
+    """TEST-01 FIX3: use pytest tmp_path (ACL-safe) instead of tempfile.TemporaryDirectory."""
+    manager = PipelineStateManager(tmp_path)
+    
+    test_state = {
+        "last_weights": {"HPG": 0.5, "SSI": -0.5},
+        "portfolio_returns_history": np.array([0.01, -0.02, 0.015]),
+        "warmup_history": [0.01, -0.02, 0.015]
+    }
+    manager.save_state("test_run", test_state)
+    
+    loaded = manager.load_state("test_run")
+    assert loaded["last_weights"] == {"HPG": 0.5, "SSI": -0.5}
+    assert loaded["portfolio_returns_history"] == [0.01, -0.02, 0.015]
+    
+    assert manager.load_state("non_existent") == {}
 
-def test_parquet_feature_store():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = Path(tmpdir) / "features.parquet"
-        
-        dates = pd.date_range("2026-01-01", "2026-01-05", freq="D")
-        tickers = ["HPG", "SSI"]
-        rows = []
-        for d in dates:
-            for t in tickers:
-                rows.append({
-                    "date": d,
-                    "ticker": t,
-                    "close": 100.0,
-                    "volume": 1000.0,
-                    "returns": 0.01,
-                    "composite_signal": 0.5
-                })
-        df = pd.DataFrame(rows)
-        df.to_parquet(tmp_path)
-        
-        adapter = ParquetFeatureStoreAdapter(tmp_path)
-        res = adapter.get_features(pd.Timestamp("2026-01-02"), pd.Timestamp("2026-01-04"), ["HPG"])
-        assert len(res) == 3
-        assert (res["ticker"] == "HPG").all()
-        assert (res["date"] >= "2026-01-02").all()
-        assert (res["date"] <= "2026-01-04").all()
+def test_parquet_feature_store(tmp_path):
+    """TEST-01 FIX3: use pytest tmp_path (ACL-safe) instead of tempfile.TemporaryDirectory."""
+    parquet_path = tmp_path / "features.parquet"
+    
+    dates = pd.date_range("2026-01-01", "2026-01-05", freq="D")
+    tickers = ["HPG", "SSI"]
+    rows = []
+    for d in dates:
+        for t in tickers:
+            rows.append({
+                "date": d,
+                "ticker": t,
+                "close": 100.0,
+                "volume": 1000.0,
+                "returns": 0.01,
+                "composite_signal": 0.5
+            })
+    df = pd.DataFrame(rows)
+    df.to_parquet(parquet_path)
+    
+    adapter = ParquetFeatureStoreAdapter(parquet_path)
+    res = adapter.get_features(pd.Timestamp("2026-01-02"), pd.Timestamp("2026-01-04"), ["HPG"])
+    assert len(res) == 3
+    assert (res["ticker"] == "HPG").all()
+    assert (res["date"] >= "2026-01-02").all()
+    assert (res["date"] <= "2026-01-04").all()
 
-def test_trading_pipeline_v2_backtest():
+def test_trading_pipeline_v2_backtest(tmp_path):
+    """TEST-01 FIX3: use pytest tmp_path (ACL-safe) instead of tempfile.TemporaryDirectory."""
     def query_fn(start, end, tickers):
         rows = []
         hist_dates = pd.date_range(end=end, periods=40, freq="D")
@@ -96,53 +99,52 @@ def test_trading_pipeline_v2_backtest():
         
     feature_store = DatabaseFeatureStoreAdapter(query_fn)
     
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = Path(tmpdir)
-        state_manager = PipelineStateManager(tmp_path)
-        
-        out_json = tmp_path / "report.json"
-        out_csv = tmp_path / "equity.csv"
-        output_handler = BacktestOutputHandler(out_json, out_csv)
-        
-        overlays = [
-            SmartMoneyOverlay(boost_scale=0.1),
-            SentimentOverlay(boost_scale=0.1),
-            ContagionOverlay(lookback=5, spike_threshold_std=2.0),
-            TCostOverlay(cost_per_trade_bps=10.0, min_trade_threshold_bps=5.0),
-            CircuitBreakerOverlay(cvar_limit=-0.1, derisk_multiplier=0.8, lookback=5),
-            TailControlOverlay(target_vol_ann=0.2, max_abs_weight=0.5),
-            AdaptiveSizingOverlay(capital_vnd=1e9),
-            BlackLittermanOverlay(tau=0.05, view_confidence=0.5, l2_reg=0.01, max_weight=0.05),
-            ContinuousLearningOverlay(retrain_threshold_ic=0.01, retrain_lookback=10, retrain_every=10, min_train=10),
-            DriftOverlay(lookback=5, ic_threshold=0.0, drift_exposure=0.5),
-            HMMRegimeOverlay(bear_exposure=0.5, bull_exposure=1.1, sideways_exposure=0.8, retrain_every=10),
-            RegimeAwareWFOverlay(bear_scale=0.3, bull_scale=1.0, sideways_scale=0.7, retrain_every=10, min_train=10),
-            RegimeOverlay(hysteresis_days=2, dd_threshold=-0.10),
-            ThompsonSamplingWeightOverlay(lookback=5, update_every=2)
-        ]
-        
-        pipeline = TradingPipelineV2(
-            feature_store=feature_store,
-            state_manager=state_manager,
-            output_handler=output_handler,
-            overlays=overlays,
-            config={"initial_capital_vnd": 1e9}
-        )
-        
-        res = pipeline.execute(
-            run_id="test_run",
-            date_start="2026-01-01",
-            date_end="2026-01-10",
-            tickers=["HPG", "SSI"]
-        )
-        
-        assert out_json.exists()
-        assert out_csv.exists()
-        assert "total_return" in res
-        assert "annualized_sharpe" in res
-        assert "max_drawdown" in res
+    state_manager = PipelineStateManager(tmp_path)
+    
+    out_json = tmp_path / "report.json"
+    out_csv = tmp_path / "equity.csv"
+    output_handler = BacktestOutputHandler(out_json, out_csv)
+    
+    overlays = [
+        SmartMoneyOverlay(boost_scale=0.1),
+        SentimentOverlay(boost_scale=0.1),
+        ContagionOverlay(lookback=5, spike_threshold_std=2.0),
+        TCostOverlay(cost_per_trade_bps=10.0, min_trade_threshold_bps=5.0),
+        CircuitBreakerOverlay(cvar_limit=-0.1, derisk_multiplier=0.8, lookback=5),
+        TailControlOverlay(target_vol_ann=0.2, max_abs_weight=0.5),
+        AdaptiveSizingOverlay(capital_vnd=1e9),
+        BlackLittermanOverlay(tau=0.05, view_confidence=0.5, l2_reg=0.01, max_weight=0.05),
+        ContinuousLearningOverlay(retrain_threshold_ic=0.01, retrain_lookback=10, retrain_every=10, min_train=10),
+        DriftOverlay(lookback=5, ic_threshold=0.0, drift_exposure=0.5),
+        HMMRegimeOverlay(bear_exposure=0.5, bull_exposure=1.1, sideways_exposure=0.8, retrain_every=10),
+        RegimeAwareWFOverlay(bear_scale=0.3, bull_scale=1.0, sideways_scale=0.7, retrain_every=10, min_train=10),
+        ThompsonSamplingWeightOverlay(lookback=5, update_every=2),
+        RegimeOverlay(hysteresis_days=2, dd_threshold=-0.10),
+    ]
+    
+    pipeline = TradingPipelineV2(
+        feature_store=feature_store,
+        state_manager=state_manager,
+        output_handler=output_handler,
+        overlays=overlays,
+        config={"initial_capital_vnd": 1e9}
+    )
+    
+    res = pipeline.execute(
+        run_id="test_run",
+        date_start="2026-01-01",
+        date_end="2026-01-10",
+        tickers=["HPG", "SSI"]
+    )
+    
+    assert out_json.exists()
+    assert out_csv.exists()
+    assert "total_return" in res
+    assert "annualized_sharpe" in res
+    assert "max_drawdown" in res
 
-def test_trading_pipeline_v2_live():
+def test_trading_pipeline_v2_live(tmp_path):
+    """TEST-01 FIX3: use pytest tmp_path (ACL-safe) instead of tempfile.TemporaryDirectory."""
     def query_fn(start, end, tickers):
         rows = []
         hist_dates = pd.date_range(end=end, periods=40, freq="D")
@@ -164,39 +166,352 @@ def test_trading_pipeline_v2_live():
         
     feature_store = DatabaseFeatureStoreAdapter(query_fn)
     
-    with tempfile.TemporaryDirectory() as tmpdir:
-        tmp_path = Path(tmpdir)
-        state_manager = PipelineStateManager(tmp_path)
-        
-        class MockRouter:
-            def __init__(self):
-                self.routed = []
-            def route_orders(self, orders):
-                self.routed = orders
-                
-        router = MockRouter()
-        positions = {"HPG": 0.1, "SSI": 0.2}
-        output_handler = LiveOutputHandler(router, positions, initial_capital=1e9)
-        
-        pipeline = TradingPipelineV2(
-            feature_store=feature_store,
-            state_manager=state_manager,
-            output_handler=output_handler,
-            overlays=[
-                TCostOverlay(cost_per_trade_bps=10.0, min_trade_threshold_bps=5.0)
-            ],
-            config={"initial_capital_vnd": 1e9}
+    state_manager = PipelineStateManager(tmp_path)
+    
+    class MockRouter:
+        def __init__(self):
+            self.routed = []
+        def route_orders(self, orders):
+            self.routed = orders
+            
+    router = MockRouter()
+    positions = {"HPG": 0.1, "SSI": 0.2}
+    output_handler = LiveOutputHandler(router, positions, initial_capital=1e9)
+    
+    pipeline = TradingPipelineV2(
+        feature_store=feature_store,
+        state_manager=state_manager,
+        output_handler=output_handler,
+        overlays=[
+            TCostOverlay(cost_per_trade_bps=10.0, min_trade_threshold_bps=5.0)
+        ],
+        config={
+            "initial_capital_vnd": 1e9,
+        }
+    )
+    
+    orders = pipeline.execute(
+        run_id="live_run",
+        date_start="2026-01-03",
+        date_end="2026-01-05",
+        tickers=["HPG", "SSI"]
+    )
+    
+    assert len(orders) > 0
+    assert router.routed == orders
+    state = state_manager.load_state("live_run")
+    assert "last_weights" in state
+    assert "portfolio_returns_history" in state
+
+def test_signal_overlays_use_prior_day_scores(monkeypatch):
+    import omega.quant.portfolio.sentiment_overlay as sentiment_mod
+    import omega.quant.portfolio.smart_money_overlay as smart_money_mod
+
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    symbols = ["HPG", "SSI"]
+    index = pd.MultiIndex.from_product([dates, symbols], names=["date", "symbol"])
+    scores = pd.Series([1.0, -1.0, -1.0, 1.0], index=index)
+
+    def fake_smart_money_features(panel):
+        return pd.DataFrame({"smart_money_score": scores}, index=scores.index)
+
+    def fake_sentiment_proxy(panel):
+        return scores
+
+    monkeypatch.setattr(smart_money_mod, "compute_smart_money_features", fake_smart_money_features)
+    monkeypatch.setattr(sentiment_mod, "compute_sentiment_proxy", fake_sentiment_proxy)
+
+    panel = pd.DataFrame(
+        [
+            {
+                "date": date,
+                "symbol": symbol,
+                "open": 10.0,
+                "high": 11.0,
+                "low": 9.0,
+                "close": 10.0,
+                "volume": 1000.0,
+            }
+            for date in dates
+            for symbol in symbols
+        ]
+    )
+    weights = pd.DataFrame(0.5, index=dates, columns=symbols)
+
+    smart_money_out = SmartMoneyOverlay(boost_scale=0.5).apply(weights, panel, {})
+    sentiment_out = SentimentOverlay(boost_scale=0.5).apply(weights, panel, {})
+
+    assert np.allclose(smart_money_out.loc[dates[0]], weights.loc[dates[0]])
+    assert np.allclose(sentiment_out.loc[dates[0]], weights.loc[dates[0]])
+    assert smart_money_out.loc[dates[1], "HPG"] > smart_money_out.loc[dates[1], "SSI"]
+    assert sentiment_out.loc[dates[1], "HPG"] > sentiment_out.loc[dates[1], "SSI"]
+
+def test_adaptive_sizing_overlay_uses_prior_expanding_adv(monkeypatch):
+    import omega.quant.portfolio.adaptive_sizing_overlay as adaptive_mod
+
+    captured = {}
+
+    def fake_apply_adaptive_sizing(weights, capital_vnd, adv_series):
+        captured["adv_series"] = adv_series.copy()
+        return weights
+
+    monkeypatch.setattr(adaptive_mod, "apply_adaptive_sizing", fake_apply_adaptive_sizing)
+
+    dates = pd.date_range("2026-01-01", periods=3, freq="D")
+    rows = []
+    for date, hpg_adv, ssi_adv in zip(dates, [100.0, 300.0, 900.0], [50.0, 150.0, 450.0]):
+        rows.append({"date": date, "symbol": "HPG", "adv_vnd": hpg_adv})
+        rows.append({"date": date, "symbol": "SSI", "adv_vnd": ssi_adv})
+
+    weights = pd.DataFrame(0.5, index=dates, columns=["HPG", "SSI"])
+    AdaptiveSizingOverlay(capital_vnd=1e9).apply(weights, pd.DataFrame(rows), {})
+
+    adv_series = captured["adv_series"]
+    assert pd.isna(adv_series.loc[dates[0], "HPG"])
+    assert pd.isna(adv_series.loc[dates[0], "SSI"])
+    assert adv_series.loc[dates[1], "HPG"] == 100.0
+    assert adv_series.loc[dates[1], "SSI"] == 50.0
+    assert adv_series.loc[dates[2], "HPG"] == 200.0
+    assert adv_series.loc[dates[2], "SSI"] == 100.0
+
+def test_drawdown_control_hmm_reentry_cap():
+    dates = pd.date_range("2026-01-01", periods=40, freq="D")
+    weights = pd.DataFrame(1.0, index=dates, columns=["HPG"])
+    panel = pd.DataFrame(
+        [{"date": dt, "symbol": "HPG", "returns": 0.0} for dt in dates]
+    )
+    overlay = DrawdownControlOverlay(
+        cooldown_days=1,
+        adaptive_re_entry=False,
+        regime_re_entry_filter=False,
+        bocpd_enabled=False,
+        hmm_reentry_enabled=True,
+        hmm_bear_reentry_threshold=0.6,
+        hmm_reentry_cooldown_extension=5,
+        max_reentry_cooldown_days=10,
+    )
+    overlay._in_cooldown = True
+    overlay._cooldown_remaining = 1
+    overlay._reentry_cooldown_total = 1
+
+    state = {"hmm_p_bear": {str(dt)[:10]: 0.9 for dt in dates}}
+    result = overlay.apply(weights, panel, state)
+
+    dd_state = state["drawdown_control"]
+    assert dd_state["hmm_reentry_blocked_count"] == 2
+    assert dd_state["reentry_cooldown_total"] == 0
+    assert dd_state["in_cooldown"] is False
+    assert result.iloc[-1, 0] == pytest.approx(1.0)
+
+def test_drawdown_control_hmm_reentry_allowed():
+    dates = pd.date_range("2026-01-01", periods=3, freq="D")
+    weights = pd.DataFrame(1.0, index=dates, columns=["HPG"])
+    panel = pd.DataFrame(
+        [{"date": dt, "symbol": "HPG", "returns": 0.0} for dt in dates]
+    )
+    overlay = DrawdownControlOverlay(
+        cooldown_days=1,
+        adaptive_re_entry=False,
+        regime_re_entry_filter=False,
+        bocpd_enabled=False,
+        hmm_reentry_enabled=True,
+        hmm_bear_reentry_threshold=0.6,
+    )
+    overlay._in_cooldown = True
+    overlay._cooldown_remaining = 1
+    overlay._reentry_cooldown_total = 1
+
+    state = {"hmm_p_bear": {str(dt)[:10]: 0.2 for dt in dates}}
+    result = overlay.apply(weights, panel, state)
+
+    dd_state = state["drawdown_control"]
+    assert dd_state["hmm_reentry_blocked_count"] == 0
+    assert dd_state["in_cooldown"] is False
+    assert result.iloc[0, 0] == pytest.approx(1.0)
+
+
+def test_pipeline_uses_adv_tiered_spread_and_dynamic_capital(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake_apply_realistic_tc(daily_weights, daily_realized_y, **kwargs):
+        captured.update(kwargs)
+        return daily_weights, np.zeros(len(daily_weights)), {"total_cost": 0.0, "final_w": daily_weights.iloc[-1].to_numpy()}
+
+    def query_fn(start, end, tickers):
+        dates = pd.date_range(start, end, freq="D")
+        rows = []
+        adv_values = {"HPG": 100e9, "SSI": 5e9}
+        signals = {"HPG": 1.0, "SSI": -1.0}
+        for d in dates:
+            for t in ["HPG", "SSI"]:
+                rows.append({
+                    "date": d,
+                    "symbol": t,
+                    "open": 10.0,
+                    "high": 10.5,
+                    "low": 9.5,
+                    "close": 10.0,
+                    "volume": 1000.0,
+                    "returns": 0.01,
+                    "adv_vnd": adv_values[t],
+                    "composite_signal": signals[t],
+                })
+        return pd.DataFrame(rows)
+
+    monkeypatch.setattr("omega.quant.pipeline_v2.apply_realistic_tc", fake_apply_realistic_tc)
+
+    feature_store = DatabaseFeatureStoreAdapter(query_fn)
+    state_manager = PipelineStateManager(tmp_path)
+    output_handler = BacktestOutputHandler(tmp_path / "report.json", tmp_path / "equity.csv")
+    pipeline = TradingPipelineV2(
+        feature_store=feature_store,
+        state_manager=state_manager,
+        output_handler=output_handler,
+        overlays=[],
+        config={
+            "initial_capital_vnd": 1e9,
+            "use_adv_tiered_spread": True,
+            "dynamic_capital_tracking": True,
+        },
+    )
+
+    pipeline.execute(
+        run_id="spread_dyn_cap",
+        date_start="2026-01-02",
+        date_end="2026-01-03",
+        tickers=["HPG", "SSI"],
+    )
+
+    assert captured["use_adv_tiered_spread"] is True
+    assert captured["dynamic_capital_tracking"] is True
+    assert captured["daily_adv"].shape[1] == 2
+    np.testing.assert_allclose(
+        captured["daily_adv"][1],
+        [100e9, 5e9],
+    )
+    assert adv_tiered_half_spread(captured["daily_adv"][1][0]) == pytest.approx(0.0005)
+    assert adv_tiered_half_spread(captured["daily_adv"][1][1]) == pytest.approx(0.0015)
+
+
+def test_weight_smoothing_overlay_defaults_to_non_rescaled_ema():
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    weights = pd.DataFrame(
+        {"HPG": [1.0, 0.0], "SSI": [0.0, 0.0]},
+        index=dates,
+    )
+
+    smoothed = WeightSmoothingOverlay(ema_alpha=0.5).apply(weights, pd.DataFrame(), {})
+
+    assert smoothed.loc[dates[1], "HPG"] == pytest.approx(0.5)
+    assert smoothed.abs().sum(axis=1).loc[dates[1]] == pytest.approx(0.5)
+
+
+def test_weight_smoothing_overlay_exposure_blend_one_matches_old_rescale():
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    weights = pd.DataFrame(
+        {"HPG": [1.0, 0.0], "SSI": [0.0, 0.0]},
+        index=dates,
+    )
+
+    smoothed = WeightSmoothingOverlay(ema_alpha=0.5, exposure_blend=1.0).apply(weights, pd.DataFrame(), {})
+
+    assert smoothed.abs().sum(axis=1).loc[dates[1]] == pytest.approx(0.0)
+
+
+def test_pipeline_rejects_duplicate_regime_overlay(tmp_path):
+    with pytest.raises(ValueError, match="At most one RegimeOverlay"):
+        TradingPipelineV2(
+            feature_store=DatabaseFeatureStoreAdapter(lambda *_: pd.DataFrame()),
+            state_manager=PipelineStateManager(tmp_path),
+            output_handler=BacktestOutputHandler(tmp_path / "a.json", tmp_path / "a.csv"),
+            overlays=[RegimeOverlay(), RegimeOverlay()],
+            config={},
         )
-        
-        orders = pipeline.execute(
-            run_id="live_run",
-            date_start="2026-01-05",
-            date_end="2026-01-05",
-            tickers=["HPG", "SSI"]
+
+
+def test_pipeline_rejects_regime_overlay_not_last(tmp_path):
+    with pytest.raises(ValueError, match="RegimeOverlay must be the last overlay"):
+        TradingPipelineV2(
+            feature_store=DatabaseFeatureStoreAdapter(lambda *_: pd.DataFrame()),
+            state_manager=PipelineStateManager(tmp_path),
+            output_handler=BacktestOutputHandler(tmp_path / "a.json", tmp_path / "a.csv"),
+            overlays=[RegimeOverlay(), TCostOverlay()],
+            config={},
         )
-        
-        assert len(orders) > 0
-        assert router.routed == orders
-        state = state_manager.load_state("live_run")
-        assert "last_weights" in state
-        assert "portfolio_returns_history" in state
+
+
+def test_regime_overlay_preserves_cash_residual_without_renorm():
+    dates = pd.date_range("2026-01-01", periods=2, freq="D")
+    weights = pd.DataFrame({"HPG": [0.4, 0.4], "SSI": [0.2, -0.1]}, index=dates)
+    panel = pd.DataFrame(
+        [{"date": dt, "symbol": sym, "returns": 0.01} for dt in dates for sym in ["HPG", "SSI"]]
+    )
+    result = RegimeOverlay(bull_exposure=0.8, bear_exposure=0.8, sideways_exposure=0.8).apply(weights, panel, {})
+    assert result.abs().sum(axis=1).iloc[0] == pytest.approx(weights.abs().sum(axis=1).iloc[0] * 0.8)
+
+
+def test_crash_detector_excludes_inactive_members_without_survivorship_bias(tmp_path):
+    captured = {}
+
+    def query_fn(start, end, tickers):
+        dates = pd.date_range(end=end, periods=6, freq="D")
+        rows = []
+        symbols = ["HPG", "SSI", "VCB", "FPT", "MBB"]
+        for i, d in enumerate(dates):
+            for symbol in symbols:
+                volume = 1000.0
+                returns = 0.01
+                if symbol == "SSI":
+                    volume = 0.0 if i >= 3 else 1000.0
+                    returns = 0.50
+                rows.append({"date": d, "symbol": symbol, "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "volume": volume, "returns": returns, "composite_signal": 1.0})
+        return pd.DataFrame(rows)
+
+    class CaptureOverlay(TCostOverlay):
+        def apply(self, weights, panel, state):
+            captured.update(state["crash_detector"])
+            return weights
+
+    pipeline = TradingPipelineV2(
+        feature_store=DatabaseFeatureStoreAdapter(query_fn),
+        state_manager=PipelineStateManager(tmp_path),
+        output_handler=BacktestOutputHandler(tmp_path / "a.json", tmp_path / "a.csv"),
+        overlays=[CaptureOverlay()],
+        config={"initial_capital_vnd": 1e9},
+    )
+    pipeline.execute("crash", "2026-01-01", "2026-01-06", ["HPG", "SSI"])
+    assert captured["market_proxy_returns"][4] == pytest.approx(0.0)
+
+
+def test_crash_detector_breadth_floor_applies(tmp_path):
+    captured = {}
+
+    def query_fn(start, end, tickers):
+        dates = pd.date_range(end=end, periods=3, freq="D")
+        rows = []
+        for d in dates:
+            rows.append({"date": d, "symbol": "HPG", "open": 10.0, "high": 10.0, "low": 10.0, "close": 10.0, "volume": 1000.0, "returns": 0.03, "composite_signal": 1.0})
+        return pd.DataFrame(rows)
+
+    class CaptureOverlay(TCostOverlay):
+        def apply(self, weights, panel, state):
+            captured.update(state["crash_detector"])
+            return weights
+
+    pipeline = TradingPipelineV2(
+        feature_store=DatabaseFeatureStoreAdapter(query_fn),
+        state_manager=PipelineStateManager(tmp_path),
+        output_handler=BacktestOutputHandler(tmp_path / "b.json", tmp_path / "b.csv"),
+        overlays=[CaptureOverlay()],
+        config={"initial_capital_vnd": 1e9},
+    )
+    pipeline.execute("crashfloor", "2026-01-01", "2026-01-03", ["HPG"])
+    assert captured["breadth_insufficient"].all()
+    assert np.allclose(captured["market_proxy_returns"], 0.0)
+
+
+def test_crash_detector_warmup_defaults_sideways():
+    from omega.quant.portfolio.regime_overlay import compute_regime_exposure
+
+    exposures = compute_regime_exposure(np.array([0.01, -0.01, 0.0]), ma_long=5)
+    assert np.allclose(exposures, 1.0)

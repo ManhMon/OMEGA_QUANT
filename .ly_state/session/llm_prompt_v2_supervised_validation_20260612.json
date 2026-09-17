@@ -1,0 +1,209 @@
+{
+  "test_type": "llm_v2_supervised_validation_smoke",
+  "prompt_version": "vn_alpha_search_v2",
+  "validation_metrics": {
+    "total_formulas": 10,
+    "accepted": 10,
+    "rejected": 0,
+    "deployable": 10,
+    "unsupervised_only": 0,
+    "rejection_taxonomy": {
+      "parse_error": 0,
+      "unsafe_token": 0,
+      "duplicate_formula": 0,
+      "execution_failure": 0,
+      "low_coverage": 0,
+      "near_zero_variance": 0,
+      "unstable": 0,
+      "nan_inf": 0
+    },
+    "details": {},
+    "median_test_ic": null,
+    "mean_test_ic": null,
+    "note": "Smoke test validation. Full CPCV metrics (SR, DSR, pass/fail) require running backtest_v2_cpcv.py with --use-llm-alphas."
+  },
+  "scoring_stats": {
+    "total": 10,
+    "accepted": 10,
+    "rejected": 0,
+    "deployable": 10,
+    "unsupervised_only": 0,
+    "accepted_names": [
+      "alpha_llm_0",
+      "alpha_llm_1",
+      "alpha_llm_2",
+      "alpha_llm_3",
+      "alpha_llm_4",
+      "alpha_llm_5",
+      "alpha_llm_6",
+      "alpha_llm_7",
+      "alpha_llm_8",
+      "alpha_llm_9"
+    ],
+    "rejected_names": [],
+    "rejection_reasons": {},
+    "details": {
+      "alpha_llm_0": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.45694451324231505,
+        "stability": 0.46163792492030326,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.16209865304375123,
+        "dsr_proxy": -0.06959694960188147,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      },
+      "alpha_llm_1": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.38220149765739475,
+        "stability": 0.38467544713231855,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.06468246595995882,
+        "dsr_proxy": -0.028175348652148057,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      },
+      "alpha_llm_2": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.14249736150465694,
+        "stability": 0.14480190934134737,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.05697260393889557,
+        "dsr_proxy": 0.1325836410016268,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      },
+      "alpha_llm_3": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.05294523533239949,
+        "stability": 0.05383841829974798,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.03434616855041803,
+        "dsr_proxy": -0.039670052757108325,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      },
+      "alpha_llm_4": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.2787221761776821,
+        "stability": 0.2811035490366306,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.14595852618313968,
+        "dsr_proxy": -0.06959694960188147,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      },
+      "alpha_llm_5": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.03521606586539509,
+        "stability": 0.035752381296235494,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.03865385178017122,
+        "dsr_proxy": -0.03660422447288248,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      },
+      "alpha_llm_6": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.17891785714285716,
+        "stability": 0.18038737373737374,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.09329096809665885,
+        "dsr_proxy": -0.0010170255012867902,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      },
+      "alpha_llm_7": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.3749074386109074,
+        "stability": 0.379225385051134,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.053084304396649615,
+        "dsr_proxy": 0.04286379201498993,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      },
+      "alpha_llm_8": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.05691161042524006,
+        "stability": 0.05781824965706447,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.02121563387158593,
+        "dsr_proxy": -0.02949581382560577,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      },
+      "alpha_llm_9": {
+        "accepted": true,
+        "coverage": 1.0,
+        "variance": 0.11887152777777778,
+        "stability": 0.12060656565656566,
+        "nan_inf_ratio": 0.0,
+        "ic": 0.1753284029468049,
+        "dsr_proxy": 0.20347350672334166,
+        "is_supervised_validated": true,
+        "is_deployable": true,
+        "validation_mode": "supervised"
+      }
+    },
+    "rejection_taxonomy": {
+      "parse_error": 0,
+      "unsafe_token": 0,
+      "duplicate_formula": 0,
+      "execution_failure": 0,
+      "low_coverage": 0,
+      "near_zero_variance": 0,
+      "unstable": 0,
+      "nan_inf": 0
+    },
+    "synthesis": {
+      "prompt_version": "vn_alpha_search_v2",
+      "max_candidates": 10,
+      "provider_type": "OpenAICompatibleProvider",
+      "cache_hit": false,
+      "total_raw": 10,
+      "rejection_taxonomy": {
+        "parse_error": 0,
+        "unsafe_token": 0,
+        "duplicate_formula": 0,
+        "execution_failure": 0,
+        "low_coverage": 0,
+        "near_zero_variance": 0,
+        "unstable": 0,
+        "nan_inf": 0
+      },
+      "accepted": 10,
+      "rejected_formulas": [],
+      "accepted_formulas": [
+        "div(ts_rank(volume, 7), ts_rank(volume, 30))",
+        "mul(neg(ts_rank(ret_1d, 3)), div(volume, ts_mean(volume, 20)))",
+        "sub(ts_rank(volume, 5), decay_linear(ts_rank(volume, 20), 10))",
+        "mul(rank(div(volume, ts_mean(volume, 10))), neg(rank(abs(ret_1d))))",
+        "div(ts_std(volume, 5), ts_std(volume, 30))",
+        "mul(decay_linear(rank(volume), 6), neg(ts_rank(ret_1d, 10)))",
+        "sub(ts_rank(abs(ret_1d), 5), ts_rank(volume, 20))",
+        "div(decay_linear(volume, 3), ts_mean(volume, 15))",
+        "mul(rank(ts_std(volume, 10)), neg(ts_rank(ret_1d, 5)))",
+        "sub(ts_rank(div(volume, ts_mean(volume, 20)), 10), ts_rank(abs(ret_1d), 10))"
+      ]
+    }
+  }
+}

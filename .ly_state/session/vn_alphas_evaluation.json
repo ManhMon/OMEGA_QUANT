@@ -1,0 +1,2458 @@
+{
+  "Full Period (2020-2026)": [
+    {
+      "feature": "vn_expiry_effect",
+      "mean_ic": -0.06314561269944456,
+      "mean_rank_ic": -0.06137274696921036,
+      "rank_ic_ir": -0.2211869493795076,
+      "t_stat": -0.6994545487436111,
+      "n_days": 10
+    },
+    {
+      "feature": "vn_hit_ceil",
+      "mean_ic": 0.07850178737486645,
+      "mean_rank_ic": 0.04906517243237493,
+      "rank_ic_ir": 0.20743591178791057,
+      "t_stat": 4.82929336079418,
+      "n_days": 542
+    },
+    {
+      "feature": "vn_stock_sector_corr",
+      "mean_ic": 0.033465491694950486,
+      "mean_rank_ic": 0.04630314917496842,
+      "rank_ic_ir": 0.1699086029503655,
+      "t_stat": 6.764411236029618,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_pair_correlation",
+      "mean_ic": 0.03566489603950028,
+      "mean_rank_ic": 0.04630314917496842,
+      "rank_ic_ir": 0.1699086029503655,
+      "t_stat": 6.764411236029618,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_market_correlation",
+      "mean_ic": 0.030646685333307003,
+      "mean_rank_ic": 0.04566068522837256,
+      "rank_ic_ir": 0.16736795657851475,
+      "t_stat": 6.663262874109736,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_leverage_proxy",
+      "mean_ic": 0.04221461603965858,
+      "mean_rank_ic": 0.03929254922216693,
+      "rank_ic_ir": 0.1370295895076022,
+      "t_stat": 5.455430030252959,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_bb_dist_120",
+      "mean_ic": 0.057928648171135626,
+      "mean_rank_ic": 0.03367595197058567,
+      "rank_ic_ir": 0.12099135669562658,
+      "t_stat": 4.816914967710311,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_amihud_liq_reversal",
+      "mean_ic": 0.051073934795459686,
+      "mean_rank_ic": 0.03317766057818048,
+      "rank_ic_ir": 0.14448226802633002,
+      "t_stat": 5.752136503234354,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_ev_ebitda_pit",
+      "mean_ic": 0.04778273016260483,
+      "mean_rank_ic": 0.032235067477034196,
+      "rank_ic_ir": 0.09993185530759063,
+      "t_stat": 3.978492866999928,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_pe_ratio_pit",
+      "mean_ic": 0.04778273016260483,
+      "mean_rank_ic": 0.032235067477034196,
+      "rank_ic_ir": 0.09993185530759063,
+      "t_stat": 3.978492866999928,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_bb_dist_60",
+      "mean_ic": 0.05778041386137946,
+      "mean_rank_ic": 0.0306608248389611,
+      "rank_ic_ir": 0.11564336532056695,
+      "t_stat": 4.60400042236377,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_bb_dist_40",
+      "mean_ic": 0.053936458561755225,
+      "mean_rank_ic": 0.028652171007774636,
+      "rank_ic_ir": 0.11035713487198566,
+      "t_stat": 4.3935447066336435,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_acceleration_index",
+      "mean_ic": -0.01848689796274755,
+      "mean_rank_ic": -0.027659019736810092,
+      "rank_ic_ir": -0.11376741452752145,
+      "t_stat": -4.529314959695217,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_pb_ratio_pit",
+      "mean_ic": 0.04025135439752715,
+      "mean_rank_ic": 0.027244581521104316,
+      "rank_ic_ir": 0.08471706436307005,
+      "t_stat": 3.3727607202349885,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_dividend_yield_pit",
+      "mean_ic": -0.03464297239822582,
+      "mean_rank_ic": -0.02721722644884658,
+      "rank_ic_ir": -0.08463474163167639,
+      "t_stat": -3.3694832828389396,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_rsi_crossover_5_20",
+      "mean_ic": -0.02942610060396428,
+      "mean_rank_ic": -0.02553941756411507,
+      "rank_ic_ir": -0.11355628050068733,
+      "t_stat": -4.520909279472879,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_market_regime",
+      "mean_ic": 0.04176675819150913,
+      "mean_rank_ic": 0.022388207517992434,
+      "rank_ic_ir": 0.08274090959709744,
+      "t_stat": 3.294085931136854,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_rsi_28",
+      "mean_ic": 0.0402314521265061,
+      "mean_rank_ic": 0.02196465354761455,
+      "rank_ic_ir": 0.07948789878613928,
+      "t_stat": 3.1645768745118676,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_atc_vol_ratio_v2",
+      "mean_ic": -0.010320369779668164,
+      "mean_rank_ic": -0.021909558186483585,
+      "rank_ic_ir": -0.0951743739838454,
+      "t_stat": -3.787892257936532,
+      "n_days": 1584
+    },
+    {
+      "feature": "vn_atc_vol_ratio",
+      "mean_ic": -0.010320369779668164,
+      "mean_rank_ic": -0.021909558186483585,
+      "rank_ic_ir": -0.0951743739838454,
+      "t_stat": -3.787892257936532,
+      "n_days": 1584
+    },
+    {
+      "feature": "vn_atr_14_norm",
+      "mean_ic": 0.0428344860079143,
+      "mean_rank_ic": 0.021898383108107478,
+      "rank_ic_ir": 0.06489281872652425,
+      "t_stat": 2.583516693734251,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_wick_ratio",
+      "mean_ic": 0.018981775023791746,
+      "mean_rank_ic": 0.02169081584761469,
+      "rank_ic_ir": 0.098395937262685,
+      "t_stat": 3.9161088575481084,
+      "n_days": 1584
+    },
+    {
+      "feature": "vn_yang_zhang_vol_20",
+      "mean_ic": 0.04141185838211796,
+      "mean_rank_ic": 0.021286146842202643,
+      "rank_ic_ir": 0.06369118717006611,
+      "t_stat": 2.5356772679433877,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_accruals_quality",
+      "mean_ic": 0.03490137036134608,
+      "mean_rank_ic": 0.02114918874806298,
+      "rank_ic_ir": 0.07836018229706013,
+      "t_stat": 3.119680159705665,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_ps_ratio_pit",
+      "mean_ic": 0.0442017588586114,
+      "mean_rank_ic": 0.020908134405605325,
+      "rank_ic_ir": 0.06794774961584808,
+      "t_stat": 2.7051397809364497,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_sector_rel_momentum_60",
+      "mean_ic": 0.032742081000945354,
+      "mean_rank_ic": 0.020723608282670676,
+      "rank_ic_ir": 0.06597858719160438,
+      "t_stat": 2.6267433713561026,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_earnings_growth_qoq",
+      "mean_ic": 0.04124162404692688,
+      "mean_rank_ic": 0.020718083029674525,
+      "rank_ic_ir": 0.06596247239639828,
+      "t_stat": 2.626101808187048,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_sector_rel_momentum_20",
+      "mean_ic": 0.03673251221989555,
+      "mean_rank_ic": 0.019804706626330257,
+      "rank_ic_ir": 0.06709699754099702,
+      "t_stat": 2.671269589584931,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_hit_floor",
+      "mean_ic": -0.020245930521566275,
+      "mean_rank_ic": -0.019374611898401454,
+      "rank_ic_ir": -0.08261974556153498,
+      "t_stat": -1.7152304905514442,
+      "n_days": 431
+    },
+    {
+      "feature": "vn_mom_60_120",
+      "mean_ic": 0.012834816618509886,
+      "mean_rank_ic": 0.01860589146207902,
+      "rank_ic_ir": 0.08529072733529945,
+      "t_stat": 3.3955994240302063,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_obv_change_20",
+      "mean_ic": 0.03459287780596437,
+      "mean_rank_ic": 0.016998639899232594,
+      "rank_ic_ir": 0.0669473897732707,
+      "t_stat": 2.665313396387928,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_earnings_growth_yoy",
+      "mean_ic": 0.019389205862102635,
+      "mean_rank_ic": 0.013899021262634993,
+      "rank_ic_ir": 0.04638699975184086,
+      "t_stat": 1.8450133945681975,
+      "n_days": 1582
+    },
+    {
+      "feature": "vn_bollinger_snapback",
+      "mean_ic": 0.03798753806283824,
+      "mean_rank_ic": 0.013853635006289285,
+      "rank_ic_ir": 0.055824122939900106,
+      "t_stat": 2.2224732467871,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_bb_dist_20",
+      "mean_ic": 0.037987538062877683,
+      "mean_rank_ic": 0.013853635006289285,
+      "rank_ic_ir": 0.055824122939900106,
+      "t_stat": 2.2224732467871,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_roa_pit",
+      "mean_ic": 0.012384405172772384,
+      "mean_rank_ic": 0.013368142214980118,
+      "rank_ic_ir": 0.04255186054425729,
+      "t_stat": 1.694077160199028,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_roe_pit",
+      "mean_ic": 0.012384405172772388,
+      "mean_rank_ic": 0.013368142214980118,
+      "rank_ic_ir": 0.04255186054425729,
+      "t_stat": 1.694077160199028,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_liquidity_provision_ratio_10",
+      "mean_ic": 0.018723687539231933,
+      "mean_rank_ic": 0.013226794342250325,
+      "rank_ic_ir": 0.06055800071907831,
+      "t_stat": 2.4109386657442458,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_accumulation_dist",
+      "mean_ic": -0.00739701558877424,
+      "mean_rank_ic": -0.013190416310562707,
+      "rank_ic_ir": -0.06342885110935877,
+      "t_stat": -2.5252331293544614,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_morning_gap_v2",
+      "mean_ic": 0.027301512218954577,
+      "mean_rank_ic": 0.01291029072708148,
+      "rank_ic_ir": 0.053758663199465956,
+      "t_stat": 2.1402430428236134,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_cash_release_t3",
+      "mean_ic": 0.010332173834776184,
+      "mean_rank_ic": 0.012287648027247801,
+      "rank_ic_ir": 0.054135919390963544,
+      "t_stat": 2.1552623883794917,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_trapped_inventory_2d",
+      "mean_ic": 0.005522403441893487,
+      "mean_rank_ic": -0.01172934203024248,
+      "rank_ic_ir": -0.05217872774418693,
+      "t_stat": -2.077342560091653,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_squeeze_signal",
+      "mean_ic": 0.0371404772611275,
+      "mean_rank_ic": 0.009901209479718731,
+      "rank_ic_ir": 0.04245735205592567,
+      "t_stat": 1.4479139832212924,
+      "n_days": 1163
+    },
+    {
+      "feature": "vn_rsi_crossover_20_120",
+      "mean_ic": 0.018914697818764942,
+      "mean_rank_ic": 0.00960406063287779,
+      "rank_ic_ir": 0.036911186588970676,
+      "t_stat": 1.4695103188539393,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_retail_panic_proxy",
+      "mean_ic": 0.007463377596641038,
+      "mean_rank_ic": 0.008846870621019663,
+      "rank_ic_ir": 0.036774078681576866,
+      "t_stat": 1.1864984240431324,
+      "n_days": 1041
+    },
+    {
+      "feature": "vn_mom_5_20",
+      "mean_ic": -0.002449309043855794,
+      "mean_rank_ic": -0.008725340543050707,
+      "rank_ic_ir": -0.041297102486312444,
+      "t_stat": -1.6441226590244153,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_vol_shock_5d",
+      "mean_ic": 0.012253378267026882,
+      "mean_rank_ic": 0.007559274255599225,
+      "rank_ic_ir": 0.033797334295997856,
+      "t_stat": 1.3455414492842503,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_volume_shock_reversal",
+      "mean_ic": 0.012253378267026889,
+      "mean_rank_ic": 0.007559274255599225,
+      "rank_ic_ir": 0.033797334295997856,
+      "t_stat": 1.3455414492842503,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_sentiment_vibert_5d_decay",
+      "mean_ic": 0.026406478514393747,
+      "mean_rank_ic": 0.007538631539565044,
+      "rank_ic_ir": 0.03153094821488001,
+      "t_stat": 1.2553119540963393,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_kyle_lambda_20",
+      "mean_ic": 0.024917012010982537,
+      "mean_rank_ic": 0.007024724755104073,
+      "rank_ic_ir": 0.03044246273919762,
+      "t_stat": 1.2119771066895138,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_mom_20_60",
+      "mean_ic": 0.0064345102692083544,
+      "mean_rank_ic": 0.006997126143357132,
+      "rank_ic_ir": 0.031376935819147335,
+      "t_stat": 1.2491804035915877,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_market_fundamental_drift",
+      "mean_ic": 0.0064345102692083544,
+      "mean_rank_ic": 0.006997126143357132,
+      "rank_ic_ir": 0.031376935819147335,
+      "t_stat": 1.2491804035915877,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_sentiment_vibert_1d",
+      "mean_ic": 0.022192363484651246,
+      "mean_rank_ic": 0.006880224297821908,
+      "rank_ic_ir": 0.028861548301346948,
+      "t_stat": 1.149037648646165,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_whale_net_flow",
+      "mean_ic": 0.020471974413094483,
+      "mean_rank_ic": -0.0067503971045637465,
+      "rank_ic_ir": -0.02723572695188714,
+      "t_stat": -1.0843103540119112,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_rsi_crossover_60_120",
+      "mean_ic": 0.018299109273069526,
+      "mean_rank_ic": 0.006359157980985526,
+      "rank_ic_ir": 0.02440716180601755,
+      "t_stat": 0.9716993530248017,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_tick_signed_volume_imbalance_5",
+      "mean_ic": -0.0017131272508320674,
+      "mean_rank_ic": -0.0058996212448332985,
+      "rank_ic_ir": -0.02747668932619658,
+      "t_stat": -1.0939035621481425,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_price_impact",
+      "mean_ic": 0.02330461185551004,
+      "mean_rank_ic": 0.00589373250138434,
+      "rank_ic_ir": 0.024497939896055403,
+      "t_stat": 0.9753134156536183,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_smart_money_proxy",
+      "mean_ic": 0.017886705769775066,
+      "mean_rank_ic": -0.004826435364399516,
+      "rank_ic_ir": -0.020663606542725567,
+      "t_stat": -0.8226607119790179,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_foreign_net_flow_5d",
+      "mean_ic": 0.008468051948968474,
+      "mean_rank_ic": -0.004275180484476987,
+      "rank_ic_ir": -0.01690406693074509,
+      "t_stat": -0.6729857011085666,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_intraday_vol_morning",
+      "mean_ic": 0.027611748506963463,
+      "mean_rank_ic": 0.00376674558512196,
+      "rank_ic_ir": 0.013162399345650656,
+      "t_stat": 0.5240222124175653,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_volume_weighted_return",
+      "mean_ic": 0.025212430929983324,
+      "mean_rank_ic": -0.003739441222360163,
+      "rank_ic_ir": -0.014910729684992317,
+      "t_stat": -0.5936268421206827,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_intraday_reversal",
+      "mean_ic": 0.008492963446190762,
+      "mean_rank_ic": 0.0036443348905012217,
+      "rank_ic_ir": 0.017583753946439087,
+      "t_stat": 0.7000454403219306,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_rsi_7",
+      "mean_ic": 0.0091153726640807,
+      "mean_rank_ic": 0.0036313164982967896,
+      "rank_ic_ir": 0.015002766704874273,
+      "t_stat": 0.5972910253380684,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_sentiment_vibert_20d_ma",
+      "mean_ic": 0.004310572768366276,
+      "mean_rank_ic": -0.003408657459446381,
+      "rank_ic_ir": -0.014413199265534653,
+      "t_stat": -0.5738191319682481,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_gap_fill_ratio",
+      "mean_ic": -0.008534437500458675,
+      "mean_rank_ic": -0.003124564942321103,
+      "rank_ic_ir": -0.01542545167825037,
+      "t_stat": -0.6141189842145323,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_macd_crossover",
+      "mean_ic": 0.019311020554322832,
+      "mean_rank_ic": 0.0029578336027488313,
+      "rank_ic_ir": 0.011442593211568338,
+      "t_stat": 0.45555319004217965,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_retail_sentiment_proxy",
+      "mean_ic": 0.013678538762238603,
+      "mean_rank_ic": 0.0020362301589230162,
+      "rank_ic_ir": 0.00899309622082525,
+      "t_stat": 0.35803367261289665,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_liquidity_concentration",
+      "mean_ic": -0.0033645100191981767,
+      "mean_rank_ic": 0.001788514492828794,
+      "rank_ic_ir": 0.006118571860649515,
+      "t_stat": 0.24359294069837556,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_vol_trend_shock_v2",
+      "mean_ic": 0.015850255174439803,
+      "mean_rank_ic": 0.0015203924932057,
+      "rank_ic_ir": 0.0067228156780721375,
+      "t_stat": 0.26764913089063463,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_ceil_limit_proximity",
+      "mean_ic": -0.02435920139230172,
+      "mean_rank_ic": -0.0012531505210061663,
+      "rank_ic_ir": -0.004874299073773599,
+      "t_stat": -0.1940558797486832,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_price_continuity",
+      "mean_ic": 0.017426347260995168,
+      "mean_rank_ic": 0.0010371138762489665,
+      "rank_ic_ir": 0.004534474221288566,
+      "t_stat": 0.18052675285036263,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_sector_neutral_residual_reversion",
+      "mean_ic": 0.024492355065472548,
+      "mean_rank_ic": 0.0010185951912074175,
+      "rank_ic_ir": 0.0039629735567282285,
+      "t_stat": 0.15777413497450585,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_volume_clock_acceleration_10",
+      "mean_ic": 0.00934031945289646,
+      "mean_rank_ic": -0.0009225531769823228,
+      "rank_ic_ir": -0.004118566727646269,
+      "t_stat": -0.16396861939337268,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_floor_limit_proximity",
+      "mean_ic": 0.024359201392274144,
+      "mean_rank_ic": 0.0007601540266406399,
+      "rank_ic_ir": 0.002957717437876379,
+      "t_stat": 0.11775281958863681,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_bb_dist_10",
+      "mean_ic": 0.019617761660714644,
+      "mean_rank_ic": 0.00032925336478794334,
+      "rank_ic_ir": 0.0013509540178525184,
+      "t_stat": 0.053784260355495286,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_turnover_exhaustion",
+      "mean_ic": 0.01299187996505057,
+      "mean_rank_ic": 0.00031207732161962906,
+      "rank_ic_ir": 0.001396165137911052,
+      "t_stat": 0.055584208110976314,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_news_volume_shock",
+      "mean_ic": 0.01299187996505057,
+      "mean_rank_ic": 0.00031207732161962906,
+      "rank_ic_ir": 0.001396165137911052,
+      "t_stat": 0.055584208110976314,
+      "n_days": 1585
+    },
+    {
+      "feature": "vn_debt_equity_pit",
+      "mean_ic": 8.162816587443869e-19,
+      "mean_rank_ic": NaN,
+      "rank_ic_ir": NaN,
+      "t_stat": NaN,
+      "n_days": 0
+    }
+  ],
+  "Bull Market (2020-2021)": [
+    {
+      "feature": "vn_stock_sector_corr",
+      "mean_ic": 0.05509717643371074,
+      "mean_rank_ic": 0.08810507366087815,
+      "rank_ic_ir": 0.37855370580532177,
+      "t_stat": 7.967633797010963,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_pair_correlation",
+      "mean_ic": 0.061557521995731515,
+      "mean_rank_ic": 0.08810507366087815,
+      "rank_ic_ir": 0.37855370580532177,
+      "t_stat": 7.967633797010963,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_market_correlation",
+      "mean_ic": 0.049938932256848804,
+      "mean_rank_ic": 0.0867220695690301,
+      "rank_ic_ir": 0.3711718687105647,
+      "t_stat": 7.812264099612035,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_leverage_proxy",
+      "mean_ic": 0.08867589054547018,
+      "mean_rank_ic": 0.08094279363502199,
+      "rank_ic_ir": 0.26847569533198085,
+      "t_stat": 5.650759696705199,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_hit_ceil",
+      "mean_ic": 0.10447471334216633,
+      "mean_rank_ic": 0.07102350320787522,
+      "rank_ic_ir": 0.3234804883371738,
+      "t_stat": 4.665301949247244,
+      "n_days": 208
+    },
+    {
+      "feature": "vn_amihud_liq_reversal",
+      "mean_ic": 0.10790498553461741,
+      "mean_rank_ic": 0.06894015162345773,
+      "rank_ic_ir": 0.3203472301635075,
+      "t_stat": 6.742529207050574,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_yang_zhang_vol_20",
+      "mean_ic": 0.11092142835268749,
+      "mean_rank_ic": 0.06827945338278996,
+      "rank_ic_ir": 0.247848539553273,
+      "t_stat": 5.216608290977942,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_expiry_effect",
+      "mean_ic": -0.13146505167474223,
+      "mean_rank_ic": -0.06432675209026768,
+      "rank_ic_ir": -0.19399875931708332,
+      "t_stat": -0.433794413383619,
+      "n_days": 5
+    },
+    {
+      "feature": "vn_atr_14_norm",
+      "mean_ic": 0.10434363425965766,
+      "mean_rank_ic": 0.06349806396591888,
+      "rank_ic_ir": 0.22942673215765938,
+      "t_stat": 4.828874099088138,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_bb_dist_120",
+      "mean_ic": 0.08945484012576552,
+      "mean_rank_ic": 0.0593260418999828,
+      "rank_ic_ir": 0.24874477663186317,
+      "t_stat": 5.235471899306167,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_market_regime",
+      "mean_ic": 0.07643212870201195,
+      "mean_rank_ic": 0.0549168491226823,
+      "rank_ic_ir": 0.23233682094481362,
+      "t_stat": 4.890124382514914,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_ev_ebitda_pit",
+      "mean_ic": 0.06841072012874531,
+      "mean_rank_ic": 0.05447787847499334,
+      "rank_ic_ir": 0.20711258596311033,
+      "t_stat": 4.359215652625682,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_pe_ratio_pit",
+      "mean_ic": 0.06841072012874534,
+      "mean_rank_ic": 0.05447787847499334,
+      "rank_ic_ir": 0.20711258596311033,
+      "t_stat": 4.359215652625682,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_sector_rel_momentum_60",
+      "mean_ic": 0.07614186963825774,
+      "mean_rank_ic": 0.05430477405349622,
+      "rank_ic_ir": 0.20127779426285256,
+      "t_stat": 4.236407494003664,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_earnings_growth_qoq",
+      "mean_ic": 0.07787870567091437,
+      "mean_rank_ic": 0.05428500537178312,
+      "rank_ic_ir": 0.20122455687580373,
+      "t_stat": 4.235286976629749,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_rsi_28",
+      "mean_ic": 0.06981092521401512,
+      "mean_rank_ic": 0.053163710938454845,
+      "rank_ic_ir": 0.22636699934289417,
+      "t_stat": 4.764474173236443,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_pb_ratio_pit",
+      "mean_ic": 0.057529893762332855,
+      "mean_rank_ic": 0.052660075138053736,
+      "rank_ic_ir": 0.20661980222636947,
+      "t_stat": 4.348843754807059,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_dividend_yield_pit",
+      "mean_ic": -0.059880023014547784,
+      "mean_rank_ic": -0.052660075138053736,
+      "rank_ic_ir": -0.20661980222636947,
+      "t_stat": -4.348843754807059,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_ps_ratio_pit",
+      "mean_ic": 0.07905464515849843,
+      "mean_rank_ic": 0.05215525236264211,
+      "rank_ic_ir": 0.20349364018563673,
+      "t_stat": 4.283045655491967,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_sector_rel_momentum_20",
+      "mean_ic": 0.07602337013635702,
+      "mean_rank_ic": 0.04986497975425355,
+      "rank_ic_ir": 0.19363654525318227,
+      "t_stat": 4.0755778074171705,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_bb_dist_60",
+      "mean_ic": 0.09050593083774537,
+      "mean_rank_ic": 0.048879405076135855,
+      "rank_ic_ir": 0.21224287090823557,
+      "t_stat": 4.467195659399405,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_earnings_growth_yoy",
+      "mean_ic": 0.02628876986253301,
+      "mean_rank_ic": 0.04796020666340716,
+      "rank_ic_ir": 0.20653061014630927,
+      "t_stat": 4.346966478688466,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_bb_dist_40",
+      "mean_ic": 0.07621205845680179,
+      "mean_rank_ic": 0.04325025572768138,
+      "rank_ic_ir": 0.19007624251661379,
+      "t_stat": 4.00064210350925,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_acceleration_index",
+      "mean_ic": -0.03154679399396321,
+      "mean_rank_ic": -0.04031785017217919,
+      "rank_ic_ir": -0.18747305053276273,
+      "t_stat": -3.945851250553484,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_rsi_crossover_60_120",
+      "mean_ic": 0.06211785028462798,
+      "mean_rank_ic": 0.04019881380881412,
+      "rank_ic_ir": 0.17917363808252526,
+      "t_stat": 3.771168826052659,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_rsi_crossover_20_120",
+      "mean_ic": 0.055462726604095715,
+      "mean_rank_ic": 0.039559716301281446,
+      "rank_ic_ir": 0.171352525755603,
+      "t_stat": 3.6065534545728406,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_mom_60_120",
+      "mean_ic": 0.04115008499706774,
+      "mean_rank_ic": 0.03898216548830909,
+      "rank_ic_ir": 0.20088749297665282,
+      "t_stat": 4.228192602242596,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_foreign_net_flow_5d",
+      "mean_ic": -0.013556688475660156,
+      "mean_rank_ic": -0.036519942041742304,
+      "rank_ic_ir": -0.15692856912075126,
+      "t_stat": -3.3029642871494804,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_mom_20_60",
+      "mean_ic": 0.02749945072250232,
+      "mean_rank_ic": 0.03577885173293117,
+      "rank_ic_ir": 0.1598269248659641,
+      "t_stat": 3.363967618611238,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_market_fundamental_drift",
+      "mean_ic": 0.02749945072250232,
+      "mean_rank_ic": 0.03577885173293117,
+      "rank_ic_ir": 0.1598269248659641,
+      "t_stat": 3.363967618611238,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_roe_pit",
+      "mean_ic": 0.02069715211734651,
+      "mean_rank_ic": 0.03378427965208334,
+      "rank_ic_ir": 0.14754313476040531,
+      "t_stat": 3.105423745708903,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_roa_pit",
+      "mean_ic": 0.02069715211734651,
+      "mean_rank_ic": 0.03378427965208334,
+      "rank_ic_ir": 0.14754313476040531,
+      "t_stat": 3.105423745708903,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_rsi_crossover_5_20",
+      "mean_ic": -0.0334831070799081,
+      "mean_rank_ic": -0.03344072572565542,
+      "rank_ic_ir": -0.1587903290773556,
+      "t_stat": -3.3421498011853434,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_accruals_quality",
+      "mean_ic": 0.048420624588413126,
+      "mean_rank_ic": 0.032559737699131584,
+      "rank_ic_ir": 0.1305736736266564,
+      "t_stat": 2.748257906429405,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_accumulation_dist",
+      "mean_ic": -0.0036345750446124905,
+      "mean_rank_ic": -0.03182763663624291,
+      "rank_ic_ir": -0.1424383249416915,
+      "t_stat": -2.9979799283187902,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_price_continuity",
+      "mean_ic": -0.0005815692341728814,
+      "mean_rank_ic": -0.029521167030322707,
+      "rank_ic_ir": -0.13314535302261954,
+      "t_stat": -2.8023854961376147,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_obv_change_20",
+      "mean_ic": 0.04689363110901958,
+      "mean_rank_ic": 0.0294325857135462,
+      "rank_ic_ir": 0.13105522256605043,
+      "t_stat": 2.758393339118588,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_squeeze_signal",
+      "mean_ic": 0.06976451934761717,
+      "mean_rank_ic": 0.025937867444663313,
+      "rank_ic_ir": 0.11068188939793679,
+      "t_stat": 2.166087275570168,
+      "n_days": 383
+    },
+    {
+      "feature": "vn_intraday_vol_morning",
+      "mean_ic": 0.06766271328808475,
+      "mean_rank_ic": 0.02428553642771658,
+      "rank_ic_ir": 0.09865394832707362,
+      "t_stat": 2.0764254076635558,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_mom_5_20",
+      "mean_ic": -0.013152594106922974,
+      "mean_rank_ic": -0.021233031342922135,
+      "rank_ic_ir": -0.10260363565742096,
+      "t_stat": -2.159556709189066,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_vol_shock_5d",
+      "mean_ic": 0.0345815522956249,
+      "mean_rank_ic": 0.020374928008898997,
+      "rank_ic_ir": 0.1005795258916813,
+      "t_stat": 2.116954126963491,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_volume_shock_reversal",
+      "mean_ic": 0.03458155229562496,
+      "mean_rank_ic": 0.020374928008898997,
+      "rank_ic_ir": 0.1005795258916813,
+      "t_stat": 2.116954126963491,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_kyle_lambda_20",
+      "mean_ic": 0.06024575059009541,
+      "mean_rank_ic": 0.019010553332242296,
+      "rank_ic_ir": 0.08407083427237176,
+      "t_stat": 1.7694863640720435,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_liquidity_provision_ratio_10",
+      "mean_ic": 0.027048610044606226,
+      "mean_rank_ic": 0.01873222677611087,
+      "rank_ic_ir": 0.09563687684514567,
+      "t_stat": 2.012923398995413,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_wick_ratio",
+      "mean_ic": 0.01113077061732299,
+      "mean_rank_ic": 0.018162819051807624,
+      "rank_ic_ir": 0.08509570091511318,
+      "t_stat": 1.7910573115357966,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_price_impact",
+      "mean_ic": 0.04774754538418707,
+      "mean_rank_ic": 0.017726143578598048,
+      "rank_ic_ir": 0.07501699497692828,
+      "t_stat": 1.578925091373317,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_trapped_inventory_2d",
+      "mean_ic": 0.018098156856397072,
+      "mean_rank_ic": -0.011901915023751274,
+      "rank_ic_ir": -0.059008672794052995,
+      "t_stat": -1.241988886809224,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_rsi_7",
+      "mean_ic": 0.01926655577474295,
+      "mean_rank_ic": 0.011474892858382678,
+      "rank_ic_ir": 0.052726623588608024,
+      "t_stat": 1.109767046694601,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_cash_release_t3",
+      "mean_ic": 0.002760931187497302,
+      "mean_rank_ic": 0.011317527081142241,
+      "rank_ic_ir": 0.05243401079731348,
+      "t_stat": 1.1036082598973715,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_liquidity_concentration",
+      "mean_ic": -0.0009188155943501372,
+      "mean_rank_ic": 0.010754423074521504,
+      "rank_ic_ir": 0.040608986064625034,
+      "t_stat": 0.8547202810827828,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_gap_fill_ratio",
+      "mean_ic": -0.013333597773027535,
+      "mean_rank_ic": -0.010700515439561634,
+      "rank_ic_ir": -0.05308732880896985,
+      "t_stat": -1.1173590133308784,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_bb_dist_20",
+      "mean_ic": 0.05039560690161894,
+      "mean_rank_ic": 0.010255026631205229,
+      "rank_ic_ir": 0.04554877344124338,
+      "t_stat": 0.9586907778667536,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_bollinger_snapback",
+      "mean_ic": 0.05039560690149339,
+      "mean_rank_ic": 0.010255026631205229,
+      "rank_ic_ir": 0.04554877344124338,
+      "t_stat": 0.9586907778667536,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_tick_signed_volume_imbalance_5",
+      "mean_ic": -0.01371058810689451,
+      "mean_rank_ic": -0.009864491589789994,
+      "rank_ic_ir": -0.05184706409685551,
+      "t_stat": -1.0912544609623849,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_vol_trend_shock_v2",
+      "mean_ic": 0.03207332176831901,
+      "mean_rank_ic": 0.008750794527067618,
+      "rank_ic_ir": 0.042864494140921514,
+      "t_stat": 0.9021932343323091,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_volume_clock_acceleration_10",
+      "mean_ic": 0.02689371429914573,
+      "mean_rank_ic": 0.008581775208436908,
+      "rank_ic_ir": 0.042682755748717105,
+      "t_stat": 0.8983680836767058,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_sentiment_vibert_20d_ma",
+      "mean_ic": 0.04623421751574024,
+      "mean_rank_ic": 0.008339165360277812,
+      "rank_ic_ir": 0.0388599912650283,
+      "t_stat": 0.8179081990390532,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_smart_money_proxy",
+      "mean_ic": 0.04132091816060906,
+      "mean_rank_ic": 0.008127847089278207,
+      "rank_ic_ir": 0.03529931860421799,
+      "t_stat": 0.7429647091265412,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_turnover_exhaustion",
+      "mean_ic": 0.030306095434116692,
+      "mean_rank_ic": 0.008013074074890447,
+      "rank_ic_ir": 0.039133914937870405,
+      "t_stat": 0.8236736253975011,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_news_volume_shock",
+      "mean_ic": 0.030306095434116692,
+      "mean_rank_ic": 0.008013074074890447,
+      "rank_ic_ir": 0.039133914937870405,
+      "t_stat": 0.8236736253975011,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_hit_floor",
+      "mean_ic": 0.024377619944358067,
+      "mean_rank_ic": 0.00791042275472271,
+      "rank_ic_ir": 0.03165282812874621,
+      "t_stat": 0.29692984779610715,
+      "n_days": 88
+    },
+    {
+      "feature": "vn_macd_crossover",
+      "mean_ic": 0.02358837608148601,
+      "mean_rank_ic": -0.007807828432510665,
+      "rank_ic_ir": -0.03194878555911284,
+      "t_stat": -0.672444146472452,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_atc_vol_ratio_v2",
+      "mean_ic": 0.01307822760893618,
+      "mean_rank_ic": -0.006999429897587301,
+      "rank_ic_ir": -0.03260811921296834,
+      "t_stat": -0.6863215145272438,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_atc_vol_ratio",
+      "mean_ic": 0.01307822760893618,
+      "mean_rank_ic": -0.006999429897587301,
+      "rank_ic_ir": -0.03260811921296834,
+      "t_stat": -0.6863215145272438,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_ceil_limit_proximity",
+      "mean_ic": -0.04633969191323859,
+      "mean_rank_ic": -0.006702008217994973,
+      "rank_ic_ir": -0.02745166621224249,
+      "t_stat": -0.5777907338976375,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_sentiment_vibert_5d_decay",
+      "mean_ic": 0.0442680909569992,
+      "mean_rank_ic": -0.00630134847830546,
+      "rank_ic_ir": -0.03009123761515052,
+      "t_stat": -0.6333472850472102,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_bb_dist_10",
+      "mean_ic": 0.022540687025250576,
+      "mean_rank_ic": -0.006090813605677016,
+      "rank_ic_ir": -0.026680153526903592,
+      "t_stat": -0.5615522703658865,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_whale_net_flow",
+      "mean_ic": 0.04911584172547468,
+      "mean_rank_ic": 0.005871223739166838,
+      "rank_ic_ir": 0.024773393497561705,
+      "t_stat": 0.5214196143659819,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_sector_neutral_residual_reversion",
+      "mean_ic": 0.04670534378024424,
+      "mean_rank_ic": 0.005504109682705335,
+      "rank_ic_ir": 0.02253204940818579,
+      "t_stat": 0.4742447785543727,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_sentiment_vibert_1d",
+      "mean_ic": 0.023296008153833647,
+      "mean_rank_ic": -0.005082302956732482,
+      "rank_ic_ir": -0.02334474150182026,
+      "t_stat": -0.49134996836629236,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_floor_limit_proximity",
+      "mean_ic": 0.046339691913179305,
+      "mean_rank_ic": 0.0041101535227219595,
+      "rank_ic_ir": 0.016793007539766504,
+      "t_stat": 0.35345192075893433,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_retail_panic_proxy",
+      "mean_ic": 0.007468950404890297,
+      "mean_rank_ic": -0.003743500755051961,
+      "rank_ic_ir": -0.016177804841289684,
+      "t_stat": -0.27406939457294327,
+      "n_days": 287
+    },
+    {
+      "feature": "vn_intraday_reversal",
+      "mean_ic": 0.006871707330290544,
+      "mean_rank_ic": -0.003517692098125969,
+      "rank_ic_ir": -0.01751635206962244,
+      "t_stat": -0.36867656189856446,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_retail_sentiment_proxy",
+      "mean_ic": 0.0044110807990786925,
+      "mean_rank_ic": -0.0032551920083205162,
+      "rank_ic_ir": -0.017055894051451286,
+      "t_stat": -0.35898504174852297,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_morning_gap_v2",
+      "mean_ic": 0.021284534056022555,
+      "mean_rank_ic": -0.0026847599717777578,
+      "rank_ic_ir": -0.01234955941132754,
+      "t_stat": -0.2599281566523363,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_volume_weighted_return",
+      "mean_ic": 0.05341249955252216,
+      "mean_rank_ic": 0.001592363259507401,
+      "rank_ic_ir": 0.006642027034688998,
+      "t_stat": 0.13979849693893712,
+      "n_days": 443
+    },
+    {
+      "feature": "vn_debt_equity_pit",
+      "mean_ic": -2.2451950173202523e-18,
+      "mean_rank_ic": NaN,
+      "rank_ic_ir": NaN,
+      "t_stat": NaN,
+      "n_days": 0
+    }
+  ],
+  "Bear Market (2022)": [
+    {
+      "feature": "vn_liquidity_concentration",
+      "mean_ic": -0.07531421544692465,
+      "mean_rank_ic": -0.10119428155040569,
+      "rank_ic_ir": -0.311211730585097,
+      "t_stat": -4.573859651411982,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_macd_crossover",
+      "mean_ic": 0.08193640002654216,
+      "mean_rank_ic": 0.08820432616440976,
+      "rank_ic_ir": 0.32360170364899066,
+      "t_stat": 4.755954323012186,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_mom_60_120",
+      "mean_ic": 0.05703543218805213,
+      "mean_rank_ic": 0.08644474219077691,
+      "rank_ic_ir": 0.37571721860953083,
+      "t_stat": 5.521892839026425,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_rsi_crossover_60_120",
+      "mean_ic": -0.05896715822193181,
+      "mean_rank_ic": -0.0767363440441228,
+      "rank_ic_ir": -0.2411007781859999,
+      "t_stat": -3.543443298861894,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_earnings_growth_qoq",
+      "mean_ic": -0.07300568703994482,
+      "mean_rank_ic": -0.07503828984478787,
+      "rank_ic_ir": -0.20735284988428432,
+      "t_stat": -3.0474520735704873,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_sector_rel_momentum_60",
+      "mean_ic": -0.0651969337422109,
+      "mean_rank_ic": -0.07503828984478787,
+      "rank_ic_ir": -0.20735284988428432,
+      "t_stat": -3.0474520735704873,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_bollinger_snapback",
+      "mean_ic": 0.07956141183177434,
+      "mean_rank_ic": 0.07087881538279282,
+      "rank_ic_ir": 0.24153756544676336,
+      "t_stat": 3.5498627343520046,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_bb_dist_20",
+      "mean_ic": 0.07956141183176545,
+      "mean_rank_ic": 0.07087881538279282,
+      "rank_ic_ir": 0.24153756544676336,
+      "t_stat": 3.5498627343520046,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_atr_14_norm",
+      "mean_ic": -0.0537427869716472,
+      "mean_rank_ic": -0.06306300176725031,
+      "rank_ic_ir": -0.16041485442103748,
+      "t_stat": -2.357607242966328,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_kyle_lambda_20",
+      "mean_ic": 0.061181445502252255,
+      "mean_rank_ic": 0.056054508609810656,
+      "rank_ic_ir": 0.22760040013211627,
+      "t_stat": 3.3450290734617956,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_tick_signed_volume_imbalance_5",
+      "mean_ic": -0.03537067018487137,
+      "mean_rank_ic": -0.054572150591967496,
+      "rank_ic_ir": -0.2319646927130964,
+      "t_stat": -3.409170812931489,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_yang_zhang_vol_20",
+      "mean_ic": -0.04741982631195077,
+      "mean_rank_ic": -0.05448637136381382,
+      "rank_ic_ir": -0.14364230085210897,
+      "t_stat": -2.111102055402098,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_hit_floor",
+      "mean_ic": -0.0644246990082303,
+      "mean_rank_ic": -0.05119650122091235,
+      "rank_ic_ir": -0.2067537108036032,
+      "t_stat": -2.0467573132259425,
+      "n_days": 98
+    },
+    {
+      "feature": "vn_accruals_quality",
+      "mean_ic": 0.06570568015455905,
+      "mean_rank_ic": 0.0508163552105494,
+      "rank_ic_ir": 0.1543846329896528,
+      "t_stat": 2.268981449709,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_bb_dist_10",
+      "mean_ic": 0.05288413304647257,
+      "mean_rank_ic": 0.04757443510962985,
+      "rank_ic_ir": 0.17603528439787777,
+      "t_stat": 2.5871797410031276,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_roa_pit",
+      "mean_ic": 0.028991084378353463,
+      "mean_rank_ic": 0.0462566650289432,
+      "rank_ic_ir": 0.12828290449370508,
+      "t_stat": 1.885365952390588,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_roe_pit",
+      "mean_ic": 0.028991084378353474,
+      "mean_rank_ic": 0.0462566650289432,
+      "rank_ic_ir": 0.12828290449370508,
+      "t_stat": 1.885365952390588,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_liquidity_provision_ratio_10",
+      "mean_ic": 0.05498214383347112,
+      "mean_rank_ic": 0.046090105450996,
+      "rank_ic_ir": 0.2013340695915532,
+      "t_stat": 2.9589944300238247,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_amihud_liq_reversal",
+      "mean_ic": 0.042028984277606936,
+      "mean_rank_ic": 0.0402232380788178,
+      "rank_ic_ir": 0.15518065892886918,
+      "t_stat": 2.2806805939475994,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_bb_dist_40",
+      "mean_ic": 0.052844465235275,
+      "mean_rank_ic": 0.03953121600788329,
+      "rank_ic_ir": 0.1313887915703546,
+      "t_stat": 1.931012983609563,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_bb_dist_120",
+      "mean_ic": -0.007832262305982083,
+      "mean_rank_ic": -0.03917403811394364,
+      "rank_ic_ir": -0.14026591275213043,
+      "t_stat": -2.0614794872907822,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_intraday_vol_morning",
+      "mean_ic": -0.029433398357225842,
+      "mean_rank_ic": -0.03738916663002959,
+      "rank_ic_ir": -0.11336109567138468,
+      "t_stat": -1.666061046466316,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_rsi_crossover_20_120",
+      "mean_ic": 0.03615410160156225,
+      "mean_rank_ic": 0.03409252950216499,
+      "rank_ic_ir": 0.10120136609435847,
+      "t_stat": 1.4873502492226582,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_ev_ebitda_pit",
+      "mean_ic": -0.03847787825727134,
+      "mean_rank_ic": -0.03336807112693085,
+      "rank_ic_ir": -0.086125098941091,
+      "t_stat": -1.2657752787143326,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_pe_ratio_pit",
+      "mean_ic": -0.03847787825727136,
+      "mean_rank_ic": -0.03336807112693085,
+      "rank_ic_ir": -0.086125098941091,
+      "t_stat": -1.2657752787143326,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_rsi_7",
+      "mean_ic": 0.03642329139205731,
+      "mean_rank_ic": 0.033033560825551096,
+      "rank_ic_ir": 0.11801598048752819,
+      "t_stat": 1.7344736021322,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_sector_rel_momentum_20",
+      "mean_ic": 0.041786077485469864,
+      "mean_rank_ic": 0.03209698206574066,
+      "rank_ic_ir": 0.08266241782741357,
+      "t_stat": 1.2148844674914412,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_hit_ceil",
+      "mean_ic": 0.040151509425174765,
+      "mean_rank_ic": 0.028815167187816366,
+      "rank_ic_ir": 0.11376288286057175,
+      "t_stat": 1.0611095306126936,
+      "n_days": 87
+    },
+    {
+      "feature": "vn_market_regime",
+      "mean_ic": 0.028871226634357646,
+      "mean_rank_ic": 0.027261511882061894,
+      "rank_ic_ir": 0.0810049353468261,
+      "t_stat": 1.1905245494811902,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_wick_ratio",
+      "mean_ic": 0.025587208892376385,
+      "mean_rank_ic": 0.026382545063472863,
+      "rank_ic_ir": 0.115365746396618,
+      "t_stat": 1.695523274802247,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_acceleration_index",
+      "mean_ic": -0.027585295591747414,
+      "mean_rank_ic": -0.025195846442486944,
+      "rank_ic_ir": -0.09516063906037699,
+      "t_stat": -1.398570055770514,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_vol_shock_5d",
+      "mean_ic": 0.024221346528030128,
+      "mean_rank_ic": 0.02488816540642656,
+      "rank_ic_ir": 0.10814356341281672,
+      "t_stat": 1.5893792959663005,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_volume_shock_reversal",
+      "mean_ic": 0.024221346528030204,
+      "mean_rank_ic": 0.02488816540642656,
+      "rank_ic_ir": 0.10814356341281672,
+      "t_stat": 1.5893792959663005,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_mom_20_60",
+      "mean_ic": -0.027146472403605872,
+      "mean_rank_ic": -0.024674040772110085,
+      "rank_ic_ir": -0.10368429965505055,
+      "t_stat": -1.5238417709562224,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_market_fundamental_drift",
+      "mean_ic": -0.027146472403605872,
+      "mean_rank_ic": -0.024674040772110085,
+      "rank_ic_ir": -0.10368429965505055,
+      "t_stat": -1.5238417709562224,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_ceil_limit_proximity",
+      "mean_ic": -0.03439885131203265,
+      "mean_rank_ic": -0.024395667503311305,
+      "rank_ic_ir": -0.0882150131704869,
+      "t_stat": -1.2964906195235437,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_sector_neutral_residual_reversion",
+      "mean_ic": 0.03439885131203409,
+      "mean_rank_ic": 0.024283569272356444,
+      "rank_ic_ir": 0.08798823990289492,
+      "t_stat": 1.29315774676612,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_floor_limit_proximity",
+      "mean_ic": 0.034398851312037085,
+      "mean_rank_ic": 0.02416952075087208,
+      "rank_ic_ir": 0.08777349963153842,
+      "t_stat": 1.2900017222138187,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_ps_ratio_pit",
+      "mean_ic": -0.020818187501706855,
+      "mean_rank_ic": -0.023052338280236954,
+      "rank_ic_ir": -0.059471904070841644,
+      "t_stat": -0.8740549140318705,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_retail_panic_proxy",
+      "mean_ic": -0.022437134053082626,
+      "mean_rank_ic": -0.022016722913456733,
+      "rank_ic_ir": -0.08438936792774127,
+      "t_stat": -1.1003027407361243,
+      "n_days": 170
+    },
+    {
+      "feature": "vn_rsi_28",
+      "mean_ic": 0.02902696328145505,
+      "mean_rank_ic": 0.021973612787851815,
+      "rank_ic_ir": 0.0687651892132991,
+      "t_stat": 1.0106377538311235,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_price_impact",
+      "mean_ic": 0.037411356180882635,
+      "mean_rank_ic": 0.020374963154195156,
+      "rank_ic_ir": 0.07803496188856293,
+      "t_stat": 1.1468750323470667,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_market_correlation",
+      "mean_ic": -0.02732705258012314,
+      "mean_rank_ic": -0.019372176478077843,
+      "rank_ic_ir": -0.05869958239143667,
+      "t_stat": -0.8627041498408811,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_volume_clock_acceleration_10",
+      "mean_ic": 0.022812343080510195,
+      "mean_rank_ic": 0.01880017617453724,
+      "rank_ic_ir": 0.07845571931491689,
+      "t_stat": 1.15305887834739,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_pair_correlation",
+      "mean_ic": -0.02614367267667284,
+      "mean_rank_ic": -0.01878381698766327,
+      "rank_ic_ir": -0.057022832435175315,
+      "t_stat": -0.8380610589264351,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_stock_sector_corr",
+      "mean_ic": -0.025259337027542485,
+      "mean_rank_ic": -0.01878381698766327,
+      "rank_ic_ir": -0.057022832435175315,
+      "t_stat": -0.8380610589264351,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_sentiment_vibert_5d_decay",
+      "mean_ic": 0.006626061170234205,
+      "mean_rank_ic": 0.018478435025980525,
+      "rank_ic_ir": 0.07189745355878925,
+      "t_stat": 1.0566724501469051,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_smart_money_proxy",
+      "mean_ic": 0.03198085711365915,
+      "mean_rank_ic": 0.015155619923202034,
+      "rank_ic_ir": 0.06395957357388753,
+      "t_stat": 0.940009916532141,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_earnings_growth_yoy",
+      "mean_ic": -0.013367287589334313,
+      "mean_rank_ic": -0.014454437097945687,
+      "rank_ic_ir": -0.049794899051676354,
+      "t_stat": -0.7318325668200302,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_leverage_proxy",
+      "mean_ic": -0.004267460079961142,
+      "mean_rank_ic": -0.014352755087268717,
+      "rank_ic_ir": -0.04931363434524797,
+      "t_stat": -0.7247594490482709,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_sentiment_vibert_20d_ma",
+      "mean_ic": -0.0327859544867709,
+      "mean_rank_ic": -0.013309991757907801,
+      "rank_ic_ir": -0.05408787333189073,
+      "t_stat": -0.7949261456125329,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_morning_gap_v2",
+      "mean_ic": 0.009320664380098823,
+      "mean_rank_ic": 0.012802064975253866,
+      "rank_ic_ir": 0.046851366644137374,
+      "t_stat": 0.6885716521811306,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_obv_change_20",
+      "mean_ic": 0.015886432577715177,
+      "mean_rank_ic": 0.011158354739363276,
+      "rank_ic_ir": 0.03696345786476389,
+      "t_stat": 0.5432496653852241,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_volume_weighted_return",
+      "mean_ic": 0.02716926652251503,
+      "mean_rank_ic": 0.011061558052555716,
+      "rank_ic_ir": 0.04170827565886073,
+      "t_stat": 0.612983960493316,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_vol_trend_shock_v2",
+      "mean_ic": 0.03472484060760154,
+      "mean_rank_ic": 0.010219733713328375,
+      "rank_ic_ir": 0.04174468775866168,
+      "t_stat": 0.6135191068831697,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_whale_net_flow",
+      "mean_ic": 0.03018471123184789,
+      "mean_rank_ic": 0.010131760752206957,
+      "rank_ic_ir": 0.03943352196896113,
+      "t_stat": 0.5795520455087124,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_gap_fill_ratio",
+      "mean_ic": 0.0007835870484705919,
+      "mean_rank_ic": 0.00951510380373635,
+      "rank_ic_ir": 0.043865586044292484,
+      "t_stat": 0.6446898184600042,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_turnover_exhaustion",
+      "mean_ic": 0.035745771317261484,
+      "mean_rank_ic": 0.009053259264430968,
+      "rank_ic_ir": 0.03767713129051992,
+      "t_stat": 0.5537384798017421,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_news_volume_shock",
+      "mean_ic": 0.035745771317261484,
+      "mean_rank_ic": 0.009053259264430968,
+      "rank_ic_ir": 0.03767713129051992,
+      "t_stat": 0.5537384798017421,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_dividend_yield_pit",
+      "mean_ic": 0.01553950730754153,
+      "mean_rank_ic": 0.008033768403943266,
+      "rank_ic_ir": 0.021275836668904344,
+      "t_stat": 0.31268966213766847,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_pb_ratio_pit",
+      "mean_ic": -0.01467104174301632,
+      "mean_rank_ic": -0.008033768403943266,
+      "rank_ic_ir": -0.021275836668904344,
+      "t_stat": -0.31268966213766847,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_sentiment_vibert_1d",
+      "mean_ic": 0.007367811821687115,
+      "mean_rank_ic": 0.007861669018666254,
+      "rank_ic_ir": 0.029582684057115755,
+      "t_stat": 0.434774886971403,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_intraday_reversal",
+      "mean_ic": 0.012165289965153368,
+      "mean_rank_ic": 0.006787011772114688,
+      "rank_ic_ir": 0.03262232327357559,
+      "t_stat": 0.4794482774662821,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_retail_sentiment_proxy",
+      "mean_ic": 0.04471878818582902,
+      "mean_rank_ic": 0.003989166812937977,
+      "rank_ic_ir": 0.017232808720126707,
+      "t_stat": 0.2532695291957693,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_bb_dist_60",
+      "mean_ic": 0.012563364203565379,
+      "mean_rank_ic": -0.0036457027352865454,
+      "rank_ic_ir": -0.012910340071957594,
+      "t_stat": -0.18974247349261658,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_squeeze_signal",
+      "mean_ic": 0.020022444506302157,
+      "mean_rank_ic": 0.0036042365253139744,
+      "rank_ic_ir": 0.014960845521280096,
+      "t_stat": 0.1880549121837392,
+      "n_days": 158
+    },
+    {
+      "feature": "vn_foreign_net_flow_5d",
+      "mean_ic": -0.007427158856894396,
+      "mean_rank_ic": 0.00355654052249209,
+      "rank_ic_ir": 0.012425803232731614,
+      "t_stat": 0.18262126538650889,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_accumulation_dist",
+      "mean_ic": -0.013091054640540471,
+      "mean_rank_ic": 0.0029845628290247166,
+      "rank_ic_ir": 0.015586844149232556,
+      "t_stat": 0.22907888919543085,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_price_continuity",
+      "mean_ic": 0.006493052856393709,
+      "mean_rank_ic": 0.0028144804500390493,
+      "rank_ic_ir": 0.011402160410184582,
+      "t_stat": 0.16757684982189341,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_rsi_crossover_5_20",
+      "mean_ic": 0.0008960603925003994,
+      "mean_rank_ic": -0.0025716012918871015,
+      "rank_ic_ir": -0.0118890584280874,
+      "t_stat": -0.1747327600256999,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_mom_5_20",
+      "mean_ic": -0.006514438137915612,
+      "mean_rank_ic": 0.002521687758275825,
+      "rank_ic_ir": 0.010553285714579246,
+      "t_stat": 0.15510099066313263,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_trapped_inventory_2d",
+      "mean_ic": 0.027036860350348243,
+      "mean_rank_ic": 0.0010302896637616886,
+      "rank_ic_ir": 0.00417402838733238,
+      "t_stat": 0.061345438325138855,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_atc_vol_ratio",
+      "mean_ic": 0.007123199990624358,
+      "mean_rank_ic": 0.000928847164485483,
+      "rank_ic_ir": 0.003728812133363944,
+      "t_stat": 0.05480212244064265,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_atc_vol_ratio_v2",
+      "mean_ic": 0.007123199990624358,
+      "mean_rank_ic": 0.000928847164485483,
+      "rank_ic_ir": 0.003728812133363944,
+      "t_stat": 0.05480212244064265,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_cash_release_t3",
+      "mean_ic": 0.011136554283853529,
+      "mean_rank_ic": 0.0007262900679361482,
+      "rank_ic_ir": 0.00306437386042127,
+      "t_stat": 0.045036914034928745,
+      "n_days": 216
+    },
+    {
+      "feature": "vn_debt_equity_pit",
+      "mean_ic": -8.328393812717498e-18,
+      "mean_rank_ic": NaN,
+      "rank_ic_ir": NaN,
+      "t_stat": NaN,
+      "n_days": 0
+    }
+  ],
+  "Sideways (2024-2026)": [
+    {
+      "feature": "vn_hit_ceil",
+      "mean_ic": 0.07704210978417547,
+      "mean_rank_ic": 0.044315529193782045,
+      "rank_ic_ir": 0.18304838667192144,
+      "t_stat": 2.2935897110253487,
+      "n_days": 157
+    },
+    {
+      "feature": "vn_dividend_yield_pit",
+      "mean_ic": -0.0483878529904202,
+      "mean_rank_ic": -0.03816291727209292,
+      "rank_ic_ir": -0.11979379509740011,
+      "t_stat": -2.8974253581663083,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_pb_ratio_pit",
+      "mean_ic": 0.06259081449219447,
+      "mean_rank_ic": 0.03816291727209292,
+      "rank_ic_ir": 0.11979379509740011,
+      "t_stat": 2.8974253581663083,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_bb_dist_120",
+      "mean_ic": 0.05597550211277931,
+      "mean_rank_ic": 0.03654884171871248,
+      "rank_ic_ir": 0.12669230995429476,
+      "t_stat": 3.064278172736563,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_sector_rel_momentum_60",
+      "mean_ic": 0.04355727559983744,
+      "mean_rank_ic": 0.03496072245351396,
+      "rank_ic_ir": 0.11224341862360193,
+      "t_stat": 2.714806114480957,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_earnings_growth_qoq",
+      "mean_ic": 0.053184574351199325,
+      "mean_rank_ic": 0.03496072245351396,
+      "rank_ic_ir": 0.11224341862360193,
+      "t_stat": 2.714806114480957,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_pe_ratio_pit",
+      "mean_ic": 0.054780634924486475,
+      "mean_rank_ic": 0.03429431984499192,
+      "rank_ic_ir": 0.10926036328715422,
+      "t_stat": 2.64265563148132,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_ev_ebitda_pit",
+      "mean_ic": 0.054780634924486454,
+      "mean_rank_ic": 0.03429431984499192,
+      "rank_ic_ir": 0.10926036328715422,
+      "t_stat": 2.64265563148132,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_macd_crossover",
+      "mean_ic": 0.003626307269127256,
+      "mean_rank_ic": -0.03394877912125277,
+      "rank_ic_ir": -0.13246517886450032,
+      "t_stat": -3.2039052440402127,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_bb_dist_60",
+      "mean_ic": 0.056504311324431775,
+      "mean_rank_ic": 0.03352837849908873,
+      "rank_ic_ir": 0.12533987910937447,
+      "t_stat": 3.031567234561073,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_rsi_crossover_5_20",
+      "mean_ic": -0.041511966683448226,
+      "mean_rank_ic": -0.03318605778277093,
+      "rank_ic_ir": -0.14497065917529406,
+      "t_stat": -3.506372460635888,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_earnings_growth_yoy",
+      "mean_ic": 0.05726412070690776,
+      "mean_rank_ic": 0.03169976077321083,
+      "rank_ic_ir": 0.10168671946621997,
+      "t_stat": 2.459473625746779,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_hit_floor",
+      "mean_ic": -0.029087223172001176,
+      "mean_rank_ic": -0.025275243291140226,
+      "rank_ic_ir": -0.111010080538624,
+      "t_stat": -1.4431310470021121,
+      "n_days": 169
+    },
+    {
+      "feature": "vn_atc_vol_ratio",
+      "mean_ic": -0.00858490950244,
+      "mean_rank_ic": -0.024747200560063833,
+      "rank_ic_ir": -0.11007067854453464,
+      "t_stat": -2.66225454286846,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_atc_vol_ratio_v2",
+      "mean_ic": -0.00858490950244,
+      "mean_rank_ic": -0.024747200560063833,
+      "rank_ic_ir": -0.11007067854453464,
+      "t_stat": -2.66225454286846,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_sentiment_vibert_20d_ma",
+      "mean_ic": -0.018174534911692478,
+      "mean_rank_ic": -0.022398367703402273,
+      "rank_ic_ir": -0.09719235325862055,
+      "t_stat": -2.35076940940405,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_ps_ratio_pit",
+      "mean_ic": 0.041131556728972986,
+      "mean_rank_ic": 0.020542269097443024,
+      "rank_ic_ir": 0.07000227485827656,
+      "t_stat": 1.6931291486239948,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_price_continuity",
+      "mean_ic": 0.03852277844734296,
+      "mean_rank_ic": 0.020308474834356275,
+      "rank_ic_ir": 0.0919330688101167,
+      "t_stat": 2.223564289017681,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_cash_release_t3",
+      "mean_ic": 0.018484230847209442,
+      "mean_rank_ic": 0.020052511421432707,
+      "rank_ic_ir": 0.08896590126104481,
+      "t_stat": 2.1517980803286667,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_wick_ratio",
+      "mean_ic": 0.016741925927883292,
+      "mean_rank_ic": 0.01908373721111894,
+      "rank_ic_ir": 0.08787779891434158,
+      "t_stat": 2.123662968680577,
+      "n_days": 584
+    },
+    {
+      "feature": "vn_roe_pit",
+      "mean_ic": 0.03600161974158308,
+      "mean_rank_ic": 0.01879584016240852,
+      "rank_ic_ir": 0.06113089418884687,
+      "t_stat": 1.4785590760033482,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_roa_pit",
+      "mean_ic": 0.036001619741583085,
+      "mean_rank_ic": 0.01879584016240852,
+      "rank_ic_ir": 0.06113089418884687,
+      "t_stat": 1.4785590760033482,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_bb_dist_40",
+      "mean_ic": 0.04171083836191518,
+      "mean_rank_ic": 0.01825830994721666,
+      "rank_ic_ir": 0.07101045904514366,
+      "t_stat": 1.7175138709408388,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_yang_zhang_vol_20",
+      "mean_ic": -0.013731986756778307,
+      "mean_rank_ic": -0.01768574895783004,
+      "rank_ic_ir": -0.056174476127383334,
+      "t_stat": -1.3586793162438244,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_rsi_7",
+      "mean_ic": -0.01504838752118869,
+      "mean_rank_ic": -0.01763841613142412,
+      "rank_ic_ir": -0.07502944316376758,
+      "t_stat": -1.8147201284928325,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_rsi_crossover_20_120",
+      "mean_ic": -0.009524005308171171,
+      "mean_rank_ic": -0.0172385576640497,
+      "rank_ic_ir": -0.0709098737601874,
+      "t_stat": -1.7150810374618284,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_rsi_28",
+      "mean_ic": 0.03397809338039555,
+      "mean_rank_ic": 0.016226727426338627,
+      "rank_ic_ir": 0.05765034453939052,
+      "t_stat": 1.3943758108643465,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_intraday_vol_morning",
+      "mean_ic": 0.0028151414549364645,
+      "mean_rank_ic": -0.013208550769613015,
+      "rank_ic_ir": -0.049284061976904416,
+      "t_stat": -1.1920224316227706,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_liquidity_concentration",
+      "mean_ic": -0.02467114166471186,
+      "mean_rank_ic": -0.013151210303111976,
+      "rank_ic_ir": -0.050067190758558644,
+      "t_stat": -1.210963789886193,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_rsi_crossover_60_120",
+      "mean_ic": 0.009549081701911688,
+      "mean_rank_ic": 0.012604105003124056,
+      "rank_ic_ir": 0.04962892656058032,
+      "t_stat": 1.2003635931083352,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_amihud_liq_reversal",
+      "mean_ic": 0.025844805252118675,
+      "mean_rank_ic": 0.012229077238835878,
+      "rank_ic_ir": 0.05202903347844754,
+      "t_stat": 1.258414434894295,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_bb_dist_10",
+      "mean_ic": 0.00822204347706047,
+      "mean_rank_ic": -0.01221021248218963,
+      "rank_ic_ir": -0.052687363889069874,
+      "t_stat": -1.2743373232562363,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_trapped_inventory_2d",
+      "mean_ic": -0.00012351409028027097,
+      "mean_rank_ic": -0.012066366166093046,
+      "rank_ic_ir": -0.05213188297722717,
+      "t_stat": -1.260902032399629,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_kyle_lambda_20",
+      "mean_ic": 0.026558919992776424,
+      "mean_rank_ic": 0.012058428549799428,
+      "rank_ic_ir": 0.05284956154738372,
+      "t_stat": 1.2782603612387262,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_accruals_quality",
+      "mean_ic": 0.018116803300186234,
+      "mean_rank_ic": 0.011948078109407146,
+      "rank_ic_ir": 0.0469232676520451,
+      "t_stat": 1.1349224346095619,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_pair_correlation",
+      "mean_ic": 0.003997953606422309,
+      "mean_rank_ic": 0.01072819155288254,
+      "rank_ic_ir": 0.04507141046890227,
+      "t_stat": 1.090131984838955,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_stock_sector_corr",
+      "mean_ic": 0.002793592861288462,
+      "mean_rank_ic": 0.01072819155288254,
+      "rank_ic_ir": 0.04507141046890227,
+      "t_stat": 1.090131984838955,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_retail_panic_proxy",
+      "mean_ic": -0.0017560651185919405,
+      "mean_rank_ic": 0.010704523625095124,
+      "rank_ic_ir": 0.046103949035387094,
+      "t_stat": 0.8796072864996944,
+      "n_days": 364
+    },
+    {
+      "feature": "vn_atr_14_norm",
+      "mean_ic": -0.002916854469946813,
+      "mean_rank_ic": -0.01055554067649387,
+      "rank_ic_ir": -0.03314721411355208,
+      "t_stat": -0.8017241514644888,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_market_correlation",
+      "mean_ic": 0.000135752120331356,
+      "mean_rank_ic": 0.010127279159194159,
+      "rank_ic_ir": 0.04254158042897557,
+      "t_stat": 1.0289435593151226,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_acceleration_index",
+      "mean_ic": 0.007127704339215804,
+      "mean_rank_ic": -0.009738626795109187,
+      "rank_ic_ir": -0.03894375025157115,
+      "t_stat": -0.9419236566405993,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_foreign_net_flow_5d",
+      "mean_ic": 0.020612837494514768,
+      "mean_rank_ic": 0.009646921550901338,
+      "rank_ic_ir": 0.041750045199300145,
+      "t_stat": 1.0097988761996166,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_obv_change_20",
+      "mean_ic": 0.025843283711756843,
+      "mean_rank_ic": 0.00938241958608729,
+      "rank_ic_ir": 0.03796302953620634,
+      "t_stat": 0.9182031870814987,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_leverage_proxy",
+      "mean_ic": -0.013704134112273733,
+      "mean_rank_ic": -0.009147748173516936,
+      "rank_ic_ir": -0.03373010243143071,
+      "t_stat": -0.8158223390361179,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_volume_clock_acceleration_10",
+      "mean_ic": -0.0011820992267701498,
+      "mean_rank_ic": -0.008533588436926082,
+      "rank_ic_ir": -0.03707543537184729,
+      "t_stat": -0.8967351482946538,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_morning_gap_v2",
+      "mean_ic": 0.028379049910578043,
+      "mean_rank_ic": 0.008191469866745318,
+      "rank_ic_ir": 0.03525133309954146,
+      "t_stat": 0.8526160002588937,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_sector_rel_momentum_20",
+      "mean_ic": 0.006483837303825312,
+      "mean_rank_ic": -0.0076588407801045375,
+      "rank_ic_ir": -0.02853593509768261,
+      "t_stat": -0.6901921915387085,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_intraday_reversal",
+      "mean_ic": 0.008286485005847208,
+      "mean_rank_ic": 0.007292456805317861,
+      "rank_ic_ir": 0.035315778831905516,
+      "t_stat": 0.8541747345741844,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_gap_fill_ratio",
+      "mean_ic": -0.008706861705692057,
+      "mean_rank_ic": -0.007228493051551454,
+      "rank_ic_ir": -0.03562645691368177,
+      "t_stat": -0.8616890348902658,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_retail_sentiment_proxy",
+      "mean_ic": 0.01659433962241772,
+      "mean_rank_ic": 0.006777363643218912,
+      "rank_ic_ir": 0.029068448170140974,
+      "t_stat": 0.7030719644722015,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_mom_5_20",
+      "mean_ic": 0.007810112737537287,
+      "mean_rank_ic": 0.006612816603509409,
+      "rank_ic_ir": 0.032906948523677315,
+      "t_stat": 0.7959129021236369,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_squeeze_signal",
+      "mean_ic": 0.027332597876598027,
+      "mean_rank_ic": 0.006438986986725915,
+      "rank_ic_ir": 0.027633997786924457,
+      "t_stat": 0.5379765226918881,
+      "n_days": 379
+    },
+    {
+      "feature": "vn_bb_dist_20",
+      "mean_ic": 0.011233543290733653,
+      "mean_rank_ic": -0.00561243098727209,
+      "rank_ic_ir": -0.024075310688241255,
+      "t_stat": -0.5823040804169038,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_bollinger_snapback",
+      "mean_ic": 0.011233543290740947,
+      "mean_rank_ic": -0.00561243098727209,
+      "rank_ic_ir": -0.024075310688241255,
+      "t_stat": -0.5823040804169038,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_accumulation_dist",
+      "mean_ic": -0.012936568558842487,
+      "mean_rank_ic": -0.005439303782393577,
+      "rank_ic_ir": -0.028064457135129315,
+      "t_stat": -0.6787886609684665,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_market_regime",
+      "mean_ic": 0.015978881349291867,
+      "mean_rank_ic": -0.004751434787183264,
+      "rank_ic_ir": -0.018316844685343184,
+      "t_stat": -0.44302536896636757,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_smart_money_proxy",
+      "mean_ic": 0.019170421995516575,
+      "mean_rank_ic": -0.004462819089871366,
+      "rank_ic_ir": -0.019524730950158144,
+      "t_stat": -0.47224024015907096,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_liquidity_provision_ratio_10",
+      "mean_ic": 0.007808522961389758,
+      "mean_rank_ic": 0.0032554529345746835,
+      "rank_ic_ir": 0.014556263016546882,
+      "t_stat": 0.35206903287428015,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_floor_limit_proximity",
+      "mean_ic": 0.02815042078531613,
+      "mean_rank_ic": 0.0029733323031821465,
+      "rank_ic_ir": 0.012091146045949732,
+      "t_stat": 0.2924458076843028,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_tick_signed_volume_imbalance_5",
+      "mean_ic": -0.0011315227558912188,
+      "mean_rank_ic": -0.002879116741830106,
+      "rank_ic_ir": -0.013506883804445544,
+      "t_stat": -0.3266879358232778,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_vol_shock_5d",
+      "mean_ic": -0.0028478807411599816,
+      "mean_rank_ic": -0.0028253779875283117,
+      "rank_ic_ir": -0.012409424358586682,
+      "t_stat": -0.30014393306082066,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_volume_shock_reversal",
+      "mean_ic": -0.0028478807411599634,
+      "mean_rank_ic": -0.0028253779875283117,
+      "rank_ic_ir": -0.012409424358586682,
+      "t_stat": -0.30014393306082066,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_price_impact",
+      "mean_ic": 0.023325889135294677,
+      "mean_rank_ic": 0.0021111036255912078,
+      "rank_ic_ir": 0.00885585339421687,
+      "t_stat": 0.2141945179359629,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_sector_neutral_residual_reversion",
+      "mean_ic": 0.028156006537838528,
+      "mean_rank_ic": 0.0019971958011447775,
+      "rank_ic_ir": 0.008115981342265354,
+      "t_stat": 0.19629940038517593,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_turnover_exhaustion",
+      "mean_ic": 0.0012020611842046955,
+      "mean_rank_ic": -0.0017336019664076928,
+      "rank_ic_ir": -0.007707145565341978,
+      "t_stat": -0.1864109821543295,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_news_volume_shock",
+      "mean_ic": 0.0012020611842046955,
+      "mean_rank_ic": -0.0017336019664076928,
+      "rank_ic_ir": -0.007707145565341978,
+      "t_stat": -0.1864109821543295,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_whale_net_flow",
+      "mean_ic": 0.0266668419254181,
+      "mean_rank_ic": -0.0016176783435550375,
+      "rank_ic_ir": -0.006778472972935586,
+      "t_stat": -0.16394938874304668,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_ceil_limit_proximity",
+      "mean_ic": -0.02815042078531557,
+      "mean_rank_ic": -0.0011172366187454726,
+      "rank_ic_ir": -0.004537198009274555,
+      "t_stat": -0.1097401794175156,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_market_fundamental_drift",
+      "mean_ic": -0.0009719076355664613,
+      "mean_rank_ic": -0.0010813663609510102,
+      "rank_ic_ir": -0.005080808186193621,
+      "t_stat": -0.12288835550027466,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_mom_20_60",
+      "mean_ic": -0.0009719076355664613,
+      "mean_rank_ic": -0.0010813663609510102,
+      "rank_ic_ir": -0.005080808186193621,
+      "t_stat": -0.12288835550027466,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_sentiment_vibert_1d",
+      "mean_ic": 0.019639911575556373,
+      "mean_rank_ic": 0.0009691167172070293,
+      "rank_ic_ir": 0.004135954333631275,
+      "t_stat": 0.10003538961878314,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_vol_trend_shock_v2",
+      "mean_ic": 0.0077630393717115845,
+      "mean_rank_ic": -0.0006189683133032125,
+      "rank_ic_ir": -0.002700915467316907,
+      "t_stat": -0.06532642996162538,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_sentiment_vibert_5d_decay",
+      "mean_ic": 0.015838407480047632,
+      "mean_rank_ic": -0.0005186438620609158,
+      "rank_ic_ir": -0.0021882707485456794,
+      "t_stat": -0.05292720839351241,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_volume_weighted_return",
+      "mean_ic": 0.030109372810137917,
+      "mean_rank_ic": -0.00030009430137456397,
+      "rank_ic_ir": -0.0012254630687407874,
+      "t_stat": -0.02963999736362739,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_mom_60_120",
+      "mean_ic": -0.013871835826851338,
+      "mean_rank_ic": -0.0001601210377928595,
+      "rank_ic_ir": -0.0007301403292774827,
+      "t_stat": -0.017659738581187915,
+      "n_days": 585
+    },
+    {
+      "feature": "vn_debt_equity_pit",
+      "mean_ic": 2.963878892948888e-18,
+      "mean_rank_ic": NaN,
+      "rank_ic_ir": NaN,
+      "t_stat": NaN,
+      "n_days": 0
+    }
+  ]
+}

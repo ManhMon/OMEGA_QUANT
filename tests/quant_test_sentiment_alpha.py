@@ -2,7 +2,7 @@ import pytest
 import pandas as pd
 from datetime import datetime, timezone
 
-from omega.quant.sentiment_alpha import SentimentAlphaEngine
+from omega.quant.signal.sentiment_alpha import SentimentAlphaEngine
 
 
 def test_sentiment_alpha_combination_vectorized():

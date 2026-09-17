@@ -34,20 +34,20 @@ import numpy as np
 import pandas as pd
 
 # V21 Core Intelligence imports
-from .feature_factory import (
+from omega.quant.feature.factory import (
     MomentumGenerator,
     VolatilityGenerator,
     VolumeLiquidityGenerator as VolumeGenerator,
     LimitLockDetector,
     LeakageAuditor,
 )
-from .alpha_factory import AlphaFactory, compute_core_alphas
-from .model_module import ModelModule, ModelConfig, TrainedModel
-from .signal_module import SignalModule, SignalModuleConfig
+from omega.quant.alpha.factory import AlphaFactory, compute_core_alphas
+from omega.quant.ml.model_module import ModelModule, ModelConfig, TrainedModel
+from omega.quant.signal.module import SignalModule, SignalModuleConfig
 from .ensemble_optimizer import EnsembleOptimizer, WeightsConfig
-from .genetic_programming import GeneticProgrammingEngine, GPConfig
-from .experiment_tracker import ExperimentTracker, ExperimentMetadata
-from .pit_manager import PITManager
+from omega.quant.evolution.genetic_programming import GeneticProgrammingEngine, GPConfig
+from omega.quant.monitoring.experiment_tracker import ExperimentTracker, ExperimentMetadata
+from omega.quant.risk.pit_manager import PITManager, PITConfig
 
 # Strategy Logic (upgraded from V21 layer_02)
 from .strategy.alpha_ensemble import AlphaEnsemble
@@ -62,7 +62,7 @@ from .strategy.rl_agent import RLPortfolioAgent, RLConfig
 from .strategy.transaction_cost_analyzer import TransactionCostAnalyzer, VNSlippageModel
 
 # Portfolio & Governance (upgraded from V21 layer_05/06)
-from .performance_tracker import PerformanceTracker
+from omega.quant.monitoring.performance_tracker import PerformanceTracker
 from .portfolio import PortfolioOptimizer
 # NOTE: OnlineModelUpdater, validate_ly_state moved to lazy imports (circular import fix)
 # NOTE: VnStockLiveDataProvider, ProductionDataPipeline moved to lazy imports (circular import fix)
@@ -88,6 +88,8 @@ class QuantEngineConfig:
     
     # Model training
     model_config: ModelConfig = field(default_factory=ModelConfig)
+    temporal_split: bool = True
+    train_ratio: float = 0.7
     
     # Signal generation
     signal_config: SignalModuleConfig = field(default_factory=SignalModuleConfig)
@@ -175,7 +177,7 @@ class QuantEngine:
             self.gp_engine = GeneticProgrammingEngine(gp_config)
         
         # PIT Manager
-        self.pit_manager = PITManager(lag_days=self.config.pit_lag_days)
+        self.pit_manager = PITManager(PITConfig())
         
         # Experiment Tracker
         self.experiment_tracker: Optional[ExperimentTracker] = None
@@ -348,14 +350,18 @@ class QuantEngine:
         if self.gp_engine and self.config.enable_genetic_programming:
             try:
                 # Prepare data for GP
-                feature_cols = [col for col in df_out.columns 
-                               if col not in ["date", symbol_col, "limit_lock"]]
+                target_col = "forward_return_1d" if "forward_return_1d" in df_out.columns else None
+                feature_cols = [
+                    col for col in df_out.columns
+                    if col not in ["date", symbol_col, "limit_lock", target_col]
+                    and not col.startswith(("forward_", "fwd_", "target_"))
+                ]
                 
                 # Run GP evolution
                 gp_results = self.gp_engine.evolve(
                     df_out, 
                     feature_cols=feature_cols,
-                    target_col="forward_return_1d" if "forward_return_1d" in df_out.columns else None,
+                    target_col=target_col,
                     symbol_col=symbol_col,
                 )
                 
@@ -394,16 +400,34 @@ class QuantEngine:
             df_out["model_prediction"] = 0.0
             return df_out
         
-        # Convert to FeatureMatrix format (ModelModule contract)
-        feature_matrix = self._to_feature_matrix(df_out, alpha_cols, symbol_col)
-        target_vector = self._to_target_vector(df_out, target_col, symbol_col)
+        if not 0.0 < self.config.train_ratio < 1.0:
+            raise ValueError("train_ratio must be between 0 and 1")
+
+        # Split on unique chronological dates before fitting or scoring.
+        dates = pd.Series(pd.to_datetime(df_out["date"], errors="raise")).drop_duplicates().sort_values().tolist()
+        split_index = int(len(dates) * self.config.train_ratio)
+        if self.config.temporal_split and (split_index < 1 or split_index >= len(dates)):
+            logger.warning("Insufficient dates for temporal train/OOS split")
+            df_out["model_prediction"] = 0.0
+            return df_out
+        train_dates = set(dates[:split_index]) if self.config.temporal_split else set(dates)
+        oos_dates = set(dates[split_index:]) if self.config.temporal_split else set(dates)
+        date_values = pd.to_datetime(df_out["date"], errors="raise")
+        train_df = df_out[date_values.isin(train_dates)]
+        oos_df = df_out[date_values.isin(oos_dates)]
+
+        # Convert DataFrame to FeatureMatrix format (ModelModule contract)
+        feature_matrix = self._to_feature_matrix(train_df, alpha_cols, symbol_col)
+        target_vector = self._to_target_vector(train_df, target_col, symbol_col)
         
         # Train model
         try:
             self.model_module.train(feature_matrix, target_vector)
             
             # Predict
-            predictions = self.model_module.predict(feature_matrix)
+            predictions = self.model_module.predict(
+                self._to_feature_matrix(oos_df, alpha_cols, symbol_col)
+            )
             
             # Merge predictions back
             pred_df = self._from_score_vector(predictions, symbol_col)
@@ -412,6 +436,7 @@ class QuantEngine:
                 on=["date", symbol_col],
                 how="left",
             )
+            df_out["model_prediction"] = df_out["model_prediction"].fillna(0.0)
             
             logger.info("Model training completed: IC=%.4f, Sharpe=%.4f",
                        self.model_module.model.metrics.get("ic", 0.0),
@@ -667,7 +692,14 @@ class QuantEngine:
 
     @staticmethod
     def get_vnstock_live_provider():
-        """Lazy import for VnStockLiveDataProvider (avoids circular import at package bootstrap)."""
+        """Lazy import for legacy VnStockLiveDataProvider (archived in Phase 3B)."""
+        import warnings
+        warnings.warn(
+            "VnStockLiveDataProvider is deprecated and archived in Phase 3B. "
+            "Network data fetch is forbidden. See archive/legacy_adapters/vnstock_live.py.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from ..data.vnstock_live import VnStockLiveDataProvider
         return VnStockLiveDataProvider
 

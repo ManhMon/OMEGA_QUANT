@@ -1,0 +1,20 @@
+You are Codex running under cx/gpt-5.5.
+Task: Advisory on Latent Space Dimensions and Retraining Frequency for OMEGA_QUANT.
+
+Background:
+We have integrated UnsupervisedLatentEncoder (a PyTorch MLP Autoencoder) into OMEGA_QUANT's feature evolution system (Option B).
+Current configuration:
+- Input sequence: shape (N, T, F), where T (lookback) = 60, F (n_features) = 114.
+- Flattened input dimension: T * F = 6840.
+- Model architecture:
+  Encoder: nn.Linear(6840, hidden_dim=128) -> ReLU -> nn.Linear(128, latent_dim=16)
+  Decoder: nn.Linear(latent_dim=16, hidden_dim=128) -> ReLU -> nn.Linear(128, 6840)
+- Execution environment: CPU-only, 16GB RAM.
+- Cross-Validation: Combinatorial Purged Cross-Validation (CPCV) with e.g. 45 folds. Currently, training is performed dynamically *inside* each fold (on the fold's training set).
+
+Questions to address:
+1. What is a reasonable latent space dimension (latent_dim) for this autoencoder? (Currently set to 16).
+2. What is the optimal retraining frequency for this autoencoder? Should it be retrained dynamically inside each cross-validation fold, or should it be pre-trained once, or updated periodically?
+3. How can we optimize these parameters to ensure fast execution and resource safety under the current 16GB RAM CPU-only configuration?
+
+Please provide a detailed, professional recommendation.

@@ -17,7 +17,7 @@ import pandas as pd
 import pytest
 from datetime import datetime, timedelta
 
-from omega.quant.attribution import (
+from omega.quant.monitoring.attribution import (
     _align_series,
     _validate_pit,
     AttributionConfig,

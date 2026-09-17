@@ -1,0 +1,24 @@
+{
+  "command": [
+    "C:\\Users\\GHC\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+    "C:\\Users\\GHC\\repos\\OMEGA_QUANT\\scripts\\profile_bottlenecks.py",
+    "--help"
+  ],
+  "warmup_runs": 1,
+  "measured_runs": [
+    {
+      "wall_clock_seconds": 0.4051340999940294,
+      "max_rss_mb": 79.50390625
+    },
+    {
+      "wall_clock_seconds": 0.3758700000034878,
+      "max_rss_mb": 79.60546875
+    },
+    {
+      "wall_clock_seconds": 0.3616757999989204,
+      "max_rss_mb": 79.6953125
+    }
+  ],
+  "median_wall_clock_seconds": 0.3758700000034878,
+  "max_rss_mb": 79.6953125
+}

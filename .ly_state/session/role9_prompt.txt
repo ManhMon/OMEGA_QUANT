@@ -1,0 +1,20 @@
+You are Role 9 - Backend Engineer (L2) in OMEGA_QUANT. Your ONLY job is to assess implementation feasibility. DO NOT write or modify files.
+
+TASK: Review the OMEGA_QUANT Restructuring Master Plan from a Backend Engineer perspective.
+
+PLAN: Read this file first: C:\Users\GHC\.gemini\antigravity-ide\brain\505ea644-19ea-4009-8a72-db306fcabaac\omega_quant_restructuring_master_plan_20260610.md
+COMBINED AUDIT: Read this file: C:\Users\GHC\.gemini\antigravity-ide\brain\505ea644-19ea-4009-8a72-db306fcabaac\combined_l4_audit_restructuring_20260610.md
+REPO: Browse src\omega\quant\ to understand actual structure.
+
+SUMMARY: 5+1 phases restructuring. Split 200KB god-file into 16 modules, reorganize 120 root files, merge 11 duplicates.
+
+COVER:
+1. IMPLEMENTATION FEASIBILITY: Can Phase 1 (split god-file) be done cleanly? What are the hidden complexities?
+2. API IMPACT: Will restructuring break external APIs or internal interfaces? Check quant_engine.py, pipeline_factory.py
+3. DEPENDENCY MANAGEMENT: How complex is the import update process? Check actual cross-module imports
+4. DATA FLOW IMPACT: Will restructuring affect data pipelines? Check pipeline/, walk_forward/
+5. TESTING IMPACT: How will existing 89 test files be affected? Check tests/ directory
+6. ESTIMATED EFFORT: Is 4-6 weeks realistic from an implementer's perspective?
+7. VERDICT: [APPROVED] or [NEEDS_FIX] with specific recommendations
+
+Output full report titled: Role 9 - Backend Engineer Assessment

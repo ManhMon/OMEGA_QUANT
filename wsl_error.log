@@ -1,0 +1,19 @@
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:weekly_evolution:=== WEEKLY GP ALPHA EVOLUTION START ===
+INFO:weekly_evolution:Config: regime=sideways, generations=100, pop=4000, ortho=promoted, alt_features=ON, workers=8, backend=threads
+INFO:weekly_evolution:Loaded market data: 681079 rows, columns: ['ticker', 'date', 'exchange', 'open', 'high', 'low', 'close', 'volume', 'as_of', 'available_at', 'source', 'price_scale', 'adjusted', 'rebuild_date']
+INFO:omega.quant.evolution.alternative_features:Generated 25 alternative features
+INFO:weekly_evolution:AlternativeFeatureGenerator: 25 features generated
+INFO:omega.quant.evolution.alternative_data_fetcher:Generated 10 alternative data signals
+INFO:weekly_evolution:AlternativeDataFetcher: 10 signals generated
+INFO:weekly_evolution:Prepared data: 482913 rows after lag/dropna
+INFO:weekly_evolution:Alternative features available: 35 / 35
+INFO:weekly_evolution:Sliding walk-forward split [Regime: sideways]: train=228244 rows (up to 2025-02-18), validate=77097 rows (up to 2025-09-25), test=76806 rows (up to 2026-05-18)
+INFO:weekly_evolution:Step 3b: Building orthogonalization baseline set (source=promoted)...
+INFO:weekly_evolution:Ortho baseline: no promoted alphas found, skipping
+INFO:weekly_evolution:Ortho baseline: 0 signals loaded
+INFO:weekly_evolution:Using n_jobs=8
+INFO:omega.quant.evolution.diverse_alpha_evolution:=== DIVERSE EVOLUTION: 4 islands x 1000 pop x 100 gen ===
+INFO:omega.quant.evolution.diverse_alpha_evolution:Diverse evaluation parallelism: backend=threading requested_n_jobs=8 seed=42

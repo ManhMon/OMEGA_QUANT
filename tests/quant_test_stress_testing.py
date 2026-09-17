@@ -1,7 +1,7 @@
 import pytest
 from datetime import datetime, timezone
 
-from omega.quant.stress_testing import (
+from omega.quant.risk.stress_testing import (
     ScenarioStressTester,
     StressScenario,
 )

@@ -1,0 +1,15 @@
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+Validation successful: All files present and accounted for in .ly_state/
+INFO:weekly_evolution:=== WEEKLY GP ALPHA EVOLUTION START ===
+INFO:weekly_evolution:Config: regime=all, generations=1, pop=50, ortho=none, alt_features=OFF, workers=2, backend=threads
+INFO:weekly_evolution:Loaded market data: 1776743 rows, columns: ['ticker', 'date', 'exchange', 'open', 'high', 'low', 'close', 'volume', 'as_of', 'available_at', 'source', 'price_scale', 'adjusted', 'rebuild_date']
+INFO:weekly_evolution:Prepared data: 1734598 rows after lag/dropna
+INFO:weekly_evolution:Alternative features available: 0 / 35
+INFO:weekly_evolution:Sliding walk-forward split [Regime: all]: train=986302 rows (up to 2021-12-01), validate=380132 rows (up to 2024-03-05), test=361355 rows (up to 2026-06-16)
+INFO:weekly_evolution:Using n_jobs=2
+INFO:omega.quant.evolution.diverse_alpha_evolution:=== DIVERSE EVOLUTION: 4 islands x 13 pop x 1 gen ===
+INFO:omega.quant.evolution.diverse_alpha_evolution:Diverse evaluation parallelism: backend=threading requested_n_jobs=2 seed=42
+INFO:omega.quant.evolution.diverse_alpha_evolution:Gen 0: Island best ICs: ['-0.2160', '0.2541', '-2.0000', '0.0000']
+INFO:omega.quant.evolution.diverse_alpha_evolution:Quality filter: 10 -> 0 candidates

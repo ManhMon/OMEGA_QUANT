@@ -1,0 +1,5 @@
+﻿timestamp=2026-07-27T21:10:25.9846193+07:00
+pointer_exists=False
+market_releases_entries=0
+quarantine_target=C:\Users\GHC\repos\OMEGA_QUANT\data\market_release_quarantine\20260727\20260727T205933015735Z_fe237e3f
+canonical_sha256=3446AB3EDF79908C6D2B13A0AA16F6D8AB9C4319E83D4838209CF9D1BCAC99AD

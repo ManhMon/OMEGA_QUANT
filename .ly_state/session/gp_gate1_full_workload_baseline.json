@@ -1,0 +1,34 @@
+{
+  "command": [
+    "C:\\Users\\GHC\\AppData\\Local\\Programs\\Python\\Python314\\python.exe",
+    "C:\\Users\\GHC\\repos\\OMEGA_QUANT\\scripts\\profile_bottlenecks.py",
+    "--end-date",
+    "2026-06-13",
+    "--top",
+    "10",
+    "--no-cprofile",
+    "--summary-output",
+    ".ly_state/session/gp_gate1_bottlenecks.json"
+  ],
+  "workload": "full script execution",
+  "warmup_runs": 1,
+  "measured_runs": [
+    {
+      "run": 1,
+      "wall_clock_seconds": 27.63919210000313,
+      "max_rss_mb": 1724.84375
+    },
+    {
+      "run": 2,
+      "wall_clock_seconds": 25.8017136999988,
+      "max_rss_mb": 1711.55078125
+    },
+    {
+      "run": 3,
+      "wall_clock_seconds": 25.718975899995712,
+      "max_rss_mb": 1731.09375
+    }
+  ],
+  "median_wall_clock_seconds": 25.8017136999988,
+  "max_rss_mb": 1731.09375
+}

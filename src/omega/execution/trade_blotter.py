@@ -19,6 +19,15 @@ from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
+# VND_FULL price-unit contract
+try:
+    from omega.data.vnd_price_contract import VND_FULL, THOUSANDS, get_price_multiplier
+except ImportError:
+    VND_FULL = "VND_FULL"
+    THOUSANDS = "THOUSANDS"
+    def get_price_multiplier(price_unit: str) -> float:
+        return 1.0 if price_unit == "VND_FULL" else 1000.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -32,7 +41,7 @@ class TradeRecord:
     side: str  # BUY/SELL
     quantity: int
     price: float
-    notional_value: float  # quantity * price * 1000.0
+    notional_value: float  # quantity * price * price_multiplier
     commission: float
     timestamp: float
     execution_algo: str = "DIRECT"
@@ -74,7 +83,8 @@ class TradeBlotter:
         price: float,
         commission_rate: float = 0.0015,  # 0.15% VN market standard
         execution_algo: str = "DIRECT",
-        slippage_bps: float = 0.0
+        slippage_bps: float = 0.0,
+        price_unit: str = VND_FULL
     ) -> TradeRecord:
         """
         Record a new trade.
@@ -85,10 +95,13 @@ class TradeBlotter:
             symbol: Stock symbol
             side: side (BUY/SELL)
             quantity: Trade quantity (shares)
-            price: Execution price
+            price: Execution price (VND_FULL by default, or THOUSANDS)
             commission_rate: Commission rate percentage
             execution_algo: Execution algorithm
             slippage_bps: slippage in basis points
+            price_unit: Price unit contract - VND_FULL (default) or THOUSANDS.
+                VND_FULL: price is in whole VND (e.g. 50000.0). Notional = qty * price.
+                THOUSANDS: price is in thousands (e.g. 50.0). Notional = qty * price * 1000.
             
         Returns:
             The created TradeRecord
@@ -96,9 +109,9 @@ class TradeBlotter:
         import time
         trade_id = f"TRD_{int(time.time() * 1000)}_{broker_order_id[-6:] if len(broker_order_id) > 6 else broker_order_id}"
         
-        # Calculate VN market trade notional
-        # Price is multiplied by 1000 to get actual VND
-        notional = quantity * price * 1000.0
+        # Calculate VN market trade notional (price_unit aware)
+        price_multiplier = get_price_multiplier(price_unit)
+        notional = quantity * price * price_multiplier
         commission = notional * commission_rate
         
         record = TradeRecord(

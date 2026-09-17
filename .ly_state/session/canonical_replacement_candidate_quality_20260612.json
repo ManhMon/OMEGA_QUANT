@@ -1,0 +1,96 @@
+{
+  "task": "CANONICAL_DATA_REPLACEMENT_EXCHANGE_RESOLUTION_20260612",
+  "timestamp": "2026-06-12T19:20:59.279769+07:00",
+  "role": "15 data-engineer",
+  "tier": 2,
+  "status": "AWAITING_L3_REVIEW",
+  "gate": "CANONICAL_DATA_REPLACEMENT_EXCHANGE_RESOLUTION",
+  "validation": {
+    "total_rows": 1687749,
+    "total_tickers": 666,
+    "date_min": "2015-01-05 00:00:00",
+    "date_max": "2026-06-12 00:00:00",
+    "columns": [
+      "ticker",
+      "date",
+      "exchange",
+      "open",
+      "high",
+      "low",
+      "close",
+      "volume",
+      "as_of",
+      "available_at",
+      "source",
+      "price_scale",
+      "adjusted",
+      "rebuild_date"
+    ],
+    "hose_tickers": 380,
+    "hnx_tickers": 286,
+    "hose_rows": 953440,
+    "hnx_rows": 734309,
+    "unknown_exchange_rows": 0,
+    "unknown_exchange_tickers": 0,
+    "duplicate_ticker_date_pairs": 0,
+    "null_counts": {
+      "open": 0,
+      "high": 0,
+      "low": 0,
+      "close": 0,
+      "volume": 0
+    },
+    "total_nulls": 0,
+    "ohlc_invariant_violations": 0,
+    "price_scale_distribution": {
+      "VND": 1687749
+    },
+    "zero_volume_rows": 262362,
+    "zero_volume_pct": 15.55,
+    "fully_inactive_tickers": 0,
+    "active_rows": 1425387,
+    "inactive_rows": 262362,
+    "adv_median": 18092.5,
+    "adv_mean": 916835.4466966967,
+    "adv_min": 0.0,
+    "adv_max": 51245825.0,
+    "pit_available_at_leaks": 0,
+    "daily_turnover_value_median_vnd": 296768250.0,
+    "daily_turnover_value_total_vnd": 15438078898512.75
+  },
+  "candidate_path": "data\\market_hose_hnx_2015_now_canonical_candidate_20260612.parquet",
+  "candidate_size_mb": 19.84,
+  "candidate_sha256": "206196b1889b1a308b302b5278cd7de0a55d30cad1a2003db22f4034e2514285",
+  "canonical_untouched": true,
+  "backup_created": true,
+  "backup_path": "data\\market_2015_now.backup_20260612.parquet",
+  "secrets_found": false,
+  "antigravity_scratch_paths": false,
+  "py_compile": {
+    "total_files": 6,
+    "passed": 6,
+    "failed": 0,
+    "files": [
+      {"path": "src/omega/data/exchange_resolver.py", "status": "PASS"},
+      {"path": "src/omega/data/vnstock_vci.py", "status": "PASS"},
+      {"path": "src/omega/data/vnstock_adapter.py", "status": "PASS"},
+      {"path": "src/omega/data/vnstock_ingest.py", "status": "PASS"},
+      {"path": "src/omega/data/vnd_price_contract.py", "status": "PASS"},
+      {"path": ".ly_state/session/tmp/canonical_exchange_resolution_20260612.py", "status": "PASS"}
+    ]
+  },
+  "pytest": {
+    "total_tests": 39,
+    "passed": 39,
+    "failed": 0,
+    "errors": 0,
+    "test_files": [
+      {"path": "tests/data_test_vnd_full_exchange_fix.py", "tests": 39, "status": "PASS"}
+    ],
+    "runtime_seconds": 5.70,
+    "python_version": "3.14.4",
+    "platform": "win32"
+  },
+  "canonical_sha256_verified": "e9b0b4f1754db11378aa7be6cc46b4a28ccfe2dc5c47612893ae1cccda8cab5f",
+  "canonical_untouched_post_verification": true
+}

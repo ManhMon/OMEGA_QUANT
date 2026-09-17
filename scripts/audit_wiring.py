@@ -3,6 +3,7 @@ import os
 import ast
 import pathlib
 import sys
+import argparse
 
 def parse_file_imports(file_path, module_name, is_init=False):
     """Parse all absolute and relative imports from a file."""
@@ -47,6 +48,14 @@ def parse_file_imports(file_path, module_name, is_init=False):
     return imports
 
 def main():
+    parser = argparse.ArgumentParser(description='Audit wiring of python modules in src/')
+    parser.add_argument('--include-legacy', action='store_true',
+                        help='Include legacy compatibility roots (evolution, features, indicators) in audit')
+    args = parser.parse_args()
+
+    # Define legacy compatibility roots to exclude by default
+    LEGACY_COMPAT_ROOTS = {'evolution', 'features', 'indicators'}
+
     root = pathlib.Path('.').resolve()
     src_dir = root / 'src'
     apps_dir = root / 'apps'
@@ -65,6 +74,11 @@ def main():
         mod_parts = list(rel.parts)
         mod_parts[-1] = p.stem
         mod_name = '.'.join(mod_parts)
+        
+        # Skip legacy compat roots unless explicitly requested
+        if not args.include_legacy and len(mod_parts) > 0 and mod_parts[0] in LEGACY_COMPAT_ROOTS:
+            continue
+            
         src_files[mod_name] = p
 
     # 2. Collect all imports across src/, apps/, and scripts/
@@ -108,6 +122,8 @@ def main():
     # 4. Print report
     print("========================================================================")
     print("WIRING AUDIT (RESOLVED RELATIVE IMPORTS) - UNIMPORTED/ORPHAN MODULES IN src/")
+    if not args.include_legacy:
+        print("(Excluding legacy compatibility roots: evolution, features, indicators)")
     print("========================================================================")
     total = 0
     for group, modules in sorted(unimported.items()):

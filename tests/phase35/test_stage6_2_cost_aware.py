@@ -46,7 +46,7 @@ def _make_engine(
     rebalance_freq=1,
     sector_cap_pct=1.0,
 ):
-    from omega.quant.phase35_walk_forward import Phase35WalkForwardEngine
+    from omega.quant.alpha.phase35 import Phase35WalkForwardEngine
     return Phase35WalkForwardEngine(
         alpha_module=_make_fake_alpha_module(),
         min_ic_threshold=min_ic_threshold,
@@ -305,11 +305,11 @@ class TestStage3MLGateIntegration(unittest.TestCase):
         train_df = self.df.iloc[:int(n * 0.7)].copy()
         test_df  = self.df.iloc[int(n * 0.7):].copy()
         with patch(
-            'omega.quant.phase35_walk_forward.validate_research_gate',
+            'omega.quant.alpha.phase35.validate_research_gate',
             return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}
         ):
             with patch(
-                'omega.quant.phase35_walk_forward._import_apply_sector_caps',
+                'omega.quant.alpha.phase35._import_apply_sector_caps',
                 return_value=lambda w, sm, sc: w,
             ):
                 return engine.run_fold(
@@ -375,15 +375,15 @@ class TestStage4XGBoostIntegration(unittest.TestCase):
         )
 
         with patch(
-            'omega.quant.phase35_walk_forward.validate_research_gate',
+            'omega.quant.alpha.phase35.validate_research_gate',
             return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}
         ):
             with patch(
-                'omega.quant.phase35_walk_forward.XGBoostAlphaEnsemble',
+                'omega.quant.alpha.phase35.XGBoostAlphaEnsemble',
                 return_value=mock_ensemble,
             ):
                 with patch(
-                    'omega.quant.phase35_walk_forward._import_apply_sector_caps',
+                    'omega.quant.alpha.phase35._import_apply_sector_caps',
                     return_value=lambda w, sm, sc: w,
                 ):
                     return engine.run_fold(
@@ -429,11 +429,11 @@ class TestBaselinePathUnchanged(unittest.TestCase):
         train_df = self.df.iloc[:int(n * 0.7)].copy()
         test_df  = self.df.iloc[int(n * 0.7):].copy()
         with patch(
-            'omega.quant.phase35_walk_forward.validate_research_gate',
+            'omega.quant.alpha.phase35.validate_research_gate',
             return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}
         ):
             with patch(
-                'omega.quant.phase35_walk_forward._import_apply_sector_caps',
+                'omega.quant.alpha.phase35._import_apply_sector_caps',
                 return_value=lambda w, sm, sc: w,
             ):
                 return engine.run_fold(
@@ -501,11 +501,11 @@ class TestPITSafety(unittest.TestCase):
         engine.adjust_alphas_for_cost = spy_adjust
 
         with patch(
-            'omega.quant.phase35_walk_forward.validate_research_gate',
+            'omega.quant.alpha.phase35.validate_research_gate',
             return_value={'passed': True, 'verdict': 'PASS', 'n_samples': 10}
         ):
             with patch(
-                'omega.quant.phase35_walk_forward._import_apply_sector_caps',
+                'omega.quant.alpha.phase35._import_apply_sector_caps',
                 return_value=lambda w, sm, sc: w,
             ):
                 engine.run_fold(

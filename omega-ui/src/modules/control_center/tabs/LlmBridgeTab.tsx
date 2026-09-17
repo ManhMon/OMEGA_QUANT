@@ -1,0 +1,2 @@
+import { useUiStore } from '../../../store/uiStore';
+export function LlmBridgeTab() { const setActiveModule = useUiStore((state) => state.setActiveModule); return <section className="space-y-3 rounded border border-white/10 bg-zinc-900 p-4 font-mono text-sm text-zinc-300"><p>LLM Bridge manages dedicated global, alpha, news, and macro model profiles.</p><button className="rounded bg-cyan-400 px-3 py-2 text-xs font-bold text-zinc-950" onClick={() => setActiveModule('model_registry')}>OPEN MODEL REGISTRY</button></section>; }

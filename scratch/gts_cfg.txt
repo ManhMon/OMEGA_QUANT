@@ -1,0 +1,7 @@
+195:    memory_headroom_reserve_bytes: int = MEMORY_HEADROOM_RESERVE_BYTES
+196:    worker_memory_estimate_bytes: int = WORKER_MEMORY_ESTIMATE_BYTES
+197:    parent_memory_budget_bytes: int = PARENT_MEMORY_BUDGET_BYTES
+198:    evaluation_chunk_size: int = 100
+399:    by_available = (available - config.memory_headroom_reserve_bytes) // max(1, config.worker_memory_estimate_bytes)
+400:    by_parent_budget = (config.parent_memory_budget_bytes - parent_rss) // max(1, config.worker_memory_estimate_bytes)
+919:                    chunk_size = max(n_jobs, self.config.evaluation_chunk_size)

@@ -1,0 +1,8 @@
+2026-07-25 19:29:09,029 INFO start total_symbols=0 log_path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_bootstrap_20260725_192909.log
+2026-07-25 19:29:10,474 INFO endpoint result symbol=INDUSTRY endpoint=list rows=177
+2026-07-25 19:29:10,488 INFO snapshot saved entity=industry_list path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\industry_list\2026-07-25\snapshot.parquet
+2026-07-25 19:29:18,639 INFO endpoint result symbol=INDUSTRY endpoint=sectors rows=695
+2026-07-25 19:29:18,644 INFO snapshot saved entity=industry_sectors path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\industry_sectors\2026-07-25\snapshot.parquet
+2026-07-25 19:29:19,082 INFO endpoint result symbol=INDUSTRY endpoint=list_by_industry rows=7809
+2026-07-25 19:29:19,092 INFO snapshot saved entity=industry_list_by_industry path=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots\industry_list_by_industry\2026-07-25\snapshot.parquet
+2026-07-25 19:29:19,093 INFO summary total_symbols_attempted=0 success_count=0 error_count=0 skipped=0 total_time=10.06s snapshot_root=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\graph_snapshots

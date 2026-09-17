@@ -1,0 +1,293 @@
+{
+  "gate": "AUTOMATED_ALPHA_DISCOVERY_REAL_DYNAMIC_EVAL_20260615",
+  "timestamp": "20260617_080929",
+  "data_source": "real_vn_market_parquet",
+  "data_rows": 70815,
+  "data_symbols": 30,
+  "data_date_range": "2015-01-05 00:00:00 to 2026-05-13 00:00:00",
+  "fold_used": "last_fold_train",
+  "train_rows": 20161,
+  "test_rows": 6980,
+  "pit_safe": true,
+  "train_only": true,
+  "no_live_promotion": true,
+  "discovery_result": {
+    "gate_id": "AUTOMATED_ALPHA_DISCOVERY_DYNAMIC_20260615",
+    "enabled": true,
+    "candidates_generated": 20,
+    "candidates_after_screening": 17,
+    "candidates_after_corr_filter": 15,
+    "candidate_cap": 20,
+    "corr_threshold": 0.85,
+    "min_ic": 0.01,
+    "seed": 42,
+    "n_selected": 15,
+    "selected_names": [
+      "auto_mom_ret_5",
+      "auto_mom_ret_10",
+      "auto_mom_ret_20",
+      "auto_mom_ret_60",
+      "auto_mr_zscore_20",
+      "auto_vol_ratio_5_20",
+      "auto_vol_range_pct",
+      "auto_vol_close_loc",
+      "auto_upper_shadow",
+      "auto_lower_shadow",
+      "auto_rsi_14",
+      "auto_rsi_7",
+      "auto_vol_atr_ratio_5_20",
+      "auto_vol_std_ratio_10_30",
+      "auto_mom_accel_5_10"
+    ],
+    "selected_ics": {
+      "auto_mom_ret_5": 0.024999,
+      "auto_mom_ret_10": 0.043833,
+      "auto_mom_ret_20": 0.026165,
+      "auto_mom_ret_60": 0.032653,
+      "auto_mr_zscore_20": 0.040095,
+      "auto_vol_ratio_5_20": 0.015452,
+      "auto_vol_range_pct": 0.015371,
+      "auto_vol_close_loc": -0.016658,
+      "auto_upper_shadow": 0.016512,
+      "auto_lower_shadow": -0.011748,
+      "auto_rsi_14": 0.05437,
+      "auto_rsi_7": 0.043764,
+      "auto_vol_atr_ratio_5_20": 0.012005,
+      "auto_vol_std_ratio_10_30": 0.018912,
+      "auto_mom_accel_5_10": -0.033713
+    },
+    "evidence": {
+      "status": "completed",
+      "candidates_generated": 20,
+      "candidates_screened": 17,
+      "candidates_filtered": 15,
+      "n_selected": 15,
+      "selected_names": [
+        "auto_mom_ret_5",
+        "auto_mom_ret_10",
+        "auto_mom_ret_20",
+        "auto_mom_ret_60",
+        "auto_mr_zscore_20",
+        "auto_vol_ratio_5_20",
+        "auto_vol_range_pct",
+        "auto_vol_close_loc",
+        "auto_upper_shadow",
+        "auto_lower_shadow",
+        "auto_rsi_14",
+        "auto_rsi_7",
+        "auto_vol_atr_ratio_5_20",
+        "auto_vol_std_ratio_10_30",
+        "auto_mom_accel_5_10"
+      ],
+      "selected_ics": {
+        "auto_mom_ret_5": 0.024999,
+        "auto_mom_ret_10": 0.043833,
+        "auto_mom_ret_20": 0.026165,
+        "auto_mom_ret_60": 0.032653,
+        "auto_mr_zscore_20": 0.040095,
+        "auto_vol_ratio_5_20": 0.015452,
+        "auto_vol_range_pct": 0.015371,
+        "auto_vol_close_loc": -0.016658,
+        "auto_upper_shadow": 0.016512,
+        "auto_lower_shadow": -0.011748,
+        "auto_rsi_14": 0.05437,
+        "auto_rsi_7": 0.043764,
+        "auto_vol_atr_ratio_5_20": 0.012005,
+        "auto_vol_std_ratio_10_30": 0.018912,
+        "auto_mom_accel_5_10": -0.033713
+      },
+      "selected_icirs": {
+        "auto_mom_ret_5": 0.089,
+        "auto_mom_ret_10": 0.1622,
+        "auto_mom_ret_20": 0.088,
+        "auto_mom_ret_60": 0.1011,
+        "auto_mr_zscore_20": 0.1593,
+        "auto_vol_ratio_5_20": 0.0718,
+        "auto_vol_range_pct": 0.0519,
+        "auto_vol_close_loc": -0.0738,
+        "auto_upper_shadow": 0.0722,
+        "auto_lower_shadow": -0.053,
+        "auto_rsi_14": 0.2162,
+        "auto_rsi_7": 0.1705,
+        "auto_vol_atr_ratio_5_20": 0.0525,
+        "auto_vol_std_ratio_10_30": 0.079,
+        "auto_mom_accel_5_10": -0.1267
+      },
+      "config": {
+        "candidate_cap": 20,
+        "corr_threshold": 0.85,
+        "min_ic": 0.01,
+        "seed": 42,
+        "return_col": "fwd_ret_5"
+      },
+      "pit_safe": true,
+      "train_only": true,
+      "no_live_promotion": true
+    }
+  },
+  "target_candidates_real_eval": {
+    "auto_rsi_14": {
+      "real_train_ic": 0.05437,
+      "real_train_icir": 0.2162,
+      "status": "FOUND"
+    },
+    "auto_mom_ret_60": {
+      "real_train_ic": 0.032653,
+      "real_train_icir": 0.1011,
+      "status": "FOUND"
+    },
+    "auto_mr_zscore_20": {
+      "real_train_ic": 0.040095,
+      "real_train_icir": 0.1593,
+      "status": "FOUND"
+    },
+    "auto_vol_std_ratio_10_30": {
+      "real_train_ic": 0.018912,
+      "real_train_icir": 0.079,
+      "status": "FOUND"
+    },
+    "auto_mom_ret_20": {
+      "real_train_ic": 0.026165,
+      "real_train_icir": 0.088,
+      "status": "FOUND"
+    }
+  },
+  "all_candidates_ranked": [
+    {
+      "rank": 1,
+      "name": "auto_rsi_14",
+      "ic": 0.05437,
+      "icir": 0.2162
+    },
+    {
+      "rank": 2,
+      "name": "auto_mom_ret_10",
+      "ic": 0.043833,
+      "icir": 0.1622
+    },
+    {
+      "rank": 3,
+      "name": "auto_rsi_7",
+      "ic": 0.043764,
+      "icir": 0.1705
+    },
+    {
+      "rank": 4,
+      "name": "auto_mr_zscore_20",
+      "ic": 0.040095,
+      "icir": 0.1593
+    },
+    {
+      "rank": 5,
+      "name": "auto_mom_accel_5_10",
+      "ic": -0.033713,
+      "icir": -0.1267
+    },
+    {
+      "rank": 6,
+      "name": "auto_mom_ret_60",
+      "ic": 0.032653,
+      "icir": 0.1011
+    },
+    {
+      "rank": 7,
+      "name": "auto_mom_ret_20",
+      "ic": 0.026165,
+      "icir": 0.088
+    },
+    {
+      "rank": 8,
+      "name": "auto_mom_ret_5",
+      "ic": 0.024999,
+      "icir": 0.089
+    },
+    {
+      "rank": 9,
+      "name": "auto_vol_std_ratio_10_30",
+      "ic": 0.018912,
+      "icir": 0.079
+    },
+    {
+      "rank": 10,
+      "name": "auto_vol_close_loc",
+      "ic": -0.016658,
+      "icir": -0.0738
+    },
+    {
+      "rank": 11,
+      "name": "auto_upper_shadow",
+      "ic": 0.016512,
+      "icir": 0.0722
+    },
+    {
+      "rank": 12,
+      "name": "auto_vol_ratio_5_20",
+      "ic": 0.015452,
+      "icir": 0.0718
+    },
+    {
+      "rank": 13,
+      "name": "auto_vol_range_pct",
+      "ic": 0.015371,
+      "icir": 0.0519
+    },
+    {
+      "rank": 14,
+      "name": "auto_vol_atr_ratio_5_20",
+      "ic": 0.012005,
+      "icir": 0.0525
+    },
+    {
+      "rank": 15,
+      "name": "auto_lower_shadow",
+      "ic": -0.011748,
+      "icir": -0.053
+    }
+  ],
+  "baseline_comparison": {
+    "baseline_source": "phase35_backtest_results_dynamic_universe_best_config_20260615_baseline.json",
+    "baseline_portfolio_ic": 0.024890916777227542,
+    "baseline_sharpe": 3.1105827204044014,
+    "baseline_max_dd_pct": -12.250649360240338,
+    "baseline_metrics_derived": {
+      "A_top_level_median_signed": -0.0022967052310384826,
+      "B_top_level_median_abs": 0.011677789069477725,
+      "C_fold_level_median_signed": -0.004028221052478508,
+      "D_fold_level_median_abs": 0.022095652090321265,
+      "n_top_level_alphas": 12,
+      "n_fold_level_values": 144
+    },
+    "primary_comparator": "B_top_level_median_abs",
+    "primary_comparator_value": 0.011677789069477725,
+    "primary_comparator_rationale": "Top-level |alpha_ics| median. Each baseline alpha has one averaged IC across 12 folds; each auto candidate has one IC on the train set. Using |IC| removes sign-convention differences between template directions and compares signal strength directly.",
+    "auto_mean_ic_signed": 0.0188008,
+    "auto_median_ic_signed": 0.018912,
+    "auto_median_abs_ic": 0.024999,
+    "auto_max_abs_ic": 0.05437,
+    "auto_positive_ic_rate": "12/15",
+    "delta_abs_vs_primary": 0.013321210930522276,
+    "delta_pct_vs_primary": 114.07305656290683
+  },
+  "integration_gap": "Phase35 walk-forward engine has config params for automated discovery (enable_automated_discovery, etc.) but per-fold invocation is NOT wired. self.enable_automated_discovery is assigned but never read in the fold loop. AutomatedAlphaDiscoveryFactory is not imported in phase35.py. Therefore, direct integration into Phase35 backtest is UNSUPPORTED. This evaluation uses standalone real-data IC/transfer diagnostics on the train portion of the last walk-forward fold.",
+  "transfer_diagnostics": {
+    "n_evaluated": 15,
+    "n_recommended": 12,
+    "verdicts": {
+      "auto_mom_ret_5": "RECOMMEND",
+      "auto_mom_ret_10": "RECOMMEND",
+      "auto_mom_ret_20": "RECOMMEND",
+      "auto_mom_ret_60": "RECOMMEND",
+      "auto_mr_zscore_20": "RECOMMEND",
+      "auto_vol_ratio_5_20": "RECOMMEND",
+      "auto_vol_range_pct": "RECOMMEND",
+      "auto_vol_close_loc": "SKIP_LOW_IC",
+      "auto_upper_shadow": "RECOMMEND",
+      "auto_lower_shadow": "SKIP_LOW_IC",
+      "auto_rsi_14": "RECOMMEND",
+      "auto_rsi_7": "RECOMMEND",
+      "auto_vol_atr_ratio_5_20": "RECOMMEND",
+      "auto_vol_std_ratio_10_30": "RECOMMEND",
+      "auto_mom_accel_5_10": "SKIP_LOW_IC"
+    }
+  }
+}

@@ -1,0 +1,61 @@
+{
+  "gate": "SIMULATED_TRADING_INTEGRATION_20260619",
+  "timestamp": "2026-08-13T23:31:53.045687+00:00",
+  "signal_date": "2026-06-19",
+  "signal_source": "SIMULATED_TRADING_INTEGRATION_20260619",
+  "total_diffs": 4,
+  "total_executed": 4,
+  "completed": 0,
+  "failed": 4,
+  "results": [
+    {
+      "symbol": "FPT",
+      "side": "BUY",
+      "quantity": 1500,
+      "price": 100000.0,
+      "pipeline_state": "<MagicMock name='build_pipeline().submit_order().state.value' id='2414427200480'>",
+      "order_id": "<MagicMock name='build_pipeline().submit_order().order_id' id='2414427203168'>",
+      "error": "<MagicMock name='build_pipeline().submit_order().error' id='2414427202496'>",
+      "target_weight": 0.08,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "HPG",
+      "side": "BUY",
+      "quantity": 3000,
+      "price": 30000.0,
+      "pipeline_state": "<MagicMock name='build_pipeline().submit_order().state.value' id='2414427200480'>",
+      "order_id": "<MagicMock name='build_pipeline().submit_order().order_id' id='2414427203168'>",
+      "error": "<MagicMock name='build_pipeline().submit_order().error' id='2414427202496'>",
+      "target_weight": 0.05,
+      "current_weight": 0.0
+    },
+    {
+      "symbol": "SSI",
+      "side": "SELL",
+      "quantity": 2000,
+      "price": 25000.0,
+      "pipeline_state": "<MagicMock name='build_pipeline().submit_order().state.value' id='2414427200480'>",
+      "order_id": "<MagicMock name='build_pipeline().submit_order().order_id' id='2414427203168'>",
+      "error": "<MagicMock name='build_pipeline().submit_order().error' id='2414427202496'>",
+      "target_weight": 0.0,
+      "current_weight": 0.025
+    },
+    {
+      "symbol": "VNM",
+      "side": "BUY",
+      "quantity": 1000,
+      "price": 80000.0,
+      "pipeline_state": "<MagicMock name='build_pipeline().submit_order().state.value' id='2414427200480'>",
+      "order_id": "<MagicMock name='build_pipeline().submit_order().order_id' id='2414427203168'>",
+      "error": "<MagicMock name='build_pipeline().submit_order().error' id='2414427202496'>",
+      "target_weight": 0.1,
+      "current_weight": 0.04
+    }
+  ],
+  "market_data_provenance": {
+    "code": "MARKET_DATA_EXECUTABLE",
+    "attempt_id": "test",
+    "receipt_path": "test"
+  }
+}

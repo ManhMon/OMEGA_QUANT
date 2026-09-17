@@ -1,0 +1,60 @@
+{
+  "run_date": "2026-06-17T11:55:13.834969",
+  "total_promoted": 2,
+  "target_horizon": 5,
+  "multi_target_horizons": [
+    3,
+    5,
+    10
+  ],
+  "multi_target_weights": [
+    0.5,
+    0.3,
+    0.2
+  ],
+  "train_ratio": 0.7,
+  "pit_safety": {
+    "t1_lag": true,
+    "chronological_split": true,
+    "no_lookahead": true
+  },
+  "orthogonalization": {
+    "enabled": true
+  },
+  "alternative_features": {
+    "enabled": true,
+    "expected_columns": 35
+  },
+  "alphas": [
+    {
+      "alpha_id": "gp_alpha_20260617_000",
+      "formula": "(target_h10 - rank((vn_expiry_effect ts_rank 10)))",
+      "ic": 0.165288,
+      "sharpe": 0.471126,
+      "fitness": 0.246585,
+      "horizon": 5,
+      "multi_target_horizons": [
+        3,
+        5,
+        10
+      ],
+      "train_end_date": "2026-06-17 00:00:00",
+      "promoted_at": "2026-06-17T11:55:13.829204"
+    },
+    {
+      "alpha_id": "gp_alpha_20260617_001",
+      "formula": "neg(vn_sector_rel_momentum_20)",
+      "ic": -0.11159,
+      "sharpe": 0.368646,
+      "fitness": 0.020629,
+      "horizon": 5,
+      "multi_target_horizons": [
+        3,
+        5,
+        10
+      ],
+      "train_end_date": "2026-06-17 00:00:00",
+      "promoted_at": "2026-06-17T11:55:13.829944"
+    }
+  ]
+}

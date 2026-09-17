@@ -1,0 +1,33 @@
+{
+  "test_id": "llm_scoring_real_online_smoke_20260612",
+  "timestamp": "2026-06-12T10:49:27.508639",
+  "provider": "openai-compatible",
+  "base_url_set": true,
+  "model": "cx/gpt-5.5",
+  "status": "SUCCESS",
+  "panel_shape": {
+    "rows": 100,
+    "cols": 5
+  },
+  "feature_counts": {
+    "before": 5,
+    "after": 21,
+    "added": 16
+  },
+  "llm_features": [
+    "alpha_llm_0"
+  ],
+  "llm_feature_count": 1,
+  "feature_groups": {
+    "alt_features": 0,
+    "alt_data": 0,
+    "arsenal": 15,
+    "llm_synth": 1
+  },
+  "validation_metadata": {
+    "deployable": 0,
+    "unsupervised_only": 1,
+    "mode": "unsupervised_only (no labels in feature generation)"
+  },
+  "secrets_check": "PASS"
+}

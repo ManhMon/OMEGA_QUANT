@@ -1,0 +1,462 @@
+RUN h35_validation horizons=3,5 method=validation_ic
+\U0001f4e6 Vnstock 4.0.4 is available
+Current: 4.0.2 (Python 3.14)
+Update: pip install vnstock --upgrade
+Release: https://vnstocks.com/docs/tai-lieu/lich-su-phien-ban
+WARNING:omega.quant.promoted_alphas:Could not import ultimate_alpha_arsenal: cannot import name 'compute_returns' from partially initialized module 'omega.quant.ultimate_alpha_arsenal' (most likely due to a circular import) (C:\Users\GHC\repos\OMEGA_QUANT\src\omega\quant\ultimate_alpha_arsenal.py). Using legacy implementation.
+INFO:omega.quant.alpha_factory_legacy:Successfully imported ultimate_alpha_arsenal, vn_alphas, microstructure_alphas, and promoted_alphas
+INFO:__main__:================================================================================
+INFO:__main__:Phase 3.5 Walk-Forward Backtest - Real VN Market Data
+INFO:__main__:================================================================================
+INFO:__main__:Configuration:
+INFO:__main__:  Date Range: 2015-01-05 to 2026-05-14
+INFO:__main__:  Top Symbols: 30
+INFO:__main__:  Folds: 8
+INFO:__main__:  Train Window: 3 year(s)
+INFO:__main__:  Test Window: 1 year(s)
+INFO:__main__:  Min IC Threshold: 0.02
+INFO:__main__:  Top Alphas: 5
+INFO:__main__:  Return Horizon: T+5
+INFO:__main__:  [Stage2] Top N Stocks: 15
+INFO:__main__:  [Stage2] Rebalance Freq: every 7 days
+INFO:__main__:  [Stage2] Sector Cap: 40%
+INFO:__main__:  [Stage4] Use XGBoost: True
+INFO:__main__:  [Stage6.2] Cost Aware: True (tcost=30.0 bps)
+INFO:__main__:  [Stage6.3] Drawdown Control: True (threshold=5.0%)
+INFO:__main__:  [Evolved] Enable: True (blend_weight=0.40)
+INFO:__main__:  [P10] Multi-Horizon Blend: True (horizons=3,5, method=validation_ic)
+INFO:__main__:  [UI Context] Initial Capital: 1,000,000,000 VND | Strategy: multi_factor
+INFO:__main__:
+INFO:__main__:Step 1: Loading and preparing data...
+INFO:phase35_data_loader:Loading data from C:\Users\GHC\repos\OMEGA_QUANT\data\market_2015_now.parquet
+INFO:phase35_data_loader:Loaded 3,391,112 rows, 1534 symbols, date range: 2015-01-05 00:00:00 to 2026-05-13 00:00:00
+INFO:phase35_data_loader:Filters removed 1,552,877 rows (45.8%)
+INFO:phase35_data_loader:Remaining: 1,838,235 rows, 1384 symbols
+INFO:phase35_data_loader:Selected 30 symbols (max 30) with ADTV > 5B, price > 5k. Top 10: ['HPG', 'STB', 'VHM', 'VPB', 'SSI', 'GEL', 'TCB', 'SHB', 'NVL', 'VIX']...
+INFO:phase35_data_loader:Computed forward returns for horizons: [1, 3, 5]
+INFO:phase35_data_loader:Data preparation complete: 68,355 rows, 30 symbols
+INFO:__main__:Data loaded: 68,355 rows, 30 symbols
+INFO:__main__:Date range: 2015-01-05 00:00:00 to 2026-05-13 00:00:00
+INFO:__main__:
+INFO:__main__:Step 2: Creating walk-forward splits...
+INFO:phase35_data_loader:Creating 8 walk-forward folds
+INFO:phase35_data_loader:Date range: 2015-01-05 00:00:00 to 2026-05-13 00:00:00
+INFO:phase35_data_loader:Fold 1: train=2015-01-05 to 2018-01-04 (16,237 rows), test=2018-01-04 to 2019-01-04 (6,323 rows)
+INFO:phase35_data_loader:Fold 2: train=2016-01-05 to 2019-01-04 (17,415 rows), test=2019-01-04 to 2020-01-04 (6,383 rows)
+INFO:phase35_data_loader:Fold 3: train=2017-01-04 to 2020-01-04 (18,412 rows), test=2020-01-04 to 2021-01-03 (6,337 rows)
+INFO:phase35_data_loader:Fold 4: train=2018-01-04 to 2021-01-03 (19,043 rows), test=2021-01-03 to 2022-01-03 (6,297 rows)
+INFO:phase35_data_loader:Fold 5: train=2019-01-04 to 2022-01-03 (19,017 rows), test=2022-01-03 to 2023-01-03 (6,124 rows)
+INFO:phase35_data_loader:Fold 6: train=2020-01-04 to 2023-01-03 (18,758 rows), test=2023-01-03 to 2024-01-03 (6,147 rows)
+INFO:phase35_data_loader:Fold 7: train=2021-01-03 to 2024-01-03 (18,568 rows), test=2024-01-03 to 2025-01-02 (6,078 rows)
+INFO:phase35_data_loader:Fold 8: train=2022-01-03 to 2025-01-02 (18,349 rows), test=2025-01-02 to 2026-01-02 (6,138 rows)
+INFO:phase35_data_loader:Created 8 valid folds
+INFO:__main__:Created 8 valid folds
+INFO:__main__:
+INFO:__main__:Step 3: Running walk-forward backtest...
+INFO:omega.quant.phase35_walk_forward:Starting walk-forward backtest with 8 folds
+INFO:omega.quant.phase35_walk_forward:Running fold 1
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 1: Multi-horizon blending enabled, horizons=[3, 5], method=validation_ic
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=1, horizon=3, return_col=fwd_ret_3
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 embargo: train rows before=16237, after=16159
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 train ICs: {'alpha_p34_volatility_compression_5': np.float64(-0.0069442216753210495), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.03669772308010176), 'alpha_p34_kyle_lambda_20': np.float64(0.0009530985638869865), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.03595195518843636), 'alpha_p34_close_auction_drift_10': np.float64(0.026420052826628203), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.005064644508538527), 'alpha_p34_micro_momentum_5_20': np.float64(-0.014105209034934464)}
+INFO:omega.quant.phase35_walk_forward:Selected top 3 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_close_auction_drift_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0367 < 0.05 (val_ic=-0.0367, n_samples=231)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0360 < 0.05 (val_ic=-0.0360, n_samples=231)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_close_auction_drift_10]: FAIL: val_ic 0.0264 < 0.05 (val_ic=0.0264, n_samples=231)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_close_auction_drift_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (3/3): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_close_auction_drift_10']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 3 (3 alphas tested, 0 passed) - excluding horizon
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=1, horizon=5, return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 embargo: train rows before=16237, after=16109
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 train ICs: {'alpha_p34_volatility_compression_5': np.float64(-0.01697291060407786), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.031731100869975236), 'alpha_p34_kyle_lambda_20': np.float64(-0.008530681867204822), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.012203180552474447), 'alpha_p34_close_auction_drift_10': np.float64(0.04287681884879846), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.001505785924698409), 'alpha_p34_micro_momentum_5_20': np.float64(-0.005799612565288582)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_close_auction_drift_10]: FAIL: val_ic 0.0429 < 0.05 (val_ic=0.0429, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0317 < 0.05 (val_ic=-0.0317, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 5 (2 alphas tested, 0 passed) - excluding horizon
+WARNING:omega.quant.phase35_walk_forward:[P10] Fold 1: All requested horizons failed/missing. Falling back to single-horizon baseline using return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 1: Executing fallback to single-horizon baseline (return_col=fwd_ret_5)
+INFO:omega.quant.phase35_walk_forward:Running fold 1
+INFO:omega.quant.phase35_walk_forward:Fold 1 embargo: h=5, train rows before=16237, after=16109
+INFO:omega.quant.phase35_walk_forward:Fold 1 validation split: train_actual=10461 rows, val_actual=5648 rows
+INFO:omega.quant.phase35_walk_forward:Fold 1 train ICs (strategy=multi_factor): {'alpha_p34_volatility_compression_5': np.float64(-0.01697291060407786), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.031731100869975236), 'alpha_p34_kyle_lambda_20': np.float64(-0.008530681867204822), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.012203180552474447), 'alpha_p34_close_auction_drift_10': np.float64(0.04287681884879846), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.001505785924698409), 'alpha_p34_micro_momentum_5_20': np.float64(-0.005799612565288582)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_close_auction_drift_10]: FAIL: val_ic 0.0429 < 0.05 (val_ic=0.0429, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0317 < 0.05 (val_ic=-0.0317, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.alpha_ensemble_xgboost:XGBoost ensemble trained. Cutoff: 2017-12-26, Embargo: 0d
+INFO:omega.quant.phase35_walk_forward:Fold 1: XGBoost path active, signal std=0.0549
+INFO:omega.quant.evolution.genetic_engine:Starting GP evolution: pop=150, gen=3
+INFO:omega.quant.evolution.genetic_engine:Gen 1: IC=0.0538, Fitness=0.0435
+INFO:omega.quant.evolution.genetic_engine:Gen 2: IC=0.0496, Fitness=0.0405
+INFO:omega.quant.evolution.genetic_engine:Gen 3: IC=0.0538, Fitness=0.0435
+INFO:omega.quant.phase35_walk_forward:GP ensemble (n=3): train_ic=0.0338, test_ic=0.0076, signal_std=0.7495
+INFO:omega.quant.phase35_walk_forward:Fold 1: Evolved signal blended (evolved=0.068, handcrafted=0.932, gp_train_ic=0.0338, adaptive=True)
+INFO:omega.quant.phase35_walk_forward:Fold 1 raw signal IC: 0.0074, daily CS IC: 0.0152
+INFO:omega.quant.phase35_walk_forward:Stage 2 constraints applied: top_n=15, final_rebal_freq=5, sector_cap=40%, alphas=['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10'], dynamic=YES
+INFO:omega.quant.phase35_walk_forward:Fold 1: Drawdown control stop-out triggered at 2018-01-25 00:00:00
+INFO:omega.quant.phase35_walk_forward:Fold 1 results: RawIC=0.0074, RawCS_IC=0.0152, PortfolioIC=0.0189, Sharpe=2.1189, MaxDD=-10.55%, PnL=+390,110,096 VND
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 1: Fallback complete. Reason: all_horizons_failed_or_missing, Requested horizons: [3, 5], Successful horizons: []
+INFO:omega.quant.phase35_walk_forward:Running fold 2
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 2: Multi-horizon blending enabled, horizons=[3, 5], method=validation_ic
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=2, horizon=3, return_col=fwd_ret_3
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 embargo: train rows before=17415, after=17334
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 train ICs: {'alpha_p34_volatility_compression_5': np.float64(0.004732660205378552), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.016794868293631037), 'alpha_p34_kyle_lambda_20': np.float64(0.015924106619215117), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.02084143425516898), 'alpha_p34_close_auction_drift_10': np.float64(-0.0011884387540674023), 'alpha_p34_liquidity_provision_ratio_10': np.float64(0.009821616584845708), 'alpha_p34_micro_momentum_5_20': np.float64(0.029474572081630266)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_micro_momentum_5_20', 'alpha_p34_tick_signed_volume_imbalance_5']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_micro_momentum_5_20]: FAIL: val_ic 0.0295 < 0.05 (val_ic=0.0295, n_samples=231)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0208 < 0.05 (val_ic=-0.0208, n_samples=231)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_micro_momentum_5_20', 'alpha_p34_tick_signed_volume_imbalance_5'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_micro_momentum_5_20', 'alpha_p34_tick_signed_volume_imbalance_5']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 3 (2 alphas tested, 0 passed) - excluding horizon
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=2, horizon=5, return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 embargo: train rows before=17415, after=17280
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 train ICs: {'alpha_p34_volatility_compression_5': np.float64(-0.00196165803939267), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.02149976145708636), 'alpha_p34_kyle_lambda_20': np.float64(0.007055773490971661), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.00602159029130699), 'alpha_p34_close_auction_drift_10': np.float64(0.01808838917345765), 'alpha_p34_liquidity_provision_ratio_10': np.float64(0.0159287668561797), 'alpha_p34_micro_momentum_5_20': np.float64(0.041199036029830466)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_micro_momentum_5_20', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_micro_momentum_5_20]: FAIL: val_ic 0.0412 < 0.05 (val_ic=0.0412, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0215 < 0.05 (val_ic=-0.0215, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_micro_momentum_5_20', 'alpha_p34_volume_clock_acceleration_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_micro_momentum_5_20', 'alpha_p34_volume_clock_acceleration_10']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 5 (2 alphas tested, 0 passed) - excluding horizon
+WARNING:omega.quant.phase35_walk_forward:[P10] Fold 2: All requested horizons failed/missing. Falling back to single-horizon baseline using return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 2: Executing fallback to single-horizon baseline (return_col=fwd_ret_5)
+INFO:omega.quant.phase35_walk_forward:Running fold 2
+INFO:omega.quant.phase35_walk_forward:Fold 2 embargo: h=5, train rows before=17415, after=17280
+INFO:omega.quant.phase35_walk_forward:Fold 2 validation split: train_actual=10995 rows, val_actual=6285 rows
+INFO:omega.quant.phase35_walk_forward:Fold 2 train ICs (strategy=multi_factor): {'alpha_p34_volatility_compression_5': np.float64(-0.00196165803939267), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.02149976145708636), 'alpha_p34_kyle_lambda_20': np.float64(0.007055773490971661), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.00602159029130699), 'alpha_p34_close_auction_drift_10': np.float64(0.01808838917345765), 'alpha_p34_liquidity_provision_ratio_10': np.float64(0.0159287668561797), 'alpha_p34_micro_momentum_5_20': np.float64(0.041199036029830466)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_micro_momentum_5_20', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_micro_momentum_5_20]: FAIL: val_ic 0.0412 < 0.05 (val_ic=0.0412, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0215 < 0.05 (val_ic=-0.0215, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_micro_momentum_5_20', 'alpha_p34_volume_clock_acceleration_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_micro_momentum_5_20', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.alpha_ensemble_xgboost:XGBoost ensemble trained. Cutoff: 2018-12-25, Embargo: 0d
+INFO:omega.quant.phase35_walk_forward:Fold 2: XGBoost path active, signal std=0.0383
+INFO:omega.quant.evolution.genetic_engine:Starting GP evolution: pop=150, gen=3
+INFO:omega.quant.evolution.genetic_engine:Gen 1: IC=0.0988, Fitness=0.0897
+INFO:omega.quant.evolution.genetic_engine:Gen 2: IC=0.0988, Fitness=0.0697
+INFO:omega.quant.evolution.genetic_engine:Gen 3: IC=0.0850, Fitness=0.0758
+INFO:omega.quant.phase35_walk_forward:GP ensemble (n=3): train_ic=-0.0026, test_ic=0.0109, signal_std=0.6532
+INFO:omega.quant.phase35_walk_forward:Fold 2: Evolved signal blended (evolved=0.040, handcrafted=0.960, gp_train_ic=-0.0026, adaptive=True)
+INFO:omega.quant.phase35_walk_forward:Fold 2 raw signal IC: 0.0165, daily CS IC: 0.0157
+INFO:omega.quant.phase35_walk_forward:Stage 2 constraints applied: top_n=15, final_rebal_freq=7, sector_cap=40%, alphas=['alpha_p34_micro_momentum_5_20', 'alpha_p34_volume_clock_acceleration_10'], dynamic=YES
+INFO:omega.quant.phase35_walk_forward:Fold 2: Drawdown control stop-out triggered at 2019-03-14 00:00:00
+INFO:omega.quant.phase35_walk_forward:Fold 2 results: RawIC=0.0165, RawCS_IC=0.0157, PortfolioIC=-0.0468, Sharpe=2.8423, MaxDD=-5.38%, PnL=+492,304,817 VND
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 2: Fallback complete. Reason: all_horizons_failed_or_missing, Requested horizons: [3, 5], Successful horizons: []
+INFO:omega.quant.phase35_walk_forward:Running fold 3
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 3: Multi-horizon blending enabled, horizons=[3, 5], method=validation_ic
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=3, horizon=3, return_col=fwd_ret_3
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 embargo: train rows before=18412, after=18331
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 train ICs: {'alpha_p34_volatility_compression_5': np.float64(-0.007670947410807625), 'alpha_p34_volume_clock_acceleration_10': np.float64(0.03916907067172282), 'alpha_p34_kyle_lambda_20': np.float64(-0.01753779397627713), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.02013470513767163), 'alpha_p34_close_auction_drift_10': np.float64(-0.006541736911270423), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.0034475447955405435), 'alpha_p34_micro_momentum_5_20': np.float64(0.02145437652781198)}
+INFO:omega.quant.phase35_walk_forward:Selected top 3 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20', 'alpha_p34_tick_signed_volume_imbalance_5']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic 0.0392 < 0.05 (val_ic=0.0392, n_samples=231)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_micro_momentum_5_20]: FAIL: val_ic 0.0215 < 0.05 (val_ic=0.0215, n_samples=231)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0201 < 0.05 (val_ic=-0.0201, n_samples=231)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20', 'alpha_p34_tick_signed_volume_imbalance_5'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (3/3): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20', 'alpha_p34_tick_signed_volume_imbalance_5']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 3 (3 alphas tested, 0 passed) - excluding horizon
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=3, horizon=5, return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 embargo: train rows before=18412, after=18277
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 train ICs: {'alpha_p34_volatility_compression_5': np.float64(-0.0033039767881185463), 'alpha_p34_volume_clock_acceleration_10': np.float64(0.045794069443659866), 'alpha_p34_kyle_lambda_20': np.float64(-0.007454175187710995), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.01295854780502999), 'alpha_p34_close_auction_drift_10': np.float64(0.0025548376222808526), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.0029734186661090414), 'alpha_p34_micro_momentum_5_20': np.float64(0.023751304185948254)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic 0.0458 < 0.05 (val_ic=0.0458, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_micro_momentum_5_20]: FAIL: val_ic 0.0238 < 0.05 (val_ic=0.0238, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 5 (2 alphas tested, 0 passed) - excluding horizon
+WARNING:omega.quant.phase35_walk_forward:[P10] Fold 3: All requested horizons failed/missing. Falling back to single-horizon baseline using return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 3: Executing fallback to single-horizon baseline (return_col=fwd_ret_5)
+INFO:omega.quant.phase35_walk_forward:Running fold 3
+INFO:omega.quant.phase35_walk_forward:Fold 3 embargo: h=5, train rows before=18412, after=18277
+INFO:omega.quant.phase35_walk_forward:Fold 3 validation split: train_actual=11924 rows, val_actual=6353 rows
+INFO:omega.quant.phase35_walk_forward:Fold 3 train ICs (strategy=multi_factor): {'alpha_p34_volatility_compression_5': np.float64(-0.0033039767881185463), 'alpha_p34_volume_clock_acceleration_10': np.float64(0.045794069443659866), 'alpha_p34_kyle_lambda_20': np.float64(-0.007454175187710995), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.01295854780502999), 'alpha_p34_close_auction_drift_10': np.float64(0.0025548376222808526), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.0029734186661090414), 'alpha_p34_micro_momentum_5_20': np.float64(0.023751304185948254)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic 0.0458 < 0.05 (val_ic=0.0458, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_micro_momentum_5_20]: FAIL: val_ic 0.0238 < 0.05 (val_ic=0.0238, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20']
+INFO:omega.quant.alpha_ensemble_xgboost:XGBoost ensemble trained. Cutoff: 2019-12-26, Embargo: 0d
+INFO:omega.quant.phase35_walk_forward:Fold 3: XGBoost path active, signal std=0.0448
+INFO:omega.quant.evolution.genetic_engine:Starting GP evolution: pop=150, gen=3
+INFO:omega.quant.evolution.genetic_engine:Gen 1: IC=0.0773, Fitness=0.0732
+INFO:omega.quant.evolution.genetic_engine:Gen 2: IC=0.0773, Fitness=0.0532
+INFO:omega.quant.evolution.genetic_engine:Gen 3: IC=0.0773, Fitness=0.0532
+INFO:omega.quant.phase35_walk_forward:GP ensemble (n=3): train_ic=0.0875, test_ic=-0.0284, signal_std=0.7820
+INFO:omega.quant.phase35_walk_forward:Fold 3: Evolved signal blended (evolved=0.175, handcrafted=0.825, gp_train_ic=0.0875, adaptive=True)
+INFO:omega.quant.phase35_walk_forward:Fold 3 raw signal IC: -0.0063, daily CS IC: -0.0014
+INFO:omega.quant.phase35_walk_forward:Stage 2 constraints applied: top_n=15, final_rebal_freq=7, sector_cap=40%, alphas=['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_micro_momentum_5_20'], dynamic=YES
+INFO:omega.quant.phase35_walk_forward:Fold 3: Drawdown control stop-out triggered at 2020-01-17 00:00:00
+INFO:omega.quant.phase35_walk_forward:Fold 3 results: RawIC=-0.0063, RawCS_IC=-0.0014, PortfolioIC=-0.0385, Sharpe=1.2956, MaxDD=-7.62%, PnL=+129,659,359 VND
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 3: Fallback complete. Reason: all_horizons_failed_or_missing, Requested horizons: [3, 5], Successful horizons: []
+INFO:omega.quant.phase35_walk_forward:Running fold 4
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 4: Multi-horizon blending enabled, horizons=[3, 5], method=validation_ic
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=4, horizon=3, return_col=fwd_ret_3
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 embargo: train rows before=19043, after=18962
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 train ICs: {'alpha_p34_volatility_compression_5': np.float64(0.02031917858602545), 'alpha_p34_volume_clock_acceleration_10': np.float64(0.011471556094956072), 'alpha_p34_kyle_lambda_20': np.float64(-0.016506862165839485), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.026441061397170437), 'alpha_p34_close_auction_drift_10': np.float64(0.014633639420179742), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.009308307525359846), 'alpha_p34_micro_momentum_5_20': np.float64(0.01237307195717506)}
+INFO:omega.quant.phase35_walk_forward:Selected top 1 alphas: ['alpha_p34_tick_signed_volume_imbalance_5']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0264 < 0.05 (val_ic=-0.0264, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_tick_signed_volume_imbalance_5'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (1/1): ['alpha_p34_tick_signed_volume_imbalance_5']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 3 (1 alphas tested, 0 passed) - excluding horizon
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=4, horizon=5, return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 embargo: train rows before=19043, after=18908
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 train ICs: {'alpha_p34_volatility_compression_5': np.float64(0.02124184759600261), 'alpha_p34_volume_clock_acceleration_10': np.float64(0.010575329784757285), 'alpha_p34_kyle_lambda_20': np.float64(-0.012255887345652593), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.028135201288628967), 'alpha_p34_close_auction_drift_10': np.float64(0.004271165950972284), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.010125236191326936), 'alpha_p34_micro_momentum_5_20': np.float64(0.015425663743807735)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0281 < 0.05 (val_ic=-0.0281, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volatility_compression_5]: FAIL: val_ic 0.0212 < 0.05 (val_ic=0.0212, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 5 (2 alphas tested, 0 passed) - excluding horizon
+WARNING:omega.quant.phase35_walk_forward:[P10] Fold 4: All requested horizons failed/missing. Falling back to single-horizon baseline using return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 4: Executing fallback to single-horizon baseline (return_col=fwd_ret_5)
+INFO:omega.quant.phase35_walk_forward:Running fold 4
+INFO:omega.quant.phase35_walk_forward:Fold 4 embargo: h=5, train rows before=19043, after=18908
+INFO:omega.quant.phase35_walk_forward:Fold 4 validation split: train_actual=12604 rows, val_actual=6304 rows
+INFO:omega.quant.phase35_walk_forward:Fold 4 train ICs (strategy=multi_factor): {'alpha_p34_volatility_compression_5': np.float64(0.02124184759600261), 'alpha_p34_volume_clock_acceleration_10': np.float64(0.010575329784757285), 'alpha_p34_kyle_lambda_20': np.float64(-0.012255887345652593), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.028135201288628967), 'alpha_p34_close_auction_drift_10': np.float64(0.004271165950972284), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.010125236191326936), 'alpha_p34_micro_momentum_5_20': np.float64(0.015425663743807735)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0281 < 0.05 (val_ic=-0.0281, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volatility_compression_5]: FAIL: val_ic 0.0212 < 0.05 (val_ic=0.0212, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5']
+INFO:omega.quant.alpha_ensemble_xgboost:XGBoost ensemble trained. Cutoff: 2020-12-24, Embargo: 0d
+INFO:omega.quant.phase35_walk_forward:Fold 4: XGBoost path active, signal std=0.0513
+INFO:omega.quant.evolution.genetic_engine:Starting GP evolution: pop=150, gen=3
+INFO:omega.quant.evolution.genetic_engine:Gen 1: IC=0.1115, Fitness=0.1023
+INFO:omega.quant.evolution.genetic_engine:Gen 2: IC=0.1115, Fitness=0.0823
+INFO:omega.quant.evolution.genetic_engine:Gen 3: IC=0.1000, Fitness=0.0959
+INFO:omega.quant.phase35_walk_forward:GP ensemble (n=3): train_ic=0.0787, test_ic=-0.0756, signal_std=0.8641
+INFO:omega.quant.phase35_walk_forward:Fold 4: Evolved signal blended (evolved=0.157, handcrafted=0.843, gp_train_ic=0.0787, adaptive=True)
+INFO:omega.quant.phase35_walk_forward:Fold 4 raw signal IC: -0.0116, daily CS IC: -0.0013
+INFO:omega.quant.phase35_walk_forward:Stage 2 constraints applied: top_n=15, final_rebal_freq=7, sector_cap=40%, alphas=['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5'], dynamic=YES
+INFO:omega.quant.phase35_walk_forward:Fold 4: Drawdown control stop-out triggered at 2021-01-21 00:00:00
+INFO:omega.quant.phase35_walk_forward:Fold 4 results: RawIC=-0.0116, RawCS_IC=-0.0013, PortfolioIC=0.0321, Sharpe=1.4975, MaxDD=-13.06%, PnL=+318,651,124 VND
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 4: Fallback complete. Reason: all_horizons_failed_or_missing, Requested horizons: [3, 5], Successful horizons: []
+INFO:omega.quant.phase35_walk_forward:Running fold 5
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 5: Multi-horizon blending enabled, horizons=[3, 5], method=validation_ic
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=5, horizon=3, return_col=fwd_ret_3
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 embargo: train rows before=19017, after=18936
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 train ICs: {'alpha_p34_volatility_compression_5': np.float64(-0.02139211688691732), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.024822347047482565), 'alpha_p34_kyle_lambda_20': np.float64(0.017863639003808683), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.0385936855522933), 'alpha_p34_close_auction_drift_10': np.float64(0.005481652953996632), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.009988056734300668), 'alpha_p34_micro_momentum_5_20': np.float64(0.009565912864274257)}
+INFO:omega.quant.phase35_walk_forward:Selected top 3 alphas: ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volume_clock_acceleration_10', 'alpha_p34_volatility_compression_5']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0386 < 0.05 (val_ic=-0.0386, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0248 < 0.05 (val_ic=-0.0248, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volatility_compression_5]: FAIL: val_ic -0.0214 < 0.05 (val_ic=-0.0214, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volume_clock_acceleration_10', 'alpha_p34_volatility_compression_5'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (3/3): ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volume_clock_acceleration_10', 'alpha_p34_volatility_compression_5']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 3 (3 alphas tested, 0 passed) - excluding horizon
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=5, horizon=5, return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 embargo: train rows before=19017, after=18882
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 train ICs: {'alpha_p34_volatility_compression_5': np.float64(-0.0322273302468596), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.026394425759143622), 'alpha_p34_kyle_lambda_20': np.float64(0.008106660781985773), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.04239981325766409), 'alpha_p34_close_auction_drift_10': np.float64(0.008621429152482717), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.014845482580526655), 'alpha_p34_micro_momentum_5_20': np.float64(-0.013780397420970524)}
+INFO:omega.quant.phase35_walk_forward:Selected top 3 alphas: ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0424 < 0.05 (val_ic=-0.0424, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volatility_compression_5]: FAIL: val_ic -0.0322 < 0.05 (val_ic=-0.0322, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0264 < 0.05 (val_ic=-0.0264, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_volume_clock_acceleration_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (3/3): ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_volume_clock_acceleration_10']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 5 (3 alphas tested, 0 passed) - excluding horizon
+WARNING:omega.quant.phase35_walk_forward:[P10] Fold 5: All requested horizons failed/missing. Falling back to single-horizon baseline using return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 5: Executing fallback to single-horizon baseline (return_col=fwd_ret_5)
+INFO:omega.quant.phase35_walk_forward:Running fold 5
+INFO:omega.quant.phase35_walk_forward:Fold 5 embargo: h=5, train rows before=19017, after=18882
+INFO:omega.quant.phase35_walk_forward:Fold 5 validation split: train_actual=12623 rows, val_actual=6259 rows
+INFO:omega.quant.phase35_walk_forward:Fold 5 train ICs (strategy=multi_factor): {'alpha_p34_volatility_compression_5': np.float64(-0.0322273302468596), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.026394425759143622), 'alpha_p34_kyle_lambda_20': np.float64(0.008106660781985773), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.04239981325766409), 'alpha_p34_close_auction_drift_10': np.float64(0.008621429152482717), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.014845482580526655), 'alpha_p34_micro_momentum_5_20': np.float64(-0.013780397420970524)}
+INFO:omega.quant.phase35_walk_forward:Selected top 3 alphas: ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0424 < 0.05 (val_ic=-0.0424, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volatility_compression_5]: FAIL: val_ic -0.0322 < 0.05 (val_ic=-0.0322, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0264 < 0.05 (val_ic=-0.0264, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_volume_clock_acceleration_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (3/3): ['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.alpha_ensemble_xgboost:XGBoost ensemble trained. Cutoff: 2021-12-24, Embargo: 0d
+INFO:omega.quant.phase35_walk_forward:Fold 5: XGBoost path active, signal std=0.0556
+INFO:omega.quant.evolution.genetic_engine:Starting GP evolution: pop=150, gen=3
+INFO:omega.quant.evolution.genetic_engine:Gen 1: IC=0.1206, Fitness=0.1114
+INFO:omega.quant.evolution.genetic_engine:Gen 2: IC=0.1206, Fitness=0.0914
+INFO:omega.quant.evolution.genetic_engine:Gen 3: IC=0.1206, Fitness=0.0914
+INFO:omega.quant.phase35_walk_forward:GP ensemble (n=3): train_ic=0.0567, test_ic=0.0241, signal_std=0.8920
+INFO:omega.quant.phase35_walk_forward:Fold 5: Evolved signal blended (evolved=0.113, handcrafted=0.887, gp_train_ic=0.0567, adaptive=True)
+INFO:omega.quant.phase35_walk_forward:Fold 5 raw signal IC: 0.0092, daily CS IC: 0.0078
+INFO:omega.quant.phase35_walk_forward:Stage 2 constraints applied: top_n=15, final_rebal_freq=7, sector_cap=40%, alphas=['alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_volume_clock_acceleration_10'], dynamic=YES
+INFO:omega.quant.phase35_walk_forward:Fold 5: Drawdown control stop-out triggered at 2022-01-07 00:00:00
+INFO:omega.quant.phase35_walk_forward:Fold 5 results: RawIC=0.0092, RawCS_IC=0.0078, PortfolioIC=0.0262, Sharpe=-1.9590, MaxDD=-7.48%, PnL=-111,770,111 VND
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 5: Fallback complete. Reason: all_horizons_failed_or_missing, Requested horizons: [3, 5], Successful horizons: []
+INFO:omega.quant.phase35_walk_forward:Running fold 6
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 6: Multi-horizon blending enabled, horizons=[3, 5], method=validation_ic
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=6, horizon=3, return_col=fwd_ret_3
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 embargo: train rows before=18758, after=18677
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 train ICs: {'alpha_p34_volatility_compression_5': np.float64(-0.0018986239247188019), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.06266920834943034), 'alpha_p34_kyle_lambda_20': np.float64(-0.012116126339275786), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.01851262197573058), 'alpha_p34_close_auction_drift_10': np.float64(0.012444620833043641), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.014210316130875675), 'alpha_p34_micro_momentum_5_20': np.float64(-0.017066177959714924)}
+INFO:omega.quant.phase35_walk_forward:Selected top 1 alphas: ['alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0627 < 0.05 (val_ic=-0.0627, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (1/1): ['alpha_p34_volume_clock_acceleration_10']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 3 (1 alphas tested, 0 passed) - excluding horizon
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=6, horizon=5, return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 embargo: train rows before=18758, after=18623
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 train ICs: {'alpha_p34_volatility_compression_5': np.float64(-0.026028132747589364), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.06521965704648477), 'alpha_p34_kyle_lambda_20': np.float64(-0.005780256647644208), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.02705780492575472), 'alpha_p34_close_auction_drift_10': np.float64(0.02652892280085564), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.009832955267732538), 'alpha_p34_micro_momentum_5_20': np.float64(0.0007678715660927133)}
+INFO:omega.quant.phase35_walk_forward:Selected top 4 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_close_auction_drift_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0652 < 0.05 (val_ic=-0.0652, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0271 < 0.05 (val_ic=-0.0271, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volatility_compression_5]: FAIL: val_ic -0.0260 < 0.05 (val_ic=-0.0260, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_close_auction_drift_10]: FAIL: val_ic 0.0265 < 0.05 (val_ic=0.0265, n_samples=229)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_close_auction_drift_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (4/4): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_close_auction_drift_10']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 5 (4 alphas tested, 0 passed) - excluding horizon
+WARNING:omega.quant.phase35_walk_forward:[P10] Fold 6: All requested horizons failed/missing. Falling back to single-horizon baseline using return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 6: Executing fallback to single-horizon baseline (return_col=fwd_ret_5)
+INFO:omega.quant.phase35_walk_forward:Running fold 6
+INFO:omega.quant.phase35_walk_forward:Fold 6 embargo: h=5, train rows before=18758, after=18623
+INFO:omega.quant.phase35_walk_forward:Fold 6 validation split: train_actual=12535 rows, val_actual=6088 rows
+INFO:omega.quant.phase35_walk_forward:Fold 6 train ICs (strategy=multi_factor): {'alpha_p34_volatility_compression_5': np.float64(-0.026028132747589364), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.06521965704648477), 'alpha_p34_kyle_lambda_20': np.float64(-0.005780256647644208), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(-0.02705780492575472), 'alpha_p34_close_auction_drift_10': np.float64(0.02652892280085564), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.009832955267732538), 'alpha_p34_micro_momentum_5_20': np.float64(0.0007678715660927133)}
+INFO:omega.quant.phase35_walk_forward:Selected top 4 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_close_auction_drift_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0652 < 0.05 (val_ic=-0.0652, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_tick_signed_volume_imbalance_5]: FAIL: val_ic -0.0271 < 0.05 (val_ic=-0.0271, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volatility_compression_5]: FAIL: val_ic -0.0260 < 0.05 (val_ic=-0.0260, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_close_auction_drift_10]: FAIL: val_ic 0.0265 < 0.05 (val_ic=0.0265, n_samples=229)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_close_auction_drift_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (4/4): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_close_auction_drift_10']
+INFO:omega.quant.alpha_ensemble_xgboost:XGBoost ensemble trained. Cutoff: 2022-12-23, Embargo: 0d
+INFO:omega.quant.phase35_walk_forward:Fold 6: XGBoost path active, signal std=0.0422
+INFO:omega.quant.evolution.genetic_engine:Starting GP evolution: pop=150, gen=3
+INFO:omega.quant.evolution.genetic_engine:Gen 1: IC=0.0921, Fitness=0.0823
+INFO:omega.quant.evolution.genetic_engine:Gen 2: IC=0.0921, Fitness=0.0623
+INFO:omega.quant.evolution.genetic_engine:Gen 3: IC=0.0860, Fitness=0.0769
+INFO:omega.quant.phase35_walk_forward:GP ensemble (n=3): train_ic=0.0324, test_ic=0.0000, signal_std=0.5838
+INFO:omega.quant.phase35_walk_forward:Fold 6: Evolved signal blended (evolved=0.065, handcrafted=0.935, gp_train_ic=0.0324, adaptive=True)
+INFO:omega.quant.phase35_walk_forward:Fold 6 raw signal IC: -0.0009, daily CS IC: -0.0063
+INFO:omega.quant.phase35_walk_forward:Stage 2 constraints applied: top_n=15, final_rebal_freq=7, sector_cap=40%, alphas=['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_tick_signed_volume_imbalance_5', 'alpha_p34_volatility_compression_5', 'alpha_p34_close_auction_drift_10'], dynamic=YES
+INFO:omega.quant.phase35_walk_forward:Fold 6: Drawdown control stop-out triggered at 2023-01-19 00:00:00
+INFO:omega.quant.phase35_walk_forward:Fold 6 results: RawIC=-0.0009, RawCS_IC=-0.0063, PortfolioIC=0.0190, Sharpe=1.8193, MaxDD=-6.66%, PnL=+233,195,893 VND
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 6: Fallback complete. Reason: all_horizons_failed_or_missing, Requested horizons: [3, 5], Successful horizons: []
+INFO:omega.quant.phase35_walk_forward:Running fold 7
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 7: Multi-horizon blending enabled, horizons=[3, 5], method=validation_ic
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=7, horizon=3, return_col=fwd_ret_3
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 embargo: train rows before=18568, after=18487
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 train ICs: {'alpha_p34_volatility_compression_5': np.float64(0.019478169237545934), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.036993433530305764), 'alpha_p34_kyle_lambda_20': np.float64(-0.009614013428674411), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(0.01176014763117009), 'alpha_p34_close_auction_drift_10': np.float64(0.0373748403898784), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.01614389922738045), 'alpha_p34_micro_momentum_5_20': np.float64(-0.02184070006393868)}
+INFO:omega.quant.phase35_walk_forward:Selected top 3 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_close_auction_drift_10', 'alpha_p34_micro_momentum_5_20']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0370 < 0.05 (val_ic=-0.0370, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_close_auction_drift_10]: FAIL: val_ic 0.0374 < 0.05 (val_ic=0.0374, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_micro_momentum_5_20]: FAIL: val_ic -0.0218 < 0.05 (val_ic=-0.0218, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_close_auction_drift_10', 'alpha_p34_micro_momentum_5_20'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (3/3): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_close_auction_drift_10', 'alpha_p34_micro_momentum_5_20']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 3 (3 alphas tested, 0 passed) - excluding horizon
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=7, horizon=5, return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 embargo: train rows before=18568, after=18433
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 train ICs: {'alpha_p34_volatility_compression_5': np.float64(0.01605821487716637), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.022691822287346498), 'alpha_p34_kyle_lambda_20': np.float64(-0.017838154729670694), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(0.019146390408582653), 'alpha_p34_close_auction_drift_10': np.float64(0.06518026294444287), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.011727846335428796), 'alpha_p34_micro_momentum_5_20': np.float64(-0.01786637082065494)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_close_auction_drift_10]: FAIL: stability_ratio -0.3468 <= 1.5 (val_ic=0.0652, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0227 < 0.05 (val_ic=-0.0227, n_samples=229)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 5 (2 alphas tested, 0 passed) - excluding horizon
+WARNING:omega.quant.phase35_walk_forward:[P10] Fold 7: All requested horizons failed/missing. Falling back to single-horizon baseline using return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 7: Executing fallback to single-horizon baseline (return_col=fwd_ret_5)
+INFO:omega.quant.phase35_walk_forward:Running fold 7
+INFO:omega.quant.phase35_walk_forward:Fold 7 embargo: h=5, train rows before=18568, after=18433
+INFO:omega.quant.phase35_walk_forward:Fold 7 validation split: train_actual=12346 rows, val_actual=6087 rows
+INFO:omega.quant.phase35_walk_forward:Fold 7 train ICs (strategy=multi_factor): {'alpha_p34_volatility_compression_5': np.float64(0.01605821487716637), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.022691822287346498), 'alpha_p34_kyle_lambda_20': np.float64(-0.017838154729670694), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(0.019146390408582653), 'alpha_p34_close_auction_drift_10': np.float64(0.06518026294444287), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.011727846335428796), 'alpha_p34_micro_momentum_5_20': np.float64(-0.01786637082065494)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_close_auction_drift_10]: FAIL: stability_ratio -0.3468 <= 1.5 (val_ic=0.0652, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0227 < 0.05 (val_ic=-0.0227, n_samples=229)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10']
+INFO:omega.quant.alpha_ensemble_xgboost:XGBoost ensemble trained. Cutoff: 2023-12-25, Embargo: 0d
+INFO:omega.quant.phase35_walk_forward:Fold 7: XGBoost path active, signal std=0.0392
+INFO:omega.quant.evolution.genetic_engine:Starting GP evolution: pop=150, gen=3
+INFO:omega.quant.evolution.genetic_engine:Gen 1: IC=0.1026, Fitness=0.0935
+INFO:omega.quant.evolution.genetic_engine:Gen 2: IC=0.1026, Fitness=0.0735
+INFO:omega.quant.evolution.genetic_engine:Gen 3: IC=0.1026, Fitness=0.0735
+INFO:omega.quant.phase35_walk_forward:GP ensemble (n=3): train_ic=0.0837, test_ic=0.0723, signal_std=0.5872
+INFO:omega.quant.phase35_walk_forward:Fold 7: Evolved signal blended (evolved=0.167, handcrafted=0.833, gp_train_ic=0.0837, adaptive=True)
+INFO:omega.quant.phase35_walk_forward:Fold 7 raw signal IC: 0.0078, daily CS IC: 0.0223
+INFO:omega.quant.phase35_walk_forward:Stage 2 constraints applied: top_n=15, final_rebal_freq=10, sector_cap=40%, alphas=['alpha_p34_close_auction_drift_10', 'alpha_p34_volume_clock_acceleration_10'], dynamic=YES
+INFO:omega.quant.phase35_walk_forward:Fold 7: Drawdown control stop-out triggered at 2024-03-05 00:00:00
+INFO:omega.quant.phase35_walk_forward:Fold 7 results: RawIC=0.0078, RawCS_IC=0.0223, PortfolioIC=-0.0191, Sharpe=2.3793, MaxDD=-7.00%, PnL=+260,821,793 VND
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 7: Fallback complete. Reason: all_horizons_failed_or_missing, Requested horizons: [3, 5], Successful horizons: []
+INFO:omega.quant.phase35_walk_forward:Running fold 8
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 8: Multi-horizon blending enabled, horizons=[3, 5], method=validation_ic
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=8, horizon=3, return_col=fwd_ret_3
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 embargo: train rows before=18349, after=18268
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 3 train ICs: {'alpha_p34_volatility_compression_5': np.float64(0.007308067573170728), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.051424472121092676), 'alpha_p34_kyle_lambda_20': np.float64(-0.019592141742780556), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(0.0015753289041547242), 'alpha_p34_close_auction_drift_10': np.float64(-0.009344616384101005), 'alpha_p34_liquidity_provision_ratio_10': np.float64(-0.011112263809995861), 'alpha_p34_micro_momentum_5_20': np.float64(0.0057857450911321)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0514 < 0.05 (val_ic=-0.0514, n_samples=230)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_kyle_lambda_20]: FAIL: val_ic -0.0196 < 0.05 (val_ic=-0.0196, n_samples=230)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 3 (2 alphas tested, 0 passed) - excluding horizon
+INFO:omega.quant.phase35_walk_forward:[P10] Computing horizon signal: fold=8, horizon=5, return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 embargo: train rows before=18349, after=18214
+INFO:omega.quant.phase35_walk_forward:[P10] Horizon 5 train ICs: {'alpha_p34_volatility_compression_5': np.float64(0.0012216612313299957), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.04693352472750728), 'alpha_p34_kyle_lambda_20': np.float64(-0.02963842615535206), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(0.01772175552353901), 'alpha_p34_close_auction_drift_10': np.float64(0.007698165427965441), 'alpha_p34_liquidity_provision_ratio_10': np.float64(0.002403286384043396), 'alpha_p34_micro_momentum_5_20': np.float64(0.007281893641661196)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0469 < 0.05 (val_ic=-0.0469, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_kyle_lambda_20]: FAIL: val_ic -0.0296 < 0.05 (val_ic=-0.0296, n_samples=229)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20']
+WARNING:omega.quant.phase35_walk_forward:[P10] Research gate failed all alphas for horizon 5 (2 alphas tested, 0 passed) - excluding horizon
+WARNING:omega.quant.phase35_walk_forward:[P10] Fold 8: All requested horizons failed/missing. Falling back to single-horizon baseline using return_col=fwd_ret_5
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 8: Executing fallback to single-horizon baseline (return_col=fwd_ret_5)
+INFO:omega.quant.phase35_walk_forward:Running fold 8
+INFO:omega.quant.phase35_walk_forward:Fold 8 embargo: h=5, train rows before=18349, after=18214
+INFO:omega.quant.phase35_walk_forward:Fold 8 validation split: train_actual=12168 rows, val_actual=6046 rows
+INFO:omega.quant.phase35_walk_forward:Fold 8 train ICs (strategy=multi_factor): {'alpha_p34_volatility_compression_5': np.float64(0.0012216612313299957), 'alpha_p34_volume_clock_acceleration_10': np.float64(-0.04693352472750728), 'alpha_p34_kyle_lambda_20': np.float64(-0.02963842615535206), 'alpha_p34_tick_signed_volume_imbalance_5': np.float64(0.01772175552353901), 'alpha_p34_close_auction_drift_10': np.float64(0.007698165427965441), 'alpha_p34_liquidity_provision_ratio_10': np.float64(0.002403286384043396), 'alpha_p34_micro_momentum_5_20': np.float64(0.007281893641661196)}
+INFO:omega.quant.phase35_walk_forward:Selected top 2 alphas: ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20']
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_volume_clock_acceleration_10]: FAIL: val_ic -0.0469 < 0.05 (val_ic=-0.0469, n_samples=229)
+INFO:omega.quant.phase35_walk_forward:Research Gate [alpha_p34_kyle_lambda_20]: FAIL: val_ic -0.0296 < 0.05 (val_ic=-0.0296, n_samples=229)
+WARNING:omega.quant.phase35_walk_forward:All alphas failed Research Gate — falling back to top_alphas (['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20'])
+INFO:omega.quant.phase35_walk_forward:Gated alphas (2/2): ['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20']
+INFO:omega.quant.alpha_ensemble_xgboost:XGBoost ensemble trained. Cutoff: 2024-12-24, Embargo: 0d
+INFO:omega.quant.phase35_walk_forward:Fold 8: XGBoost path active, signal std=0.0453
+INFO:omega.quant.evolution.genetic_engine:Starting GP evolution: pop=150, gen=3
+INFO:omega.quant.evolution.genetic_engine:Gen 1: IC=0.0941, Fitness=0.0891
+INFO:omega.quant.evolution.genetic_engine:Gen 2: IC=0.0958, Fitness=0.0865
+INFO:omega.quant.evolution.genetic_engine:Gen 3: IC=0.0941, Fitness=0.0891
+INFO:omega.quant.phase35_walk_forward:GP ensemble (n=3): train_ic=0.1048, test_ic=0.1317, signal_std=0.7389
+INFO:omega.quant.phase35_walk_forward:Fold 8: Evolved signal blended (evolved=0.210, handcrafted=0.790, gp_train_ic=0.1048, adaptive=True)
+INFO:omega.quant.phase35_walk_forward:Fold 8 raw signal IC: 0.0087, daily CS IC: -0.0022
+INFO:omega.quant.phase35_walk_forward:Stage 2 constraints applied: top_n=15, final_rebal_freq=7, sector_cap=40%, alphas=['alpha_p34_volume_clock_acceleration_10', 'alpha_p34_kyle_lambda_20'], dynamic=YES
+INFO:omega.quant.phase35_walk_forward:Fold 8: Drawdown control stop-out triggered at 2025-01-07 00:00:00
+INFO:omega.quant.phase35_walk_forward:Fold 8 results: RawIC=0.0087, RawCS_IC=-0.0022, PortfolioIC=0.0103, Sharpe=-1.9995, MaxDD=-6.54%, PnL=-93,082,806 VND
+INFO:omega.quant.phase35_walk_forward:[P10] Fold 8: Fallback complete. Reason: all_horizons_failed_or_missing, Requested horizons: [3, 5], Successful horizons: []
+INFO:omega.quant.phase35_walk_forward:Walk-forward backtest complete
+INFO:omega.quant.phase35_walk_forward:Walk-Forward Backtest Results (8 folds)
+============================================================
+Average Portfolio IC (post Stage 2): 0.0003
+Average Raw Signal IC (pre Stage 2):  0.0039
+Average Raw Signal Daily CS IC:       0.0062
+Average Portfolio Sharpe: 0.9993
+Average Max Drawdown: -8.03%
+
+Alpha IC Summary:
+  alpha_p34_tick_signed_volume_imbalance_5: -0.0309
+  alpha_p34_volatility_compression_5: -0.0185
+  alpha_p34_volume_clock_acceleration_10: -0.0184
+  alpha_p34_kyle_lambda_20: -0.0112
+  alpha_p34_micro_momentum_5_20: 0.0105
+  alpha_p34_close_auction_drift_10: 0.0069
+  alpha_p34_liquidity_provision_ratio_10: -0.0063
+INFO:__main__:
+INFO:__main__:================================================================================
+INFO:__main__:BACKTEST RESULTS
+INFO:__main__:================================================================================
+INFO:__main__:Walk-Forward Backtest Results (8 folds)
+============================================================
+Average Portfolio IC (post Stage 2): 0.0003
+Average Raw Signal IC (pre Stage 2):  0.0039
+Average Raw Signal Daily CS IC:       0.0062
+Average Portfolio Sharpe: 0.9993
+Average Max Drawdown: -8.03%
+
+Alpha IC Summary:
+  alpha_p34_tick_signed_volume_imbalance_5: -0.0309
+  alpha_p34_volatility_compression_5: -0.0185
+  alpha_p34_volume_clock_acceleration_10: -0.0184
+  alpha_p34_kyle_lambda_20: -0.0112
+  alpha_p34_micro_momentum_5_20: 0.0105
+  alpha_p34_close_auction_drift_10: 0.0069
+  alpha_p34_liquidity_provision_ratio_10: -0.0063
+INFO:__main__:
+INFO:__main__:Step 4: Saving results...
+INFO:__main__:Results saved to: C:\Users\GHC\repos\OMEGA_QUANT\data\phase35_results\phase35_backtest_results_xgboost.json
+INFO:__main__:Summary saved to: C:\Users\GHC\repos\OMEGA_QUANT\data\phase35_results\phase35_backtest_summary_xgboost.txt
+INFO:__main__:
+INFO:__main__:================================================================================
+INFO:__main__:Phase 3.5 Walk-Forward Backtest Complete!
+INFO:__main__:================================================================================
+Validation successful: All files present and accounted for in .ly_state/

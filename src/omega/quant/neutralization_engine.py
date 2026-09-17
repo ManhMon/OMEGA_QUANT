@@ -1,3 +1,4 @@
+# flake8: noqa
 """
 Neutralization Engine - Full Implementation (v21.2)
 Hierarchical factor neutralization to remove sector, size, and exchange biases.
@@ -13,6 +14,13 @@ import numpy as np
 from typing import Dict, List, Optional, Tuple
 import warnings
 warnings.filterwarnings('ignore')
+warnings.simplefilter('always', DeprecationWarning)
+
+warnings.warn(
+    "omega.quant.neutralization_engine is deprecated; import from omega.quant.features.neutralization instead.",
+    DeprecationWarning,
+    stacklevel=2
+)
 
 
 class NeutralizationEngine:

@@ -1,0 +1,178 @@
+def prepare_features(df: pd.DataFrame) -> pd.DataFrame:
+    """Compute features with T-1 lag for PIT safety, strictly grouped by ticker."""
+    result = df.copy()
+    result = result.sort_values(["ticker", "date"])
+    result.index = pd.RangeIndex(len(result))
+
+    # Compute derived features grouped by ticker to prevent boundary bleed
+    temp_dfs = []
+    for ticker, group in result.groupby("ticker"):
+        group = group.copy()
+        
+        # Returns / Momentum
+        group["returns_1d"] = group["close"].pct_change(1)
+        group["returns_5d"] = group["close"].pct_change(5)
+        group["returns_10d"] = group["close"].pct_change(10)
+        
+        # Volume features
+        roll_mean_20 = group["volume"].rolling(20).mean()
+        group["vol_ratio"] = group["volume"] / (roll_mean_20 + 1e-9)
+        
+        roll_v_5 = group["volume"].rolling(5).mean()
+        group["vol_trend_5_20"] = roll_v_5 / (roll_mean_20 + 1e-9)
+        group["vol_std_10"] = group["volume"].rolling(10).std()
+        
+        # Ranges
+        group["hl_range"] = (group["high"] - group["low"]) / (group["close"] + 1e-9)
+        group["oc_range"] = (group["close"] - group["open"]) / (group["open"] + 1e-9)
+        group["close_range_ratio"] = (group["close"] - group["low"]) / (group["high"] - group["low"] + 1e-9)
+        
+        # RSI
+        group["rsi_14"] = compute_rsi(group["close"], 14)
+        group["rsi_5"] = compute_rsi(group["close"], 5)
+        group["rsi_21"] = compute_rsi(group["close"], 21)
+        
+        # MA ratios
+        roll_mean_5_c = group["close"].rolling(5).mean()
+        roll_mean_20_c = group["close"].rolling(20).mean()
+        group["ma_ratio_5_20"] = roll_mean_5_c / (roll_mean_20_c + 1e-9)
+        
+        # MACD
+        macd_df = compute_macd(group["close"])
+        group["macd_line"] = macd_df["macd_line"]
+        group["macd_signal"] = macd_df["macd_signal"]
+        group["macd_hist"] = macd_df["macd_hist"]
+        
+        # CCI
+        group["cci_14"] = compute_cci(group, 14)
+        
+        # Williams %R
+        group["williams_r_14"] = compute_williams_r(group, 14)
+        
+        # MFI
+        group["mfi_14"] = compute_mfi(group, 14)
+        
+        # OBV Normalized
+        group["obv_norm"] = compute_obv(group)
+        
+        # Force Index
+        group["force_index_13"] = compute_force_index(group, 13)
+        
+        # ROC
+        group["roc_10"] = group["close"].pct_change(10)
+        group["roc_20"] = group["close"].pct_change(20)
+        
+        # Realized Volatility
+        group["realized_vol_20"] = group["returns_1d"].rolling(20).std()
+        
+        # Bollinger Bands Width
+        bb_std = group["close"].rolling(20).std()
+        group["bollinger_w_20"] = (4 * bb_std) / (roll_mean_20_c + 1e-9)
+        
+        # MA ratios & EMA distance
+        ema_10 = group["close"].ewm(span=10, adjust=False).mean()
+        ema_20 = group["close"].ewm(span=20, adjust=False).mean()
+        ma_50 = group["close"].rolling(50).mean()
+        ma_10 = group["close"].rolling(10).mean()
+        
+        group["ma_ratio_10_50"] = ma_10 / (ma_50 + 1e-9)
+        group["close_to_ema_10"] = group["close"] / (ema_10 + 1e-9)
+        group["close_to_ema_20"] = group["close"] / (ema_20 + 1e-9)
+        
+        # Vietnam Stock Market specific features
+        prev_close = group["close"].shift(1)
+        group["returns_3d"] = group["close"].pct_change(3)
+        group["vn_vol_shock_5d"] = group["volume"] / (group["volume"].rolling(5).mean() + 1e-9)
+        group["vn_ceil_limit_proximity"] = (1.07 * prev_close - group["close"]) / (prev_close + 1e-9)
+        group["vn_floor_limit_proximity"] = (group["close"] - 0.93 * prev_close) / (prev_close + 1e-9)
+        group["vn_hit_ceil"] = (group["high"] >= 1.069 * prev_close).astype(float)
+        group["vn_hit_floor"] = (group["low"] <= 0.931 * prev_close).astype(float)
+        
+        temp_dfs.append(group)
+        
+    result = pd.concat(temp_dfs).sort_values(["ticker", "date"])
+    result.index = pd.RangeIndex(len(result))
+
+    # Compute 75 additional VN alphas in batch and join to result
+    from omega.quant.alpha.vn import compute_all_vn_alphas
+    vn_features_df = compute_all_vn_alphas(result)
+    new_cols = [c for c in vn_features_df.columns if c not in ["ticker", "date"]]
+    _downcast_float64_columns(vn_features_df, new_cols)
+    
+    # MEMORY OPTIMIZATION: Direct column assignment instead of merge (GP_VN_ALPHAS_MERGE_DIRECT_ASSIGN)
+    # Skip redundant full-frame sorting when compute_all_vn_alphas() preserved row order.
+    is_aligned = _are_frames_aligned(result, vn_features_df)
+    if not is_aligned:
+        result = result.sort_values(["ticker", "date"])
+        result.index = pd.RangeIndex(len(result))
+        vn_features_df = vn_features_df.sort_values(["ticker", "date"])
+        vn_features_df.index = pd.RangeIndex(len(vn_features_df))
+    
+    # Validate alignment: lengths, tickers, and dates must match exactly
+    if len(result) != len(vn_features_df):
+        raise ValueError(
+            f"Length mismatch: result={len(result)}, vn_features_df={len(vn_features_df)}"
+        )
+    if not (result["ticker"].values == vn_features_df["ticker"].values).all():
+        raise ValueError("Ticker alignment mismatch after sorting")
+    if not (result["date"].values == vn_features_df["date"].values).all():
+        raise ValueError("Date alignment mismatch after sorting")
+    
+    # Direct column assignment (avoids merge memory overhead)
+    result = result.drop(columns=[c for c in new_cols if c in result.columns])
+    for col in new_cols:
+        result[col] = vn_features_df[col].values
+
+    # PIT SAFETY: Apply T-1 lag to ALL features strictly per ticker (no shift bleed across symbols)
+    for col in FEATURE_COLUMNS:
+        if col in result.columns:
+            result[col] = result.groupby("ticker")[col].shift(1)
+
+    # --- Alternative Feature Generation (GP Expansion gate) ---
+    # Generate alternative features from AlternativeFeatureGenerator + AlternativeDataFetcher.
+    # These use MultiIndex [date, symbol] internally; convert flat -> MultiIndex -> flat.
+    alt_input_cols = [
+        col for col in ["date", "ticker", "open", "high", "low", "close", "volume"]
+        if col in result.columns
+    ]
+    alt_features_df = _generate_alternative_features(result[alt_input_cols])
+    alt_value_cols = [c for c in alt_features_df.columns if c not in {"date", "ticker"}]
+    if alt_value_cols:
+        _downcast_float64_columns(alt_features_df, alt_value_cols)
+        alt_features_indexed = alt_features_df.set_index(["date", "ticker"])
+        alt_result_index = pd.MultiIndex.from_arrays(
+            [
+                result["date"].to_numpy(copy=False),
+                result["ticker"].to_numpy(copy=False),
+            ]
+        )
+        for col in alt_value_cols:
+            result[col] = alt_features_indexed[col].reindex(alt_result_index).to_numpy(copy=False)
+
+    # PIT SAFETY: Apply T-1 lag to ALL alternative features strictly per ticker
+    for col in ALTERNATIVE_FEATURE_COLUMNS:
+        if col in result.columns:
+            result[col] = result.groupby("ticker")[col].shift(1)
+
+    # Multi-horizon forward return targets strictly per ticker (PIT-safe: forward-looking labels only)
+    for horizon in MULTI_TARGET_HORIZONS:
+        target_col = f"target_h{horizon}"
+        result[target_col] = result.groupby("ticker")["close"].pct_change(horizon).shift(-horizon)
+
+    # Primary target (T+5) strictly per ticker
+    result["target"] = result.groupby("ticker")["close"].pct_change(TARGET_HORIZON).shift(-TARGET_HORIZON)
+
+    _downcast_float64_columns(result)
+
+    # Determine which columns to drop NaN on: base features + available alt features + all targets
+    available_alt = [c for c in ALTERNATIVE_FEATURE_COLUMNS if c in result.columns]
+    target_cols = ["target"] + [f"target_h{h}" for h in MULTI_TARGET_HORIZONS if f"target_h{h}" in result.columns]
+    drop_cols = FEATURE_COLUMNS + available_alt + target_cols
+
+    # Drop NaN rows using boolean masking instead of dropna
+    valid_mask = _all_notna_mask(result, drop_cols)
+    result = result[valid_mask]
+    result.index = pd.RangeIndex(len(result))
+
+    return result
+

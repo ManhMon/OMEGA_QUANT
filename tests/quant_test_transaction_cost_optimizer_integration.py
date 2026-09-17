@@ -19,13 +19,13 @@ import pytest
 from datetime import datetime, timezone, timedelta
 from typing import Dict
 
-from omega.quant.transaction_cost_optimizer import (
+from omega.quant.execution.transaction_cost_optimizer import (
     TransactionCostOptimizer,
     TransactionCostResult,
 )
-from omega.quant.rebalancer import Rebalancer, RebalanceConfig, RebalanceDecision
+from omega.quant.portfolio.rebalancer import Rebalancer, RebalanceConfig, RebalanceDecision
 from omega.quant.execution_sim import ExecutionSimulator, ExecutionConfig
-from omega.quant.realtime_risk_guard import RealtimeRiskGuard, RiskLimits, RiskVerdict
+from omega.quant.risk.realtime_risk import RealtimeRiskGuard, RiskLimits, RiskVerdict
 
 
 # ---------------------------------------------------------------------------

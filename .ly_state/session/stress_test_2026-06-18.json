@@ -1,0 +1,47 @@
+{
+  "date": "2026-06-18",
+  "capital": 2000000000.0,
+  "scenarios": [
+    {
+      "name": "market_crash_20pct",
+      "description": "Market crashes 20%",
+      "loss_pct": -8.39,
+      "loss_vnd": -167720000.0,
+      "worst_ticker": "BID"
+    },
+    {
+      "name": "sector_rotation",
+      "description": "Financials -15%, Tech +10%",
+      "loss_pct": -4.22,
+      "loss_vnd": -84450000.0,
+      "worst_ticker": "BID"
+    },
+    {
+      "name": "volatility_spike",
+      "description": "Volatility doubles, 95% VaR shock",
+      "loss_pct": -2.81,
+      "loss_vnd": -56110753.0,
+      "worst_ticker": "VSC"
+    },
+    {
+      "name": "liquidity_crisis",
+      "description": "Volume drops 50%, slippage spikes 50bps",
+      "loss_pct": -0.21,
+      "loss_vnd": -4193000.0,
+      "worst_ticker": "ALL"
+    },
+    {
+      "name": "foreign_outflow",
+      "description": "Foreign sell-off -5% on FTSE Vietnam",
+      "loss_pct": -0.85,
+      "loss_vnd": -16990000.0,
+      "worst_ticker": "BID"
+    }
+  ],
+  "summary": {
+    "worst_case_pct": -8.39,
+    "best_case_pct": -0.21,
+    "avg_loss_pct": -3.3
+  },
+  "method": "ScenarioStressTester"
+}

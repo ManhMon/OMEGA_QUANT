@@ -1,0 +1,14 @@
+{
+  "timestamp": "2026-06-12T23:44:12.830665",
+  "total_tickers": 666,
+  "completed": 666,
+  "stats": {
+    "fetched": 665,
+    "empty": 1,
+    "errors": 0,
+    "rows": 1763089
+  },
+  "errors": [],
+  "output_path": "C:\\Users\\GHC\\repos\\OMEGA_QUANT\\data\\market_vci_candidate_20260612.parquet",
+  "elapsed_seconds": 669.3480832576752
+}

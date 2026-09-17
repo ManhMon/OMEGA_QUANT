@@ -52,10 +52,11 @@ def test_slippage_scales_with_capital():
     y = np.zeros((T, N))
     adv = np.full((T, N), 1e9)  # 1B VND ADV (small)
 
+    cost_model = VNCostModel(slippage_nonlinear_exp=1.0)
     _, _, br_small = apply_realistic_tc(w, y, daily_adv=adv,
-                                          portfolio_capital_vnd=1e8)  # 100M
+                                          portfolio_capital_vnd=1e8, cost_model=cost_model)  # 100M
     _, _, br_big = apply_realistic_tc(w, y, daily_adv=adv,
-                                        portfolio_capital_vnd=1e10)  # 10B
+                                        portfolio_capital_vnd=1e10, cost_model=cost_model)  # 10B
     assert br_big["total_slippage_cost"] > 50 * br_small["total_slippage_cost"]
 
 
@@ -162,3 +163,44 @@ def test_chaining_two_calls_matches_single_long_call():
         br_full["total_spread_cost"],
         br_a["total_spread_cost"] + br_b["total_spread_cost"],
     )
+
+
+def test_active_dates_total_cost_matches_filtered_bar_costs():
+    T, N = 6, 3
+    w = pd.DataFrame(
+        [[0.1, 0.0, -0.1], [0.0, 0.1, -0.1], [0.1, -0.1, 0.0], [0.0, 0.0, 0.0], [0.1, 0.0, -0.1], [0.0, 0.1, -0.1]]
+    )
+    y = np.full((T, N), 0.001)
+    mask = np.array([True, False, True, False, True, False])
+    _, net, br = apply_realistic_tc(w, y, active_dates_mask=mask)
+
+    np.testing.assert_allclose(br["total_cost"], br["bar_costs"][mask].sum())
+    np.testing.assert_allclose(net[~mask], np.sum(w.to_numpy()[~mask] * y[~mask], axis=1))
+
+
+def test_dynamic_capital_tracking_changes_slippage_path():
+    T, N = 4, 2
+    w = pd.DataFrame([[0.5, -0.5], [0.0, 0.0], [0.5, -0.5], [0.0, 0.0]])
+    y = np.array([[0.20, 0.20], [0.0, 0.0], [0.0, 0.0], [0.0, 0.0]])
+    adv = np.full((T, N), 1e9)
+    model = VNCostModel(slippage_nonlinear_exp=1.0)
+
+    _, _, br_dynamic = apply_realistic_tc(
+        w,
+        y,
+        daily_adv=adv,
+        portfolio_capital_vnd=1e9,
+        cost_model=model,
+        dynamic_capital_tracking=True,
+    )
+    _, _, br_static = apply_realistic_tc(
+        w,
+        y,
+        daily_adv=adv,
+        portfolio_capital_vnd=1e9,
+        cost_model=model,
+        dynamic_capital_tracking=False,
+    )
+
+    assert br_dynamic["final_capital_vnd"] != br_static["capital_vnd"]
+    assert br_dynamic["total_slippage_cost"] < br_static["total_slippage_cost"]

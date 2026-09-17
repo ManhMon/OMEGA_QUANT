@@ -10,8 +10,8 @@ Date: 2026-05-19
 import pytest
 import pandas as pd
 from datetime import datetime, timedelta, UTC
-from omega.quant.rebalancer import Rebalancer, RebalanceConfig, RebalanceDecision
-from omega.quant.constraint_solver import ConstraintSolver, ConstraintConfig
+from omega.quant.portfolio.rebalancer import Rebalancer, RebalanceConfig, RebalanceDecision
+from omega.quant.portfolio.constraint_solver import ConstraintSolver, ConstraintConfig
 
 
 @pytest.fixture

@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from omega.quant.ml_gate_validator import validate_production_gate, validate_research_gate
+from omega.quant.ml.gate_validator import validate_production_gate, validate_research_gate
 
 
 def _make_ic_series(mean: float, std: float, n: int, seed: int = 42) -> pd.Series:

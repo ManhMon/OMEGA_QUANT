@@ -1,0 +1,60 @@
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:weekly_evolution:=== WEEKLY GP ALPHA EVOLUTION START ===
+INFO:weekly_evolution:Config: regime=all, generations=2, pop=200, ortho=none, alt_features=OFF, workers=4, backend=loky
+INFO:weekly_evolution:Loaded market data: 1776743 rows, columns: ['ticker', 'date', 'exchange', 'open', 'high', 'low', 'close', 'volume', 'as_of', 'available_at', 'source', 'price_scale', 'adjusted', 'rebuild_date']
+INFO:weekly_evolution:Prepared data: 1734598 rows after lag/dropna
+INFO:weekly_evolution:Alternative features available: 0 / 35
+INFO:weekly_evolution:Sliding walk-forward split [Regime: all]: train=986302 rows (up to 2021-12-01), validate=380132 rows (up to 2024-03-05), test=361355 rows (up to 2026-06-16)
+INFO:weekly_evolution:Using n_jobs=4
+INFO:omega.quant.evolution.diverse_alpha_evolution:=== DIVERSE EVOLUTION: 4 islands x 50 pop x 2 gen ===
+INFO:omega.quant.evolution.diverse_alpha_evolution:Diverse evaluation parallelism: backend=loky requested_n_jobs=4 seed=42
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.evolution.diverse_alpha_evolution:Gen 0: Island best ICs: ['0.4322', '0.0079', '0.1899', '1.1266']
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.alpha.promoted:Successfully imported alpha primitives for promoted alphas
+omega.quant.alpha.discovery is deprecated; import from individual submodules instead.
+The ``declarative_base()`` function is now available as sqlalchemy.orm.declarative_base(). (deprecated since: 2.0) (Background on SQLAlchemy 2.0 at: https://sqlalche.me/e/b8d9)
+INFO:omega.quant.evolution.diverse_alpha_evolution:Quality filter: 10 -> 6 candidates
+INFO:omega.quant.evolution.diverse_alpha_evolution:Diversity filter (corr<0.5): 6 -> 4 alphas
+INFO:omega.quant.evolution.diverse_alpha_evolution:=== DIVERSE EVOLUTION COMPLETE: 4 alphas, 912.0s ===
+INFO:weekly_evolution:Diverse evolution complete. Hall of Fame size: 4
+INFO:weekly_evolution:Step 4b: Running validation culling...
+INFO:weekly_evolution:  Alpha passed validation: IC=0.0176
+INFO:weekly_evolution:Validation complete: 1 / 4 individuals survived
+INFO:weekly_evolution:  gp_alpha_20260716_000: IC=0.0135, Sharpe=0.0057
+INFO:weekly_evolution:Total promoted: 0 / 1
+INFO:weekly_evolution:Results saved to: /mnt/c/Users/GHC/repos/OMEGA_QUANT/.ly_state/session/evolved_alphas.json
+INFO:weekly_evolution:=== WEEKLY GP ALPHA EVOLUTION COMPLETE ===

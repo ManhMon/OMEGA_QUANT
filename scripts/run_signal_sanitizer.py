@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # --- Import SignalSanitizer ---
 SignalSanitizer = None
 try:
-    from omega.quant.signal_sanitizer import SignalSanitizer
+    from omega.quant.signal.sanitizer import SignalSanitizer
     logger.info('SignalSanitizer imported successfully')
 except ImportError as e:
     logger.warning(f'SignalSanitizer not available: {e}. Using manual sanitization.')
@@ -37,7 +37,7 @@ except ImportError as e:
 # --- Import ConstraintSolver ---
 ConstraintSolver = None
 try:
-    from omega.quant.constraint_solver import ConstraintSolver
+    from omega.quant.portfolio.constraint_solver import ConstraintSolver
     logger.info('ConstraintSolver imported successfully')
 except ImportError as e:
     logger.warning(f'ConstraintSolver not available: {e}. Using manual constraints.')

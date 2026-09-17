@@ -1,0 +1,22 @@
+{
+  "news_sentiment": {
+    "coverage": {
+      "duplicate_count": 0,
+      "fetched_at": 1.0,
+      "minimum_provenance": 1.0,
+      "payload_checksum": 1.0,
+      "per_year": {
+        "2026": {
+          "rows": 1,
+          "sources": 1,
+          "tickers": 1
+        }
+      }
+    },
+    "max_publish_time": "2026-01-02T18:00:00+00:00",
+    "row_count": 1,
+    "schema_version": "v10",
+    "sha256": "1f9f18b21eb33cc8c67440b0c8edffd4a4235e6e3dcc5c9bab6be520cb2be4a2",
+    "updated_at": "2026-01-04T00:00:00+00:00"
+  }
+}

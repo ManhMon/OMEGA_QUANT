@@ -43,7 +43,7 @@ def check_imports():
     src = BACKTEST.read_text(encoding="utf-8")
     if "from omega.data.sanitizer import DataSanitizer" not in src:
         fail("IMP-1", "Missing DataSanitizer import", findings)
-    if "from omega.quant.alpha_sanitizer import AlphaSanitizer" not in src:
+    if "from omega.quant.alpha.sanitizer import AlphaSanitizer" not in src:
         warn("IMP-2", "AlphaSanitizer imported but not yet used (acceptable; reserved for future per-fold alpha winsorize)", findings)
     return len([f for f in findings if f["sev"] == "P0"]) == 0, findings
 

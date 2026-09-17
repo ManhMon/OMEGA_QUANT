@@ -1,4 +1,4 @@
-﻿"""
+"""
 run_ensemble_signals.py - Voting+Stacking Ensemble ML Signal Generator
 ======================================================================
 Replaces Ridge-only ML signals with a Voting+Stacking ensemble approach
@@ -19,6 +19,12 @@ import argparse
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# Fix Windows console encoding
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
+    import io
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
 # --- Path setup ---
 WORKSPACE = Path(__file__).resolve().parent.parent
 from pathlib import Path
@@ -36,7 +42,7 @@ from xgboost import XGBRegressor
 from sklearn.ensemble import RandomForestRegressor
 
 from omega.quant.ultimate_alpha_arsenal import compute_ultimate_alphas
-from omega.quant.voting_stacking_ensemble import (
+from omega.quant.ml.voting_stacking import (
     BaseModelPrediction,
     create_voting_ensemble,
     create_stacking_ensemble,
@@ -145,10 +151,21 @@ def build_ensemble_signals(df: pd.DataFrame, target_date: str) -> dict:
     # Align features with df
     features = features.loc[df.index]
 
-    # PIT Safety: T-1 lag - train on all data BEFORE target_date - 1 day
-    t_minus_1 = target_dt - timedelta(days=1)
-    train_mask = df["date"] < t_minus_1
-    predict_mask = df["date"] == df[df["date"] <= t_minus_1]["date"].max()
+    # PIT Safety: T-1 lag - dùng ngày giao dịch thực sự gần nhất TRƯỚC target_date
+    # (không dùng calendar day T-1 để tránh lấy ngày cuối tuần/ngày nghỉ)
+    available_dates = df["date"].unique()
+    available_dates = sorted(d for d in available_dates if d < target_dt)
+    if not available_dates:
+        raise ValueError(f"Không có dữ liệu giao dịch trước {target_date}")
+    latest_trading_day = available_dates[-1]
+    # train: toàn bộ lịch sử trước ngày predict
+    train_mask = df["date"] < latest_trading_day
+    predict_mask = df["date"] == latest_trading_day
+    logger.info(
+        "PIT Safety: latest trading day for prediction = %s (target = %s)",
+        latest_trading_day.strftime("%Y-%m-%d"),
+        target_date,
+    )
 
     # Get feature columns (only numeric, exclude string columns like ticker)
     feature_cols = [c for c in features.columns if features[c].dtype in (np.float64, np.float32, np.int64, np.int32, np.float16, np.int16)]
@@ -167,8 +184,14 @@ def build_ensemble_signals(df: pd.DataFrame, target_date: str) -> dict:
     X_predict = features.loc[predict_mask, feature_cols].copy()
     predict_tickers = df.loc[predict_mask, "ticker"].copy()
 
-    # Drop NaN rows in predict set
-    valid_predict = X_predict.notna().all(axis=1)
+    # Xử lý NaN trong predict set: fillna bằng median của train thay vì drop
+    # (tránh loại hết rows do feature warmup chưa đủ)
+    train_medians = X_train.median()
+    X_predict = X_predict.fillna(train_medians)
+    # Nếu vẫn còn NaN (cột không có giá trị nào trong train), fillna(0)
+    X_predict = X_predict.fillna(0.0)
+    # Chỉ drop ticker nếu toàn bộ features đều 0 (cực hiếm)
+    valid_predict = (X_predict != 0).any(axis=1) | X_predict.eq(0).all(axis=1)
     X_predict = X_predict[valid_predict]
     predict_tickers = predict_tickers[valid_predict]
 
@@ -251,7 +274,7 @@ def build_ensemble_signals(df: pd.DataFrame, target_date: str) -> dict:
 def apply_sanitizer(signals: dict) -> dict:
     """Apply signal_sanitizer if available."""
     try:
-        from omega.quant.signal_sanitizer import sanitize_signals
+        from omega.quant.signal.sanitizer import sanitize_signals
 
         logger.info("Applying signal_sanitizer...")
         signals = sanitize_signals(signals)

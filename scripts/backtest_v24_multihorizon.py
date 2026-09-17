@@ -26,7 +26,7 @@ logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 logger = logging.getLogger(__name__)
 
 from omega.quant.evolution.multi_horizon_evolution import MultiHorizonEvolution, MultiHorizonConfig
-from omega.quant.parallel_backtest import ParallelBacktestRunner
+from omega.quant.backtest.parallel import ParallelBacktestRunner
 
 # ============================================================
 # PHASE A: DATA PIPELINE

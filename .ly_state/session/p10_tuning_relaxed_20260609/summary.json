@@ -1,0 +1,68 @@
+﻿[
+    {
+        "config":  "relaxed_h135_train",
+        "IC":  -0.0026,
+        "RawIC":  0.0131,
+        "CSIC":  0.0142,
+        "Sharpe":  1.427,
+        "MaxDD":  -6.45,
+        "Fallbacks":  1,
+        "NonEmptyHorizonFolds":  1,
+        "RelaxedCandidateUses":  24
+    },
+    {
+        "config":  "relaxed_h135_validation",
+        "IC":  -0.0036,
+        "RawIC":  0.0093,
+        "CSIC":  0.0086,
+        "Sharpe":  1.2788,
+        "MaxDD":  -7.24,
+        "Fallbacks":  2,
+        "NonEmptyHorizonFolds":  2,
+        "RelaxedCandidateUses":  24
+    },
+    {
+        "config":  "relaxed_h15_train",
+        "IC":  0.0003,
+        "RawIC":  0.0121,
+        "CSIC":  0.0165,
+        "Sharpe":  1.3684,
+        "MaxDD":  -6.35,
+        "Fallbacks":  1,
+        "NonEmptyHorizonFolds":  1,
+        "RelaxedCandidateUses":  16
+    },
+    {
+        "config":  "relaxed_h15_validation",
+        "IC":  -0.0042,
+        "RawIC":  0.0077,
+        "CSIC":  0.0103,
+        "Sharpe":  1.1486,
+        "MaxDD":  -7.21,
+        "Fallbacks":  3,
+        "NonEmptyHorizonFolds":  3,
+        "RelaxedCandidateUses":  16
+    },
+    {
+        "config":  "relaxed_h35_train",
+        "IC":  0.0005,
+        "RawIC":  0.0133,
+        "CSIC":  0.0127,
+        "Sharpe":  1.4324,
+        "MaxDD":  -6.26,
+        "Fallbacks":  1,
+        "NonEmptyHorizonFolds":  1,
+        "RelaxedCandidateUses":  16
+    },
+    {
+        "config":  "relaxed_h35_validation",
+        "IC":  -0.0013,
+        "RawIC":  0.011,
+        "CSIC":  0.0085,
+        "Sharpe":  1.2044,
+        "MaxDD":  -7.01,
+        "Fallbacks":  3,
+        "NonEmptyHorizonFolds":  3,
+        "RelaxedCandidateUses":  16
+    }
+]

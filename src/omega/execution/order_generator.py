@@ -18,6 +18,15 @@ from dataclasses import dataclass
 
 from .broker_gateway import BrokerOrder, OrderSide, OrderType
 
+# VND_FULL price-unit contract
+try:
+    from omega.data.vnd_price_contract import VND_FULL, THOUSANDS, get_price_multiplier
+except ImportError:
+    VND_FULL = "VND_FULL"
+    THOUSANDS = "THOUSANDS"
+    def get_price_multiplier(price_unit: str) -> float:
+        return 1.0 if price_unit == "VND_FULL" else 1000.0
+
 logger = logging.getLogger(__name__)
 
 
@@ -152,7 +161,8 @@ class OrderGenerator:
         portfolio_value: float,
         current_price: float,
         current_position: int = 0,
-        order_type: str = "MARKET"
+        order_type: str = "MARKET",
+        price_unit: str = VND_FULL
     ) -> Optional[BrokerOrder]:
         """
         Convert alpha signal to executable BrokerOrder.
@@ -161,9 +171,12 @@ class OrderGenerator:
             symbol: Stock symbol
             signal_weight: Target weight (0.0 to 1.0)
             portfolio_value: Total portfolio value (VND)
-            current_price: Current stock price (VND)
+            current_price: Current stock price (VND_FULL by default)
             current_position: Current position quantity
             order_type: Order type (MARKET, LIMIT)
+            price_unit: Price unit contract - VND_FULL (default) or THOUSANDS.
+                VND_FULL: price is in whole VND (e.g. 50000.0). No multiplier needed.
+                THOUSANDS: price is in thousands (e.g. 50.0). Multiplied by 1000.
             
         Returns:
             BrokerOrder or None if no order needed
@@ -173,8 +186,9 @@ class OrderGenerator:
             logger.warning(f"Invalid price for {symbol}: {current_price}")
             return None
         
+        price_vnd = current_price * get_price_multiplier(price_unit)
         target_notional = portfolio_value * signal_weight
-        target_quantity = int(target_notional / (current_price * 1000.0))  # Convert to shares
+        target_quantity = int(target_notional / price_vnd)  # Convert to shares
         
         # Round to board lot
         target_quantity = self._round_to_board_lot(target_quantity)
@@ -240,7 +254,8 @@ class OrderGenerator:
         order: BrokerOrder,
         current_price: float,
         adv: float,
-        portfolio_value: float
+        portfolio_value: float,
+        price_unit: str = VND_FULL
     ) -> tuple[bool, Optional[str]]:
         """
         Validate order meets compliance constraints.
@@ -250,6 +265,7 @@ class OrderGenerator:
             current_price: Current stock price
             adv: Average daily volume (shares)
             portfolio_value: Total portfolio value
+            price_unit: Price unit contract - VND_FULL (default) or THOUSANDS.
             
         Returns:
             (is_valid, error_message)
@@ -262,15 +278,18 @@ class OrderGenerator:
         if order.quantity < self.config.min_order_size:
             return False, f"Order below minimum size: {order.quantity}"
         
-        # Position weight validation
-        order_notional = order.quantity * current_price * 1000.0
+        # Position weight validation (price_unit aware)
+        price_vnd = current_price * get_price_multiplier(price_unit)
+        order_notional = order.quantity * price_vnd
         position_weight = order_notional / portfolio_value if portfolio_value > 0 else 0
         
         if position_weight > self.config.max_position_weight:
             return False, f"Position weight exceeds limit: {position_weight:.2%}"
         
-        # ADV validation (don't exceed 20% of ADV)
-        if adv > 0 and order.quantity > adv * 0.2:
+        # ADV validation (don't exceed 20% of ADV; reject if ADV=0 no-liquidity)
+        if adv <= 0:
+            return False, f"ADV is zero or negative: cannot validate order against illiquid ticker (adv={adv})"
+        if order.quantity > adv * 0.2:
             return False, f"Order exceeds 20% of ADV: {order.quantity} vs {adv * 0.2:.0f}"
         
         return True, None

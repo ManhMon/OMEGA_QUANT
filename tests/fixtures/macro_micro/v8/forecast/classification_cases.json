@@ -1,0 +1,1 @@
+[{"record":{"provider_marker":"forecast"},"evidence":{},"destination":"forecast"},{"record":{"period_is_future":true},"evidence":{},"destination":"quarantine"},{"record":{"period_is_future":false},"evidence":{},"destination":"actual"}]

@@ -1,0 +1,575 @@
+{
+  "date": "2026-06-18",
+  "generated_at": "2026-06-19T13:57:57.258797",
+  "gate": "HYBRID_REGIME_DETECTION_20260619",
+  "pipeline": "TradingPipelineV2",
+  "universe_size": 50,
+  "orders": [
+    {
+      "ticker": "ACB",
+      "target_weight": 0.0,
+      "current_weight": 0.0165,
+      "order_weight": -0.0165
+    },
+    {
+      "ticker": "BID",
+      "target_weight": 0.0,
+      "current_weight": 0.038655,
+      "order_weight": -0.038655
+    },
+    {
+      "ticker": "BSR",
+      "target_weight": 0.0,
+      "current_weight": 0.0118575,
+      "order_weight": -0.0118575
+    },
+    {
+      "ticker": "CEO",
+      "target_weight": 0.0,
+      "current_weight": -0.041605,
+      "order_weight": 0.041605
+    },
+    {
+      "ticker": "CII",
+      "target_weight": 0.0,
+      "current_weight": 0.012495,
+      "order_weight": -0.012495
+    },
+    {
+      "ticker": "CTG",
+      "target_weight": 0.0,
+      "current_weight": 0.05831,
+      "order_weight": -0.05831
+    },
+    {
+      "ticker": "DGC",
+      "target_weight": 0.0,
+      "current_weight": -0.01914,
+      "order_weight": 0.01914
+    },
+    {
+      "ticker": "DIG",
+      "target_weight": 0.0,
+      "current_weight": -0.0479975,
+      "order_weight": 0.0479975
+    },
+    {
+      "ticker": "DPM",
+      "target_weight": 0.0,
+      "current_weight": -0.02838,
+      "order_weight": 0.02838
+    },
+    {
+      "ticker": "DXG",
+      "target_weight": 0.0,
+      "current_weight": -0.04806,
+      "order_weight": 0.04806
+    },
+    {
+      "ticker": "EIB",
+      "target_weight": 0.0,
+      "current_weight": -0.04719,
+      "order_weight": 0.04719
+    },
+    {
+      "ticker": "EVF",
+      "target_weight": 0.0,
+      "current_weight": -0.0516475,
+      "order_weight": 0.0516475
+    },
+    {
+      "ticker": "FPT",
+      "target_weight": 0.0,
+      "current_weight": 0.018075,
+      "order_weight": -0.018075
+    },
+    {
+      "ticker": "GEX",
+      "target_weight": 0.0,
+      "current_weight": 0.01246,
+      "order_weight": -0.01246
+    },
+    {
+      "ticker": "HAG",
+      "target_weight": 0.0,
+      "current_weight": -0.0360725,
+      "order_weight": 0.0360725
+    },
+    {
+      "ticker": "HCM",
+      "target_weight": 0.0,
+      "current_weight": -0.0055,
+      "order_weight": 0.0055
+    },
+    {
+      "ticker": "HDB",
+      "target_weight": 0.0,
+      "current_weight": 0.037875,
+      "order_weight": -0.037875
+    },
+    {
+      "ticker": "HHV",
+      "target_weight": 0.0,
+      "current_weight": -0.032175,
+      "order_weight": 0.032175
+    },
+    {
+      "ticker": "HPG",
+      "target_weight": 0.0,
+      "current_weight": 0.0252,
+      "order_weight": -0.0252
+    },
+    {
+      "ticker": "KDH",
+      "target_weight": 0.0,
+      "current_weight": -0.061745,
+      "order_weight": 0.061745
+    },
+    {
+      "ticker": "KHG",
+      "target_weight": -0.0002515,
+      "current_weight": -0.1285165,
+      "order_weight": 0.12826500000000002
+    },
+    {
+      "ticker": "MBB",
+      "target_weight": 0.0,
+      "current_weight": 0.04536,
+      "order_weight": -0.04536
+    },
+    {
+      "ticker": "MSB",
+      "target_weight": 0.0,
+      "current_weight": 0.0241025,
+      "order_weight": -0.0241025
+    },
+    {
+      "ticker": "MSN",
+      "target_weight": 0.0,
+      "current_weight": 0.02175,
+      "order_weight": -0.02175
+    },
+    {
+      "ticker": "MWG",
+      "target_weight": 0.0,
+      "current_weight": 0.019775,
+      "order_weight": -0.019775
+    },
+    {
+      "ticker": "NVL",
+      "target_weight": 0.0,
+      "current_weight": 0.02937,
+      "order_weight": -0.02937
+    },
+    {
+      "ticker": "PC1",
+      "target_weight": 0.0,
+      "current_weight": -0.012935,
+      "order_weight": 0.012935
+    },
+    {
+      "ticker": "PDR",
+      "target_weight": 0.0,
+      "current_weight": -0.037875,
+      "order_weight": 0.037875
+    },
+    {
+      "ticker": "PLX",
+      "target_weight": 0.0,
+      "current_weight": -0.011595,
+      "order_weight": 0.011595
+    },
+    {
+      "ticker": "POW",
+      "target_weight": 0.0,
+      "current_weight": -0.0233475,
+      "order_weight": 0.0233475
+    },
+    {
+      "ticker": "PVS",
+      "target_weight": 0.0,
+      "current_weight": -0.019,
+      "order_weight": 0.019
+    },
+    {
+      "ticker": "PVT",
+      "target_weight": 0.0,
+      "current_weight": -0.0187625,
+      "order_weight": 0.0187625
+    },
+    {
+      "ticker": "SHB",
+      "target_weight": 0.0,
+      "current_weight": 0.0539,
+      "order_weight": -0.0539
+    },
+    {
+      "ticker": "SHS",
+      "target_weight": 0.0,
+      "current_weight": 0.033775,
+      "order_weight": -0.033775
+    },
+    {
+      "ticker": "SSI",
+      "target_weight": 0.0,
+      "current_weight": 0.065095,
+      "order_weight": -0.065095
+    },
+    {
+      "ticker": "STB",
+      "target_weight": 0.0,
+      "current_weight": 0.02884,
+      "order_weight": -0.02884
+    },
+    {
+      "ticker": "TCB",
+      "target_weight": 0.0,
+      "current_weight": 0.040885,
+      "order_weight": -0.040885
+    },
+    {
+      "ticker": "TCH",
+      "target_weight": 0.0,
+      "current_weight": -0.048195,
+      "order_weight": 0.048195
+    },
+    {
+      "ticker": "TPB",
+      "target_weight": 0.0,
+      "current_weight": -0.03948,
+      "order_weight": 0.03948
+    },
+    {
+      "ticker": "VCB",
+      "target_weight": 0.0,
+      "current_weight": 0.05287,
+      "order_weight": -0.05287
+    },
+    {
+      "ticker": "VCG",
+      "target_weight": 0.0,
+      "current_weight": -0.026195,
+      "order_weight": 0.026195
+    },
+    {
+      "ticker": "VCI",
+      "target_weight": 0.0,
+      "current_weight": -0.0628575,
+      "order_weight": 0.0628575
+    },
+    {
+      "ticker": "VCK",
+      "target_weight": 0.0,
+      "current_weight": -0.07502,
+      "order_weight": 0.07502
+    },
+    {
+      "ticker": "VHM",
+      "target_weight": 0.0,
+      "current_weight": 0.03375,
+      "order_weight": -0.03375
+    },
+    {
+      "ticker": "VIB",
+      "target_weight": 0.0,
+      "current_weight": -0.0369,
+      "order_weight": 0.0369
+    },
+    {
+      "ticker": "VIX",
+      "target_weight": 0.0,
+      "current_weight": 0.03949,
+      "order_weight": -0.03949
+    },
+    {
+      "ticker": "VND",
+      "target_weight": 0.0,
+      "current_weight": 0.0299475,
+      "order_weight": -0.0299475
+    },
+    {
+      "ticker": "VPB",
+      "target_weight": 0.0,
+      "current_weight": 0.03975,
+      "order_weight": -0.03975
+    },
+    {
+      "ticker": "VRE",
+      "target_weight": 0.0,
+      "current_weight": 0.0098525,
+      "order_weight": -0.0098525
+    },
+    {
+      "ticker": "VSC",
+      "target_weight": 0.0,
+      "current_weight": -0.0172125,
+      "order_weight": 0.0172125
+    }
+  ],
+  "n_orders": 50,
+  "reconciliation": {
+    "n_discrepancies": 50,
+    "discrepancies": {
+      "CTG": {
+        "theoretical": 0.0,
+        "actual": 0.05831,
+        "diff": 0.05831
+      },
+      "MSB": {
+        "theoretical": 0.0,
+        "actual": 0.0241025,
+        "diff": 0.0241025
+      },
+      "ACB": {
+        "theoretical": 0.0,
+        "actual": 0.0165,
+        "diff": 0.0165
+      },
+      "FPT": {
+        "theoretical": 0.0,
+        "actual": 0.018075,
+        "diff": 0.018075
+      },
+      "TPB": {
+        "theoretical": 0.0,
+        "actual": -0.03948,
+        "diff": 0.03948
+      },
+      "NVL": {
+        "theoretical": 0.0,
+        "actual": 0.02937,
+        "diff": 0.02937
+      },
+      "VCK": {
+        "theoretical": 0.0,
+        "actual": -0.07502,
+        "diff": 0.07502
+      },
+      "EIB": {
+        "theoretical": 0.0,
+        "actual": -0.04719,
+        "diff": 0.04719
+      },
+      "PC1": {
+        "theoretical": 0.0,
+        "actual": -0.012935,
+        "diff": 0.012935
+      },
+      "TCB": {
+        "theoretical": 0.0,
+        "actual": 0.040885,
+        "diff": 0.040885
+      },
+      "STB": {
+        "theoretical": 0.0,
+        "actual": 0.02884,
+        "diff": 0.02884
+      },
+      "CII": {
+        "theoretical": 0.0,
+        "actual": 0.012495,
+        "diff": 0.012495
+      },
+      "SSI": {
+        "theoretical": 0.0,
+        "actual": 0.065095,
+        "diff": 0.065095
+      },
+      "MSN": {
+        "theoretical": 0.0,
+        "actual": 0.02175,
+        "diff": 0.02175
+      },
+      "EVF": {
+        "theoretical": 0.0,
+        "actual": -0.0516475,
+        "diff": 0.0516475
+      },
+      "HPG": {
+        "theoretical": 0.0,
+        "actual": 0.0252,
+        "diff": 0.0252
+      },
+      "DIG": {
+        "theoretical": 0.0,
+        "actual": -0.0479975,
+        "diff": 0.0479975
+      },
+      "VND": {
+        "theoretical": 0.0,
+        "actual": 0.0299475,
+        "diff": 0.0299475
+      },
+      "VCI": {
+        "theoretical": 0.0,
+        "actual": -0.0628575,
+        "diff": 0.0628575
+      },
+      "VPB": {
+        "theoretical": 0.0,
+        "actual": 0.03975,
+        "diff": 0.03975
+      },
+      "HDB": {
+        "theoretical": 0.0,
+        "actual": 0.037875,
+        "diff": 0.037875
+      },
+      "VCG": {
+        "theoretical": 0.0,
+        "actual": -0.026195,
+        "diff": 0.026195
+      },
+      "GEX": {
+        "theoretical": 0.0,
+        "actual": 0.01246,
+        "diff": 0.01246
+      },
+      "MWG": {
+        "theoretical": 0.0,
+        "actual": 0.019775,
+        "diff": 0.019775
+      },
+      "HCM": {
+        "theoretical": 0.0,
+        "actual": -0.0055,
+        "diff": 0.0055
+      },
+      "KHG": {
+        "theoretical": -0.0002515,
+        "actual": -0.1285165,
+        "diff": 0.12826500000000002
+      },
+      "DXG": {
+        "theoretical": 0.0,
+        "actual": -0.04806,
+        "diff": 0.04806
+      },
+      "HHV": {
+        "theoretical": 0.0,
+        "actual": -0.032175,
+        "diff": 0.032175
+      },
+      "PDR": {
+        "theoretical": 0.0,
+        "actual": -0.037875,
+        "diff": 0.037875
+      },
+      "VIB": {
+        "theoretical": 0.0,
+        "actual": -0.0369,
+        "diff": 0.0369
+      },
+      "DPM": {
+        "theoretical": 0.0,
+        "actual": -0.02838,
+        "diff": 0.02838
+      },
+      "POW": {
+        "theoretical": 0.0,
+        "actual": -0.0233475,
+        "diff": 0.0233475
+      },
+      "PLX": {
+        "theoretical": 0.0,
+        "actual": -0.011595,
+        "diff": 0.011595
+      },
+      "CEO": {
+        "theoretical": 0.0,
+        "actual": -0.041605,
+        "diff": 0.041605
+      },
+      "KDH": {
+        "theoretical": 0.0,
+        "actual": -0.061745,
+        "diff": 0.061745
+      },
+      "HAG": {
+        "theoretical": 0.0,
+        "actual": -0.0360725,
+        "diff": 0.0360725
+      },
+      "BSR": {
+        "theoretical": 0.0,
+        "actual": 0.0118575,
+        "diff": 0.0118575
+      },
+      "PVS": {
+        "theoretical": 0.0,
+        "actual": -0.019,
+        "diff": 0.019
+      },
+      "SHS": {
+        "theoretical": 0.0,
+        "actual": 0.033775,
+        "diff": 0.033775
+      },
+      "VCB": {
+        "theoretical": 0.0,
+        "actual": 0.05287,
+        "diff": 0.05287
+      },
+      "SHB": {
+        "theoretical": 0.0,
+        "actual": 0.0539,
+        "diff": 0.0539
+      },
+      "VSC": {
+        "theoretical": 0.0,
+        "actual": -0.0172125,
+        "diff": 0.0172125
+      },
+      "VRE": {
+        "theoretical": 0.0,
+        "actual": 0.0098525,
+        "diff": 0.0098525
+      },
+      "DGC": {
+        "theoretical": 0.0,
+        "actual": -0.01914,
+        "diff": 0.01914
+      },
+      "VIX": {
+        "theoretical": 0.0,
+        "actual": 0.03949,
+        "diff": 0.03949
+      },
+      "VHM": {
+        "theoretical": 0.0,
+        "actual": 0.03375,
+        "diff": 0.03375
+      },
+      "BID": {
+        "theoretical": 0.0,
+        "actual": 0.038655,
+        "diff": 0.038655
+      },
+      "TCH": {
+        "theoretical": 0.0,
+        "actual": -0.048195,
+        "diff": 0.048195
+      },
+      "MBB": {
+        "theoretical": 0.0,
+        "actual": 0.04536,
+        "diff": 0.04536
+      },
+      "PVT": {
+        "theoretical": 0.0,
+        "actual": -0.0187625,
+        "diff": 0.0187625
+      }
+    },
+    "reconciled": false
+  },
+  "tca": {
+    "total_commission_vnd": 3554185.0,
+    "total_tax_vnd": 1599880.0,
+    "total_slippage_vnd": 1777092.5,
+    "total_cost_vnd": 6931157.5,
+    "n_orders": 50,
+    "n_fills": 50
+  },
+  "capital": 2000000000.0
+}

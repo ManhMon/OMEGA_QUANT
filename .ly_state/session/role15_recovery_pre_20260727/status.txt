@@ -1,0 +1,9 @@
+timestamp_utc=2026-07-27T13:34:17.3170345Z
+repo_root=C:\Users\GHC\repos\OMEGA_QUANT
+scheduler_evidence=C:\Users\GHC\repos\OMEGA_QUANT\.ly_state\session\paper_trading_task_disable_20260727.json
+scheduler_enabled=false
+scheduler_task_name=OMEGA_QUANT_PaperTrading
+pointer_exists=True
+releases_exists=True
+canonical_exists=True
+release_dirs=20260727T193508686265Z_2c6ee0ec,20260727T193520065461Z_96d16cbb,20260727T193525526387Z_c0bf2826,20260727T193530617891Z_824ded09,20260727T193535285124Z_62181bf0,20260727T194549980123Z_5abd0aa3,20260727T194815410147Z_69d74953,20260727T195154822094Z_6de403ad

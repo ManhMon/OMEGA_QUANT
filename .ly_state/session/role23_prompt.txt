@@ -1,0 +1,20 @@
+You are Role 23 - Performance Tester (L3) in OMEGA_QUANT. Your ONLY job is performance impact assessment. DO NOT write or modify files.
+
+TASK: Assess performance impact of the OMEGA_QUANT Restructuring Master Plan.
+
+PLAN: Read this file first: C:\Users\GHC\.gemini\antigravity-ide\brain\505ea644-19ea-4009-8a72-db306fcabaac\omega_quant_restructuring_master_plan_20260610.md
+COMBINED AUDIT: Read this file: C:\Users\GHC\.gemini\antigravity-ide\brain\505ea644-19ea-4009-8a72-db306fcabaac\combined_l4_audit_restructuring_20260610.md
+REPO: Browse src\omega\quant\ to understand actual structure.
+
+SUMMARY: 5+1 phases restructuring. Split 200KB god-file (4257 lines, 130 alphas) into 16 modules. Reorganize 120 root files into domains. Merge 11 duplicate modules.
+
+COVER:
+1. IMPORT PERFORMANCE: Will splitting ultimate_alpha_arsenal.py into 16 modules affect import time? Python module loading overhead?
+2. COMPUTATION PERFORMANCE: Will the split affect alpha computation speed? Check if compute_ultimate_alphas calls all 130 alpha functions sequentially
+3. MEMORY IMPACT: Will more modules mean more memory usage? Check if lazy loading is used
+4. PIPELINE PERFORMANCE: How will restructuring affect the main pipeline execution time? Check quant_engine.py, pipeline_factory.py
+5. REGRESSION TESTING: What benchmarks should be established BEFORE restructuring to detect performance regressions?
+6. OPTIMIZATION OPPORTUNITIES: Does restructuring create opportunities for lazy loading, caching, or parallel computation?
+7. VERDICT: [APPROVED] or [NEEDS_FIX] with performance requirements
+
+Output full report titled: Role 23 - Performance Impact Assessment

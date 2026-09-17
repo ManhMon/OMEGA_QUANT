@@ -1,0 +1,54 @@
+{
+  "gate": "HOSE_HNX_DATA_REBUILD_PHASE12_AUDIT_20260612",
+  "date": "2026-06-12T19:45:00+07:00",
+  "role": "15 data-engineer",
+  "tier": 2,
+  "status": "AWAITING_L3_REVIEW",
+  "purpose": "Promoted candidate manifest for rebuilt HOSE/HNX dataset with UNKNOWN exchange exclusion",
+  "source_dataset": "data/market_hose_hnx_2015_now_rebuilt_20260612.parquet",
+  "exchange_map_source": ".ly_state/session/exchange_map_20260612.json",
+  "exchange_resolution_approach": "Exclude UNKNOWN exchange rows from promoted candidate. No pretense that UNKNOWN is safe.",
+  "exchange_map_stats": {
+    "total_entries_in_map": 1446,
+    "valid_exchanges": ["HOSE", "HNX", "UPCOM"],
+    "known_unknown_tickers": "See exchange_map_20260612.json for full list (~1017 tickers)"
+  },
+  "promoted_candidate_spec": {
+    "exclude_unknown": true,
+    "behavior": "UNKNOWN exchange tickers are dropped from promoted dataset",
+    "flag_mode_available": "build_promoted_candidate(df, exchange_map, exclude_unknown=False) adds exchange_flag column instead of dropping",
+    "module": "src/omega/data/exchange_resolver.py",
+    "function": "build_promoted_candidate()"
+  },
+  "promoted_candidate_simulation": {
+    "note": "Simulation based on audit report data (3,233,304 rows, 1,444 tickers)",
+    "total_input_tickers": 1444,
+    "total_input_rows": 3233304,
+    "unknown_tickers": 1017,
+    "unknown_rows": 2264195,
+    "promoted_tickers_estimate": 427,
+    "promoted_rows_estimate": 969109,
+    "unknown_fraction_tickers": 0.7043,
+    "unknown_fraction_rows": 0.7003
+  },
+  "zero_volume_analysis": {
+    "total_zero_volume_rows": 1018451,
+    "zero_volume_fraction": 0.31499,
+    "impact": "ADV/capacity estimates unreliable for tickers with high zero-volume ratio. Exchange-aware ADV computation required.",
+    "recommendation": "Exclude fully-inactive tickers (all-zero volume) from capacity/slippage models"
+  },
+  "canonical_replacement_status": "BLOCKED",
+  "blocking_reasons": [
+    "VCI Listing API outage caused UNKNOWN exchange mapping for 70% of tickers",
+    "90 tickers missing from rebuilt dataset vs canonical (universe completeness gap)",
+    "31.5% zero-volume rows affect ADV/capacity/slippage estimates",
+    "External dependency (VCI API) must be restored for authoritative exchange resolution"
+  ],
+  "next_steps": [
+    "L3 re-review of code fixes (exchange_resolver, vnd_price_contract, execution/PnL parameterization)",
+    "Restore VCI Listing API and regenerate authoritative exchange map",
+    "Re-run batch loader with exchange assignment at ingestion time",
+    "Rebuild promoted candidate with resolved exchanges",
+    "Re-audit ADV/capacity by exchange tier"
+  ]
+}

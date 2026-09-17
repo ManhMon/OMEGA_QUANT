@@ -16,7 +16,7 @@ from __future__ import annotations
 import pytest
 from datetime import datetime, timezone, timedelta
 
-from omega.quant.transaction_cost_optimizer import (
+from omega.quant.execution.transaction_cost_optimizer import (
     TransactionCostOptimizer,
     TransactionCostResult,
 )

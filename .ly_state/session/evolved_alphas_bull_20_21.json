@@ -1,0 +1,75 @@
+{
+  "run_date": "2026-06-17T11:44:07.126052",
+  "total_promoted": 3,
+  "target_horizon": 5,
+  "multi_target_horizons": [
+    3,
+    5,
+    10
+  ],
+  "multi_target_weights": [
+    0.5,
+    0.3,
+    0.2
+  ],
+  "train_ratio": 0.7,
+  "pit_safety": {
+    "t1_lag": true,
+    "chronological_split": true,
+    "no_lookahead": true
+  },
+  "orthogonalization": {
+    "enabled": true
+  },
+  "alternative_features": {
+    "enabled": true,
+    "expected_columns": 35
+  },
+  "alphas": [
+    {
+      "alpha_id": "gp_alpha_20260617_000",
+      "formula": "(target_h10 * sqrt(((vn_ps_ratio_pit ts_std 5) - (vn_rsi_crossover_20_120 + vn_intraday_vol_morning))))",
+      "ic": 0.652756,
+      "sharpe": 0.221475,
+      "fitness": 0.589755,
+      "horizon": 5,
+      "multi_target_horizons": [
+        3,
+        5,
+        10
+      ],
+      "train_end_date": "2026-06-17 00:00:00",
+      "promoted_at": "2026-06-17T11:44:07.115374"
+    },
+    {
+      "alpha_id": "gp_alpha_20260617_002",
+      "formula": "sqrt((vn_stock_sector_corr ts_mean 5))",
+      "ic": 0.050185,
+      "sharpe": 0.250415,
+      "fitness": 0.035785,
+      "horizon": 5,
+      "multi_target_horizons": [
+        3,
+        5,
+        10
+      ],
+      "train_end_date": "2026-06-17 00:00:00",
+      "promoted_at": "2026-06-17T11:44:07.119010"
+    },
+    {
+      "alpha_id": "gp_alpha_20260617_004",
+      "formula": "(vn_stock_sector_corr ts_mean 10)",
+      "ic": 0.052967,
+      "sharpe": 0.239511,
+      "fitness": 0.02823,
+      "horizon": 5,
+      "multi_target_horizons": [
+        3,
+        5,
+        10
+      ],
+      "train_end_date": "2026-06-17 00:00:00",
+      "promoted_at": "2026-06-17T11:44:07.122119"
+    }
+  ]
+}
