@@ -40,7 +40,8 @@ GRAPH_BUILD_TIMEOUT = 900
 GRAPH_MAX_SCOPE_FILES = 200
 GRAPH_MAX_DETAIL_FILES = 20
 GRAPH_MAX_QUERY_ENTITIES = 5
-GRAPH_MAX_IMPACTED_FILES = 100
+GRAPH_IMPACT_MAX_RESULTS_LADDER: tuple[int, ...] = (100, 150, 200, 250)
+GRAPH_MAX_IMPACTED_FILES = 250
 GRAPH_MAX_OUTPUT_BYTES = 1_000_000
 GRAPH_MAX_JSON_BYTES = 500_000
 GRAPH_IMPACT_PROTOCOL = "stable_recursive_bisection_v1"
@@ -383,28 +384,40 @@ def _merge_impact_batches(repo_root: Path, scope_files: list[str], batches: list
 
 
 def _bounded_impact_query(repo_root: Path, scope_files: list[str]) -> tuple[dict, dict]:
-    """Query all scope files; bisect stable sorted slices only when output exceeds byte limits."""
+    """Query all scope files; bisect stable sorted slices dynamically laddering --max-results."""
     batches: list[tuple[list[str], dict]] = []
 
     def query(batch_scope: list[str]) -> None:
-        try:
-            payload = _graph_json(
-                repo_root, "impact", "--files", *batch_scope, "--depth", "2", "--max-results", "100"
-            )
-        except RuntimeError as exc:
-            if "exceeded safe byte limit" not in str(exc) and "graph impact response is truncated" not in str(exc):
-                raise
-            if len(batch_scope) == 1:
-                raise RuntimeError(
-                    f"graph impact response for {batch_scope[0]} exceeds safe byte budgets "
-                    f"(stdout={GRAPH_MAX_OUTPUT_BYTES}, json={GRAPH_MAX_JSON_BYTES}); "
-                    "safe complete representation is impossible"
-                ) from exc
-            middle = len(batch_scope) // 2
-            query(batch_scope[:middle])
-            query(batch_scope[middle:])
+        if not batch_scope:
             return
-        batches.append((list(batch_scope), payload))
+        last_exc: RuntimeError | None = None
+        for max_results in GRAPH_IMPACT_MAX_RESULTS_LADDER:
+            try:
+                payload = _graph_json(
+                    repo_root, "impact", "--files", *batch_scope, "--depth", "2", "--max-results", str(max_results)
+                )
+                batches.append((list(batch_scope), payload))
+                return
+            except RuntimeError as exc:
+                last_exc = exc
+                err = str(exc)
+                is_byte_limit = "exceeded safe byte limit" in err
+                is_truncated = "graph impact response is truncated" in err
+                is_omitted = "graph impact response omitted nodes" in err
+                if not (is_byte_limit or is_truncated or is_omitted):
+                    raise
+                if is_byte_limit:
+                    break
+
+        if len(batch_scope) <= 1:
+            raise RuntimeError(
+                f"graph impact response for {batch_scope[0]} exceeds safe byte budgets or ladder limits "
+                f"(stdout={GRAPH_MAX_OUTPUT_BYTES}, json={GRAPH_MAX_JSON_BYTES}, max_results={GRAPH_IMPACT_MAX_RESULTS_LADDER[-1]}); "
+                "safe complete representation is impossible"
+            ) from last_exc
+        middle = len(batch_scope) // 2
+        query(batch_scope[:middle])
+        query(batch_scope[middle:])
 
     query(scope_files)
     return _merge_impact_batches(repo_root, scope_files, batches)

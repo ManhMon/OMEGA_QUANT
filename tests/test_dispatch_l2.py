@@ -1069,3 +1069,409 @@ def test_contract_atomic_failure_leaves_no_temp_files(tmp_path, monkeypatch):
 def test_canonical_json_rejects_non_json_or_nonfinite(value):
     with pytest.raises((ValueError, TypeError)):
         dispatch_l2.canonical_json_bytes({"value": value})
+
+
+def _make_valid_impact_payload(scope_files: list[str], total: int = 10, impacted: list[str] | None = None) -> dict:
+    return {
+        "status": "ok",
+        "summary": "Impact summary",
+        "changed_files": list(scope_files),
+        "impacted_files": list(scope_files if impacted is None else impacted),
+        "total_impacted": total,
+        "truncated": False,
+        "nodes_omitted": 0,
+    }
+
+
+def test_bounded_impact_query_laddering_on_truncation(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    file_a = tmp_path / "a.py"
+    file_a.write_text("print(1)", encoding="utf-8")
+    attempts = []
+
+    def fake_graph_json(repo_root, *args):
+        max_res = args[args.index("--max-results") + 1]
+        attempts.append(max_res)
+        if max_res == "100":
+            raise RuntimeError("graph impact response is truncated; complete representation is required")
+        if max_res == "150":
+            return _make_valid_impact_payload(["a.py"], total=120)
+        raise RuntimeError("unexpected max_results")
+
+    monkeypatch.setattr(dispatch_l2, "_graph_json", fake_graph_json)
+    merged, protocol = dispatch_l2._bounded_impact_query(tmp_path, ["a.py"])
+
+    assert attempts == ["100", "150"]
+    assert protocol["batch_count"] == 1
+    assert protocol["complete"] is True
+    assert merged["total_impacted"] == 120
+    assert merged["impacted_files"] == ["a.py"]
+    assert merged["truncated"] is False
+
+
+def test_bounded_impact_query_laddering_on_omitted_nodes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    file_a = tmp_path / "a.py"
+    file_a.write_text("print(1)", encoding="utf-8")
+    attempts = []
+
+    def fake_graph_json(repo_root, *args):
+        max_res = args[args.index("--max-results") + 1]
+        attempts.append(max_res)
+        if max_res == "100":
+            raise RuntimeError("graph impact response omitted nodes; complete representation is required")
+        if max_res == "150":
+            return _make_valid_impact_payload(["a.py"], total=115)
+        raise RuntimeError("unexpected max_results")
+
+    monkeypatch.setattr(dispatch_l2, "_graph_json", fake_graph_json)
+    merged, protocol = dispatch_l2._bounded_impact_query(tmp_path, ["a.py"])
+
+    assert attempts == ["100", "150"]
+    assert protocol["batch_count"] == 1
+    assert merged["total_impacted"] == 115
+    assert merged["truncated"] is False
+
+
+def test_bounded_impact_query_full_ladder_to_250(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    file_a = tmp_path / "a.py"
+    file_a.write_text("print(1)", encoding="utf-8")
+    attempts = []
+
+    def fake_graph_json(repo_root, *args):
+        max_res = args[args.index("--max-results") + 1]
+        attempts.append(max_res)
+        if max_res in ("100", "150"):
+            raise RuntimeError("graph impact response is truncated; complete representation is required")
+        if max_res == "200":
+            raise RuntimeError("graph impact response omitted nodes; complete representation is required")
+        if max_res == "250":
+            return _make_valid_impact_payload(["a.py"], total=240)
+        raise RuntimeError("unexpected max_results")
+
+    monkeypatch.setattr(dispatch_l2, "_graph_json", fake_graph_json)
+    merged, protocol = dispatch_l2._bounded_impact_query(tmp_path, ["a.py"])
+
+    assert attempts == ["100", "150", "200", "250"]
+    assert protocol["batch_count"] == 1
+    assert merged["total_impacted"] == 240
+
+
+def test_bounded_impact_query_bisection_after_ladder_exhaustion(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    file_a = tmp_path / "a.py"
+    file_b = tmp_path / "b.py"
+    file_a.write_text("print(1)", encoding="utf-8")
+    file_b.write_text("print(2)", encoding="utf-8")
+    query_log = []
+
+    def fake_graph_json(repo_root, *args):
+        files = []
+        i = args.index("--files") + 1
+        while i < len(args) and not args[i].startswith("--"):
+            files.append(args[i])
+            i += 1
+        max_res = args[args.index("--max-results") + 1]
+        query_log.append((tuple(files), max_res))
+
+        if files == ["a.py", "b.py"]:
+            # Exhaust all ladder steps for combined batch
+            raise RuntimeError("graph impact response is truncated; complete representation is required")
+        if files == ["a.py"]:
+            # a.py succeeds at 100
+            return _make_valid_impact_payload(["a.py"], total=30)
+        if files == ["b.py"]:
+            # b.py truncates at 100, succeeds at 150
+            if max_res == "100":
+                raise RuntimeError("graph impact response omitted nodes; complete representation is required")
+            return _make_valid_impact_payload(["b.py"], total=135)
+        raise RuntimeError(f"unexpected files: {files}")
+
+    monkeypatch.setattr(dispatch_l2, "_graph_json", fake_graph_json)
+    merged, protocol = dispatch_l2._bounded_impact_query(tmp_path, ["a.py", "b.py"])
+
+    # First combined was tried for 100, 150, 200, 250
+    assert (("a.py", "b.py"), "100") in query_log
+    assert (("a.py", "b.py"), "150") in query_log
+    assert (("a.py", "b.py"), "200") in query_log
+    assert (("a.py", "b.py"), "250") in query_log
+
+    # Then bisected: a.py tried at 100, b.py tried at 100 then 150
+    assert (("a.py",), "100") in query_log
+    assert (("b.py",), "100") in query_log
+    assert (("b.py",), "150") in query_log
+
+    assert protocol["batch_count"] == 2
+    assert protocol["complete"] is True
+    assert protocol["covered_scope_count"] == 2
+    assert merged["total_impacted"] == 165
+    assert merged["impacted_files"] == ["a.py", "b.py"]
+    assert merged["truncated"] is False
+
+
+def test_bounded_impact_query_single_file_ladder_exhaustion_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    file_a = tmp_path / "a.py"
+    file_a.write_text("print(1)", encoding="utf-8")
+    attempts = []
+
+    def fake_graph_json(repo_root, *args):
+        max_res = args[args.index("--max-results") + 1]
+        attempts.append(max_res)
+        raise RuntimeError("graph impact response is truncated; complete representation is required")
+
+    monkeypatch.setattr(dispatch_l2, "_graph_json", fake_graph_json)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        dispatch_l2._bounded_impact_query(tmp_path, ["a.py"])
+
+    assert attempts == ["100", "150", "200", "250"]
+    assert "safe complete representation is impossible" in str(excinfo.value)
+    assert "max_results=250" in str(excinfo.value)
+
+
+def test_bounded_impact_query_byte_limit_bisects_without_laddering(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    file_a = tmp_path / "a.py"
+    file_b = tmp_path / "b.py"
+    file_a.write_text("print(1)", encoding="utf-8")
+    file_b.write_text("print(2)", encoding="utf-8")
+    query_log = []
+
+    def fake_graph_json(repo_root, *args):
+        files = []
+        i = args.index("--files") + 1
+        while i < len(args) and not args[i].startswith("--"):
+            files.append(args[i])
+            i += 1
+        max_res = args[args.index("--max-results") + 1]
+        query_log.append((tuple(files), max_res))
+
+        if files == ["a.py", "b.py"]:
+            raise RuntimeError("command output exceeded safe byte limit")
+        return _make_valid_impact_payload(files, total=10)
+
+    monkeypatch.setattr(dispatch_l2, "_graph_json", fake_graph_json)
+    merged, protocol = dispatch_l2._bounded_impact_query(tmp_path, ["a.py", "b.py"])
+
+    # Byte limit should break immediately on 100 without trying 150, 200, 250
+    assert query_log == [
+        (("a.py", "b.py"), "100"),
+        (("a.py",), "100"),
+        (("b.py",), "100"),
+    ]
+    assert protocol["batch_count"] == 2
+    assert protocol["complete"] is True
+    assert merged["total_impacted"] == 20
+
+
+def test_bounded_impact_query_byte_limit_single_file_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    file_a = tmp_path / "a.py"
+    file_a.write_text("print(1)", encoding="utf-8")
+    attempts = []
+
+    def fake_graph_json(repo_root, *args):
+        max_res = args[args.index("--max-results") + 1]
+        attempts.append(max_res)
+        raise RuntimeError("graph query JSON exceeded safe byte limit")
+
+    monkeypatch.setattr(dispatch_l2, "_graph_json", fake_graph_json)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        dispatch_l2._bounded_impact_query(tmp_path, ["a.py"])
+
+    # For byte limit, does not ladder to 150, 200, 250 since output is already too large
+    assert attempts == ["100"]
+    assert "safe complete representation is impossible" in str(excinfo.value)
+
+
+def test_bounded_impact_query_unhandled_error_fails_closed_immediately(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    file_a = tmp_path / "a.py"
+    file_b = tmp_path / "b.py"
+    file_a.write_text("print(1)", encoding="utf-8")
+    file_b.write_text("print(2)", encoding="utf-8")
+    attempts = []
+
+    def fake_graph_json(repo_root, *args):
+        attempts.append(args[args.index("--max-results") + 1])
+        raise RuntimeError("graph query returned malformed JSON")
+
+    monkeypatch.setattr(dispatch_l2, "_graph_json", fake_graph_json)
+
+    with pytest.raises(RuntimeError, match="graph query returned malformed JSON"):
+        dispatch_l2._bounded_impact_query(tmp_path, ["a.py", "b.py"])
+
+    # Immediate fail-closed, no laddering or bisection on unexpected error
+    assert attempts == ["100"]
+
+
+def test_bounded_impact_query_empty_scope(tmp_path: Path):
+    merged, protocol = dispatch_l2._bounded_impact_query(tmp_path, [])
+    assert protocol["batch_count"] == 0
+    assert protocol["complete"] is True
+    assert protocol["covered_scope_count"] == 0
+    assert merged["impacted_files"] == []
+    assert merged["total_impacted"] == 0
+
+
+def test_f001_scope_isolation_traversal_and_flag_injection_faults(tmp_path: Path):
+    """F-001 fault injection: _scope_files rejects traversal, flags, directories, and non-existent files."""
+    valid_file = tmp_path / "valid_script.py"
+    valid_file.write_text("print('test')", encoding="utf-8")
+    sub_dir = tmp_path / "sub_dir"
+    sub_dir.mkdir()
+
+    # Path traversal outside repository
+    with pytest.raises(RuntimeError, match="escapes repository"):
+        dispatch_l2._scope_files("../../escape.py", tmp_path)
+
+    # Flag-like token injection
+    with pytest.raises(RuntimeError, match="flag-like token"):
+        dispatch_l2._scope_files("--injected-flag", tmp_path)
+
+    # Directory token rejection (must be regular file)
+    with pytest.raises(RuntimeError, match="does not name an existing repo-local regular file"):
+        dispatch_l2._scope_files("sub_dir", tmp_path)
+
+    # Non-existent file token rejection
+    with pytest.raises(RuntimeError, match="does not name an existing repo-local regular file"):
+        dispatch_l2._scope_files("non_existent_file.py", tmp_path)
+
+    # Control characters injection
+    with pytest.raises(RuntimeError, match="control-free string"):
+        dispatch_l2._scope_files("valid_script.py\n", tmp_path)
+
+    # Duplicate file tokens rejection
+    with pytest.raises(RuntimeError, match="duplicate file token"):
+        dispatch_l2._scope_files("valid_script.py valid_script.py", tmp_path)
+
+    # Valid scope resolves cleanly
+    resolved = dispatch_l2._scope_files("valid_script.py", tmp_path)
+    assert resolved == ["valid_script.py"]
+
+
+def test_f001_scope_isolation_prompt_test_constraint_injection():
+    """F-001 scope isolation: dispatch_l2 must inject TEST SCOPE CONSTRAINT into prompt."""
+    res = subprocess.run(
+        [
+            sys.executable,
+            "scripts/dispatch_l2.py",
+            "devops-engineer",
+            "GATE_DISPATCH_L2_IMPACT_QUERY_HARDENING_20260917",
+            "test_scope_isolation_slug",
+            "Scope isolation validation",
+            "scripts/dispatch_l2.py",
+            "--risk",
+            "low",
+        ],
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+    )
+    assert res.returncode == 0
+    command, prompt_path, prompt = _parse_command_and_prompt(res.stdout)
+    try:
+        assert "TEST SCOPE CONSTRAINT: Limit test execution to declared scope files and related test suites" in prompt
+        assert "do NOT scan or run the full 4400+ test repository suite" in prompt
+    finally:
+        prompt_path.unlink(missing_ok=True)
+        lock_file = REPO_ROOT / ".ly_state" / "session" / f"dispatch_l2_role11_test_scope_isolation_slug_{datetime.now().strftime('%Y%m%d')}.lock"
+        lock_file.unlink(missing_ok=True)
+
+
+def test_f001_scope_isolation_predispatch_mutation_fault(tmp_path, monkeypatch):
+    """F-001 fault injection: mutation of scoped file during graph collection aborts predispatch."""
+    import scripts.dispatch_l2 as dl2
+
+    repo_dir = tmp_path / "repo"
+    repo_dir.mkdir(parents=True)
+    session_dir = repo_dir / ".ly_state" / "session"
+    session_dir.mkdir(parents=True)
+
+    session_id = "test_f001_mutation"
+
+    monkeypatch.setattr(dl2, "GRAPH_TOOL_ROOT", tmp_path)
+    (tmp_path / "pyproject.toml").write_text("", encoding="utf-8")
+    monkeypatch.setattr(dl2, "_scope_files", lambda scope, root: ["target.py"])
+    monkeypatch.setattr(dl2, "_is_scope_dirty", lambda root, files: False)
+    monkeypatch.setattr(dl2, "_current_commit", lambda root: "abcdef1234567890")
+    monkeypatch.setattr(dl2, "_graph_commit", lambda: "abcdef1234567890")
+
+    class FakeProc:
+        stdout = "status: abcdef123456 ok"
+    monkeypatch.setattr(dl2, "_run_checked", lambda cmd, cwd, timeout: FakeProc())
+    monkeypatch.setattr(dl2, "_bounded_impact_query", lambda root, files: ({"summary": "s", "impacted_files": [], "total_impacted": 0, "truncated": False}, {"complete": True, "batch_count": 1}))
+    monkeypatch.setattr(dl2, "_graph_file_summary", lambda root, p: ({"summary": "ok"}, False))
+
+    call_count = 0
+    def mutating_scope_hashes(root, files):
+        nonlocal call_count
+        call_count += 1
+        if call_count >= 2:
+            return {"target.py": "mutated_hash_9999"}
+        return {"target.py": "original_hash_1111"}
+
+    monkeypatch.setattr(dl2, "_scope_content_hashes", mutating_scope_hashes)
+
+    with pytest.raises(RuntimeError, match="scope file content changed during graph evidence collection"):
+        dl2.run_graph_predispatch_gate(session_id, "target.py", repo_dir)
+
+
+def test_f002_16d_boundary_invariants_fault_injection():
+    """F-002 fault injection: verify 16-dimension invariant defenses fail closed."""
+    # Dim 1: Malformed types
+    with pytest.raises(RuntimeError, match="invalid count"):
+        dispatch_l2._strict_int("not_a_number", "count")
+    with pytest.raises(RuntimeError, match="invalid count"):
+        dispatch_l2._strict_int(True, "count")
+    with pytest.raises(RuntimeError, match="invalid flag"):
+        dispatch_l2._strict_bool("yes", "flag")
+
+    # Dim 2: Invalid I/O path containment
+    with pytest.raises(SystemExit) as exc:
+        dispatch_l2.ensure_session_containment(Path("../outside_escape.txt"))
+    assert exc.value.code == 2
+
+    # Dim 4: Fail-closed exit codes
+    with pytest.raises(SystemExit) as exc:
+        dispatch_l2.validate_identifier("bad;identifier", "role")
+    assert exc.value.code == 2
+
+    # Dim 8: Numeric bounds overflow
+    with pytest.raises(RuntimeError, match="invalid ladder_val"):
+        dispatch_l2._strict_int(1_000_001, "ladder_val", maximum=1_000_000)
+
+    # Dim 16: Credential leak redaction
+    sanitized = dispatch_l2.redact_credentials(
+        "Failed connection to https://admin:supersecret@api.omega.quant/v1?token=topsecrettoken"
+    )
+    assert "supersecret" not in sanitized
+    assert "topsecrettoken" not in sanitized
+    assert "[REDACTED]" in sanitized
+
+
+def test_f002_validate_l2_report_sweep_schema_and_boundaries():
+    """F-002 boundary documentation: validate_l2_report requires exact heading order and sweep JSON."""
+    from scripts.validate_l2_report import _check_required_headings, REMEDIATION_H2, BASELINE_H2
+
+    # Valid baseline headings
+    baseline_doc = "# L2 Implementation Report\n\n" + "\n\n".join(f"{h}\nContent" for h in BASELINE_H2)
+    ok, errs = _check_required_headings(baseline_doc, remediation_required=False)
+    assert ok is True
+    assert errs == []
+
+    # Valid remediation headings
+    remediation_doc = "# L2 Implementation Report\n\n" + "\n\n".join(f"{h}\nContent" for h in REMEDIATION_H2)
+    ok, errs = _check_required_headings(remediation_doc, remediation_required=True)
+    assert ok is True
+    assert errs == []
+
+    # Remediation missing Root-Cause Architectural Sweep heading
+    ok, errs = _check_required_headings(baseline_doc, remediation_required=True)
+    assert ok is False
+    assert any("missing H2 headings" in e for e in errs)
+
+    # Out of order headings
+    swapped = list(REMEDIATION_H2)
+    swapped[3], swapped[4] = swapped[4], swapped[3]
+    bad_order_doc = "# L2 Implementation Report\n\n" + "\n\n".join(f"{h}\nContent" for h in swapped)
+    ok, errs = _check_required_headings(bad_order_doc, remediation_required=True)
+    assert ok is False
+    assert any("out of order" in e for e in errs)
+
+
