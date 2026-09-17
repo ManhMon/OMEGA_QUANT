@@ -1022,8 +1022,12 @@ class ConformalCalibrationResponse(StrictApiModel):
     quantiles: dict[str, FiniteFloat]
     group_coverages: list[MondrianGroupCoverage]
     artifact_path: Annotated[str, Field(min_length=1, max_length=256)]
+    artifact_sha256: Sha256
     calibrated_at: AwareUtcDateTime
+    pit_cutoff: AwareUtcDateTime
     pit_embargo: AwareUtcDateTime
+    calendar_aligned: bool = True
+    holiday_aware: bool = True
     is_valid: bool = True
     provenance: ProvenanceEnvelope | None = None
 
