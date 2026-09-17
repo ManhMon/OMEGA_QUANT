@@ -415,7 +415,7 @@ def _validate_finding_sweep_coverage(contract: Mapping[str, Any], sweep: Mapping
     for contract_finding, finding in zip(expected, actual, strict=True):
         finding_id = finding["finding_id"]
         probes = finding["probe_strings"]
-        if not probes or any(not probe.strip() for probe in probes) or probes != contract_finding["probe_strings"]:
+        if (contract_finding["probe_strings"] and not probes) or any(not probe.strip() for probe in probes) or probes != contract_finding["probe_strings"]:
             return [f"ANTI_DRIP[E502] probe coverage mismatch for {finding_id}"]
         compiled = []
         for search in finding["searches"]:
@@ -477,7 +477,7 @@ def _collect_pytest_node_ids(
     if errors:
         return False, errors
     try:
-        completed = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", *node_ids],
+        completed = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-o", "addopts=", "-q", *node_ids],
                                    cwd=repo_root, shell=False, capture_output=True, text=True,
                                    timeout=timeout_seconds, check=False)
     except (subprocess.TimeoutExpired, OSError) as exc:
@@ -584,10 +584,43 @@ def _emit_failures(errors: Sequence[str], *, fatal: bool = False) -> None:
 
 def main(argv: Sequence[str] | None = None, repo_root: Path | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
-    if len(args) != 3:
-        _emit_failures(["ANTI_DRIP[E101] usage: python scripts/validate_l2_report.py <session_id> <role_id> <role_name>"], fatal=True)
+    collect_timeout = 60
+    pos_args: list[str] = []
+    i = 0
+    while i < len(args):
+        arg = args[i]
+        if arg in ("--collect-timeout", "--timeout"):
+            if i + 1 >= len(args):
+                _emit_failures(["ANTI_DRIP[E101] missing value for timeout option"], fatal=True)
+                return 2
+            try:
+                collect_timeout = int(args[i + 1])
+                if collect_timeout <= 0:
+                    raise ValueError
+            except ValueError:
+                _emit_failures(["ANTI_DRIP[E101] timeout must be a positive integer"], fatal=True)
+                return 2
+            i += 2
+        elif arg.startswith(("--collect-timeout=", "--timeout=")):
+            try:
+                collect_timeout = int(arg.split("=", 1)[1])
+                if collect_timeout <= 0:
+                    raise ValueError
+            except ValueError:
+                _emit_failures(["ANTI_DRIP[E101] timeout must be a positive integer"], fatal=True)
+                return 2
+            i += 1
+        elif arg.startswith("-"):
+            _emit_failures([f"ANTI_DRIP[E101] unrecognized option: {arg!r}"], fatal=True)
+            return 2
+        else:
+            pos_args.append(arg)
+            i += 1
+
+    if len(pos_args) != 3:
+        _emit_failures(["ANTI_DRIP[E101] usage: python scripts/validate_l2_report.py <session_id> <role_id> <role_name> [--collect-timeout <seconds>]"], fatal=True)
         return 2
-    session_id, role_text, role_name = args
+    session_id, role_text, role_name = pos_args
     if SESSION_ID_RE.fullmatch(session_id) is None:
         _emit_failures([f"ANTI_DRIP[E101] invalid session_id: {session_id!r}"], fatal=True)
         return 2
@@ -612,7 +645,7 @@ def main(argv: Sequence[str] | None = None, repo_root: Path | None = None) -> in
     if len(raw) < MIN_REPORT_BYTES:
         _emit_failures([f"ANTI_DRIP[E104] report is smaller than {MIN_REPORT_BYTES} bytes"])
         return 1
-    mode, errors = validate_anti_drip_report(session_id, content, root)
+    mode, errors = validate_anti_drip_report(session_id, content, root, collect_timeout_seconds=collect_timeout)
     if errors:
         _emit_failures(errors)
         return 1
