@@ -37,6 +37,12 @@ export interface UiState {
   activeModule: ModuleType;
   setActiveModule: (module: ModuleType) => void;
 
+  activeSubTabs: Record<string, string>;
+  activeFeatureId: string | null;
+  setActiveSubTab: (module: string, subTab: string) => void;
+  setActiveFeatureId: (featureId: string | null) => void;
+  navigateToFeature: (module: ModuleType, subTab?: string, featureId?: string) => void;
+
   isSideDockCollapsed: boolean;
   toggleSideDockCollapse: () => void;
   setSideDockCollapsed: (collapsed: boolean) => void;
@@ -197,6 +203,30 @@ export const useUiStore = create<UiState>((set) => ({
 
   activeModule: 'macro_cockpit',
   setActiveModule: (module) => set({ activeModule: module }),
+
+  activeSubTabs: {
+    control_center: 'overview'
+  },
+  activeFeatureId: null,
+  setActiveSubTab: (module, subTab) =>
+    set((state) => ({
+      activeSubTabs: {
+        ...state.activeSubTabs,
+        [module]: subTab
+      }
+    })),
+  setActiveFeatureId: (activeFeatureId) => set({ activeFeatureId }),
+  navigateToFeature: (module, subTab, featureId) =>
+    set((state) => ({
+      activeModule: module,
+      activeSubTabs: subTab
+        ? {
+            ...state.activeSubTabs,
+            [module]: subTab
+          }
+        : state.activeSubTabs,
+      activeFeatureId: featureId ?? null
+    })),
 
   isSideDockCollapsed: false,
   toggleSideDockCollapse: () => set((state) => ({ isSideDockCollapsed: !state.isSideDockCollapsed })),
