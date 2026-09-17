@@ -39,6 +39,12 @@ DECISION_NEUTRAL = "neutral"
 DECISION_POSITIVE = "positive"
 DECISION_STRONG_POSITIVE = "strong_positive"
 
+# Status hierarchy constants
+STATUS_DISQUALIFIED = "DISQUALIFIED"
+STATUS_DISTRESS = "DISTRESS"
+STATUS_QUALIFIED = "QUALIFIED"
+STATUS_WATCH = "WATCH"
+
 # Weight & threshold constants
 MANDATORY_RAW_QUANT_WEIGHT = 0.75
 MANDATORY_RAW_LLM_MAX_WEIGHT = 0.25
@@ -110,6 +116,11 @@ class HybridEvaluator:
     Ensemble evaluator combining Quant and LLM fundamental signals.
     """
 
+    STATUS_DISQUALIFIED = STATUS_DISQUALIFIED
+    STATUS_DISTRESS = STATUS_DISTRESS
+    STATUS_QUALIFIED = STATUS_QUALIFIED
+    STATUS_WATCH = STATUS_WATCH
+
     def __init__(
         self,
         raw_quant_weight: float = RAW_QUANT_BASE_WEIGHT,
@@ -166,6 +177,57 @@ class HybridEvaluator:
             return DECISION_POSITIVE
         else:
             return DECISION_STRONG_POSITIVE
+
+    @staticmethod
+    def map_status_hierarchy(
+        is_veto: bool = False,
+        altman_zone: Optional[str] = None,
+        piotroski_f: Optional[Union[int, float]] = None,
+        roe: Optional[Union[int, float]] = None,
+    ) -> str:
+        """
+        Maps fundamental metrics to deterministic status hierarchy:
+        1. Veto -> DISQUALIFIED
+        2. Distress Priority (Altman zone == 'distress' or Piotroski F <= 3) -> DISTRESS
+        3. Qualified Priority (Piotroski F >= 7 and Altman zone in {'safe', 'not_applicable'} and ROE >= 15.0) -> QUALIFIED
+        4. Default -> WATCH
+        """
+        if is_veto:
+            return STATUS_DISQUALIFIED
+
+        zone_norm = str(altman_zone).strip().lower() if altman_zone is not None else ""
+
+        f_val: Optional[float] = None
+        if piotroski_f is not None:
+            try:
+                f_cand = float(piotroski_f)
+                if math.isfinite(f_cand):
+                    f_val = f_cand
+            except (ValueError, TypeError):
+                f_val = None
+
+        if zone_norm == "distress" or (f_val is not None and f_val <= 3):
+            return STATUS_DISTRESS
+
+        roe_val: Optional[float] = None
+        if roe is not None:
+            try:
+                roe_cand = float(roe)
+                if math.isfinite(roe_cand):
+                    roe_val = roe_cand
+            except (ValueError, TypeError):
+                roe_val = None
+
+        if (
+            f_val is not None
+            and f_val >= 7
+            and zone_norm in {"safe", "not_applicable"}
+            and roe_val is not None
+            and roe_val >= 15.0
+        ):
+            return STATUS_QUALIFIED
+
+        return STATUS_WATCH
 
     def compute_weights(
         self,
