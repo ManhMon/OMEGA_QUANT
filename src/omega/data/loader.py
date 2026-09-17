@@ -47,7 +47,7 @@ except ImportError:
     CorporateAction = None
 
 try:
-    from omega.data.validator import DataValidator, ValidationIssue
+    from omega.data.sanitizer import DataValidator, ValidationIssue
 except ImportError:
     DataValidator = None
     ValidationIssue = None

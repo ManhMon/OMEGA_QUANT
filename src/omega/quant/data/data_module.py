@@ -8,7 +8,7 @@ import json
 import hashlib
 from pathlib import Path
 from omega.data.corporate_action import CorporateActionAdjuster, CorporateAction
-from omega.data.data_validator import DataValidator, ValidationIssue
+from omega.data.sanitizer import DataValidator, ValidationIssue
 
 class DataModule:
     """

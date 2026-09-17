@@ -15,6 +15,14 @@ import pandas as pd
 import numpy as np
 from typing import Optional, Dict, Tuple
 import warnings
+import hashlib
+import json
+import math
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from typing import Any, List
+from .calendar import VNTradingCalendar
 warnings.filterwarnings('ignore')
 
 
@@ -452,9 +460,156 @@ class DataSanitizer:
         report += f"Outliers clipped: {stats['outliers_clipped']}\n"
         report += f"Invalid prices removed: {stats['invalid_prices_removed']}\n"
         report += f"Output rows: {stats['output_rows']}\n"
-        report += f"Data retention: {stats['output_rows'] / stats['input_rows'] * 100:.1f}%\n"
+        retention = stats['output_rows'] / stats['input_rows'] * 100 if stats['input_rows'] else 0
+        report += f"Data retention: {retention:.1f}%\n"
         
         return report
+
+
+@dataclass(frozen=True)
+class ValidationIssue:
+    rule: str
+    message: str
+    symbol: str
+    timestamp: Any
+
+
+class DataValidator:
+    """Canonical OHLCV validator. Fail-closed on malformed inputs."""
+
+    def __init__(self, max_session_move: float = 0.20, adv_lookback: int = 20,
+                 liquid_adv_threshold: float = 100000.0, validate_provenance: bool = True) -> None:
+        self.max_session_move = max_session_move
+        self.adv_lookback = adv_lookback
+        self.liquid_adv_threshold = liquid_adv_threshold
+        self.validate_provenance = validate_provenance
+
+    def validate(self, df: Any) -> Dict[str, Any]:
+        if not isinstance(df, pd.DataFrame):
+            return {"error": "Input must be a pandas DataFrame"}
+        missing = {col: int(df[col].isna().sum()) for col in df.columns if df[col].isna().any()}
+        symbol_col = "ticker" if "ticker" in df.columns else "symbol"
+        symbol = str(df[symbol_col].iloc[0]) if symbol_col in df and len(df) else "UNKNOWN"
+        rows = df.to_dict("records")
+        return {"missing_values": missing, "total_rows": len(df),
+                "issues": [{"rule": i.rule, "message": i.message} for i in self.validate_rows(rows, symbol)]}
+
+    def validate_rows(self, rows: List[Dict[str, Any]], symbol: str | None = None,
+                      parquet_path: Path | None = None) -> List[ValidationIssue]:
+        if not isinstance(rows, list) or not rows:
+            return []
+        rows = sorted((r for r in rows if isinstance(r, dict) and r.get("timestamp") is not None),
+                      key=lambda r: r["timestamp"])
+        if not rows:
+            return []
+        sym = symbol or str(rows[0].get("symbol", "UNKNOWN"))
+        issues = self._structural(rows, sym) + self._moves(rows, sym) + self._liquidity(rows, sym) + self._gaps(rows, sym)
+        if self.validate_provenance:
+            issues += self._provenance(rows, sym)
+            if parquet_path:
+                issues += self._checksum(Path(parquet_path), sym)
+        return issues
+
+    @staticmethod
+    def _number(value: Any, positive: bool = False) -> bool:
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value) and (not positive or value > 0)
+
+    def _structural(self, rows, symbol):
+        out = []
+        for row in rows:
+            vals = [row.get(k) for k in ("open", "high", "low", "close")]
+            if all(self._number(v) for v in vals) and (row["high"] < max(row["open"], row["low"], row["close"]) or row["low"] > min(row["open"], row["high"], row["close"])):
+                out.append(ValidationIssue("ohlc_structure_inconsistent", "OHLC violated: high must be max and low must be min", symbol, row.get("timestamp")))
+        return out
+
+    def _moves(self, rows, symbol):
+        out = []
+        for prev, row in zip(rows, rows[1:]):
+            if self._number(prev.get("close"), True) and self._number(row.get("close"), True):
+                move = abs(row["close"] / prev["close"] - 1)
+                if move > self.max_session_move:
+                    out.append(ValidationIssue("price_jump_gt_20pct", f"Detected single-session move {move:.2%} > {self.max_session_move:.0%}", symbol, row.get("timestamp")))
+                if any(abs(row["close"] / prev["close"] - r) < .02 for r in (.5, .33, .25, 2, 3, 4)):
+                    out.append(ValidationIssue("potential_unadjusted_split", "Detected common split ratio", symbol, row.get("timestamp")))
+        first = rows[0]
+        try: adjusted = json.loads(first.get("adjustments_applied", "[]")) if isinstance(first.get("adjustments_applied", "[]"), str) else first.get("adjustments_applied", [])
+        except (TypeError, json.JSONDecodeError): adjusted = []
+        if "vnstock" in str(first.get("source", "")).lower() and adjusted:
+            out.append(ValidationIssue("potential_double_adjustment", "Source and adjustments both indicate adjusted prices", symbol, first.get("timestamp")))
+        return out
+
+    def _liquidity(self, rows, symbol):
+        out = []
+        volumes = [float(r.get("volume", 0) or 0) if self._number(r.get("volume", 0)) else 0 for r in rows]
+        for i in range(self.adv_lookback, len(rows)):
+            adv = sum(volumes[i-self.adv_lookback:i]) / self.adv_lookback
+            if adv >= self.liquid_adv_threshold and volumes[i] == 0:
+                out.append(ValidationIssue("zero_volume_liquid_stock", f"Zero volume with trailing ADV={adv:.2f}", symbol, rows[i].get("timestamp")))
+        return out
+
+    def _gaps(self, rows, symbol):
+        dates = [self._to_date(r.get("timestamp")) for r in rows]
+        if any(d is None for d in dates): return []
+        out, cur, end, observed = [], min(dates), max(dates), set(dates)
+        while cur <= end:
+            if VNTradingCalendar.is_trading_day(datetime.combine(cur, datetime.min.time())) and cur not in observed:
+                out.append(ValidationIssue("missing_trading_timestamp", f"Missing trading day in observed data: {cur.isoformat()}", symbol, cur.isoformat()))
+            cur += timedelta(days=1)
+        return out
+
+    def _provenance(self, rows, symbol):
+        out = []
+        for row in rows:
+            for field in ("dataset_version", "source"):
+                if field not in row: out.append(ValidationIssue(f"missing_{field}", f"Missing {field} field in provenance metadata", symbol, row.get("timestamp")))
+            if "adjustments_applied" in row and row["adjustments_applied"] is not None and not isinstance(row["adjustments_applied"], (str, list)):
+                out.append(ValidationIssue("invalid_adjustments_format", "adjustments_applied must be JSON string or list", symbol, row.get("timestamp")))
+        return out
+
+    def _checksum(self, parquet_path, symbol):
+        meta = parquet_path.parent / f"{parquet_path.stem}.metadata.json"
+        if not meta.exists(): return [ValidationIssue("missing_metadata_sidecar", f"Missing .metadata.json sidecar file at {meta}", symbol, None)]
+        try:
+            payload = json.loads(meta.read_text(encoding="utf-8"))
+            stored = payload.get("checksum")
+            if "checksum" not in payload:
+                return [ValidationIssue("missing_checksum_in_sidecar", "Missing checksum field in .metadata.json", symbol, None)]
+            if not isinstance(stored, str) or len(stored) != 64 or any(c not in "0123456789abcdefABCDEF" for c in stored):
+                return [ValidationIssue("invalid_checksum_format", "checksum must be a 64-char hexadecimal string", symbol, None)]
+            actual = hashlib.sha256(parquet_path.read_bytes()).hexdigest()
+            return [] if actual.lower() == stored.lower() else [ValidationIssue("checksum_mismatch", "Checksum mismatch", symbol, None)]
+        except (OSError, json.JSONDecodeError) as exc:
+            return [ValidationIssue("invalid_metadata_sidecar", f"Failed to read .metadata.json: {type(exc).__name__}", symbol, None)]
+
+    @staticmethod
+    def _to_date(value):
+        if isinstance(value, datetime): return value.date()
+        if isinstance(value, date): return value
+        if isinstance(value, str):
+            try: return datetime.fromisoformat(value).date()
+            except ValueError: return None
+        return None
+
+
+class DataQualityChecker:
+    def __init__(self, max_missing_pct: float = 0.05, price_jump_threshold: float = 0.15):
+        self.max_missing_pct = max_missing_pct
+        self.price_jump_threshold = price_jump_threshold
+
+    def check_missing_values(self, values: List[float]) -> bool:
+        return bool(values) and sum(v is None or (isinstance(v, float) and not math.isfinite(v)) for v in values) / len(values) <= self.max_missing_pct
+
+    def check_outliers(self, values: List[float]) -> bool:
+        valid = [v for v in values if self._valid(v)]
+        return all(prev == 0 or abs((curr - prev) / prev) <= self.price_jump_threshold for prev, curr in zip(valid, valid[1:]))
+
+    def validate(self, prices: List[float]) -> Dict[str, Any]:
+        missing, outliers = self.check_missing_values(prices), self.check_outliers(prices)
+        return {"is_valid": missing and outliers, "missing_pass": missing, "outliers_pass": outliers}
+
+    @staticmethod
+    def _valid(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 if __name__ == '__main__':

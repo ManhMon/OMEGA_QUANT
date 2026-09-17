@@ -7,87 +7,12 @@ from pathlib import Path
 from datetime import datetime, date
 from typing import Dict, List, Any, Optional, Tuple
 
-from omega.data.validator import DataValidator, ValidationIssue
+from omega.data.sanitizer import DataSanitizer, DataValidator, ValidationIssue
 from omega.data.corporate_action import CorporateActionAdjuster, CorporateAction
 # NOTE: FeatureModule, NeutralizationEngine not yet in OMEGA package
 # These will be integrated in Phase 12 (Portfolio Optimization)
 
 warnings.filterwarnings('ignore')
-
-class DataSanitizer:
-    def __init__(self, max_fill_days: int = 3, outlier_sigma: float = 3.0, min_price: float = 0.01):
-        self.max_fill_days = max_fill_days
-        self.outlier_sigma = outlier_sigma
-        self.min_price = min_price
-        self.fitted_stats: Dict[str, Dict[str, float]] = {}
-        self.sanitization_stats: Dict[str, int] = {}
-
-    def fit(self, df: pd.DataFrame, symbol_col: str = 'ticker', date_col: str = 'timestamp') -> None:
-        print(f"  [DataSanitizer] Fitting on {len(df):,} rows, {df[symbol_col].nunique()} symbols...")
-        
-        # Vectorized: compute stats per symbol using groupby
-        price_cols = ['open', 'high', 'low', 'close']
-        available_cols = [col for col in price_cols if col in df.columns]
-        
-        if available_cols:
-            grouped = df.groupby(symbol_col)[available_cols]
-            means = grouped.mean()
-            stds = grouped.std()
-            
-            for sym in df[symbol_col].unique():
-                stats = {}
-                for col in available_cols:
-                    if sym in means.index and not pd.isna(means.loc[sym, col]):
-                        mean = means.loc[sym, col]
-                        std = stds.loc[sym, col] if not pd.isna(stds.loc[sym, col]) else 0
-                        stats[f'{col}_lower'] = max(self.min_price, mean - self.outlier_sigma * std)
-                        stats[f'{col}_upper'] = mean + self.outlier_sigma * std
-                self.fitted_stats[sym] = stats
-        
-        print(f"  [DataSanitizer] Fitted on {len(self.fitted_stats)} symbols")
-
-    def apply(self, df: pd.DataFrame, symbol_col: str = 'ticker', date_col: str = 'timestamp') -> pd.DataFrame:
-        print(f"  [DataSanitizer] Applying sanitization to {len(df):,} rows...")
-        df_clean = df.copy()
-        self.sanitization_stats = {'outliers_clipped': 0, 'missing_filled': 0, 'ohlc_fixed': 0}
-        
-        price_cols = ['open', 'high', 'low', 'close']
-        available_price_cols = [col for col in price_cols if col in df_clean.columns]
-        
-        # Vectorized: clip outliers per symbol using groupby + transform
-        for col in available_price_cols:
-            def make_clipper(col_name):
-                def clip_series(series):
-                    sym = series.name
-                    stats = self.fitted_stats.get(sym, {})
-                    if f'{col_name}_lower' in stats and f'{col_name}_upper' in stats:
-                        before = series.copy()
-                        clipped = series.clip(lower=stats[f'{col_name}_lower'], upper=stats[f'{col_name}_upper'])
-                        self.sanitization_stats['outliers_clipped'] += (before != clipped).sum()
-                        return clipped
-                    return series
-                return clip_series
-            
-            df_clean[col] = df_clean.groupby(symbol_col, group_keys=False)[col].transform(make_clipper(col))
-        
-        # Vectorized: forward fill per symbol using groupby + transform
-        fill_cols = ['open', 'high', 'low', 'close', 'volume']
-        available_fill_cols = [col for col in fill_cols if col in df_clean.columns]
-        
-        for col in available_fill_cols:
-            before_na = df_clean[col].isna().sum()
-            df_clean[col] = df_clean.sort_values([symbol_col, date_col]).groupby(symbol_col)[col].ffill(limit=self.max_fill_days)
-            self.sanitization_stats['missing_filled'] += (before_na - df_clean[col].isna().sum())
-        
-        # Vectorized: OHLC consistency fix
-        if all(c in df_clean.columns for c in ['open', 'high', 'low', 'close']):
-            before_h, before_l = df_clean['high'].copy(), df_clean['low'].copy()
-            df_clean['high'] = df_clean[['high', 'open', 'close']].max(axis=1)
-            df_clean['low'] = df_clean[['low', 'open', 'close']].min(axis=1)
-            self.sanitization_stats['ohlc_fixed'] += ((before_h != df_clean['high']) | (before_l != df_clean['low'])).sum()
-        
-        print(f"  [DataSanitizer] Sanitization complete: {self.sanitization_stats}")
-        return df_clean
 
 class ProductionDataPipeline:
     def __init__(self, input_path: str, output_path: str, cache_dir: str = "data/cache", as_of_time: Optional[datetime] = None):
@@ -95,7 +20,7 @@ class ProductionDataPipeline:
             raise ValueError("as_of_time is mandatory for PIT compliance in ProductionDataPipeline")
         self.input_path, self.output_path, self.cache_dir, self.as_of_time = Path(input_path), Path(output_path), Path(cache_dir), as_of_time
         self.cache_dir.mkdir(parents=True, exist_ok=True)
-        self.sanitizer = DataSanitizer()
+        self.sanitizer = DataSanitizer(as_of_time=as_of_time)
         self.validator = DataValidator()
         # NOTE: FeatureModule and NeutralizationEngine are Phase 12 features
         # Removed to prevent import errors - will be integrated in Portfolio Optimization phase
@@ -143,7 +68,7 @@ class ProductionDataPipeline:
         self.pipeline_stats['l1_input_rows'] = len(df)
         df = self._apply_corporate_actions(df)
         self.sanitizer.fit(df, symbol_col='symbol')
-        df = self.sanitizer.apply(df, symbol_col='symbol')
+        df = self.sanitizer.apply(df, symbol_col='symbol', date_col='timestamp')
         
         # Validation using DataValidator.validate_rows() - fully vectorized groupby approach
         # Vectorized: Use groupby().apply() to partition by symbol and validate each group
