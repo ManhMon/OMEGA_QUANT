@@ -200,3 +200,20 @@ def test_report_heading_duplicate_and_forbidden_wording(case):
 
 def test_main_usage_is_fatal_exit_two():
     assert validator.main([]) == 2
+
+
+def test_main_options_parsing_and_validation(case):
+    # Valid options
+    assert validator.main([SESSION, "11", "devops-engineer", "--collect-timeout", "30"], repo_root=case["root"]) == 0
+    assert validator.main([SESSION, "11", "devops-engineer", "--timeout=45"], repo_root=case["root"]) == 0
+
+    # Missing option value
+    assert validator.main([SESSION, "11", "devops-engineer", "--collect-timeout"], repo_root=case["root"]) == 2
+
+    # Invalid option value (non-integer or negative)
+    assert validator.main([SESSION, "11", "devops-engineer", "--collect-timeout", "abc"], repo_root=case["root"]) == 2
+    assert validator.main([SESSION, "11", "devops-engineer", "--timeout=-5"], repo_root=case["root"]) == 2
+
+    # Unrecognized option
+    assert validator.main([SESSION, "11", "devops-engineer", "--unrecognized"], repo_root=case["root"]) == 2
+
