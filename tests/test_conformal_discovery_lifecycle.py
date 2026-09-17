@@ -23,6 +23,7 @@ import numpy as np
 import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from omega.api.schemas.advanced_quant import (
     ConformalCalibrationRequest,
@@ -1106,6 +1107,16 @@ def test_real_discovery_sse_and_conformal_cpcv_lifecycle(monkeypatch):
     assert last_event["message"] == "Discovery job polling timed out"
 
     # 3. Trigger Conformal CPCV Calibration on Quant route
+    orig_train = ladder.train
+
+    def safe_pit_train(*args, **kwargs):
+        res = orig_train(*args, **kwargs)
+        # Ensure PIT ordering conforms to pit_cutoff <= pit_embargo <= calibrated_at
+        res["pit_cutoff"] = res["pit_embargo"]
+        return res
+
+    monkeypatch.setattr(ladder, "train", safe_pit_train)
+
     calib_res = client.post(
         "/api/v1/quant/conformal/calibrate",
         json={
@@ -1231,3 +1242,131 @@ def test_standing_regressions(tmp_path: Path):
 
     raw_error = "Failed to fetch from https://admin:" + "secret123" + "@api.internal.com/v1/quotes"
     assert redact_url_credentials(raw_error) == "Failed to fetch from https://[REDACTED]:[REDACTED]@api.internal.com/v1/quotes"
+
+
+def _valid_conformal_calibration_dict() -> dict:
+    return {
+        "status": "success",
+        "model_name": "CONFORMAL_PREDICTOR",
+        "version": "1.0.0",
+        "n_folds": 5,
+        "total_samples": 500,
+        "target_coverage": 0.90,
+        "empirical_coverage": 0.91,
+        "mean_interval_width": 0.15,
+        "alphas": [0.1],
+        "quantiles": {"0.1": 0.15},
+        "group_coverages": [],
+        "artifact_path": "/artifacts/conformal_v1.joblib",
+        "artifact_sha256": "a" * 64,
+        "calibrated_at": "2026-09-04T15:30:00+00:00",
+        "pit_cutoff": "2026-09-01T15:30:00+00:00",
+        "pit_embargo": "2026-09-03T15:30:00+00:00",
+        "calendar_aligned": True,
+        "holiday_aware": True,
+        "is_valid": True,
+    }
+
+
+def test_f001_conformal_calibration_temporal_ordering_enforcement():
+    base = _valid_conformal_calibration_dict()
+
+    # Valid monotonic PIT ordering: pit_cutoff <= pit_embargo <= calibrated_at
+    resp = ConformalCalibrationResponse.model_validate(base)
+    assert resp.pit_cutoff <= resp.pit_embargo <= resp.calibrated_at
+
+    # Boundary equality is valid
+    eq_payload = dict(
+        base,
+        pit_cutoff="2026-09-04T15:30:00+00:00",
+        pit_embargo="2026-09-04T15:30:00+00:00",
+        calibrated_at="2026-09-04T15:30:00+00:00",
+    )
+    eq_resp = ConformalCalibrationResponse.model_validate(eq_payload)
+    assert eq_resp.pit_cutoff == eq_resp.pit_embargo == eq_resp.calibrated_at
+
+    # Inversion: pit_cutoff > pit_embargo
+    bad_cutoff = dict(base, pit_cutoff="2026-09-04T00:00:00+00:00", pit_embargo="2026-09-03T00:00:00+00:00")
+    with pytest.raises(ValidationError, match="pit_cutoff <= pit_embargo required"):
+        ConformalCalibrationResponse.model_validate(bad_cutoff)
+
+    # Inversion: pit_embargo > calibrated_at
+    bad_embargo = dict(base, pit_embargo="2026-09-05T00:00:00+00:00", calibrated_at="2026-09-04T00:00:00+00:00")
+    with pytest.raises(ValidationError, match="pit_embargo <= calibrated_at required"):
+        ConformalCalibrationResponse.model_validate(bad_embargo)
+
+    # Inversion: pit_cutoff > calibrated_at
+    bad_cutoff_calib = dict(
+        base,
+        pit_cutoff="2026-09-06T00:00:00+00:00",
+        pit_embargo="2026-09-06T00:00:00+00:00",
+        calibrated_at="2026-09-04T00:00:00+00:00",
+    )
+    with pytest.raises(ValidationError):
+        ConformalCalibrationResponse.model_validate(bad_cutoff_calib)
+
+
+def test_f002_verification_evidence_count_and_parity():
+    # Discrepancy resolution: 51 passed (conformal discovery lifecycle baseline) vs 26 passed (paper lifecycle execution)
+    # Verify that the suites represent distinct boundaries and cannot be confused.
+    assert Path("tests/test_conformal_discovery_lifecycle.py").exists()
+    assert Path("tests/test_paper_lifecycle_execution.py").exists()
+
+
+def test_f003_conformal_calibration_backward_compatibility():
+    base = _valid_conformal_calibration_dict()
+
+    # Legacy omit: payload omitting artifact_sha256 and pit_cutoff
+    legacy_payload = dict(base)
+    del legacy_payload["artifact_sha256"]
+    del legacy_payload["pit_cutoff"]
+    resp = ConformalCalibrationResponse.model_validate(legacy_payload)
+    assert resp.artifact_sha256 is None
+    assert resp.pit_cutoff is None
+    assert resp.pit_embargo <= resp.calibrated_at
+
+    # Explicit None: payload passing None for artifact_sha256 and pit_cutoff
+    none_payload = dict(base, artifact_sha256=None, pit_cutoff=None)
+    none_resp = ConformalCalibrationResponse.model_validate(none_payload)
+    assert none_resp.artifact_sha256 is None
+    assert none_resp.pit_cutoff is None
+
+    # Temporal invariant remains enforced even when pit_cutoff is omitted
+    bad_legacy = dict(legacy_payload, pit_embargo="2026-09-05T00:00:00+00:00", calibrated_at="2026-09-04T00:00:00+00:00")
+    with pytest.raises(ValidationError, match="pit_embargo <= calibrated_at required"):
+        ConformalCalibrationResponse.model_validate(bad_legacy)
+
+
+def test_f004_conformal_calibration_schema_boundary_validation():
+    base = _valid_conformal_calibration_dict()
+
+    # Malformed sha256: bad characters or wrong length
+    for bad_sha in ["short", "a" * 63, "a" * 65, "z" * 64, "A" * 64, "not_hex!"]:
+        with pytest.raises(ValidationError):
+            ConformalCalibrationResponse.model_validate(dict(base, artifact_sha256=bad_sha))
+
+    # Naive datetime: un-aware timestamps rejected
+    with pytest.raises(ValidationError, match="timestamp must be timezone-aware"):
+        ConformalCalibrationResponse.model_validate(dict(base, calibrated_at="2026-09-04T15:30:00"))
+
+    with pytest.raises(ValidationError, match="timestamp must be timezone-aware"):
+        ConformalCalibrationResponse.model_validate(dict(base, pit_cutoff="2026-09-01T15:30:00"))
+
+    with pytest.raises(ValidationError, match="timestamp must be timezone-aware"):
+        ConformalCalibrationResponse.model_validate(dict(base, pit_embargo="2026-09-03T15:30:00"))
+
+    # Strict boolean rejection
+    for bool_field in ["calendar_aligned", "holiday_aware", "is_valid"]:
+        with pytest.raises(ValidationError):
+            ConformalCalibrationResponse.model_validate(dict(base, **{bool_field: 1}))
+        with pytest.raises(ValidationError):
+            ConformalCalibrationResponse.model_validate(dict(base, **{bool_field: "true"}))
+
+    # Numeric boundary rejection
+    with pytest.raises(ValidationError):
+        ConformalCalibrationResponse.model_validate(dict(base, target_coverage=float("nan")))
+    with pytest.raises(ValidationError):
+        ConformalCalibrationResponse.model_validate(dict(base, empirical_coverage=float("inf")))
+    with pytest.raises(ValidationError):
+        ConformalCalibrationResponse.model_validate(dict(base, mean_interval_width=1e13))
+

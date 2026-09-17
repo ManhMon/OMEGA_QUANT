@@ -7050,7 +7050,7 @@
   },
   "GATE_CONFORMAL_CALIBRATION_SCHEMA_HARDENING_20260917": {
     "phase_name": "GATE_CONFORMAL_CALIBRATION_SCHEMA_HARDENING_20260917",
-    "l2_session_id": "l2_role9_conformal_calibration_schema_hardening_20260917",
+    "l2_session_id": "l2_role9_conformal_calibration_schema_hardening_rem_20260917",
     "l2_role_id": 9,
     "l2_role_name": "backend-engineer",
     "l3_session_id": "l3_role21_gate_conformal_calibration_schema_hardening_20260917",
@@ -7062,7 +7062,7 @@
     "sod_boundary_checked": true,
     "writer_auditor_separated": true,
     "l2_completed": true,
-    "timestamp": "2026-09-17T21:28:36+07:00",
+    "timestamp": "2026-09-17T22:43:05+07:00",
     "forbidden_path_scan": "forbidden path scan completed for session l3_role21_gate_conformal_calibration_schema_hardening_20260917; non-authoritative scan evidence only; no reliance.",
     "repo_local_skill_sources": [
       ".agents/agent/backend-engineer.md",

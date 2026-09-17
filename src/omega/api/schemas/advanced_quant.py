@@ -1022,14 +1022,24 @@ class ConformalCalibrationResponse(StrictApiModel):
     quantiles: dict[str, FiniteFloat]
     group_coverages: list[MondrianGroupCoverage]
     artifact_path: Annotated[str, Field(min_length=1, max_length=256)]
-    artifact_sha256: Sha256
+    artifact_sha256: Sha256 | None = None
     calibrated_at: AwareUtcDateTime
-    pit_cutoff: AwareUtcDateTime
+    pit_cutoff: AwareUtcDateTime | None = None
     pit_embargo: AwareUtcDateTime
     calendar_aligned: bool = True
     holiday_aware: bool = True
     is_valid: bool = True
     provenance: ProvenanceEnvelope | None = None
+
+    @model_validator(mode="after")
+    def validate_pit_ordering(self) -> "ConformalCalibrationResponse":
+        if self.pit_cutoff is not None and self.pit_cutoff > self.pit_embargo:
+            raise ValueError("pit_cutoff <= pit_embargo required")
+        if self.pit_embargo > self.calibrated_at:
+            raise ValueError("pit_embargo <= calibrated_at required")
+        if self.pit_cutoff is not None and self.pit_cutoff > self.calibrated_at:
+            raise ValueError("pit_cutoff <= calibrated_at required")
+        return self
 
 
 class ConformalCalibrationStatusResponse(StrictApiModel):
