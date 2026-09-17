@@ -136,6 +136,7 @@ def test_model_mapping():
     for level in ("high", "medium", "low"):
         assert isinstance(MODELS[level], str)
         assert len(MODELS[level]) > 0
+        assert MODELS[level] == "9router/cx/gpt-5.6-luna"
 
 
 def test_parse_frontmatter():
@@ -192,6 +193,7 @@ def test_dispatch_l2_cli_run_and_prompt_construction():
     assert "---COMMAND---" in stdout
 
     command, prompt_path, prompt = _parse_command_and_prompt(stdout)
+    assert '-m "9router/cx/gpt-5.6-luna"' in command
 
     # Prompt check: 16 dimensions
     assert "MANDATORY 16-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in prompt

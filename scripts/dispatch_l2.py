@@ -1496,9 +1496,9 @@ def build_regression_clause(classes: list[str] | None = None) -> str:
     )
 
 MODELS = {
-    "high": "9router/ag/gemini-3.8-flash-high",
-    "medium": "9router/ag/gemini-3.8-flash-high",
-    "low": "9router/ag/gemini-3.8-flash-high"
+    "high": "9router/cx/gpt-5.6-luna",
+    "medium": "9router/cx/gpt-5.6-luna",
+    "low": "9router/cx/gpt-5.6-luna"
 }
 VALID_RISK_LEVELS = ("low", "medium", "high")
 
