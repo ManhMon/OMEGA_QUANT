@@ -50,17 +50,17 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 ## 2. Data Sources
 
-### Primary: vnstock + VCI Provider
+### Primary: DirectVCIClient (SSOT)
 
 ```python
-from vnstock import Quote
+from omega.data.vci_direct import DirectVCIClient
 
-df = Quote(source="VCI", symbol="VNM").history(
-    start="2015-01-01",
-    end="2026-06-13",
-    interval="1D"
+df = DirectVCIClient().fetch_history(
+    "VNM", "2015-01-01", "2026-06-13", as_of="2026-06-14T09:00:00+07:00"
 )
 ```
+
+`DirectVCIClient` is the only active VCI network-ingestion SSOT. It enforces HTTPS/path allowlisting, bounded payloads and retries, redaction, calendar/session filters, and `as_of`/`available_at` PIT constraints. Do not add new `from vnstock import ...` network call sites. Archived adapters under `archive/legacy_adapters/` are fail-closed historical inventory.
 
 ### Provider Characteristics
 
@@ -73,10 +73,14 @@ df = Quote(source="VCI", symbol="VNM").history(
 ### Data Refresh Pipeline
 
 ```
-VCI API → vnstock.Quote.history() → ensure_vnd_scale() → parquet cache
+VCI API → DirectVCIClient.fetch_history() → ensure_vnd_scale() → DataSanitizer → parquet cache
                                                               ↓
-                                                  data/market_*.parquet
+                                                   data/market_*.parquet
 ```
+
+### Validation SSOT
+
+Use `src/omega/data/sanitizer.py` for `DataSanitizer`, `DataValidator`, `ValidationIssue`, and `DataQualityChecker`. Train with `fit(train_df)`, then validate later observations with `apply(test_df)`. Compatibility modules `omega.data.validator`, `omega.data.data_validator`, and `omega.data.data_quality` re-export these exact objects; they must not acquire duplicate logic.
 
 ---
 

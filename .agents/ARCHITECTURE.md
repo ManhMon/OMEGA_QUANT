@@ -8,7 +8,7 @@
 
 AG Kit is a modular system consisting of:
 
-- **25 OMEGA Agents** - Three-tier role-based AI personas with segregation of duties
+- **26 OMEGA Agents** - Three-tier role-based AI personas with segregation of duties
 - **55 Skills** - Domain-specific knowledge modules with conditional loading
 - **13 Workflows** - Slash command procedures
 
@@ -78,6 +78,7 @@ OMEGA agents follow a three-tier segregation of duties (SOD) architecture with s
 | 23 | `performance-tester` | Load/stress testing |
 | 24 | `uat-validator` | User acceptance validation |
 | 25 | `it-systems-auditor` | Overall system audit |
+| 26 | `planning-architect` | Master Planner / Architecture Documenter |
 
 ---
 
@@ -101,6 +102,7 @@ Modular knowledge domains that agents can load on-demand based on task context.
 | `code-review-graph` | `code-review-graph` | Token-efficient code review using Tree-sitter AST graphs and MCP. Cuts AI token usage on large codebases by computing the blast radius of changes instead of reading entire codebases. Uses a SQLite graph database for structural analysis. |
 | `context-compression` | `context-compression` | Manage and compress conversation context in long sessions. Detect when context is growing large, summarize completed work phases, archive old findings while preserving key decisions. Prevents context degradation. |
 | `coordinator-mode` | `coordinator-mode` | Advanced multi-agent orchestration with parallel workers, synthesis protocols, and coordinator lifecycle. Use when complex tasks require multiple agents working in parallel with intelligent result synthesis. |
+| `cso` | `cso` | Security-audit guidance for signed receipts, secret handling, integrity controls, and fail-closed verification. |
 | `data-science-workflow` | `data-science-workflow` | Data science workflow for OMEGA_QUANT. EDA, data quality assessment, experiment tracking, statistical tests, reproducibility protocols, and reporting standards for Vietnam equity quant research. |
 | `database-design` | `database-design` | Database design principles and decision-making. Schema design, indexing strategy, ORM selection, serverless databases. |
 | `deployment-procedures` | `deployment-procedures` | Production deployment principles and decision-making. Safe deployment workflows, rollback strategies, and verification. Teaches thinking, not scripts. |
@@ -110,7 +112,6 @@ Modular knowledge domains that agents can load on-demand based on task context.
 | `game-development` | `game-development` | Game development orchestrator. Routes to platform-specific skills based on project needs. |
 | `geo-fundamentals` | `geo-fundamentals` | Generative Engine Optimization for AI search engines (ChatGPT, Claude, Perplexity). |
 | `i18n-localization` | `i18n-localization` | Internationalization and localization patterns. Detecting hardcoded strings, managing translations, locale files, RTL support. |
-| `improve` | `improve` | Survey any codebase as a senior advisor and produce prioritized, self-contained implementation plans for OTHER models/agents to execute. Strictly read-only on source code — never implements, fixes, or refactors anything itself. Use when asked to audit a codebase, find improvement opportunities (bugs, security, performance, test coverage, tech debt, migrations, DX), suggest features or where to take the project next (roadmap, product direction), or generate handoff plans for another agent to implement. |
 | `intelligent-routing` | `intelligent-routing` | Automatic agent selection and intelligent task routing. Analyzes user requests and automatically selects the best specialist agent(s) without requiring explicit user mentions. |
 | `lint-and-validate` | `lint-and-validate` | Automatic quality control, linting, and static analysis procedures. Use after every code modification to ensure syntax correctness and project standards. Triggers onKeywords: lint, format, check, validate, types, static analysis. |
 | `mcp-builder` | `mcp-builder` | MCP (Model Context Protocol) server building principles. Tool design, resource patterns, best practices. |
@@ -169,6 +170,21 @@ Slash command procedures. Invoke with `/command`.
 
 ## 📊 Statistics
 
-- **Total Agents**: 25
+- **Total Agents**: 26
 - **Total Skills**: 55
 - **Total Workflows**: 13
+
+---
+
+## OMEGA_QUANT Data Architecture SSOT
+
+The repository architecture is documented in the root `ARCHITECTURE.md`. For market data, `src/omega/data/vci_direct.py` is the ingestion SSOT and `src/omega/data/sanitizer.py` is the validation SSOT.
+
+```text
+VCI HTTPS → DirectVCIClient → canonical OHLCV/PIT frame → DataSanitizer → research/backtest
+```
+
+- `DirectVCIClient` owns VCI allowlisting, HTTPS transport, bounded reads, retry exhaustion, redaction, VND normalization, and PIT/session filtering.
+- `DataSanitizer` owns causal cleaning, duplicate handling, fitted outlier parameters, and `as_of <= available_at` enforcement.
+- `src/omega/data/validator.py`, `data_validator.py`, and `data_quality.py` are compatibility shims re-exporting canonical objects by identity.
+- `archive/legacy_adapters/` and `archive/legacy_validators/` are historical, fail-closed inventory; never use them as active dependencies.
