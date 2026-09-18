@@ -36,10 +36,13 @@ STRICT_REPO_LOCAL_SKILL_LOADING_20260612 (2026-06-12):
 
 import json
 import hashlib
+import math
 import os
 import re
 import subprocess
 import sys
+import uuid
+from contextlib import contextmanager, nullcontext
 from datetime import date, datetime, timezone
 from pathlib import Path
 
@@ -235,6 +238,53 @@ def _sha256(value) -> str:
     return hashlib.sha256(value if isinstance(value, bytes) else _canonical_json(value)).hexdigest()
 
 
+@contextmanager
+def _shared_file_lock(path: Path):
+    """Serialize readers and writers of an evidence file on every supported OS."""
+    lock_path = Path(f"{path}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b")
+    try:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            handle.write(b"0")
+            handle.flush()
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        if os.name == "nt":
+            import msvcrt
+            handle.seek(0)
+            msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        handle.close()
+
+
+def _locked_report_bytes(path: Path) -> bytes:
+    with _shared_file_lock(path):
+        return path.read_bytes()
+
+
+def _locked_sha256(path: Path) -> str:
+    return _sha256(_locked_report_bytes(path))
+
+
+def _finite_timestamp(value) -> bool:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (OverflowError, ValueError, TypeError):
+        return False
+
+
 def _safe_repo_path(value: str, required_prefix: str = ".ly_state/session/") -> Path | None:
     if not isinstance(value, str) or not value or Path(value).is_absolute() or ".." in value:
         return None
@@ -251,7 +301,11 @@ def _safe_repo_path(value: str, required_prefix: str = ".ly_state/session/") -> 
 
 def validate_post_cutoff_gate_fields(gate: dict, timestamp: float | None) -> tuple[bool, str]:
     """Enforce implementation-gate fields independently of strict-gate discovery."""
-    if timestamp is None or timestamp < CUTOFF_TIMESTAMP:
+    if timestamp is None:
+        return True, ""
+    if not _finite_timestamp(timestamp):
+        return False, "timestamp must be finite"
+    if timestamp < CUTOFF_TIMESTAMP:
         return True, ""
     if gate.get("l2_completed") is not True:
         return False, "l2_completed must be literal true"
@@ -384,7 +438,8 @@ def load_canonical_gate_map() -> dict[str, dict]:
 
 def _declared_report_identity(path: Path) -> tuple[str, str] | None:
     try:
-        content = path.read_text(encoding="utf-8")
+        with _shared_file_lock(path):
+            content = path.read_text(encoding="utf-8")
     except OSError:
         return None
     def value(pattern: str) -> str | None:
@@ -405,12 +460,13 @@ def validate_legacy_residual_evidence() -> tuple[bool, str]:
     """Validate the append-only, fail-closed ledger for current residual defects."""
     if not LEGACY_RESIDUAL_EVIDENCE_FILE.is_file() or not LEGACY_RESIDUAL_EVIDENCE_LOCK.is_file():
         return False, "legacy residual evidence ledger and lock are required"
-    try:
-        raw = LEGACY_RESIDUAL_EVIDENCE_FILE.read_bytes()
-        payload = json.loads(raw.decode("utf-8"))
-        lock = LEGACY_RESIDUAL_EVIDENCE_LOCK.read_text(encoding="utf-8").strip()
-    except (OSError, ValueError):
-        return False, "legacy residual evidence ledger is unreadable"
+    with _shared_file_lock(LEGACY_RESIDUAL_EVIDENCE_FILE):
+        try:
+            raw = LEGACY_RESIDUAL_EVIDENCE_FILE.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
+            lock = LEGACY_RESIDUAL_EVIDENCE_LOCK.read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            return False, "legacy residual evidence ledger is unreadable"
     if lock != _sha256(raw):
         return False, "legacy residual evidence ledger hash drift"
     if not isinstance(payload, dict) or set(payload) != {"version", "records"}:
@@ -431,13 +487,14 @@ def validate_legacy_residual_evidence() -> tuple[bool, str]:
 def _read_locked_json(path: Path, lock_path: Path) -> tuple[dict | None, str]:
     if not path.is_file() or not lock_path.is_file():
         return None, "residual reconciliation sidecar and lock are required"
-    try:
-        raw = path.read_bytes()
-        if lock_path.read_text(encoding="utf-8").strip() != _sha256(raw):
-            return None, "residual reconciliation sidecar hash drift"
-        payload = json.loads(raw.decode("utf-8"))
-    except (OSError, ValueError, UnicodeError):
-        return None, "residual reconciliation sidecar is unreadable"
+    with _shared_file_lock(path):
+        try:
+            raw = path.read_bytes()
+            if lock_path.read_text(encoding="utf-8").strip() != _sha256(raw):
+                return None, "residual reconciliation sidecar hash drift"
+            payload = json.loads(raw.decode("utf-8"))
+        except (OSError, ValueError, UnicodeError):
+            return None, "residual reconciliation sidecar is unreadable"
     return payload, "ok"
 
 
@@ -486,7 +543,8 @@ def validate_residual_reconciliation(gates: dict | None = None) -> tuple[bool, s
         fresh = _safe_repo_path(record["fresh_l3_report_path"], ".ly_state/session/audit_reports/")
         if historical is None or fresh is None or not historical.is_file() or not fresh.is_file():
             return False, f"residual reconciliation record {key} evidence path invalid"
-        raw_bytes = historical.read_bytes()
+        with _shared_file_lock(historical):
+            raw_bytes = historical.read_bytes()
         actual_historical_sha256 = _sha256(raw_bytes)
         if actual_historical_sha256 != record["historical_evidence_sha256"]:
             lf_sha256 = _sha256(raw_bytes.replace(b"\r\n", b"\n"))
@@ -494,9 +552,11 @@ def validate_residual_reconciliation(gates: dict | None = None) -> tuple[bool, s
                 pass
             else:
                 return False, f"residual reconciliation record {key} historical hash drift"
-        if _sha256(fresh.read_bytes()) != record["fresh_l3_report_sha256"]:
+        with _shared_file_lock(fresh):
+            fresh_raw = fresh.read_bytes()
+            content = fresh_raw.decode("utf-8")
+        if _sha256(fresh_raw) != record["fresh_l3_report_sha256"]:
             return False, f"residual reconciliation record {key} fresh report hash drift"
-        content = fresh.read_text(encoding="utf-8")
         if "[APPROVED]" not in content or "[NEEDS_FIX]" in content or "[MANUAL_APPROVAL]" in content:
             return False, f"residual reconciliation record {key} approval evidence invalid"
         valid, _, _ = validate_report_evidence(content, strict=True)
@@ -608,7 +668,8 @@ def _trusted_provenance_bundle(raw: bytes) -> tuple[bool, str]:
 
 def _closed_report_tuple(path: Path, key: str, role_id: int, session: str | None = None) -> bool:
     try:
-        raw = path.read_bytes()
+        with _shared_file_lock(path):
+            raw = path.read_bytes()
         if b"\r" in raw:
             return False
         text = raw.decode("utf-8")
@@ -639,7 +700,8 @@ def _closed_original_role23_report(raw: bytes, key: str) -> bool:
 def _closed_gate4_sidecar_authority(path: Path, session: str) -> bool:
     """Accept only the approved repair authority, including its declared L2 session."""
     try:
-        raw = path.read_bytes()
+        with _shared_file_lock(path):
+            raw = path.read_bytes()
         if b"\r" in raw:
             return False
         lines = raw.decode("utf-8").splitlines()
@@ -654,7 +716,8 @@ def _closed_gate4_sidecar_authority(path: Path, session: str) -> bool:
 
 def _closed_gate3_authority(path: Path) -> bool:
     try:
-        raw = path.read_bytes()
+        with _shared_file_lock(path):
+            raw = path.read_bytes()
         if b"\r" in raw:
             return False
         lines = raw.decode("utf-8").splitlines()
@@ -672,9 +735,10 @@ def validate_legacy_gate4_original_provenance(gates: dict | None = None) -> tupl
     if not target.is_file() or not lock.is_file():
         return False, "Gate4 original provenance sidecar and lock are required"
     try:
-        raw = target.read_bytes()
-        payload = json.loads(raw.decode("utf-8"))
-        declared_lock = lock.read_text(encoding="utf-8").strip()
+        with _shared_file_lock(target):
+            raw = target.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
+            declared_lock = lock.read_text(encoding="utf-8").strip()
     except (OSError, ValueError, UnicodeError):
         return False, "Gate4 original provenance sidecar unreadable"
     if raw != _canonical_gate4_provenance_json(payload) or declared_lock != _sha256(raw):
@@ -708,9 +772,10 @@ def validate_legacy_gate4_original_provenance(gates: dict | None = None) -> tupl
     if published_at > datetime.now(timezone.utc):
         return False, "Gate4 original provenance published_at is future-dated"
     try:
-        predecessor_raw = LEGACY_RESIDUAL_RECONCILIATION_FILE.read_bytes()
-        predecessor_lock = LEGACY_RESIDUAL_RECONCILIATION_LOCK.read_text(encoding="utf-8").strip()
-        predecessor = json.loads(predecessor_raw.decode("utf-8"))["records"][payload["gate"]]
+        with _shared_file_lock(LEGACY_RESIDUAL_RECONCILIATION_FILE):
+            predecessor_raw = LEGACY_RESIDUAL_RECONCILIATION_FILE.read_bytes()
+            predecessor_lock = LEGACY_RESIDUAL_RECONCILIATION_LOCK.read_text(encoding="utf-8").strip()
+            predecessor = json.loads(predecessor_raw.decode("utf-8"))["records"][payload["gate"]]
     except (OSError, KeyError, TypeError, ValueError, UnicodeError):
         return False, "Gate4 original provenance predecessor unreadable"
     if (payload["predecessor_raw_sha256"] != LEGACY_GATE4_ORIGINAL_PROVENANCE_PREDECESSOR_RAW_SHA256 or
@@ -727,7 +792,7 @@ def validate_legacy_gate4_original_provenance(gates: dict | None = None) -> tupl
             payload["original_gate_record"] != _immutable_gate_record(pinned) or
             payload["original_gate_record_sha256"] != _sha256(_immutable_gate_record(pinned)) or
             payload["original_audit_report_sha256"] != _sha256(pinned_report) or
-            report.read_bytes() != pinned_report or
+            _locked_report_bytes(report) != pinned_report or
             not _closed_original_role23_report(pinned_report, payload["gate"]) or
             payload["current_gate_record_sha256"] != _sha256(_immutable_gate_record(current))):
         return False, "Gate4 original provenance pinned authority drift"
@@ -737,23 +802,36 @@ def validate_legacy_gate4_original_provenance(gates: dict | None = None) -> tupl
 def publish_legacy_gate4_original_provenance(payload: dict) -> tuple[Path, Path]:
     """Publish canonical Gate4 provenance once; partial artifacts deliberately block fallback."""
     target, lock = LEGACY_GATE4_ORIGINAL_PROVENANCE_FILE, LEGACY_GATE4_ORIGINAL_PROVENANCE_LOCK
-    pending = Path(f"{target}.pending")
-    if target.exists() or lock.exists() or pending.exists():
-        raise FileExistsError("Gate4 original provenance artifact collision")
     raw = _canonical_gate4_provenance_json(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with pending.open("xb") as output:
-        output.write(raw)
-        output.flush()
-        os.fsync(output.fileno())
-    if pending.read_bytes() != raw:
-        raise RuntimeError("Gate4 original provenance pending reread mismatch")
-    os.link(pending, target)
-    with lock.open("xb") as output:
-        output.write(_sha256(raw).encode("ascii"))
-        output.flush()
-        os.fsync(output.fileno())
-    pending.unlink()
+    nonce = uuid.uuid4().hex
+    pending = Path(f"{target}.{nonce}.pending")
+    lock_pending = Path(f"{lock}.{nonce}.pending")
+    with _shared_file_lock(target):
+        if target.exists() or lock.exists():
+            raise FileExistsError("Gate4 original provenance artifact collision")
+        try:
+            with pending.open("xb") as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+            if pending.read_bytes() != raw:
+                raise RuntimeError("Gate4 original provenance pending reread mismatch")
+            os.link(pending, target)
+            with lock_pending.open("xb") as output:
+                output.write(_sha256(raw).encode("ascii"))
+                output.flush()
+                os.fsync(output.fileno())
+            os.link(lock_pending, lock)
+            pending.unlink()
+            lock_pending.unlink()
+        except Exception:
+            for artifact in (target, lock, pending, lock_pending):
+                try:
+                    artifact.unlink()
+                except OSError:
+                    pass
+            raise
     valid, message = validate_legacy_gate4_original_provenance()
     if not valid:
         raise RuntimeError(f"Gate4 original provenance post-publish validation failed: {message}")
@@ -766,9 +844,10 @@ def validate_legacy_gate3_original_provenance(gates: dict | None = None) -> tupl
     if not target.is_file() or not lock.is_file():
         return False, "Gate3 original provenance sidecar and lock are required"
     try:
-        raw = target.read_bytes()
-        payload = json.loads(raw.decode("utf-8"))
-        declared_lock = lock.read_text(encoding="utf-8").strip()
+        with _shared_file_lock(target):
+            raw = target.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
+            declared_lock = lock.read_text(encoding="utf-8").strip()
     except (OSError, ValueError, UnicodeError):
         return False, "Gate3 original provenance sidecar unreadable"
     required = {
@@ -815,7 +894,7 @@ def validate_legacy_gate3_original_provenance(gates: dict | None = None) -> tupl
             payload["original_l2_report_sha256"] != _sha256(pinned_l2) or
             payload["original_audit_report_sha256"] != _sha256(pinned_audit) or
             not _closed_original_role23_report(pinned_audit, payload["gate"]) or
-            _sha256(authority.read_bytes()) != LEGACY_GATE3_AUTHORITY_SHA256 or
+            _locked_sha256(authority) != LEGACY_GATE3_AUTHORITY_SHA256 or
             not _closed_gate3_authority(authority) or
             _sha256(_immutable_gate_record(current)) != payload["original_gate_record_sha256"]):
         return False, "Gate3 original provenance pinned authority drift"
@@ -848,8 +927,9 @@ def validate_legacy_residual_provenance_retry1(gates: dict | None = None) -> tup
     if not target.is_file():
         return False, "retry1 provenance bundle is required"
     try:
-        raw = target.read_bytes()
-        payload = json.loads(raw.decode("utf-8"))
+        with _shared_file_lock(target):
+            raw = target.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
     except (OSError, ValueError, UnicodeError):
         return False, "retry1 provenance bundle unreadable"
     if raw != _canonical_bundle_json(payload):
@@ -874,9 +954,10 @@ def validate_legacy_residual_provenance_retry1(gates: dict | None = None) -> tup
             payload["supersedes_lock_value"] != payload["supersedes_raw_sha256"]):
         return False, "retry1 provenance predecessor invalid"
     try:
-        baseline_raw = LEGACY_RESIDUAL_RECONCILIATION_FILE.read_bytes()
-        baseline_lock = LEGACY_RESIDUAL_RECONCILIATION_LOCK.read_text(encoding="utf-8").strip()
-        baseline_records = json.loads(baseline_raw.decode("utf-8"))["records"]
+        with _shared_file_lock(LEGACY_RESIDUAL_RECONCILIATION_FILE):
+            baseline_raw = LEGACY_RESIDUAL_RECONCILIATION_FILE.read_bytes()
+            baseline_lock = LEGACY_RESIDUAL_RECONCILIATION_LOCK.read_text(encoding="utf-8").strip()
+            baseline_records = json.loads(baseline_raw.decode("utf-8"))["records"]
     except OSError:
         return False, "retry1 provenance predecessor unreadable"
     except (KeyError, TypeError, ValueError, UnicodeError):
@@ -926,10 +1007,12 @@ def validate_legacy_residual_provenance_retry1(gates: dict | None = None) -> tup
         original, original_message = (None, "immutable blob") if key == "GP_ALT_DATA_FETCHER_OPTIMIZATION" else _bundle_report(record, "original_audit_report_path")
         if evidence is None or (key != "GP_ALT_DATA_FETCHER_OPTIMIZATION" and original is None) or record["authority_evidence_path"] in reports or (original is not None and record["original_audit_report_path"] in reports):
             return False, f"retry1 provenance record {key} {evidence_message if evidence is None else original_message}"
-        if _sha256(evidence.read_bytes()) != record["authority_evidence_sha256"]:
+        evidence_raw = _locked_report_bytes(evidence)
+        if _sha256(evidence_raw) != record["authority_evidence_sha256"]:
             return False, f"retry1 provenance record {key} report hash drift"
-        evidence_text = evidence.read_text(encoding="utf-8")
-        original_text = original.read_text(encoding="utf-8") if original is not None else "[APPROVED]"
+        evidence_text = evidence_raw.decode("utf-8")
+        original_raw = _locked_report_bytes(original) if original is not None else None
+        original_text = original_raw.decode("utf-8") if original_raw is not None else "[APPROVED]"
         is_gate4_sidecar = key == LEGACY_GATE4_ORIGINAL_PROVENANCE_KEY
         is_gate3_sidecar = key == LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY
         authority_valid = (record["authority_evidence_path"] == LEGACY_GATE2_AUTHORITY_PATH and
@@ -945,7 +1028,7 @@ def validate_legacy_residual_provenance_retry1(gates: dict | None = None) -> tup
                 "[APPROVED]" not in original_text):
             return False, f"retry1 provenance record {key} report authority invalid"
         if key in {"GP_OVERFITTING_REMEDIATION_GATE4_20260704", LEGACY_GATE3_ORIGINAL_PROVENANCE_KEY} and (
-                original is None or not _closed_original_role23_report(original.read_bytes(), key)):
+                original is None or not _closed_original_role23_report(original_raw, key)):
             return False, f"retry1 provenance {key} original Role23 report invalid"
         current = canonical.get(key)
         if current is None or _sha256(_immutable_gate_record(current)) != record["current_record_sha256"]:
@@ -993,27 +1076,38 @@ def validate_legacy_residual_provenance_retry1(gates: dict | None = None) -> tup
 def publish_legacy_residual_provenance_retry1(payload: dict) -> Path:
     """Atomically publish one canonical retry1 bundle without overwriting evidence."""
     target, pending = LEGACY_RESIDUAL_PROVENANCE_RETRY1_FILE, LEGACY_RESIDUAL_PROVENANCE_RETRY1_PENDING
-    if target.exists() or pending.exists():
-        raise FileExistsError("retry1 provenance final artifact or pending residue exists")
     raw = _canonical_bundle_json(payload)
     target.parent.mkdir(parents=True, exist_ok=True)
-    with pending.open("xb") as output:
-        output.write(raw)
-        output.flush()
-        os.fsync(output.fileno())
-    if pending.read_bytes() != raw:
-        raise RuntimeError("retry1 provenance pending reread mismatch")
-    try:
-        os.link(pending, target)
-    except FileExistsError:
-        raise FileExistsError("retry1 provenance final artifact collision")
-    try:
-        directory_fd = os.open(target.parent, os.O_RDONLY)
-        os.fsync(directory_fd)
-        os.close(directory_fd)
-    except OSError:
-        pass
-    pending.unlink()
+    with _shared_file_lock(target):
+        if target.exists() or pending.exists():
+            raise FileExistsError("retry1 provenance final artifact or pending residue exists")
+        pending_created = False
+        target_created = False
+        try:
+            with pending.open("xb") as output:
+                pending_created = True
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+            if pending.read_bytes() != raw:
+                raise RuntimeError("retry1 provenance pending reread mismatch")
+            os.link(pending, target)
+            target_created = True
+            directory_fd = os.open(target.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            pending.unlink()
+            pending_created = False
+        except Exception:
+            for artifact, created in ((target, target_created), (pending, pending_created)):
+                if created:
+                    try:
+                        artifact.unlink()
+                    except OSError:
+                        pass
+            raise
     return target
 
 
@@ -1026,23 +1120,37 @@ def publish_residual_reconciliation(payload: dict) -> tuple[Path, Path]:
     raw = _canonical_json(payload)
     target, lock = LEGACY_RESIDUAL_RECONCILIATION_FILE, LEGACY_RESIDUAL_RECONCILIATION_LOCK
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() or lock.exists():
-        raise FileExistsError("residual reconciliation final artifact collision")
-    created = []
-    try:
-        with target.open("xb") as output:
-            output.write(raw)
-        created.append(target)
-        with lock.open("xb") as output:
-            output.write(_sha256(raw).encode("ascii"))
-        created.append(lock)
-    except Exception:
-        for path in created:
+    nonce = uuid.uuid4().hex
+    pending = Path(f"{target}.{nonce}.pending")
+    lock_pending = Path(f"{lock}.{nonce}.pending")
+    with _shared_file_lock(target):
+        if target.exists() or lock.exists():
+            raise FileExistsError("residual reconciliation final artifact collision")
+        try:
+            with pending.open("xb") as output:
+                output.write(raw)
+                output.flush()
+                os.fsync(output.fileno())
+            os.link(pending, target)
+            with lock_pending.open("xb") as output:
+                output.write(_sha256(raw).encode("ascii"))
+                output.flush()
+                os.fsync(output.fileno())
+            os.link(lock_pending, lock)
+            pending.unlink()
+            lock_pending.unlink()
+            directory_fd = os.open(target.parent, os.O_RDONLY)
             try:
-                path.unlink()
-            except OSError:
-                pass
-        raise
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+        except Exception:
+            for path in (target, lock, pending, lock_pending):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            raise
     valid, message = validate_residual_reconciliation()
     if not valid:
         raise RuntimeError(f"residual reconciliation post-publish validation failed: {message}")
@@ -1052,12 +1160,13 @@ def publish_residual_reconciliation(payload: dict) -> tuple[Path, Path]:
 def _validate_retry2_sidecar(gates: dict[str, dict]) -> tuple[bool, str]:
     if not LEGACY_RECONCILIATION_RETRY2_FILE.is_file() or not LEGACY_RECONCILIATION_RETRY2_LOCK.is_file():
         return False, "retry2 reconciliation sidecar and lock are required"
-    try:
-        raw = LEGACY_RECONCILIATION_RETRY2_FILE.read_bytes()
-        payload = json.loads(raw.decode("utf-8"))
-        lock = LEGACY_RECONCILIATION_RETRY2_LOCK.read_text(encoding="utf-8").strip()
-    except (OSError, ValueError):
-        return False, "retry2 reconciliation sidecar is unreadable"
+    with _shared_file_lock(LEGACY_RECONCILIATION_RETRY2_FILE):
+        try:
+            raw = LEGACY_RECONCILIATION_RETRY2_FILE.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
+            lock = LEGACY_RECONCILIATION_RETRY2_LOCK.read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            return False, "retry2 reconciliation sidecar is unreadable"
     if lock != _sha256(raw):
         return False, "retry2 reconciliation sidecar hash drift"
     if not isinstance(payload, dict) or set(payload) != {"version", "supersedes", "supersedes_lock_sha256", "records"}:
@@ -1065,7 +1174,8 @@ def _validate_retry2_sidecar(gates: dict[str, dict]) -> tuple[bool, str]:
     if payload["version"] != LEGACY_RECONCILIATION_RETRY2_VERSION or payload["supersedes"] != LEGACY_RECONCILIATION_FILE.name:
         return False, "retry2 reconciliation sidecar version or supersedes drift"
     try:
-        v1_hash = LEGACY_RECONCILIATION_LOCK.read_text(encoding="utf-8").strip()
+        with _shared_file_lock(LEGACY_RECONCILIATION_FILE):
+            v1_hash = LEGACY_RECONCILIATION_LOCK.read_text(encoding="utf-8").strip()
     except OSError:
         return False, "retry2 superseded V1 lock is missing"
     if payload["supersedes_lock_sha256"] != v1_hash:
@@ -1088,12 +1198,13 @@ def _validate_retry2_sidecar(gates: dict[str, dict]) -> tuple[bool, str]:
 def _validate_retry3_sidecar(gates: dict[str, dict]) -> tuple[bool, str]:
     if not LEGACY_RECONCILIATION_RETRY3_FILE.is_file() or not LEGACY_RECONCILIATION_RETRY3_LOCK.is_file():
         return False, "retry3 reconciliation sidecar and lock are required"
-    try:
-        raw = LEGACY_RECONCILIATION_RETRY3_FILE.read_bytes()
-        payload = json.loads(raw.decode("utf-8"))
-        lock = LEGACY_RECONCILIATION_RETRY3_LOCK.read_text(encoding="utf-8").strip()
-    except (OSError, ValueError):
-        return False, "retry3 reconciliation sidecar is unreadable"
+    with _shared_file_lock(LEGACY_RECONCILIATION_RETRY3_FILE):
+        try:
+            raw = LEGACY_RECONCILIATION_RETRY3_FILE.read_bytes()
+            payload = json.loads(raw.decode("utf-8"))
+            lock = LEGACY_RECONCILIATION_RETRY3_LOCK.read_text(encoding="utf-8").strip()
+        except (OSError, ValueError):
+            return False, "retry3 reconciliation sidecar is unreadable"
     if lock != _sha256(raw):
         return False, "retry3 reconciliation sidecar hash drift"
     if not isinstance(payload, dict) or set(payload) != {"version", "supersedes", "supersedes_lock_sha256", "records"}:
@@ -1101,7 +1212,8 @@ def _validate_retry3_sidecar(gates: dict[str, dict]) -> tuple[bool, str]:
     if payload["version"] != LEGACY_RECONCILIATION_RETRY3_VERSION or payload["supersedes"] != LEGACY_RECONCILIATION_RETRY2_FILE.name:
         return False, "retry3 reconciliation sidecar version or supersedes drift"
     try:
-        retry2_lock = LEGACY_RECONCILIATION_RETRY2_LOCK.read_text(encoding="utf-8").strip()
+        with _shared_file_lock(LEGACY_RECONCILIATION_RETRY2_FILE):
+            retry2_lock = LEGACY_RECONCILIATION_RETRY2_LOCK.read_text(encoding="utf-8").strip()
     except OSError:
         return False, "retry3 superseded retry2 lock is missing"
     if payload["supersedes_lock_sha256"] != retry2_lock:
@@ -1110,7 +1222,8 @@ def _validate_retry3_sidecar(gates: dict[str, dict]) -> tuple[bool, str]:
     if not retry2_valid:
         return False, f"retry3 superseded retry2 invalid: {retry2_message}"
     try:
-        retry2_records = json.loads(LEGACY_RECONCILIATION_RETRY2_FILE.read_text(encoding="utf-8"))["records"]
+        with _shared_file_lock(LEGACY_RECONCILIATION_RETRY2_FILE):
+            retry2_records = json.loads(LEGACY_RECONCILIATION_RETRY2_FILE.read_text(encoding="utf-8"))["records"]
     except (OSError, KeyError, TypeError, ValueError):
         return False, "retry3 superseded retry2 records are unreadable"
     records = payload["records"]
@@ -1148,11 +1261,12 @@ def resolve_active_legacy_gate(gates: dict[str, dict], key: str) -> dict | None:
     gate = dict(gates[key])
     sidecar_file = LEGACY_RECONCILIATION_RETRY3_FILE if LEGACY_RECONCILIATION_RETRY3_FILE.exists() else LEGACY_RECONCILIATION_RETRY2_FILE
     if sidecar_file.exists():
-        try:
-            records = json.loads(sidecar_file.read_text(encoding="utf-8"))["records"]
-            record = records.get(key)
-        except (OSError, TypeError, ValueError):
-            return None
+        with _shared_file_lock(sidecar_file):
+            try:
+                records = json.loads(sidecar_file.read_text(encoding="utf-8"))["records"]
+                record = records.get(key)
+            except (OSError, TypeError, ValueError):
+                return None
         if record is None:
             return gate
         gate.update(
@@ -1170,12 +1284,13 @@ def validate_legacy_reconciliation(gates: dict | None = None) -> tuple[bool, str
     """Validate the locked, append-only legacy migration sidecar."""
     if not LEGACY_RECONCILIATION_FILE.exists() or not LEGACY_RECONCILIATION_LOCK.exists():
         return False, "legacy reconciliation sidecar and lock are required"
-    try:
-        raw = LEGACY_RECONCILIATION_FILE.read_bytes()
-        sidecar = json.loads(raw.decode("utf-8"))
-        lock = LEGACY_RECONCILIATION_LOCK.read_text(encoding="utf-8").strip().split()[0]
-    except (OSError, ValueError, IndexError) as exc:
-        return False, f"legacy reconciliation sidecar unreadable: {exc}"
+    with _shared_file_lock(LEGACY_RECONCILIATION_FILE):
+        try:
+            raw = LEGACY_RECONCILIATION_FILE.read_bytes()
+            sidecar = json.loads(raw.decode("utf-8"))
+            lock = LEGACY_RECONCILIATION_LOCK.read_text(encoding="utf-8").strip().split()[0]
+        except (OSError, ValueError, IndexError) as exc:
+            return False, f"legacy reconciliation sidecar unreadable: {exc}"
     if lock != _sha256(raw):
         return False, "legacy reconciliation sidecar hash drift"
     if not isinstance(sidecar, dict) or set(sidecar) != LEGACY_DATE_KEYS:
@@ -1335,6 +1450,7 @@ def validate_task_graph() -> tuple[bool, str]:
         "success_criteria",
     }
     nodes_by_id = {}
+    role_specs = load_role_specs()
 
     for index, node in enumerate(data):
         if not isinstance(node, dict):
@@ -1359,6 +1475,14 @@ def validate_task_graph() -> tuple[bool, str]:
 
         if isinstance(node.get("role_id"), bool) or not isinstance(node.get("role_id"), int):
             return False, f"task_graph node '{task_id}' role_id must be integer"
+        role_id = node["role_id"]
+        if role_id not in role_specs:
+            return False, f"task_graph node '{task_id}' role_id {role_id} not found"
+        spec = role_specs[role_id]
+        if role_id <= 16 and (spec.get("tier") != 2 or spec.get("platform") != "OpenCode"):
+            return False, f"task_graph node '{task_id}' role_id {role_id} violates L2 boundary"
+        if role_id >= 17 and (spec.get("tier") != 3 or spec.get("platform") != "Codex"):
+            return False, f"task_graph node '{task_id}' role_id {role_id} violates L3 boundary"
 
         success_criteria = node.get("success_criteria")
         if not isinstance(success_criteria, str) or not success_criteria.strip():
@@ -1469,6 +1593,9 @@ def load_role_specs() -> dict:
             
             # Store by role_id if present
             if 'role_id' in spec:
+                if spec.get('name') != md_file.stem:
+                    print(f"WARNING: role filename stem mismatch: {md_file.name}")
+                    continue
                 role_specs[spec['role_id']] = spec
         
         except Exception as e:
@@ -1495,9 +1622,8 @@ def validate_l3_role(role_id, role_name, role_specs: dict) -> tuple[bool, str]:
     except (ValueError, TypeError):
         return False, f"l3_role_id must be integer, got: {role_id}"
     
-    # Check range 17-25
-    if not (17 <= role_id_int <= 25):
-        return False, f"l3_role_id must be 17-25, got: {role_id_int}"
+    if not (17 <= role_id_int <= 30):
+        return False, f"l3_role_id must be 17-30, got: {role_id_int}"
     
     # Check role spec exists
     if role_id_int not in role_specs:
@@ -1682,13 +1808,32 @@ def check_audit_report_content(report_path_str: str, expected_verdict: str) -> t
         report_path = Path(report_path_str)
     
     try:
-        content = report_path.read_text(encoding='utf-8')
+        with _shared_file_lock(report_path):
+            content = report_path.read_text(encoding='utf-8')
     except Exception as e:
         return False, f"failed to read audit report: {e}"
-    
-    # Check if verdict appears in content
-    if expected_verdict not in content:
-        return False, f"audit report does not contain verdict '{expected_verdict}'"
+
+    # ponytail: scope verdict extraction to ## Verdict / Supersession sections when present
+    sections = re.findall(
+        r"(?im)^##[ \t]+[^\r\n]*(?:verdict|supersession)[^\r\n]*\r?\n(.*?)(?=^#{1,3}[ \t]+|\Z)",
+        content,
+        re.DOTALL,
+    )
+    token_re = re.compile(r"\[(?:APPROVED(?:_PARTIAL)?|NEEDS_FIX|MANUAL_APPROVAL)\]")
+    if sections:
+        target_verdicts = [token_re.findall(s) for s in sections if token_re.findall(s)]
+        for v in reversed(target_verdicts):
+            if expected_verdict in v and all(item == expected_verdict for item in v):
+                return True, ""
+        if target_verdicts:
+            last_v = target_verdicts[-1]
+            if expected_verdict not in last_v or any(item != expected_verdict for item in last_v):
+                return False, f"audit report verdict is missing or contradictory for '{expected_verdict}'"
+            return True, ""
+
+    verdicts = token_re.findall(content)
+    if expected_verdict not in verdicts or any(v != expected_verdict for v in verdicts):
+        return False, f"audit report verdict is missing or contradictory for '{expected_verdict}'"
     
     return True, ""
 
@@ -1715,7 +1860,9 @@ def audit_l2_session_identity_required(timestamp: float | None) -> bool:
 def check_audit_report_l2_session(report_path_str: str, expected_session_id: str) -> tuple[bool, str]:
     """Compare a gate L2 session with the declaration in its audit report."""
     try:
-        content = (WORKSPACE / report_path_str).read_text(encoding="utf-8")
+        report_path = WORKSPACE / report_path_str
+        with _shared_file_lock(report_path):
+            content = report_path.read_text(encoding="utf-8")
     except OSError as exc:
         return False, f"failed to read audit report: {exc}"
     return validate_audit_report_l2_session(content, expected_session_id)
@@ -1738,6 +1885,9 @@ def detect_duplicate_gates(raw_json) -> tuple[bool, list]:
     # Enhanced tracking: gate_name -> [(location, verdict, l2_role_id, l3_role_id, l2_role_name, l3_role_name, l2_session_id, l3_session_id), ...]
     gate_occurrences = {}
     
+    if isinstance(raw_json, dict) and isinstance(raw_json.get("gates"), list):
+        raw_json = raw_json["gates"]
+
     if not isinstance(raw_json, list):
         # If it's a dict at top level, extract gates from it
         if isinstance(raw_json, dict):
@@ -1803,9 +1953,7 @@ def detect_duplicate_gates(raw_json) -> tuple[bool, list]:
     
     for gate_name, occurrences in gate_occurrences.items():
         if len(occurrences) > 1:
-            # Check for conflicts in verdict and role metadata
-            # Note: Different session IDs are tracked but NOT considered conflicts by themselves
-            # (a gate may legitimately have multiple L2 sessions if it was fixed/re-implemented)
+            # Duplicate entries are ambiguous even when metadata currently matches.
             verdicts = set(occ[1] for occ in occurrences if occ[1] is not None)
             l2_role_ids = set(occ[2] for occ in occurrences if occ[2] is not None)
             l3_role_ids = set(occ[3] for occ in occurrences if occ[3] is not None)
@@ -1826,23 +1974,12 @@ def detect_duplicate_gates(raw_json) -> tuple[bool, list]:
             if len(l3_role_names) > 1:
                 conflict_details.append(f"conflicting l3_role_names: {l3_role_names}")
             
-            # Session IDs are tracked but not reported as conflicts (informational only)
-            # Different sessions for same gate are legitimate (e.g., initial + fix sessions)
-            
-            # Only report if there are actual conflicts
-            if conflict_details:
-                has_conflicts = True
-                locations = [occ[0] for occ in occurrences]
-                conflict_msg = " with " + ", ".join(conflict_details)
-                # Include session ID info for context but not as primary conflict
-                session_info = ""
-                if len(l2_session_ids) > 1:
-                    session_info += f" [note: {len(l2_session_ids)} different L2 sessions]"
-                if len(l3_session_ids) > 1:
-                    session_info += f" [note: {len(l3_session_ids)} different L3 sessions]"
-                conflict_reports.append(
-                    f"DUPLICATE GATE NAME WITH CONFLICTS: '{gate_name}' appears {len(occurrences)} times at {locations}{conflict_msg}{session_info}"
-                )
+            has_conflicts = True
+            locations = [occ[0] for occ in occurrences]
+            conflict_msg = " with " + ", ".join(conflict_details) if conflict_details else ""
+            conflict_reports.append(
+                f"DUPLICATE GATE NAME: '{gate_name}' appears {len(occurrences)} times at {locations}{conflict_msg}"
+            )
     
     return has_conflicts, conflict_reports
 
@@ -1861,14 +1998,18 @@ def normalize_timestamp(ts) -> float | None:
     
     # Already numeric
     if isinstance(ts, (int, float)):
-        return float(ts)
+        try:
+            return float(ts) if _finite_timestamp(ts) else None
+        except (OverflowError, ValueError, TypeError):
+            return None
     
     # Try to parse string timestamp
     if isinstance(ts, str):
         # Try numeric string first
         try:
-            return float(ts)
-        except ValueError:
+            parsed = float(ts)
+            return parsed if math.isfinite(parsed) else None
+        except (OverflowError, ValueError, TypeError):
             pass
         
         # Try ISO format parsing
@@ -1880,8 +2021,9 @@ def normalize_timestamp(ts) -> float | None:
             dt = datetime.fromisoformat(iso_str)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=timezone.utc)
-            return dt.timestamp()
-        except (ValueError, TypeError):
+            parsed = dt.timestamp()
+            return parsed if math.isfinite(parsed) else None
+        except (OverflowError, OSError, ValueError, TypeError):
             pass
     
     return None
@@ -1903,8 +2045,15 @@ def load_gates() -> list | None:
         return []
 
     try:
-        with open(GATES_FILE, 'r', encoding='utf-8-sig') as f:
-            data = json.load(f)
+        lock_context = _shared_file_lock(GATES_FILE) if isinstance(GATES_FILE, Path) else nullcontext()
+        with lock_context:
+            with open(GATES_FILE, 'r', encoding='utf-8-sig') as f:
+                data = json.load(f)
+
+        duplicate_conflict, duplicate_messages = detect_duplicate_gates(data)
+        if duplicate_conflict:
+            print(f"FAIL: duplicate gate entries: {'; '.join(duplicate_messages)}", file=sys.stderr)
+            sys.exit(1)
 
         if isinstance(data, list):
             gates = data
@@ -2330,12 +2479,13 @@ def check_l2_report_skill_sources(session_id, role_id=None, role_name=None) -> t
     l2_report_path = WORKSPACE / ".ly_state" / "session" / f"{session_id}.md"
     
     if not l2_report_path.exists():
-        return True, f"L2 report not found: {session_id}.md (soft warning - checked separately)"
+        return True, f"L2 report not found: {session_id}.md (soft warning)"
     
     try:
-        content = l2_report_path.read_text(encoding='utf-8')
+        with _shared_file_lock(l2_report_path):
+            content = l2_report_path.read_text(encoding='utf-8')
     except Exception as e:
-        return True, f"L2 report read error (soft warning): {e}"
+        return False, f"L2 report read error: {e}"
     
     return _validate_l2_report_content(content, role_id, role_name)
 
@@ -2361,7 +2511,8 @@ def check_audit_report_skill_sources(report_path, role_id=None, role_name=None) 
         return True, f"Audit report not found: {report_path} (checked separately)"
     
     try:
-        content = full_path.read_text(encoding='utf-8')
+        with _shared_file_lock(full_path):
+            content = full_path.read_text(encoding='utf-8')
     except Exception as e:
         return True, f"Audit report read error (checked separately): {e}"
     
@@ -2418,7 +2569,8 @@ def check_report_evidence_wording(
 ) -> tuple[bool, str]:
     full_path = WORKSPACE / report_path
     try:
-        content = full_path.read_text(encoding="utf-8")
+        with _shared_file_lock(full_path):
+            content = full_path.read_text(encoding="utf-8")
     except OSError as exc:
         return False, f"report evidence read failed: {exc}"
     resolved_gate_date, resolution_error = resolve_gate_date(gate_record or {}, gate_name)
@@ -2504,6 +2656,9 @@ def _validate_panel_audit(audit: dict, l2_role_id, role_specs: dict) -> tuple[bo
         return False, f"writer/auditor separation violated: l2_role_id {l2_role_id} equals panel l3_role_id {l3_role_id}"
 
     audit_path = audit.get("audit_report_path", "")
+    report_stem = Path(audit_path.replace("\\", "/")).stem
+    if not re.match(rf"^role{int(l3_role_id)}(?:[_-]|$)", report_stem, re.IGNORECASE):
+        return False, "audit report filename stem is not bound to panel l3_role_id"
     path_valid, path_msg = validate_audit_report_path(audit_path)
     if not path_valid:
         return False, path_msg
@@ -2518,7 +2673,9 @@ def _validate_panel_audit(audit: dict, l2_role_id, role_specs: dict) -> tuple[bo
         if not partial_valid:
             return False, approved_msg or partial_msg
 
-    skill_valid, skill_msg = check_audit_report_skill_sources(audit_path)
+    skill_valid, skill_msg = check_audit_report_skill_sources(
+        audit_path, l3_role_id, l3_role_name
+    )
     if not skill_valid:
         return False, skill_msg
 
@@ -2785,6 +2942,10 @@ def check_sod_compliance() -> bool:
         phase_name = gate.get("phase_name", gate_name)
         verdict = gate.get("final_verdict", "")
         ts = normalize_timestamp(gate.get("timestamp"))
+        if "timestamp" in gate and gate.get("timestamp") is not None and ts is None:
+            print(f"FAIL: Gate {gate_name} timestamp is invalid or non-finite")
+            all_pass = False
+            continue
         fields_valid, fields_msg = validate_post_cutoff_gate_fields(gate, ts)
         if not fields_valid:
             print(f"FAIL: Gate {gate_name} {fields_msg}")

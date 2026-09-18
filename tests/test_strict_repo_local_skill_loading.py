@@ -49,6 +49,8 @@ from sod_gate_enforcer import (
     check_sod_compliance,
     load_gates,
     load_canonical_gate_map,
+    detect_duplicate_gates,
+    normalize_timestamp,
     validate_l3_panel,
     validate_task_graph,
     validate_audit_report_path,
@@ -415,6 +417,19 @@ class TestIntegration:
         ts = normalize_timestamp("2026-06-12T10:00:00+07:00")
         assert ts is not None
         assert ts >= SKILL_LOADING_CUTOFF
+
+    def test_timestamp_overflow_fails_closed(self):
+        assert normalize_timestamp(10 ** 309) is None
+        assert normalize_timestamp("1e309") is None
+
+    def test_duplicate_gate_entries_fail_closed(self):
+        duplicate = [
+            {"phase_name": "DUP", "final_verdict": "[APPROVED]"},
+            {"phase_name": "DUP", "final_verdict": "[APPROVED]"},
+        ]
+        has_conflict, messages = detect_duplicate_gates(duplicate)
+        assert has_conflict is True
+        assert "DUPLICATE GATE NAME" in messages[0]
 
 
 class TestTaskGraphValidation:
