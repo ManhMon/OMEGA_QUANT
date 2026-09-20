@@ -11,6 +11,8 @@ from omega.data.macro_rates import (
     parse_hnx_yield_curve,
     parse_rates,
     parse_sbv_interbank_rates,
+    parse_sbv_omo_operations,
+    parse_usd_vnd_rates,
     statutory_available_at,
     canonical_tenor,
 )
@@ -116,7 +118,7 @@ def test_macro_features_allow_default_none_rows():
         {"date": pd.to_datetime(["2024-01-02"]), "symbol": ["AAA"]}
     ).set_index(["date", "symbol"])
     output = AlternativeDataFetcher().get_macro_bitemporal_features(panel)
-    assert output.shape == (1, 4)
+    assert output.shape == (1, 8)
     assert output.isna().all().all()
 
 

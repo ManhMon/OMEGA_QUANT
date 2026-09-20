@@ -86,6 +86,52 @@ def _temporal_fields(row: Mapping[str, Any]) -> dict[str, str]:
     return fields
 
 
+def _pit_macro_row(row: Mapping[str, Any], *, value: float, lower: float, upper: float) -> tuple[str, str]:
+    if not math.isfinite(value) or not lower <= value <= upper:
+        raise ValueError("macro value outside accepted bounds")
+    available = _aware_datetime(row.get("available_at"), "available_at")
+    as_of = _aware_datetime(row.get("as_of", available), "as_of")
+    if as_of > available:
+        raise ValueError("as_of must be <= available_at")
+    return as_of.isoformat(), available.isoformat()
+
+
+def parse_sbv_omo_operations(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Parse PIT-safe SBV OMO net-injection observations."""
+    if isinstance(rows, (str, bytes)):
+        raise TypeError("rows must be an iterable mappings")
+    result = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise TypeError("OMO row must be mapping")
+        raw = row.get("net_injection", row.get("value", row.get("amount")))
+        if raw is None:
+            raise ValueError("OMO row requires net_injection")
+        value = float(raw)
+        as_of, available = _pit_macro_row(row, value=value, lower=-1e9, upper=1e9)
+        result.append({"date": _row_date(row), "net_injection": value, "as_of": as_of,
+                       "available_at": available, "provider": "SBV", **_temporal_fields(row)})
+    return result
+
+
+def parse_usd_vnd_rates(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """Parse PIT-safe USD/VND observations."""
+    if isinstance(rows, (str, bytes)):
+        raise TypeError("rows must be an iterable mappings")
+    result = []
+    for row in rows:
+        if not isinstance(row, Mapping):
+            raise TypeError("USD/VND row must be mapping")
+        raw = row.get("rate", row.get("value", row.get("usd_vnd")))
+        if raw is None:
+            raise ValueError("USD/VND row requires rate")
+        value = float(raw)
+        as_of, available = _pit_macro_row(row, value=value, lower=1_000.0, upper=100_000.0)
+        result.append({"date": _row_date(row), "rate": value, "as_of": as_of,
+                       "available_at": available, "provider": "SBV", **_temporal_fields(row)})
+    return result
+
+
 def parse_sbv_interbank_rates(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     """Parse SBV direct interbank rows into a stable, PIT-tagged schema."""
     if isinstance(rows, (str, bytes)):

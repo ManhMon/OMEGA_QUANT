@@ -32,6 +32,29 @@ def _rolling_zscore(series: pd.Series, window: int) -> pd.Series:
     return (shifted - mean) / std.replace(0, np.nan)
 
 
+def get_fx_omo_indicators(macro_frame: pd.DataFrame, window: int = 60) -> pd.DataFrame:
+    """Derive PIT-safe FX/OMO regime features using only prior observations."""
+    frame = macro_frame.sort_index()
+    usd_col = _pick_column(frame, ["usd_vnd", "usd_vnd_rate", "usdvnd"], "usd_vnd_zscore")
+    omo_col = _pick_column(frame, ["omo_net_injection", "net_injection", "sbv_omo_net"], "omo_net_injection_20d_sum")
+    usd = frame[usd_col].astype(float)
+    omo = frame[omo_col].astype(float)
+
+    result = pd.DataFrame(index=frame.index)
+    result["usd_vnd_zscore"] = _rolling_zscore(usd, window)
+    result["usd_vnd_vol_20d"] = usd.pct_change().shift(1).rolling(20, min_periods=5).std()
+    result["omo_net_injection_20d_sum"] = omo.shift(1).rolling(20, min_periods=5).sum()
+    result["macro_fx_liquidity_regime"] = np.select(
+        [
+            (result["usd_vnd_zscore"] > 1.0) & (result["omo_net_injection_20d_sum"] < 0),
+            (result["usd_vnd_zscore"] < -1.0) & (result["omo_net_injection_20d_sum"] > 0),
+        ],
+        [-1, 1],
+        default=0,
+    )
+    return result
+
+
 def get_macro_indicators(macro_frame: pd.DataFrame, window: int = 60) -> pd.DataFrame:
     """
     Build point-in-time macro indicators for the VN market.

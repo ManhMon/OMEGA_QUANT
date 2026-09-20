@@ -19,6 +19,7 @@ import numpy as np
 import pandas as pd
 
 from omega.data.macro_rates import canonical_tenor
+from omega.quant.strategy.macro_context import get_fx_omo_indicators
 from omega.data.calendar import trading_session_open_utc
 from omega.quant.sentiment.focal_point_detector import VNFocalPointDetector
 from omega.quant.sentiment.vsi_engine import VSIPortfolioEngine, SentimentData
@@ -48,7 +49,7 @@ class AlternativeDataFetcher:
         """Tạo tín hiệu macro theo availability/vintage, không nhìn trước."""
         rows = list((self.macro_rows if macro_rows is None else macro_rows) or [])
         dates = pd.DatetimeIndex(panel.index.get_level_values("date")).tz_localize(None).normalize().unique().sort_values()
-        columns = ["interbank_on_spread", "term_structure_slope", "interbank_vol_5d", "macro_monetary_regime"]
+        columns = ["interbank_on_spread", "term_structure_slope", "interbank_vol_5d", "macro_monetary_regime", "usd_vnd_zscore", "usd_vnd_vol_20d", "omo_net_injection_20d_sum", "macro_fx_liquidity_regime"]
         output = pd.DataFrame(np.nan, index=dates, columns=columns)
         if not rows:
             return output
@@ -87,6 +88,22 @@ class AlternativeDataFetcher:
             output.loc[session, "interbank_vol_5d"] = output.loc[:session, "interbank_on_spread"].rolling(5, min_periods=2).std().iloc[-1]
             history = output.loc[:session, "interbank_on_spread"].dropna()
             output.loc[session, "macro_monetary_regime"] = 0 if len(history) < 20 else (1 if history.iloc[-1] - history.iloc[-20] > 0.05 else (-1 if history.iloc[-1] - history.iloc[-20] < -0.05 else 0))
+        fx_rows = []
+        for row in rows:
+            item = row.as_dict() if hasattr(row, "as_dict") else dict(row)
+            if any(key in item for key in ("usd_vnd", "usd_vnd_rate", "usdvnd", "net_injection", "omo_net_injection", "sbv_omo_net")):
+                available = self._utc_timestamp(item["available_at"])
+                vintage = self._utc_timestamp(item.get("vintage_at", item.get("revision_at", item["available_at"])))
+                if available <= (cutoff or available) and vintage <= (cutoff or vintage):
+                    fx_rows.append(item)
+        if fx_rows:
+            macro = pd.DataFrame(fx_rows)
+            macro.index = pd.to_datetime(macro.get("date", macro["available_at"])).tz_localize(None).normalize()
+            macro = macro.reindex(dates).ffill()
+            try:
+                output = output.join(get_fx_omo_indicators(macro), how="left")
+            except ValueError:
+                pass
         return output
 
     def get_foreign_flow_proxy(self, panel: pd.DataFrame) -> pd.Series:
