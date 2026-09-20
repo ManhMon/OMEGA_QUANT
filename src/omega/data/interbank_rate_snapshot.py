@@ -13,6 +13,8 @@ from typing import Callable, Iterable
 
 from filelock import FileLock
 
+from .calendar import trading_session_open_utc
+
 
 VALID_TENORS = {"overnight", "1w", "1m", "3m", "6m", "12m"}
 
@@ -40,7 +42,13 @@ class InterbankRateSnapshot:
 
 
 def _pit_available_at(rate_date: date) -> datetime:
-    return datetime(rate_date.year, rate_date.month, rate_date.day, 9, tzinfo=timezone.utc)
+    return trading_session_open_utc(rate_date)
+
+
+def _aware(value: datetime, field: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{field} must be timezone-aware")
+    return value.astimezone(timezone.utc)
 
 
 def build_snapshot(
@@ -55,7 +63,7 @@ def build_snapshot(
         raise ValueError("unsupported tenor")
     if not math.isfinite(rate) or rate < 0.0 or rate > 100.0:
         raise ValueError("rate must be finite and within 0.0-100.0")
-    vintage = vintage_at or datetime.now(timezone.utc)
+    vintage = _aware(vintage_at or datetime.now(timezone.utc), "vintage_at")
     available = _pit_available_at(rate_date)
     if vintage < available:
         raise ValueError("vintage_at violates PIT availability")
@@ -104,18 +112,26 @@ def save_snapshot(path: str | Path, snapshots: Iterable[InterbankRateSnapshot]) 
 
 def load_snapshots(path: str | Path) -> list[InterbankRateSnapshot]:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
-    return [
-        InterbankRateSnapshot(
-            rate_date=date.fromisoformat(item["rate_date"]),
-            tenor=item["tenor"],
-            rate=item["rate"],
-            provider=item["provider"],
-            vintage_at=datetime.fromisoformat(item["vintage_at"]),
-            available_at=datetime.fromisoformat(item["available_at"]),
-            fallback_reason=item.get("fallback_reason"),
+    if not isinstance(data, list):
+        raise ValueError("snapshot payload must be a list")
+    snapshots = []
+    for item in data:
+        if not isinstance(item, dict):
+            raise ValueError("snapshot item must be an object")
+        snapshot = build_snapshot(
+            date.fromisoformat(item["rate_date"]),
+            item["tenor"],
+            item["provider"],
+            item["rate"],
+            vintage_at=_aware(datetime.fromisoformat(item["vintage_at"]), "vintage_at"),
         )
-        for item in data
-    ]
+        serialized_available = _aware(datetime.fromisoformat(item["available_at"]), "available_at")
+        if serialized_available != snapshot.available_at:
+            raise ValueError("available_at violates PIT calendar")
+        snapshots.append(snapshot if item.get("fallback_reason") is None else InterbankRateSnapshot(
+            **{**snapshot.__dict__, "fallback_reason": item["fallback_reason"]}
+        ))
+    return snapshots
 
 
 def latest_vintage(snapshots: Iterable[InterbankRateSnapshot]) -> InterbankRateSnapshot:

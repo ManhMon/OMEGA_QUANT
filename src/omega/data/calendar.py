@@ -3,7 +3,7 @@ OMEGA_QUANT VN Trading Calendar - Holiday and session validation for Vietnamese 
 """
 
 import json
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, time, timedelta, timezone
 from typing import Set, Optional
 from pathlib import Path
 
@@ -36,6 +36,55 @@ def _load_holidays_from_json() -> dict:
 
 # Cache for loaded JSON holidays
 _JSON_HOLIDAYS_CACHE: Optional[dict] = None
+
+
+def get_statutory_available_at(
+    period: str,
+    *,
+    is_audited: bool = False,
+) -> datetime:
+    """Return Circular 96's latest knowable timestamp in ICT (15:30)."""
+    if not isinstance(period, str):
+        raise TypeError("period must be a string")
+    if not isinstance(is_audited, bool):
+        raise TypeError("is_audited must be boolean")
+    value = period.strip()
+    try:
+        if value.endswith("-Q"):
+            raise ValueError
+        if "-Q" in value:
+            year_text, quarter_text = value.split("-Q", 1)
+            year, quarter = int(year_text), int(quarter_text)
+        else:
+            year, quarter = int(value), 0
+    except (TypeError, ValueError) as exc:
+        raise ValueError("period must be YYYY or YYYY-Q1..YYYY-Q4") from exc
+    if not 1 <= year <= 9998 or quarter not in (0, 1, 2, 3, 4):
+        raise ValueError("unsupported fiscal period")
+    if is_audited and quarter not in (0, 2):
+        raise ValueError("audited period must be YYYY or YYYY-Q2")
+    if quarter == 4 and not is_audited:
+        target = date(year + 1, 1, 30)
+    elif quarter == 0 and is_audited:
+        target = date(year + 1, 3, 31)
+    elif quarter == 2 and is_audited:
+        target = date(year, 8, 29)
+    elif quarter in (1, 2, 3):
+        target = date(year, quarter * 3 + 1, 30)
+    else:
+        raise ValueError("unsupported fiscal period")
+    return datetime.combine(target, time(15, 30), tzinfo=timezone(timedelta(hours=7)))
+
+
+ICT = timezone(timedelta(hours=7))
+
+
+def trading_session_open_utc(value: date | datetime) -> datetime:
+    """Return the first available session open, explicitly converted ICT to UTC."""
+    current = value.date() if isinstance(value, datetime) else value
+    while current.weekday() >= 5 or current in _load_holidays(current.year):
+        current += timedelta(days=1)
+    return datetime.combine(current, time(9), tzinfo=ICT).astimezone(timezone.utc)
 
 
 def _get_json_holidays() -> dict:

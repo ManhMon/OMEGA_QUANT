@@ -11,12 +11,13 @@ from omega.data.interbank_rate_snapshot import (
 )
 
 
-VALID_VINTAGE = datetime(2026, 9, 12, 10, tzinfo=timezone.utc)
+VALID_VINTAGE = datetime(2026, 9, 14, 10, tzinfo=timezone.utc)
 
 
 def test_build_snapshot_pit_available_time():
     snapshot = build_snapshot(date(2026, 9, 12), "overnight", "primary", 3.5, vintage_at=VALID_VINTAGE)
-    assert snapshot.available_at.hour == 9
+    assert snapshot.available_at.hour == 2
+    assert snapshot.available_at.date() == date(2026, 9, 14)
     assert snapshot.available_at.tzinfo == timezone.utc
 
 
@@ -27,7 +28,7 @@ def test_build_snapshot_rejects_early_vintage():
             "overnight",
             "primary",
             3.5,
-            vintage_at=datetime(2026, 9, 12, 8, tzinfo=timezone.utc),
+            vintage_at=datetime(2026, 9, 14, 1, tzinfo=timezone.utc),
         )
 
 
@@ -66,7 +67,7 @@ def test_latest_vintage_selection():
         "overnight",
         "secondary",
         3.6,
-        vintage_at=datetime(2026, 9, 12, 11, tzinfo=timezone.utc),
+        vintage_at=datetime(2026, 9, 14, 11, tzinfo=timezone.utc),
     )
     assert latest_vintage([older, newer]) == newer
 
@@ -78,3 +79,23 @@ def test_save_and_load_snapshot_atomic_persistence(tmp_path):
     restored = load_snapshots(path)
     assert restored == [original]
     assert path.exists()
+
+
+def test_load_snapshots_revalidates_corrupt_pit_payload(tmp_path):
+    path = tmp_path / "corrupt.json"
+    path.write_text("[{\"rate_date\": \"2026-09-12\", \"tenor\": \"overnight\", "
+                    "\"rate\": 3.5, \"provider\": \"primary\", "
+                    "\"vintage_at\": \"2026-09-14T10:00:00+00:00\", "
+                    "\"available_at\": \"2026-09-12T09:00:00+00:00\"}]", encoding="utf-8")
+    with pytest.raises(ValueError, match="PIT calendar"):
+        load_snapshots(path)
+
+
+def test_load_snapshots_rejects_naive_temporal_payload(tmp_path):
+    path = tmp_path / "naive.json"
+    path.write_text("[{\"rate_date\": \"2026-09-14\", \"tenor\": \"overnight\", "
+                    "\"rate\": 3.5, \"provider\": \"primary\", "
+                    "\"vintage_at\": \"2026-09-14T10:00:00\", "
+                    "\"available_at\": \"2026-09-14T09:00:00+00:00\"}]", encoding="utf-8")
+    with pytest.raises(ValueError, match="timezone-aware"):
+        load_snapshots(path)
