@@ -18,6 +18,8 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
+from omega.data.macro_rates import canonical_tenor
+from omega.data.calendar import trading_session_open_utc
 from omega.quant.sentiment.focal_point_detector import VNFocalPointDetector
 from omega.quant.sentiment.vsi_engine import VSIPortfolioEngine, SentimentData
 
@@ -31,10 +33,61 @@ class AlternativeDataFetcher:
     Fallback: OHLCV-derived proxies
     """
 
-    def __init__(self, use_api: bool = False):
+    def __init__(self, use_api: bool = False, macro_rows=None):
         self.use_api = use_api
+        self.macro_rows = macro_rows
         self.fp_detector = VNFocalPointDetector()
         self.vsi_engine = VSIPortfolioEngine()
+
+    @staticmethod
+    def _utc_timestamp(value) -> pd.Timestamp:
+        timestamp = pd.Timestamp(value)
+        return timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
+
+    def get_macro_bitemporal_features(self, panel: pd.DataFrame, macro_rows=None, as_of=None) -> pd.DataFrame:
+        """Tạo tín hiệu macro theo availability/vintage, không nhìn trước."""
+        rows = list((self.macro_rows if macro_rows is None else macro_rows) or [])
+        dates = pd.DatetimeIndex(panel.index.get_level_values("date")).tz_localize(None).normalize().unique().sort_values()
+        columns = ["interbank_on_spread", "term_structure_slope", "interbank_vol_5d", "macro_monetary_regime"]
+        output = pd.DataFrame(np.nan, index=dates, columns=columns)
+        if not rows:
+            return output
+        cutoff = self._utc_timestamp(as_of) if as_of is not None else None
+        normalized = []
+        for row in rows:
+            item = row.as_dict() if hasattr(row, "as_dict") else dict(row)
+            available = self._utc_timestamp(item["available_at"])
+            vintage = self._utc_timestamp(item.get("vintage_at", item.get("revision_at", item["available_at"])))
+            if pd.Timestamp(item["available_at"]).tzinfo is None or pd.Timestamp(item.get("vintage_at", item.get("revision_at", item["available_at"]))).tzinfo is None:
+                raise ValueError("macro timestamps must be timezone-aware")
+            tenor = canonical_tenor(item.get("tenor", item.get("maturity", item.get("indicator", ""))))
+            value = float(item.get("rate", item.get("value")))
+            if not np.isfinite(value):
+                raise ValueError("macro rate must be finite")
+            revision = self._utc_timestamp(item.get("revision_at", item.get("vintage_at", item["available_at"])))
+            normalized.append((tenor, value, available, vintage, revision, str(item.get("provider", ""))))
+        for position, session in enumerate(dates):
+            session_cutoff = trading_session_open_utc(session.date())
+            effective = session_cutoff if cutoff is None else min(session_cutoff, cutoff)
+            latest = {}
+            for tenor, value, available, vintage, revision, provider in normalized:
+                candidate = (revision, vintage, available, provider, value)
+                if available <= effective and vintage <= effective and (tenor not in latest or candidate > latest[tenor][3]):
+                    latest[tenor] = (value, available, vintage, candidate)
+            ages = [position - max((i for i, day in enumerate(dates) if day.date() <= available.date()), default=position) for _, available, _, _ in latest.values()]
+            if not latest or any(age > 5 for age in ages):
+                continue
+            on = latest.get("overnight")
+            policy = latest.get("refinancing_rate") or latest.get("refinancing")
+            long_rate = next((latest[tenor] for tenor in ("12m", "6m", "3m") if tenor in latest), None)
+            if on is None:
+                continue
+            output.loc[session, "interbank_on_spread"] = on[0] - policy[0] if policy else np.nan
+            output.loc[session, "term_structure_slope"] = long_rate[0] - on[0] if long_rate else np.nan
+            output.loc[session, "interbank_vol_5d"] = output.loc[:session, "interbank_on_spread"].rolling(5, min_periods=2).std().iloc[-1]
+            history = output.loc[:session, "interbank_on_spread"].dropna()
+            output.loc[session, "macro_monetary_regime"] = 0 if len(history) < 20 else (1 if history.iloc[-1] - history.iloc[-20] > 0.05 else (-1 if history.iloc[-1] - history.iloc[-20] < -0.05 else 0))
+        return output
 
     def get_foreign_flow_proxy(self, panel: pd.DataFrame) -> pd.Series:
         """
@@ -262,6 +315,9 @@ class AlternativeDataFetcher:
         features['vsi_score'] = vsi_s
         features['focal_stress_score'] = fss_s
 
+        macro = self.get_macro_bitemporal_features(panel, self.macro_rows)
+        features = features.join(macro, on="date")
+
         # Join all features back to original panel
         result = panel.join(features)
 
@@ -278,4 +334,6 @@ class AlternativeDataFetcher:
             'order_imbalance', 'liquidity_shock',
             'foreign_flow_ma5', 'margin_trend', 'rotation_momentum',
             'vsi_score', 'focal_stress_score',
+            'interbank_on_spread', 'term_structure_slope',
+            'interbank_vol_5d', 'macro_monetary_regime',
         ]

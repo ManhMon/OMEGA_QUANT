@@ -2,6 +2,7 @@
 
 from datetime import timezone
 
+import pandas as pd
 import pytest
 
 from omega.data.calendar import get_statutory_available_at
@@ -11,6 +12,7 @@ from omega.data.macro_rates import (
     parse_rates,
     parse_sbv_interbank_rates,
     statutory_available_at,
+    canonical_tenor,
 )
 
 
@@ -37,7 +39,7 @@ def test_rates_are_utc_independent_and_deterministic():
 def test_direct_sbv_parser_normalizes_aliases_and_provider():
     rows = [{"ngay": "2024-01-02T00:00:00+00:00", "ky_han": "ON", "lai_suat": "4.25"}]
     assert parse_sbv_interbank_rates(rows)[0] == {
-        "date": "2024-01-02", "tenor": "on", "rate": 4.25,
+        "date": "2024-01-02", "tenor": "overnight", "rate": 4.25,
         "available_at": "2024-01-02T09:00:00+00:00", "provider": "SBV",
     }
 
@@ -100,3 +102,34 @@ def test_client_exposes_both_direct_parsers():
     client = DirectMacroClient()
     assert client.parse_sbv_interbank([{"date": "2024-01-01", "rate": 4}])[0]["provider"] == "SBV"
     assert client.parse_hnx_yield_curve([{"date": "2024-01-01", "maturity": "5Y", "yield": 2}])[0]["provider"] == "HNX"
+
+
+def test_tenor_aliases_are_canonical():
+    assert canonical_tenor("ON") == "overnight"
+    assert canonical_tenor("1Y") == "12m"
+
+
+def test_macro_features_allow_default_none_rows():
+    from omega.quant.evolution.alternative_data_fetcher import AlternativeDataFetcher
+
+    panel = pd.DataFrame(
+        {"date": pd.to_datetime(["2024-01-02"]), "symbol": ["AAA"]}
+    ).set_index(["date", "symbol"])
+    output = AlternativeDataFetcher().get_macro_bitemporal_features(panel)
+    assert output.shape == (1, 4)
+    assert output.isna().all().all()
+
+
+def test_macro_features_choose_revision_deterministically():
+    from omega.quant.evolution.alternative_data_fetcher import AlternativeDataFetcher
+
+    panel = pd.DataFrame(
+        {"date": pd.to_datetime(["2024-01-02"]), "symbol": ["AAA"]}
+    ).set_index(["date", "symbol"])
+    rows = [
+        {"tenor": "overnight", "rate": 4.0, "available_at": "2024-01-01T09:00:00Z", "vintage_at": "2024-01-01T10:00:00Z", "provider": "B"},
+        {"tenor": "overnight", "rate": 3.0, "available_at": "2024-01-01T09:00:00Z", "vintage_at": "2024-01-01T10:00:00Z", "provider": "A"},
+        {"tenor": "refinancing_rate", "rate": 1.0, "available_at": "2024-01-01T09:00:00Z", "vintage_at": "2024-01-01T10:00:00Z", "provider": "A"},
+    ]
+    output = AlternativeDataFetcher().get_macro_bitemporal_features(panel, rows)
+    assert output.loc[pd.Timestamp("2024-01-02"), "interbank_on_spread"] == 3.0

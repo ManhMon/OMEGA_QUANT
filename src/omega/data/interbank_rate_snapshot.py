@@ -14,6 +14,7 @@ from typing import Callable, Iterable
 from filelock import FileLock
 
 from .calendar import trading_session_open_utc
+from .macro_rates import canonical_tenor
 
 
 VALID_TENORS = {"overnight", "1w", "1m", "3m", "6m", "12m"}
@@ -59,6 +60,7 @@ def build_snapshot(
     *,
     vintage_at: datetime | None = None,
 ) -> InterbankRateSnapshot:
+    tenor = canonical_tenor(tenor)
     if tenor not in VALID_TENORS:
         raise ValueError("unsupported tenor")
     if not math.isfinite(rate) or rate < 0.0 or rate > 100.0:
@@ -93,6 +95,19 @@ def fetch_with_fallback(
             raise RuntimeError("both interbank rate providers failed") from secondary_error
 
 
+def _fsync_directory(path: Path) -> None:
+    if os.name == "nt":
+        return
+    try:
+        directory_fd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError as exc:
+        raise RuntimeError("verified directory durability unavailable") from exc
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
 def save_snapshot(path: str | Path, snapshots: Iterable[InterbankRateSnapshot]) -> None:
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -105,6 +120,7 @@ def save_snapshot(path: str | Path, snapshots: Iterable[InterbankRateSnapshot]) 
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temp_path, target)
+            _fsync_directory(target.parent)
         finally:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)
@@ -135,4 +151,15 @@ def load_snapshots(path: str | Path) -> list[InterbankRateSnapshot]:
 
 
 def latest_vintage(snapshots: Iterable[InterbankRateSnapshot]) -> InterbankRateSnapshot:
-    return max(snapshots, key=lambda item: item.vintage_at)
+    return max(
+        snapshots,
+        key=lambda item: (
+            item.vintage_at,
+            item.available_at,
+            item.rate_date,
+            item.tenor,
+            item.provider,
+            item.rate,
+            item.fallback_reason or "",
+        ),
+    )

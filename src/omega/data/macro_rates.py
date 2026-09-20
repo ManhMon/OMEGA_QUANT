@@ -9,6 +9,13 @@ from typing import Any, Iterable, Mapping
 from .calendar import get_statutory_available_at
 
 
+_TENOR_ALIASES = {"on": "overnight", "o/n": "overnight", "overnight": "overnight", "1y": "12m", "12m": "12m"}
+
+
+def canonical_tenor(value: Any) -> str:
+    return _TENOR_ALIASES.get(str(value).strip().lower(), str(value).strip().lower())
+
+
 def statutory_available_at(period: str, *, is_audited: bool = False) -> datetime:
     return get_statutory_available_at(period, is_audited=is_audited).astimezone(timezone.utc)
 
@@ -93,7 +100,7 @@ def parse_sbv_interbank_rates(rows: Iterable[Mapping[str, Any]]) -> list[dict[st
         available = row.get("available_at")
         parsed = {
             "date": _row_date(row),
-            "tenor": str(row.get("tenor", row.get("ky_han", "overnight"))).strip().lower(),
+            "tenor": canonical_tenor(row.get("tenor", row.get("ky_han", "overnight"))),
             "rate": _number(raw_rate, "rate"),
             "available_at": _available_at(row, available or f"{_row_date(row)}T09:00:00+00:00"),
             "provider": "SBV",

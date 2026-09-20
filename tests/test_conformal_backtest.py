@@ -153,6 +153,20 @@ def test_end_to_end_real_predictor():
     assert out.shape == weights.shape
 
 
+def test_conformal_macro_parent_fallback():
+    x = pd.DataFrame({"feature": np.arange(40, dtype=float)})
+    groups = pd.DataFrame({
+        "macro_regime": ["easing"] * 20 + ["tightening"] * 20,
+        "regime": ["bull"] * 40,
+        "liquidity_bucket": ["high"] * 40,
+    })
+    model = ConformalTrendPredictor(alpha=0.2, min_group_size=10)
+    model.fit(x.iloc[:20], x.iloc[:20, 0], x.iloc[20:], x.iloc[20:, 0], groups.iloc[20:])
+    prediction = model.predict(x.iloc[:1], groups.iloc[:1])
+    assert prediction.groups == [("easing", "bull", "high")]
+    assert prediction.upper[0] > prediction.lower[0]
+
+
 def test_scenario_absent_when_disabled():
     scenarios = bhr.build_scenario_overlays(1_000_000, conformal_overlay=None)
     assert set(scenarios) == {"Baseline", "Hybrid"}

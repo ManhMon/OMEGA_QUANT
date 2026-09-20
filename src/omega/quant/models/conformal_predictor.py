@@ -15,7 +15,7 @@ class ConformalPrediction:
     lower: np.ndarray
     upper: np.ndarray
     point: np.ndarray
-    groups: list[Tuple[str, str]]
+    groups: list[Tuple[str, str, str]]
 
 
 class ConformalTrendPredictor:
@@ -31,6 +31,7 @@ class ConformalTrendPredictor:
         self.point_model = GradientBoostingRegressor(loss="squared_error", random_state=random_state)
         self.symmetric = symmetric
         self.group_q_: Dict[float, Dict[Tuple[str, str], float]] = {}
+        self.parent_q_: Dict[float, Dict[Tuple[str, str], float]] = {}
         self.global_q_: Dict[float, float] = {}
 
     def fit(
@@ -61,14 +62,20 @@ class ConformalTrendPredictor:
         scores = np.maximum(scores, 0.0)
         keys = self._group_keys(calib_groups)
         self.group_q_.clear()
+        self.parent_q_.clear()
         self.global_q_.clear()
         for alpha in self.alphas:
             self.global_q_[alpha] = self._quantile(scores, alpha)
             self.group_q_[alpha] = {}
+            self.parent_q_[alpha] = {}
             for key in sorted(set(keys)):
                 group_scores = scores[np.array([k == key for k in keys])]
                 if len(group_scores) >= self.min_group_size:
                     self.group_q_[alpha][key] = self._quantile(group_scores, alpha)
+            for parent in sorted({key[1:] for key in keys}):
+                parent_scores = scores[np.array([key[1:] == parent for key in keys])]
+                if len(parent_scores) >= self.min_group_size:
+                    self.parent_q_[alpha][parent] = self._quantile(parent_scores, alpha)
         return self
 
     def fit_cpcv(
@@ -189,6 +196,7 @@ class ConformalTrendPredictor:
         pt_oof_arr = np.asarray(oof_pt, dtype=float)
 
         self.group_q_.clear()
+        self.parent_q_.clear()
         self.global_q_.clear()
 
         empirical_coverage: Dict[float, float] = {}
@@ -200,15 +208,20 @@ class ConformalTrendPredictor:
             q_glob = self._quantile(scores_arr, alpha_val)
             self.global_q_[alpha_val] = q_glob
             self.group_q_[alpha_val] = {}
+            self.parent_q_[alpha_val] = {}
 
             for key in unique_keys:
                 key_mask = np.array([k == key for k in oof_keys])
                 key_scores = scores_arr[key_mask]
                 if len(key_scores) >= self.min_group_size:
                     self.group_q_[alpha_val][key] = self._quantile(key_scores, alpha_val)
+            for parent in sorted({key[1:] for key in oof_keys}):
+                parent_scores = scores_arr[np.array([key[1:] == parent for key in oof_keys])]
+                if len(parent_scores) >= self.min_group_size:
+                    self.parent_q_[alpha_val][parent] = self._quantile(parent_scores, alpha_val)
 
             # Evaluate OOF calibration quality
-            q_applied = np.array([self.group_q_[alpha_val].get(k, q_glob) for k in oof_keys])
+            q_applied = np.array([self.group_q_[alpha_val].get(k, self.parent_q_[alpha_val].get(k[1:], q_glob)) for k in oof_keys])
             if self.symmetric:
                 adj_lo = pt_oof_arr - q_applied
                 adj_up = pt_oof_arr + q_applied
@@ -251,7 +264,7 @@ class ConformalTrendPredictor:
         upper = self.upper_model.predict(X)
         keys = self._group_keys(groups)
         alpha_value = alpha or self.alpha
-        q = np.array([self.group_q_.get(alpha_value, {}).get(key, self.global_q_.get(alpha_value, 0.0)) for key in keys], dtype=float)
+        q = np.array([self.group_q_.get(alpha_value, {}).get(key, self.parent_q_.get(alpha_value, {}).get(key[1:], self.global_q_.get(alpha_value, 0.0))) for key in keys], dtype=float)
         if self.symmetric:
             lower_adj = point - q
             upper_adj = point + q
@@ -272,8 +285,13 @@ class ConformalTrendPredictor:
             result[key] = float(inside[mask].mean()) if mask.any() else 0.0
         return result
 
-    def _group_keys(self, groups: pd.DataFrame) -> list[Tuple[str, str]]:
-        return list(zip(groups["regime"].astype(str), groups["liquidity_bucket"].astype(str)))
+    def _group_keys(self, groups: pd.DataFrame) -> list[Tuple[str, str, str]]:
+        macro = groups.get("macro_regime", pd.Series("neutral", index=groups.index)).astype(str).str.lower()
+        aliases = {"-1": "easing", "0": "neutral", "1": "tightening"}
+        macro = macro.map(lambda value: aliases.get(value, value))
+        if not macro.isin({"easing", "neutral", "tightening"}).all():
+            raise ValueError("macro_regime must be easing, neutral, or tightening")
+        return list(zip(macro, groups["regime"].astype(str), groups["liquidity_bucket"].astype(str)))
 
     def _quantile(self, scores: np.ndarray, alpha: float) -> float:
         if len(scores) == 0:

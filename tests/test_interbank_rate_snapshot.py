@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from unittest.mock import patch
 
 import pytest
 
@@ -41,6 +42,11 @@ def test_build_snapshot_rejects_invalid_numeric_rates(rate):
 def test_build_snapshot_rejects_invalid_tenor():
     with pytest.raises(ValueError):
         build_snapshot(date(2026, 9, 12), "", "primary", 3.5, vintage_at=VALID_VINTAGE)
+
+
+def test_build_snapshot_canonicalizes_tenor_alias():
+    snapshot = build_snapshot(date(2026, 9, 12), "ON", "primary", 3.5, vintage_at=VALID_VINTAGE)
+    assert snapshot.tenor == "overnight"
 
 
 def test_secondary_provider_fallback_records_reason():
@@ -99,3 +105,26 @@ def test_load_snapshots_rejects_naive_temporal_payload(tmp_path):
                     "\"available_at\": \"2026-09-14T09:00:00+00:00\"}]", encoding="utf-8")
     with pytest.raises(ValueError, match="timezone-aware"):
         load_snapshots(path)
+
+
+def test_latest_vintage_tie_break_is_deterministic():
+    first = build_snapshot(date(2026, 9, 12), "overnight", "A", 3.5, vintage_at=VALID_VINTAGE)
+    second = build_snapshot(date(2026, 9, 12), "overnight", "B", 3.5, vintage_at=VALID_VINTAGE)
+    assert latest_vintage([first, second]) == second
+    assert latest_vintage([second, first]) == second
+
+
+def test_save_snapshot_syncs_parent_directory_after_replace(tmp_path):
+    path = tmp_path / "snapshots.json"
+    snapshot = build_snapshot(date(2026, 9, 12), "overnight", "primary", 3.5, vintage_at=VALID_VINTAGE)
+    with patch("omega.data.interbank_rate_snapshot._fsync_directory") as sync_directory:
+        save_snapshot(path, [snapshot])
+    sync_directory.assert_called_once_with(path.parent)
+
+
+def test_save_snapshot_surfaces_directory_durability_failure(tmp_path):
+    path = tmp_path / "snapshots.json"
+    snapshot = build_snapshot(date(2026, 9, 12), "overnight", "primary", 3.5, vintage_at=VALID_VINTAGE)
+    with patch("omega.data.interbank_rate_snapshot._fsync_directory", side_effect=RuntimeError("durability")):
+        with pytest.raises(RuntimeError, match="durability"):
+            save_snapshot(path, [snapshot])
