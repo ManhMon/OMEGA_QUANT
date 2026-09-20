@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 
 import pandas as pd
 
+from scripts import ingest_all_market_data as legacy_ingest
 from scripts import update_market_data as updater
 
 
@@ -16,6 +17,30 @@ def _frame(symbols=("AAA", "BBB"), dates=("2026-07-24", "2026-07-24")):
         "source": ["vnstock_vci"] * 2, "price_scale": ["VND"] * 2,
         "adjusted": ["backward_adjusted"] * 2, "rebuild_date": ["2026-07-24"] * 2,
     })
+
+
+def test_legacy_ingest_delegates_exclusively_to_canonical_updater(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(legacy_ingest.update_market_data, "main", lambda argv: calls.append(argv) or 17)
+
+    with __import__("pytest").warns(DeprecationWarning, match="deprecated"):
+        result = legacy_ingest.main([
+            "aaa", "2026-07-01", "2026-07-24", "--output", str(tmp_path / "AAA.parquet")
+        ])
+
+    assert result == 17
+    assert calls == [[
+        "--symbols", "AAA",
+        "--start", "2026-07-01",
+        "--end", "2026-07-24",
+        "--output", str(tmp_path / "AAA.parquet"),
+    ]]
+
+
+def test_legacy_ingest_contains_no_independent_ingestion_api():
+    assert not hasattr(legacy_ingest, "fetch_history")
+    assert not hasattr(legacy_ingest, "ingest_symbol")
+    assert not hasattr(legacy_ingest, "DirectVCIClient")
 
 
 def test_exchange_mapping_preserves_canonical_labels():

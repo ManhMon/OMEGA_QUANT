@@ -2900,7 +2900,7 @@ def run_updater(
 
 def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Canonical VCI Updater / Backfill for market_2015_now.parquet",
+        description="Canonical SSOT direct-VCI market ingestion / backfill for market_2015_now.parquet",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     parser.add_argument(

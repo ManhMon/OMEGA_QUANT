@@ -7172,7 +7172,8 @@
       ".agents/skills/testing-patterns/SKILL.md",
       ".agents/skills/audit-cycle/SKILL.md",
       ".agents/skills/omega-sod/SKILL.md"
-    ]
+    ],
+    "closed": true
   },
   "GATE_WIRE_CONTROL_CENTER_DIRECT_INGESTION_20260920": {
     "phase_name": "GATE_WIRE_CONTROL_CENTER_DIRECT_INGESTION_20260920",
