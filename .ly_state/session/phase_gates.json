@@ -7199,6 +7199,7 @@
       ".agents/skills/audit-cycle/SKILL.md",
       ".agents/skills/omega-sod/SKILL.md"
     ],
-    "forbidden_path_scan": "forbidden path scan completed for session l3_role21_gate_wire_control_center_direct_ingestion_20260920; non-authoritative scan evidence only; no reliance."
+    "forbidden_path_scan": "forbidden path scan completed for session l3_role21_gate_wire_control_center_direct_ingestion_20260920; non-authoritative scan evidence only; no reliance.",
+    "closed": true
   }
 }

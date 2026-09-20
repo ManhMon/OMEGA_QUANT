@@ -441,6 +441,16 @@ def test_ingest_scheduler_telemetry_reports_runtime_failover(client, tmp_path, m
     assert payload["feed_health"]["vci"] == "DEGRADED"
 
 
+def test_ingest_scheduler_telemetry_probe_reports_live_feed_failure(client, monkeypatch):
+    monkeypatch.setattr(control_mod, "_probe_live_feed", lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("provider offline")))
+    control_mod.TASKS["task-ingest-probe"] = {"task_type": "DATA_INGESTION", "status": "RUNNING", "updated_at": datetime.now(timezone.utc).isoformat(), "params": {"sources": ["vci", "kbs"]}}
+
+    response = client.get("/api/v1/control/ingest-scheduler/telemetry?probe=true")
+
+    assert response.status_code == 200
+    assert response.json()["feed_health"]["vci"] == "DEGRADED"
+
+
 def test_ingest_fails_over_to_backup_feed(tmp_path, monkeypatch):
     class Loader:
         def load_prices(self, ticker, *_args, source=None, **_kwargs):

@@ -141,6 +141,7 @@ def test_ingest_data_all_sources(client, monkeypatch):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "success"
+    assert data["engine"] == "direct_ingestion"
     assert "task_id" in data
 
 
@@ -356,6 +357,25 @@ def test_ingest_request_validation_703_symbols():
     # 4. Over limit (1001 symbols) fails
     with pytest.raises(ValueError, match="symbol limit"):
         control_mod.IngestDataRequest(symbols=[f"S{i}" for i in range(1005)])
+
+
+def test_ingest_rejects_non_equity_only_sources():
+    with pytest.raises(ValueError, match="equity source"):
+        control_mod.IngestDataRequest(symbols=["FPT"], sources=["macro"])
+
+
+def test_pit_cutoff_requires_market_close_time():
+    with pytest.raises(ValueError, match="end_date"):
+        control_mod._validate_dates("2023-12-31", "2023-12-31", "2023-12-31T08:29:59Z")
+    assert control_mod._validate_dates("2023-12-31", "2023-12-31", "2023-12-31T08:30:00Z").date().isoformat() == "2023-12-31"
+
+
+def test_ingest_checkpoint_isolated_per_task(tmp_path, monkeypatch):
+    task_one = "task-ingest-isolation-one"
+    task_two = "task-ingest-isolation-two"
+    control_mod.TASKS[task_one] = {"checkpoint_path": str(tmp_path / "one.json")}
+    control_mod.TASKS[task_two] = {"checkpoint_path": str(tmp_path / "two.json")}
+    assert control_mod._checkpoint_path_for_task(task_one) != control_mod._checkpoint_path_for_task(task_two)
 
 
 def test_run_ingest_checkpoint_resume(tmp_path, monkeypatch):
@@ -892,66 +912,54 @@ def test_dim14_sse_full_queue_eviction_lossless_delivery():
     asyncio.run(_test_blocked_consumer_eviction())
 
 
-def test_dim15_network_retry_and_backoff():
-    """Dim 15: Network retry exponential backoff with jitter, Retry-After support, and timeout/5xx retries."""
-    from omega.data.vnstock_vci import VnstockVCIDataSource
+def test_dim15_network_retry_and_backoff(tmp_path):
+    """Dim 15: SSOT loader retries only retryable 429 failures with bounded backoff."""
+    from urllib.error import HTTPError
     from unittest.mock import patch
-    ds = VnstockVCIDataSource()
+    from omega.data.loader import DataLoader
+    from omega.data.vci_direct import DirectVCIClient
 
-    # 1. Test Retry-After header parsing
-    retry_after_wait = ds._calculate_backoff(attempt=0, error_msg="429 Too Many Requests; Retry-After: 4.5")
-    assert 4.5 <= retry_after_wait <= 5.5
+    retryable_attempts = []
+    retry_delays = []
 
-    # 2. Test exponential backoff with jitter (attempt 0 < attempt 1 on average)
-    delays_att0 = [ds._calculate_backoff(attempt=0) for _ in range(20)]
-    delays_att1 = [ds._calculate_backoff(attempt=1) for _ in range(20)]
-    delays_att2 = [ds._calculate_backoff(attempt=2) for _ in range(20)]
+    def retryable_opener(*_args, **_kwargs):
+        retryable_attempts.append(True)
+        raise HTTPError(
+            "https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "99"},
+            None,
+        )
 
-    avg0 = sum(delays_att0) / len(delays_att0)
-    avg1 = sum(delays_att1) / len(delays_att1)
-    avg2 = sum(delays_att2) / len(delays_att2)
+    loader = DataLoader(cache_dir=tmp_path, validate_provenance=False)
+    loader.vci_client = DirectVCIClient(opener=retryable_opener, max_attempts=3)
+    with patch("omega.data.vci_direct.time.sleep", side_effect=retry_delays.append):
+        with pytest.raises(RuntimeError, match="HTTP 429"):
+            loader.load_prices("FPT", "2023-01-01", "2023-01-03", datetime.now(timezone.utc), force_refresh=True, source="vci")
 
-    assert avg0 < avg1 < avg2, f"Backoff not exponential: {avg0} < {avg1} < {avg2}"
-    # Verify non-zero variance (jitter exists)
-    assert len(set(round(d, 4) for d in delays_att1)) > 1
+    assert len(retryable_attempts) == 3
+    assert retry_delays == [8.0, 8.0]
+    assert max(retry_delays) <= 8.0
 
-    # 3. Test _fetch_provider_isolated retry behavior on Timeout and HTTP 503
-    import unittest.mock
-    attempts_recorded = []
-    def mock_poll(timeout):
-        return True
+    non_retryable_attempts = []
 
-    def make_mock_recv(error_message):
-        def mock_recv():
-            attempts_recorded.append(error_message)
-            return False, error_message
-        return mock_recv
+    def non_retryable_opener(*_args, **_kwargs):
+        non_retryable_attempts.append(True)
+        raise HTTPError(
+            "https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart",
+            503,
+            "Service Unavailable",
+            {},
+            None,
+        )
 
-    # Mock time.sleep and RateLimiter.throttle to run instantaneously
-    with patch("time.sleep", return_value=None), \
-         patch.object(ds.rate_limiter, "throttle", return_value=None), \
-         patch("multiprocessing.get_context") as mock_ctx:
-
-        mock_parent = unittest.mock.MagicMock()
-        mock_child = unittest.mock.MagicMock()
-        mock_proc = unittest.mock.MagicMock()
-        mock_ctx.return_value.Pipe.return_value = (mock_parent, mock_child)
-        mock_ctx.return_value.Process.return_value = mock_proc
-        mock_parent.poll.side_effect = mock_poll
-
-        # Test timeout retries up to MAX_RETRIES_429 (3 attempts)
-        attempts_recorded.clear()
-        mock_parent.recv.side_effect = make_mock_recv("Connection timed out after 10.0s")
-        res = ds._fetch_provider_isolated("VCI", "FPT", "2023-01-01", "2023-12-31")
-        assert res == []
-        assert len(attempts_recorded) == ds.MAX_RETRIES_429
-
-        # Test HTTP 503 Service Unavailable retries up to MAX_RETRIES_429 (3 attempts)
-        attempts_recorded.clear()
-        mock_parent.recv.side_effect = make_mock_recv("HTTP 503 Service Unavailable")
-        res503 = ds._fetch_provider_isolated("VCI", "FPT", "2023-01-01", "2023-12-31")
-        assert res503 == []
-        assert len(attempts_recorded) == ds.MAX_RETRIES_429
+    loader.vci_client = DirectVCIClient(opener=non_retryable_opener, max_attempts=3)
+    with patch("omega.data.vci_direct.time.sleep") as sleep:
+        with pytest.raises(RuntimeError, match="HTTP Error 503"):
+            loader.load_prices("FPT", "2023-01-01", "2023-01-03", datetime.now(timezone.utc), force_refresh=True, source="vci")
+    assert len(non_retryable_attempts) == 1
+    sleep.assert_not_called()
 
 
 def test_dim16_secret_redaction_and_receipt_hmac(tmp_path, monkeypatch, caplog):
@@ -1370,34 +1378,74 @@ def test_dim16_secret_redaction_and_receipt_hmac(tmp_path, monkeypatch, caplog):
 
 
 
-def test_ingest_source_routing_and_concurrency():
-    """Verify source routing (KBS vs VCI) skips unused provider, segregates cache keys, and preserves PIT safety."""
-    from unittest.mock import MagicMock, patch
-    from datetime import datetime, timezone
-    from omega.data.loader import DataLoader
-    from omega.data.vnstock_vci import VnstockVCIDataSource
+def test_ingest_source_routing_and_concurrency(tmp_path, monkeypatch):
+    """Verify production SSOT loader routing, failover, and semaphore bounds."""
+    import threading
+    import time
+    from collections import deque
+    import pandas as pd
 
-    ds = VnstockVCIDataSource()
-    resolved_kbs = ds._resolve_providers(source="kbs")
-    assert resolved_kbs == ("KBS",)
+    routed = []
+    active = 0
+    peak = 0
+    lock = threading.Lock()
+    task_id = "test-ssot-routing-concurrency"
 
-    resolved_vci = ds._resolve_providers(source="vci")
-    assert resolved_vci == ("VCI",)
+    class InstrumentedLoader:
+        def __init__(self, **_kwargs):
+            pass
 
-    # Verify DataLoader._generate_cache_key includes source (cache key segregation)
-    loader = DataLoader(cache_dir="data/cache")
-    key_kbs = loader._generate_cache_key("HPG", "2023-01-01", "2023-12-31", source="kbs")
-    key_vci = loader._generate_cache_key("HPG", "2023-01-01", "2023-12-31", source="vci")
-    assert key_kbs != key_vci
+        def load_prices(self, ticker, *_args, source=None, **_kwargs):
+            nonlocal active, peak
+            with lock:
+                routed.append((ticker, source))
+                active += 1
+                peak = max(peak, active)
+            try:
+                time.sleep(0.02)
+                if source == "vci":
+                    raise RuntimeError("VCI 429 retryable failure")
+                return pd.DataFrame([{
+                    "symbol": ticker,
+                    "date": pd.Timestamp("2023-06-01"),
+                    "open": 100.0,
+                    "high": 100.0,
+                    "low": 100.0,
+                    "close": 100.0,
+                    "volume": 1,
+                }])
+            finally:
+                with lock:
+                    active -= 1
 
-    # Verify fetch with source only queries specified provider (skips unused reconciliation)
-    with patch.object(ds, "_fetch_provider_isolated", return_value=[{"symbol": "HPG", "close": 25000}]) as mock_fetch:
-        rows, res_dict = ds.fetch_price_data_with_reconciliation("HPG", "2023-01-01", "2023-12-31", source="kbs")
-        assert len(rows) == 1
-        assert "KBS" in res_dict
-        assert "VCI" not in res_dict
-        assert mock_fetch.call_count == 1
-        assert mock_fetch.call_args[0][0] == "KBS"
+    monkeypatch.setattr(control_mod, "DataLoader", InstrumentedLoader)
+    monkeypatch.setattr(control_mod, "DEFAULT_INGEST_CHECKPOINT_PATH", tmp_path / "checkpoint.json")
+    monkeypatch.setattr(control_mod, "CONTROL_ARTIFACT_ROOT", tmp_path / "receipts")
+    control_mod.TASKS[task_id] = {
+        "status": "RUNNING",
+        "progress": 0.0,
+        "events": deque(maxlen=1000),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+    asyncio.run(control_mod._run_ingest(
+        task_id,
+        control_mod.IngestDataRequest(
+            symbols=["FPT", "HPG", "VNM", "MBB"],
+            sources=["vci", "kbs"],
+            max_concurrency=2,
+        ),
+    ))
+
+    assert control_mod.TASKS[task_id]["status"] == "COMPLETED"
+    assert {source for _, source in routed} == {"vci", "kbs"}
+    assert all(sum(source == provider for _, source in routed) == 4 for provider in ("vci", "kbs"))
+    assert peak <= 2
+    assert peak > 1
+    result = control_mod.TASKS[task_id]["result"]
+    assert result["provider"] == "kbs"
+    assert result["failover_used"] is True
+    assert len(result["failover_history"]) == 4
 
 
 def test_ingest_pit_safety_and_concurrency_bounds():
@@ -1412,11 +1460,12 @@ def test_ingest_pit_safety_and_concurrency_bounds():
     # 1. PIT Safety verification (F-002)
     as_of = datetime(2023, 12, 31, 23, 59, 59, tzinfo=timezone.utc)
     raw_rows = [
-        {"symbol": "VNM", "timestamp": int(datetime(2023, 6, 1, tzinfo=timezone.utc).timestamp()), "open": 70000, "high": 71000, "low": 69000, "close": 70500, "volume": 1000000, "source_used": "KBS"},
-        {"symbol": "VNM", "timestamp": int(datetime(2023, 6, 2, tzinfo=timezone.utc).timestamp()), "open": 70500, "high": 72000, "low": 70000, "close": 71500, "volume": 1200000, "source_used": "KBS"}
+        {"symbol": "VNM", "date": pd.Timestamp("2023-06-01"), "open": 70000, "high": 71000, "low": 69000, "close": 70500, "volume": 1000000, "source_used": "KBS"},
+        {"symbol": "VNM", "date": pd.Timestamp("2023-06-02"), "open": 70500, "high": 72000, "low": 70000, "close": 71500, "volume": 1200000, "source_used": "KBS"}
     ]
     loader = DataLoader(cache_dir="data/cache", enable_pit_enforcement=True)
-    with patch.object(loader.vnstock_source, "fetch_price_data_with_reconciliation", return_value=(raw_rows, {"KBS": raw_rows})):
+    # SSOT loader no longer exposes the archived vnstock_source adapter.
+    with patch.object(loader, "_fetch_from_source", return_value=pd.DataFrame(raw_rows)):
         df = loader.load_prices("VNM", "2023-01-01", "2023-12-31", as_of_time=as_of, force_refresh=True, source="kbs")
         assert not df.empty
         assert "as_of" in df.columns

@@ -1269,8 +1269,8 @@ export const apiClient = {
     return apiRequest<LakehouseStatusResponse>('/api/v1/control/lakehouse-status', { signal });
   },
 
-  getIngestSchedulerTelemetry: async (signal?: AbortSignal): Promise<IngestSchedulerTelemetry> => {
-    return apiRequest<IngestSchedulerTelemetry>('/api/v1/control/ingest-scheduler/telemetry', { signal });
+  getIngestSchedulerTelemetry: async (signal?: AbortSignal, probe = false): Promise<IngestSchedulerTelemetry> => {
+    return apiRequest<IngestSchedulerTelemetry>(`/api/v1/control/ingest-scheduler/telemetry${probe ? '?probe=true' : ''}`, { signal });
   },
 
   getControlReceipts: async (limit = 50, signal?: AbortSignal): Promise<{ status: string; total_receipts: number; receipts: TaskReceipt[]; artifact_root: string }> => {

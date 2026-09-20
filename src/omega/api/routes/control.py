@@ -14,7 +14,7 @@ import logging
 import threading
 import pandas as pd
 from collections import deque
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, time as dt_time
 from pathlib import Path
 from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Set
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
@@ -399,7 +399,8 @@ def _validate_dates(start_date: str, end_date: str, as_of_time: Optional[str]) -
     if (end - start).days > 3655:
         raise ValueError("date range exceeds 10 years")
     cutoff = _parse_utc(as_of_time, default=datetime.now(timezone.utc))
-    if end > cutoff.date():
+    pit_boundary = datetime.combine(end, dt_time(8, 30), tzinfo=timezone.utc)
+    if pit_boundary > cutoff:
         raise ValueError("end_date must not exceed as_of_time")
     return cutoff
 
@@ -653,6 +654,8 @@ class IngestDataRequest(StrictRequest):
         self.symbols = _canonical_symbols(self.symbols, max_limit=1000)
         if not self.sources:
             raise ValueError("sources must not be empty")
+        if not any(source in ("vci", "kbs", "tcbs") for source in self.sources):
+            raise ValueError("at least one equity source is required for price ingestion")
         for sym in self.symbols:
             if any(ch in sym for ch in [";", "&", "|", "`", "$", "<", ">", "\n", "\r"]):
                 raise ValueError(f"symbol contains invalid CLI or control characters: {sym}")
@@ -920,6 +923,7 @@ def _evict_stale_tasks_unlocked() -> None:
             CANCELLED_JOBS.discard(tid)
 
 
+# Direct-ingestion task admission stays atomic with eviction/count checks under the shared state lock.
 def _register_task_atomic(task_id: str, task_record: Dict[str, Any]) -> None:
     """
     Enclose task eviction, active task count check, and task insertion under a single
@@ -1218,6 +1222,12 @@ def _get_full_vn703_universe() -> List[str]:
 
 def _get_checkpoint_lock_path(checkpoint_path: Path) -> Path:
     return checkpoint_path.parent / f"{checkpoint_path.name}.lock"
+
+
+def _checkpoint_path_for_task(task_id: str) -> Path:
+    task = TASKS.get(task_id, {})
+    configured = task.get("checkpoint_path")
+    return Path(configured) if configured else DEFAULT_INGEST_CHECKPOINT_PATH
 
 
 def _cleanse_or_remove_backup_file(path: Path, fallback_clean_data: Optional[Dict[str, Any]] = None) -> bool:
@@ -1558,7 +1568,8 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
             target_symbols = raw_symbols
 
         # 2. Checkpoint & Resume Handling
-        checkpoint = _load_ingest_checkpoint()
+        checkpoint_path = _checkpoint_path_for_task(task_id)
+        checkpoint = _load_ingest_checkpoint(checkpoint_path)
         if req.force_refresh:
             completed_set = set()
             checkpoint["failed_symbols"] = {}
@@ -1669,7 +1680,7 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
             checkpoint["active_feed"] = active_provider
             checkpoint["failover_used"] = failover_used
             checkpoint["failover_history"] = failover_history
-            await asyncio.to_thread(_save_ingest_checkpoint, checkpoint)
+            await asyncio.to_thread(_save_ingest_checkpoint, checkpoint, checkpoint_path)
 
             progress_pct = 5.0 + ((batch_idx + 1) / total_batches) * 85.0
             _push_task_event(
@@ -1704,7 +1715,7 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
                 f"{failed_count} failed, {missing_count} missing"
             )
             checkpoint["state"] = "failed_partial"
-            await asyncio.to_thread(_save_ingest_checkpoint, checkpoint)
+            await asyncio.to_thread(_save_ingest_checkpoint, checkpoint, checkpoint_path)
             raise RuntimeError(err_msg)
 
         # Successful completion: persist terminal 'completed' checkpoint state
@@ -1719,7 +1730,7 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
             "failed_symbols": len(checkpoint.get("failed_symbols", {})),
             "pending_symbols": max(0, total_symbols - len(completed_set.intersection(target_symbols))),
         }
-        await asyncio.to_thread(_save_ingest_checkpoint, checkpoint)
+        await asyncio.to_thread(_save_ingest_checkpoint, checkpoint, checkpoint_path)
 
         rows = sum(len(frame) for frame in frames)
         primary_provider = req.sources[0] if req.sources else "vci"
@@ -1885,6 +1896,7 @@ async def trigger_ingest_data(req: IngestDataRequest, background_tasks: Backgrou
         "created_at": now_iso,
         "updated_at": now_iso,
         "events": deque(maxlen=1000),
+        "checkpoint_path": str(DEFAULT_INGEST_CHECKPOINT_PATH.parent / f"{task_id}.json"),
     }
     _register_task_atomic(task_id, task_record)
     background_tasks.add_task(_run_ingest, task_id, req)
@@ -1892,6 +1904,7 @@ async def trigger_ingest_data(req: IngestDataRequest, background_tasks: Backgrou
         "status": "success",
         "task_id": task_id,
         "job_id": task_id,
+        "engine": "direct_ingestion",
         "message": "Data ingestion pipeline dispatched",
         "stream_url": f"/sse/v1/tasks/{task_id}/progress",
     }
@@ -2826,7 +2839,8 @@ async def get_ingest_scheduler_telemetry(probe: bool = Query(default=False, desc
     with _TASK_STATE_LOCK:
         ingest_tasks = [task.copy() for task in TASKS.values() if task.get("task_type") == "DATA_INGESTION"]
     latest_task = max(ingest_tasks, key=lambda task: task.get("updated_at", ""), default=None)
-    checkpoint = await asyncio.to_thread(_load_ingest_checkpoint)
+    checkpoint_path = Path((latest_task or {}).get("checkpoint_path", DEFAULT_INGEST_CHECKPOINT_PATH))
+    checkpoint = await asyncio.to_thread(_load_ingest_checkpoint, checkpoint_path)
     configured_feeds = [feed for feed in (latest_task or {}).get("params", {}).get("sources", []) if feed in ("vci", "kbs", "tcbs")]
     feed_health = {feed: "STANDBY" for feed in ("vci", "kbs", "tcbs")}
     checkpoint_feed_health = checkpoint.get("feed_health", {})
