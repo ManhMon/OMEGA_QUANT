@@ -577,7 +577,7 @@ def _fetch_history_chunked(
     out = pd.concat(chunks, ignore_index=True)
     date_col = "time" if "time" in out.columns else ("date" if "date" in out.columns else None)
     if date_col is not None:
-        out["_temp_dt"] = pd.to_datetime(out[date_col], errors="coerce")
+        out["_temp_dt"] = pd.to_datetime(out[date_col])
         out = (
             out.dropna(subset=["_temp_dt"])
             .drop_duplicates(subset=["_temp_dt"], keep="last")
@@ -620,7 +620,7 @@ def fetch_one_symbol(
         logger.warning(f"[{symbol}] No date column found, columns={list(df.columns)}")
         return pd.DataFrame()
 
-    df["date"] = pd.to_datetime(df["date"]).dt.normalize()
+    df["date"] = _timezone_naive_datetime(df["date"]).dt.normalize()
 
     # Hard date lower bound: discard any pre-2015 rows
     pre_count = len(df)
@@ -664,7 +664,16 @@ def _is_transport_error(exc: BaseException) -> bool:
 
 def _vci_available_at(dates: pd.Series) -> pd.Series:
     """Return canonical start-of-next-day dissemination time in Vietnam time."""
-    return (pd.to_datetime(dates).dt.normalize() + timedelta(days=1)).dt.tz_localize(VN_TZ)
+    return (_timezone_naive_datetime(dates).dt.normalize() + timedelta(days=1)).dt.tz_localize(VN_TZ)
+
+
+def _timezone_naive_datetime(values: pd.Series) -> pd.Series:
+    """Normalize timestamps to Vietnam calendar dates without silent rejection."""
+    return (
+        pd.to_datetime(values, utc=True)
+        .dt.tz_convert(VN_TZ)
+        .dt.tz_localize(None)
+    )
 
 
 def _normalize_legacy_vci_available_at(df: pd.DataFrame) -> pd.DataFrame:
@@ -678,7 +687,7 @@ def _normalize_legacy_vci_available_at(df: pd.DataFrame) -> pd.DataFrame:
         normalized["rebuild_date"] = normalized["rebuild_date"].fillna("2026-06-13")
     vci_rows = _is_legacy_vci_provenance(normalized)
     normalized["available_at"] = pd.to_datetime(
-        normalized["available_at"], errors="coerce", utc=True
+        normalized["available_at"], utc=True
     ).dt.tz_convert(VN_TZ)
     normalized.loc[vci_rows, "available_at"] = _vci_available_at(normalized.loc[vci_rows, "date"])
     return normalized

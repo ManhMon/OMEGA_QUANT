@@ -65,3 +65,51 @@ def test_vci_terminal_rejects_beyond_requested_end():
     ok, errors, _ = updater._vci_terminal_evidence(_frame(), ["AAA", "BBB"], pd.Timestamp("2026-07-23"), None, datetime(2026, 7, 26, tzinfo=timezone.utc))
     assert not ok
     assert "terminal_session: beyond requested end" in errors
+
+
+def test_fetch_one_symbol_normalizes_utc_dates_and_preserves_canonical_types(monkeypatch):
+    utc_dates = pd.Series(pd.to_datetime(["2014-12-31", "2026-07-24"], utc=True))
+    raw = pd.DataFrame({
+        "time": utc_dates,
+        "open": [10000.0, 10000.0], "high": [10500.0, 10500.0],
+        "low": [9500.0, 9500.0], "close": [10000.0, 10000.0], "volume": [100, 100],
+    })
+    monkeypatch.setattr(updater, "_fetch_history_chunked", lambda **kwargs: raw)
+
+    result = updater.fetch_one_symbol(object(), "aaa", "2014-01-01", "2026-07-24", "HOSE")
+
+    assert list(result.columns) == updater.CANONICAL_COLUMNS
+    assert result["date"].dtype == "datetime64[ns]"
+    assert str(result["available_at"].dtype) == "datetime64[ns, Asia/Ho_Chi_Minh]"
+    assert result["date"].tolist() == [pd.Timestamp("2026-07-24")]
+    assert result["available_at"].iloc[0] == pd.Timestamp("2026-07-25", tz=updater.VN_TZ)
+
+
+def test_vci_available_at_normalizes_naive_and_utc_inputs_to_same_watermark():
+    naive = pd.Series(pd.to_datetime(["2026-07-24"]))
+    aware = pd.Series(pd.to_datetime(["2026-07-24"], utc=True))
+
+    naive_result = updater._vci_available_at(naive)
+    aware_result = updater._vci_available_at(aware)
+
+    assert str(naive_result.dtype) == "datetime64[ns, Asia/Ho_Chi_Minh]"
+    assert aware_result.equals(naive_result)
+
+
+def test_fetch_one_symbol_preserves_vietnam_session_date_for_vn_aware_input(monkeypatch):
+    raw = pd.DataFrame({
+        "time": pd.Series(pd.to_datetime(["2026-07-24 00:00:00+07:00"])),
+        "open": [10000.0], "high": [10500.0], "low": [9500.0],
+        "close": [10000.0], "volume": [100],
+    })
+    monkeypatch.setattr(updater, "_fetch_history_chunked", lambda **kwargs: raw)
+
+    result = updater.fetch_one_symbol(object(), "aaa", "2026-07-24", "2026-07-24", "HOSE")
+
+    assert result["date"].iloc[0] == pd.Timestamp("2026-07-24")
+    assert result["available_at"].iloc[0] == pd.Timestamp("2026-07-25", tz=updater.VN_TZ)
+
+
+def test_timezone_normalization_rejects_malformed_dates():
+    with __import__("pytest").raises(ValueError):
+        updater._vci_available_at(pd.Series(["not-a-date"]))
