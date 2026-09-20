@@ -7146,7 +7146,8 @@
       ".agents/skills/audit-cycle/SKILL.md",
       ".agents/skills/omega-sod/SKILL.md"
     ],
-    "forbidden_path_scan": "forbidden path scan completed for session l3_role21_gate_direct_ingestion_macro_bitemporal_phase3_20260920; non-authoritative scan evidence only; no reliance."
+    "forbidden_path_scan": "forbidden path scan completed for session l3_role21_gate_direct_ingestion_macro_bitemporal_phase3_20260920; non-authoritative scan evidence only; no reliance.",
+    "closed": true
   },
   "GATE_STANDARDIZE_MARKET_INGESTION_SSOT_20260920": {
     "phase_name": "GATE_STANDARDIZE_MARKET_INGESTION_SSOT_20260920",
