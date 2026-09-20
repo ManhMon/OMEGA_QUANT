@@ -251,6 +251,56 @@ def _build_risk_exposures(
 # Diff computation
 # ------------------------------------------------------------------ #
 
+def resolve_macro_monetary_regime(
+    snapshot_path: Optional[Path] = None,
+    as_of_cutoff: Optional[datetime] = None,
+) -> float:
+    """Return the latest monetary regime available at or before the PIT cutoff."""
+    path = snapshot_path or (_REPO_ROOT / "data" / "interbank_rate_snapshots.json")
+    try:
+        payload = json.loads(
+            path.read_text(encoding="utf-8", errors="strict"),
+            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("nonfinite JSON")),
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError("invalid macro monetary snapshot JSON") from exc
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = payload.get("snapshots", [payload])
+    else:
+        raise ValueError("macro monetary snapshot must be object or array")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("macro monetary snapshot is empty")
+    cutoff = as_of_cutoff or datetime.now(timezone.utc)
+    if not isinstance(cutoff, datetime):
+        cutoff = cutoff.to_pydatetime()
+    cutoff = cutoff.replace(tzinfo=timezone.utc) if cutoff.tzinfo is None else cutoff.astimezone(timezone.utc)
+    eligible = []
+    for row in rows:
+        if not isinstance(row, dict) or "available_at" not in row:
+            raise ValueError("invalid macro monetary snapshot row")
+        try:
+            available_at = datetime.fromisoformat(str(row["available_at"]).replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("invalid macro monetary available_at") from exc
+        if available_at.tzinfo is None:
+            raise ValueError("macro monetary available_at must be timezone-aware")
+        available_at = available_at.astimezone(timezone.utc)
+        if available_at <= cutoff:
+            eligible.append((available_at, row))
+    if not eligible:
+        raise ValueError("no macro monetary snapshot available at cutoff")
+    latest = max(eligible, key=lambda item: item[0])[1]
+    raw_value = latest.get("macro_monetary_regime", latest.get("monetary_regime", latest.get("regime")))
+    if isinstance(raw_value, bool):
+        raise ValueError("invalid macro monetary regime")
+    value = float(raw_value)
+    if value not in (-1.0, 0.0, 1.0):
+        raise ValueError("invalid macro monetary regime")
+    return value
+
+
 @dataclass
 class OrderDiff:
     """Represents a single order to reconcile current -> target."""
@@ -370,6 +420,9 @@ def execute_diffs(
     pipeline,
     diffs: List[OrderDiff],
     adv_20d: float = DEFAULT_ADV_20D,
+    *,
+    enable_macro_filter: bool = False,
+    macro_monetary_regime: Optional[float] = None,
 ) -> List[Dict[str, Any]]:
     """
     Submit every diff through LiveTradingPipeline.
@@ -379,8 +432,30 @@ def execute_diffs(
     from omega.execution.broker_gateway import OrderSide, OrderType
     from omega.execution.live_trading_pipeline import PipelineState
 
+    if enable_macro_filter and (
+        isinstance(macro_monetary_regime, bool)
+        or not isinstance(macro_monetary_regime, (int, float))
+        or macro_monetary_regime not in (-1.0, 0.0, 1.0)
+    ):
+        raise ValueError("macro filter enabled without valid monetary regime")
+
     results = []
     for diff in diffs:
+        if enable_macro_filter and macro_monetary_regime == -1.0 and diff.side == "BUY":
+            logger.warning("Macro tightening blocked BUY %s quantity=%s", diff.symbol, diff.quantity)
+            results.append({
+                "symbol": diff.symbol,
+                "side": diff.side,
+                "quantity": diff.quantity,
+                "price": diff.price,
+                "pipeline_state": "BLOCKED_MACRO",
+                "order_id": None,
+                "error": "macro_tightening_buy_blocked",
+                "target_weight": diff.target_weight,
+                "current_weight": diff.current_weight,
+                "macro_monetary_regime": macro_monetary_regime,
+            })
+            continue
         side = OrderSide.BUY if diff.side == "BUY" else OrderSide.SELL
 
         result = pipeline.submit_order(
@@ -402,6 +477,7 @@ def execute_diffs(
             "error": result.error,
             "target_weight": diff.target_weight,
             "current_weight": diff.current_weight,
+            "macro_monetary_regime": macro_monetary_regime,
         }
         results.append(record)
 
@@ -565,6 +641,8 @@ def run_paper_execution_pipeline(
     current_positions: Optional[Dict[str, Dict[str, Any]]] = None,
     dry_run: bool = False,
     market_data_receipt_dir: Optional[Path] = None,
+    enable_macro_filter: bool = False,
+    as_of_cutoff: Optional[datetime] = None,
 ) -> Dict[str, Any]:
     """
     Full paper execution pipeline:
@@ -629,7 +707,13 @@ def run_paper_execution_pipeline(
 
     # Step 4: Build pipeline and execute
     pipeline = build_pipeline(current_positions=current_positions, capital=capital)
-    results = execute_diffs(pipeline, diffs)
+    macro_monetary_regime = resolve_macro_monetary_regime(as_of_cutoff=as_of_cutoff) if enable_macro_filter else 0.0
+    results = execute_diffs(
+        pipeline,
+        diffs,
+        enable_macro_filter=enable_macro_filter,
+        macro_monetary_regime=macro_monetary_regime,
+    )
 
     # Step 5: Update dashboard
     update_dashboard(signal, results, market_data=market_data)
@@ -660,6 +744,7 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="Paper Execution Pipeline")
     parser.add_argument("--dry-run", action="store_true", help="Compute diffs without executing")
+    parser.add_argument("--enable-macro-filter", action="store_true", help="Block BUY orders during monetary tightening")
     parser.add_argument("--signal-file", type=str, help="Path to signal JSON file")
     args = parser.parse_args()
 
@@ -670,5 +755,5 @@ if __name__ == "__main__":
             logger.error("Failed to load signal file: %s", args.signal_file)
             sys.exit(1)
 
-    summary = run_paper_execution_pipeline(signal=signal, dry_run=args.dry_run)
+    summary = run_paper_execution_pipeline(signal=signal, dry_run=args.dry_run, enable_macro_filter=args.enable_macro_filter)
     print(json.dumps(summary, indent=2, default=str))

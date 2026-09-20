@@ -45,6 +45,7 @@ from scripts.run_paper_execution_pipeline import (
     build_pipeline,
     BOARD_LOT,
     DEFAULT_CAPITAL,
+    resolve_macro_monetary_regime,
 )
 from omega.execution.broker_gateway import OrderSide
 from omega.quant.risk.realtime_risk import RealtimeRiskGuard, RiskLimits, RiskVerdict
@@ -98,6 +99,127 @@ CURRENT_POSITIONS = {
 # ------------------------------------------------------------------ #
 # compute_order_diffs tests
 # ------------------------------------------------------------------ #
+
+def test_resolve_macro_monetary_regime_missing_snapshot_fails_closed(tmp_path):
+    with pytest.raises(ValueError, match="invalid macro monetary snapshot JSON"):
+        resolve_macro_monetary_regime(tmp_path / "missing.json")
+
+
+def test_resolve_macro_monetary_regime_rejects_bool_regime(tmp_path):
+    path = tmp_path / "macro_bool.json"
+    path.write_text(json.dumps([{
+        "available_at": "2026-09-20T00:00:00+00:00",
+        "macro_monetary_regime": True,
+    }]), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        resolve_macro_monetary_regime(
+            path,
+            as_of_cutoff=datetime(2026, 9, 20, tzinfo=timezone.utc),
+        )
+
+
+def test_resolve_macro_monetary_regime_excludes_future_snapshot(tmp_path):
+    path = tmp_path / "macro.json"
+    path.write_text(json.dumps([{
+        "available_at": "2026-09-21T00:00:00+00:00",
+        "macro_monetary_regime": -1.0,
+    }]), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="no macro monetary snapshot available at cutoff"):
+        resolve_macro_monetary_regime(
+            path, as_of_cutoff=datetime(2026, 9, 20, tzinfo=timezone.utc)
+        )
+
+
+def test_resolve_macro_monetary_regime_uses_latest_past_not_future(tmp_path):
+    path = tmp_path / "macro.json"
+    path.write_text(json.dumps([
+        {
+            "available_at": "2026-09-19T00:00:00+00:00",
+            "macro_monetary_regime": 1.0,
+        },
+        {
+            "available_at": "2026-09-20T00:00:00+00:00",
+            "macro_monetary_regime": 0.0,
+        },
+        {
+            "available_at": "2026-09-21T00:00:00+00:00",
+            "macro_monetary_regime": -1.0,
+        },
+    ]), encoding="utf-8")
+
+    assert resolve_macro_monetary_regime(
+        path, as_of_cutoff=datetime(2026, 9, 20, 12, tzinfo=timezone.utc)
+    ) == 0.0
+
+
+def test_resolve_macro_monetary_regime_empty_or_corrupt_fails_closed(tmp_path):
+    empty = tmp_path / "empty.json"
+    empty.write_text("[]", encoding="utf-8")
+    corrupt = tmp_path / "corrupt.json"
+    corrupt.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        resolve_macro_monetary_regime(empty)
+    with pytest.raises((ValueError, json.JSONDecodeError)):
+        resolve_macro_monetary_regime(corrupt)
+
+
+def test_execute_diffs_macro_filter_requires_valid_regime():
+    buy = OrderDiff("FPT", "BUY", 100, 100000.0, 0.1, 0.0)
+    pipeline = MagicMock()
+
+    with pytest.raises(ValueError, match="macro filter enabled without valid monetary regime"):
+        execute_diffs(pipeline, [buy], enable_macro_filter=True)
+    with pytest.raises(ValueError, match="macro filter enabled without valid monetary regime"):
+        execute_diffs(pipeline, [buy], enable_macro_filter=True, macro_monetary_regime=True)
+    with pytest.raises(ValueError, match="macro filter enabled without valid monetary regime"):
+        execute_diffs(pipeline, [buy], enable_macro_filter=True, macro_monetary_regime=False)
+
+    pipeline.submit_order.assert_not_called()
+
+
+@pytest.mark.parametrize("regime,expected_calls", [(-1.0, 1), (0.0, 2), (1.0, 2)])
+def test_macro_filter_execution_rules(regime, expected_calls):
+    buy = OrderDiff("FPT", "BUY", 100, 100000.0, 0.1, 0.0)
+    sell = OrderDiff("VNM", "SELL", 100, 80000.0, 0.0, 0.1)
+    pipeline = MagicMock()
+    pipeline.submit_order.return_value = MagicMock(
+        state=MagicMock(value="COMPLETED"), order_id="ORDER-1", error=None
+    )
+
+    results = execute_diffs(
+        pipeline,
+        [buy, sell],
+        enable_macro_filter=True,
+        macro_monetary_regime=regime,
+    )
+
+    assert pipeline.submit_order.call_count == expected_calls
+    if regime == -1.0:
+        assert results[0]["pipeline_state"] == "BLOCKED_MACRO"
+        assert results[0]["macro_monetary_regime"] == -1.0
+        assert pipeline.submit_order.call_args.kwargs["side"] == OrderSide.SELL
+
+
+def test_macro_filter_disabled_allows_buy_during_tightening():
+    buy = OrderDiff("FPT", "BUY", 100, 100000.0, 0.1, 0.0)
+    pipeline = MagicMock()
+    pipeline.submit_order.return_value = MagicMock(
+        state=MagicMock(value="COMPLETED"), order_id="ORDER-1", error=None
+    )
+
+    results = execute_diffs(
+        pipeline,
+        [buy],
+        enable_macro_filter=False,
+        macro_monetary_regime=-1.0,
+    )
+
+    assert pipeline.submit_order.call_count == 1
+    assert results[0]["macro_monetary_regime"] == -1.0
+
 
 class TestComputeOrderDiffs:
     """Tests for order diff computation logic."""
@@ -812,8 +934,8 @@ class TestLiveBridgeSSIGateway:
 
     def test_ssi_gateway_submit_order(self):
         """SSIBrokerGateway submits orders through LiveExecutionBridge."""
-        from omega.quant.execution.live_bridge import LiveExecutionBridge, BrokerConfig, ExecutionState
         from omega.execution.broker_gateway import OrderSide, OrderType
+        from omega.quant.execution.live_bridge import BrokerConfig, ExecutionState, LiveExecutionBridge
 
         config = BrokerConfig(
             broker_name="SSI",
@@ -862,3 +984,39 @@ class TestLiveBridgeSSIGateway:
         assert order.state == ExecutionState.FILLED
         assert order.filled_quantity == 500
         assert order.average_fill_price == 100000.0
+
+
+def test_run_pipeline_macro_cutoff_propagation(monkeypatch):
+    captured = {}
+
+    def fake_resolver(*args, **kwargs):
+        captured.update(kwargs)
+        return 0.0
+
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline.resolve_macro_monetary_regime",
+        fake_resolver,
+    )
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline._market_data_decision",
+        lambda *args, **kwargs: {"code": "MARKET_DATA_EXECUTABLE", "receipt_id": "r1"},
+    )
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline.execute_diffs",
+        lambda *args, **kwargs: [],
+    )
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline.update_dashboard",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline._save_json",
+        lambda *args, **kwargs: True,
+    )
+
+    signal = {"date": "2026-09-20", "positions": {"VNM": {"shares": 100, "price": 50000.0}}}
+    cutoff = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    run_paper_execution_pipeline(signal=signal, current_positions={}, enable_macro_filter=True, as_of_cutoff=cutoff)
+
+    assert captured.get("as_of_cutoff") == cutoff
+
