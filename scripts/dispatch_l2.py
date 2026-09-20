@@ -725,17 +725,7 @@ def build_graph_prompt_evidence(evidence: dict) -> str:
         try:
             fd = os.open(publish_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            # Wait or fail closed if concurrent publication is active
-            import time
-            for _ in range(50):
-                time.sleep(0.05)
-                try:
-                    fd = os.open(publish_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-                    break
-                except FileExistsError:
-                    pass
-            else:
-                raise RuntimeError("graph evidence locked by active publisher")
+            raise RuntimeError("graph evidence locked by active publisher")
         try:
             try:
                 raw = path.read_bytes()
@@ -1810,6 +1800,7 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         f"SCOPE: {scope}. "
         f"REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; "
         f"TEST SCOPE CONSTRAINT: Limit test execution to declared scope files and related test suites (e.g. pytest <scope_test_files> -v, npm test); do NOT scan or run the full 4400+ test repository suite. "
+        f"ANTI-POLLING & ZERO-IDLE DIRECTIVE (ANTI_POLLING_ZERO_IDLE_20260918): NEVER poll, loop, or repeatedly run git status, task status, or sod_gate_enforcer to wait for background execution; stop calling tools immediately and end the turn when waiting for commands. "
         f"write L2 report to .ly_state/session/{session_id}.md. "
         f"Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing.\n"
         f"{adversarial_clause}\n"

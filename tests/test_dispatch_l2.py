@@ -209,6 +209,31 @@ def test_dispatch_l2_cli_run_and_prompt_construction():
     assert "non-authoritative scan evidence only; no reliance." in prompt
 
 
+def test_dispatch_l2_prompt_contains_canonical_zero_idle_directive():
+    res = subprocess.run(
+        [sys.executable, "scripts/dispatch_l2.py", "data-engineer", "TEST_GATE_ZERO_IDLE", "zero_idle", "task", "tests/test_dispatch_l2.py", "--risk", "low"],
+        capture_output=True, text=True, cwd=str(REPO_ROOT),
+    )
+    assert res.returncode == 0
+    _, _, prompt = _parse_command_and_prompt(res.stdout)
+    assert "ANTI-POLLING & ZERO-IDLE DIRECTIVE (ANTI_POLLING_ZERO_IDLE_20260918)" in prompt
+
+
+def test_graph_prompt_lock_contention_fails_without_sleep(tmp_path):
+    import hashlib
+    import scripts.dispatch_l2 as dl2
+
+    session_dir = tmp_path / ".ly_state" / "session"
+    session_dir.mkdir(parents=True)
+    evidence = session_dir / "graph.json"
+    evidence.write_bytes(b"{}")
+    evidence.with_suffix(".sha256").write_text(hashlib.sha256(b"{}").hexdigest(), encoding="ascii")
+    evidence.with_name("graph.json.publish.lock").write_text("active", encoding="ascii")
+    payload = {"_repo_root": str(tmp_path), "path": ".ly_state/session/graph.json", "sha256": hashlib.sha256(b"{}").hexdigest()}
+    with pytest.raises(RuntimeError, match="locked by active publisher"):
+        dl2.build_graph_prompt_evidence(payload)
+
+
 def test_dispatch_l2_cli_invalid_role_exit_2():
     res = subprocess.run(
         [
@@ -1475,5 +1500,3 @@ def test_f002_validate_l2_report_sweep_schema_and_boundaries():
     ok, errs = _check_required_headings(bad_order_doc, remediation_required=True)
     assert ok is False
     assert any("out of order" in e for e in errs)
-
-

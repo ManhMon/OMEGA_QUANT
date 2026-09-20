@@ -25,6 +25,7 @@ Exit codes:
 import sys
 import subprocess
 import json
+import tempfile
 from pathlib import Path
 from datetime import datetime
 
@@ -36,10 +37,46 @@ def run(cmd, desc, check=True):
     print(f"  STAGE: {desc}")
     print(f"{'='*60}")
     print(f"  CMD: {cmd[:120]}...")
-    result = subprocess.run(
-        cmd, shell=True, cwd=str(REPO_ROOT),
-        capture_output=False, text=True
-    )
+    if any(cmd.lstrip().startswith(prefix) for prefix in ("try {", "if (", "$", "throw ", "if (-not")):
+        ps_file = None
+        ps_dir = REPO_ROOT / ".ly_state" / "session"
+        ps_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", suffix=".ps1", prefix="_pipeline_step_",
+                dir=ps_dir, delete=False
+            ) as handle:
+                handle.write(
+                    "\n$ErrorActionPreference = 'Stop'\n"
+                    "$global:LASTEXITCODE = 0\n"
+                    "try {\n"
+                    "    & {\n"
+                    "        " + cmd + "\n"
+                    "    }\n"
+                    "} catch {\n"
+                    "    [Console]::Error.WriteLine($_.Exception.Message)\n"
+                    "    exit 1\n"
+                    "}\n"
+                    "if (-not $?) { exit $LASTEXITCODE }\n"
+                    "exit 0\n"
+                )
+                ps_file = Path(handle.name)
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_file)],
+                cwd=str(REPO_ROOT),
+                capture_output=False, text=True
+            )
+        finally:
+            if ps_file and ps_file.exists():
+                try:
+                    ps_file.unlink()
+                except Exception:
+                    pass
+    else:
+        result = subprocess.run(
+            cmd, shell=True, cwd=str(REPO_ROOT),
+            capture_output=False, text=True
+        )
     if check and result.returncode != 0:
         print(f"\n[FAIL] {desc} — exit code {result.returncode}")
     return result.returncode

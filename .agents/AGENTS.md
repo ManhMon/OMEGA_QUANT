@@ -126,6 +126,7 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 9. **No manual override**: Manual approval overrides are forbidden. All gates require valid L3 audit with [APPROVED] verdict and `python scripts/sod_gate_enforcer.py` exit 0.
 10. **L2 session ID format**: L2 session IDs MUST follow format `l2_role{role_id}_{task_slug}_{YYYYMMDD}` (e.g., `l2_role11_agents_md_strict_sod_hardening_20260611`).
 11. **GEMINI.md Conflict Resolution**: In case of any conflict between the Tier 0 Edit Mode instructions in GEMINI.md (which may allow direct editing of single-file fixes by the L1 orchestrator) and the SoD platform isolation constraints in AGENTS.md, the SoD platform isolation constraints in AGENTS.md take absolute precedence. Under no circumstances is L1 allowed to bypass SoD or modify code directly. All code edits must go through L2 OpenCode.
+12. **Anti-Polling & Zero-Idle Directive (ANTI_POLLING_ZERO_IDLE_20260918)**: L1, L2, and L3 MUST NOT loop, poll, or repeatedly invoke status/inspection tools (`git status`, `git status -s`, `sod_gate_enforcer.py`, `manage_task status`, process polling) to wait for task or background completion. When launching a long-running or background command, the agent MUST immediately stop calling tools and yield the turn. Unbounded polling loops and repeated status probes without user interaction or state mutations are strictly forbidden.
 
 ### L1 Audit Report Mechanical Correction Exception
 

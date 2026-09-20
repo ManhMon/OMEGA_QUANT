@@ -495,6 +495,7 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         f"SCOPE: {scope}. "
         f"REQUIREMENTS: first run Set-Location '{REPO_ROOT}'; "
         f"use repo-relative paths from REPO_ROOT only; never read/write Antigravity scratch paths. "
+        f"ANTI-POLLING & ZERO-IDLE DIRECTIVE (ANTI_POLLING_ZERO_IDLE_20260918): NEVER poll, loop, or repeatedly run git status, task status, or audit scripts to wait for background execution; stop calling tools immediately and end the turn when waiting for commands. "
         f"{adversarial_directive} "
         f"{subagent_clause}"
         f"AUDIT EVIDENCE CHECKLIST: "

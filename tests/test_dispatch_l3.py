@@ -133,6 +133,7 @@ def test_dispatch_l3_cli_embeds_directive_and_preserves_format(monkeypatch, caps
         "non-authoritative",
     ):
         assert marker in prompt_text
+    assert "ANTI-POLLING & ZERO-IDLE DIRECTIVE (ANTI_POLLING_ZERO_IDLE_20260918)" in prompt_text
 
 
 def test_dispatch_l3_directive_byte_identical_in_both_cx_and_opencode_variants(capsys, monkeypatch, tmp_path):

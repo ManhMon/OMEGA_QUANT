@@ -104,11 +104,13 @@ When user's prompt is NOT in English:
 2. **Respond in user's language** - match their communication
 3. **Code comments/variables** remain in English
 
-### 🚫 Cấm Hẹn Giờ/Timer (Global Mandatory)
+### 🚫 Cấm Hẹn Giờ, Polling & Thăm Dò Status (ANTI_POLLING_ZERO_IDLE_20260918, Global Mandatory)
 
 **TUYỆT ĐỐI CẤM sử dụng bất kỳ công cụ hẹn giờ, lập lịch hoặc timer (chẳng hạn như `schedule`, `cron` hoặc bất kỳ timer chạy ngầm nào) dưới mọi hình thức.**
 - Không đặt timer chờ đợi tiến trình chạy ngầm.
 - Không hẹn giờ báo thức hay thông báo định kỳ.
+- **TUYỆT ĐỐI CẤM Loop Polling / Thăm dò trạng thái**: Cấm lặp lại các tool call kiểm tra trạng thái (`git status`, `git status -s`, `sod_gate_enforcer.py`, `manage_task status`, vòng lặp kiểm tra tiến trình) để chờ đợi tác vụ hoàn thành.
+- **Dừng gọi tool khi chạy tác vụ nền**: Khi một lệnh được đưa vào background hoặc đang chạy dài, agent BẮT BUỘC DỪNG GỌI TOOL NGAY LẬP TỨC để nhả lượt (end turn) cho người dùng/hệ thống. Tuyệt đối không tự ý gọi thêm tool kiểm tra.
 
 ### 🧹 Clean Code (Global Mandatory)
 
