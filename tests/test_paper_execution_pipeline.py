@@ -46,6 +46,7 @@ from scripts.run_paper_execution_pipeline import (
     BOARD_LOT,
     DEFAULT_CAPITAL,
     resolve_macro_monetary_regime,
+    resolve_macro_composite_regime,
 )
 from omega.execution.broker_gateway import OrderSide
 from omega.quant.risk.realtime_risk import RealtimeRiskGuard, RiskLimits, RiskVerdict
@@ -1061,4 +1062,92 @@ def test_macro_pit_future_fx_omo_snapshot_rejected(tmp_path):
     path.write_text(json.dumps([{"available_at": "2026-09-21T00:00:00+00:00", "reason": "MACRO_FX_OMO_STRESS"}]), encoding="utf-8")
     with pytest.raises(ValueError):
         resolve_macro_monetary_regime(path, as_of_cutoff=datetime(2026, 9, 20, tzinfo=timezone.utc))
+
+
+def test_macro_composite_regime_from_parquet_alert(tmp_path):
+    """Verify parquet-backed macro regime blocks BUY when under alert/stress."""
+    from scripts.check_macro_risk_alerts import compute_macro_risk_metrics
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-01-01", periods=80, freq="D", tz="UTC"),
+        "usd_vnd": [23000.0 + float(i) for i in range(80)],
+        "omo_net": [-50000.0] * 80,
+        "on_rate": [7.5] * 80,  # High ON rate triggers ALERT
+        "rate_1m": [8.0] * 80,
+    })
+    p = tmp_path / "macro_test.parquet"
+    df.to_parquet(p)
+    res = resolve_macro_composite_regime(macro_parquet_path=p)
+    assert res["block"] is True
+    assert res["reason"] == "MACRO_FX_OMO_STRESS"
+    assert res["regime_code"] == 2
+
+
+def test_macro_composite_regime_from_parquet_normal(tmp_path):
+    """Verify parquet-backed macro regime allows BUY when normal."""
+    df = pd.DataFrame({
+        "timestamp": pd.date_range("2026-01-01", periods=80, freq="D", tz="UTC"),
+        "usd_vnd": [23000.0] * 80,  # Constant FX -> Z = 0
+        "omo_net": [5000.0] * 80,   # Positive OMO injection
+        "on_rate": [1.5] * 80,      # Low ON rate
+        "rate_1m": [2.0] * 80,
+    })
+    p = tmp_path / "macro_normal.parquet"
+    df.to_parquet(p)
+    res = resolve_macro_composite_regime(macro_parquet_path=p)
+    assert res["block"] is False
+    assert res["reason"] is None
+    assert res["regime_code"] == 0
+
+
+def test_run_paper_execution_pipeline_macro_composite_blocks_buy(tmp_path, monkeypatch):
+    """Verify run_paper_execution_pipeline end-to-end blocks BUY orders under macro stress."""
+    from scripts.run_paper_execution_pipeline import run_paper_execution_pipeline
+
+    signal = {
+        "date": "2026-06-19",
+        "positions": {
+            "VCB": {"shares": 1000, "price": 90000.0, "weight": 0.5},
+        },
+        "capital": 100_000_000.0,
+    }
+    positions = {}
+
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline._market_data_decision",
+        lambda *args, **kwargs: {"code": "MARKET_DATA_EXECUTABLE", "receipt_id": "r1"},
+    )
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline.resolve_macro_monetary_regime",
+        lambda *args, **kwargs: 0.0,
+    )
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline.resolve_macro_composite_regime",
+        lambda *args, **kwargs: {"block": True, "reason": "MACRO_FX_OMO_STRESS", "macro_monetary_regime": 0.0, "regime_code": 2, "regime_name": "ALERT"},
+    )
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline.save_execution_results",
+        lambda *args, **kwargs: tmp_path / "mock_result.json",
+    )
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline.update_dashboard",
+        lambda *args, **kwargs: None,
+    )
+
+    mock_pipeline = MagicMock()
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline.build_pipeline",
+        lambda *args, **kwargs: mock_pipeline,
+    )
+
+    summary = run_paper_execution_pipeline(
+        signal=signal,
+        current_positions=positions,
+        enable_macro_filter=True,
+    )
+
+    assert summary["total_diffs"] == 1
+    assert summary["total_executed"] == 1
+    assert summary["completed"] == 0  # BLOCKED_MACRO is not COMPLETED
+    assert mock_pipeline.submit_order.call_count == 0
+
 

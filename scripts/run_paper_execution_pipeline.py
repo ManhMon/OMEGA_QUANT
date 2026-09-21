@@ -255,9 +255,55 @@ def resolve_macro_composite_regime(
     monetary_snapshot_path: Optional[Path] = None,
     fx_omo_snapshot_path: Optional[Path] = None,
     as_of_cutoff: Optional[datetime] = None,
+    macro_parquet_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    """Resolve PIT-safe macro BUY blockers."""
-    monetary = resolve_macro_monetary_regime(monetary_snapshot_path, as_of_cutoff)
+    try:
+        monetary = resolve_macro_monetary_regime(monetary_snapshot_path, as_of_cutoff=as_of_cutoff)
+    except Exception:
+        monetary = 0.0
+
+    # 1. Evaluate Parquet database if specified or available without snapshot override
+    parquet_file = macro_parquet_path or (
+        _REPO_ROOT / "data" / "macro_indicators_daily.parquet"
+        if fx_omo_snapshot_path is None
+        else None
+    )
+    if parquet_file and Path(parquet_file).exists():
+        try:
+            import pandas as pd
+            from scripts.check_macro_risk_alerts import compute_macro_risk_metrics, evaluate_macro_regime
+
+            df_macro = pd.read_parquet(Path(parquet_file))
+            cutoff_str = as_of_cutoff.isoformat() if as_of_cutoff else None
+            metrics = compute_macro_risk_metrics(df_macro, as_of=cutoff_str)
+            code, name, _ = evaluate_macro_regime(metrics)
+            if code == 2:
+                return {
+                    "block": True,
+                    "reason": "MACRO_FX_OMO_STRESS",
+                    "macro_monetary_regime": monetary,
+                    "regime_code": code,
+                    "regime_name": name,
+                }
+            elif code == 3:
+                return {
+                    "block": True,
+                    "reason": "MACRO_ERROR_FAIL_CLOSED",
+                    "macro_monetary_regime": monetary,
+                    "regime_code": code,
+                    "regime_name": name,
+                }
+            elif macro_parquet_path is not None:
+                return {
+                    "block": False,
+                    "reason": None,
+                    "macro_monetary_regime": monetary,
+                    "regime_code": code,
+                    "regime_name": name,
+                }
+        except Exception as exc:
+            logger.warning("Parquet macro check failed: %s; falling back to snapshot", exc)
+
     path = fx_omo_snapshot_path or (_REPO_ROOT / "data" / "fx_omo_regime.json")
     try:
         payload = json.loads(path.read_text(encoding="utf-8", errors="strict"))
@@ -313,7 +359,7 @@ def resolve_macro_monetary_regime(
         raise ValueError("no macro monetary snapshot available at cutoff")
     latest = max(eligible, key=lambda item: item[0])[1]
     raw_value = latest.get("macro_monetary_regime", latest.get("monetary_regime", latest.get("regime")))
-    if isinstance(raw_value, bool):
+    if isinstance(raw_value, bool) or raw_value is None:
         raise ValueError("invalid macro monetary regime")
     value = float(raw_value)
     if value not in (-1.0, 0.0, 1.0):
@@ -748,12 +794,22 @@ def run_paper_execution_pipeline(
 
     # Step 4: Build pipeline and execute
     pipeline = build_pipeline(current_positions=current_positions, capital=capital)
-    macro_monetary_regime = resolve_macro_monetary_regime(as_of_cutoff=as_of_cutoff) if enable_macro_filter else 0.0
+    macro_monetary_regime = (
+        resolve_macro_monetary_regime(as_of_cutoff=as_of_cutoff)
+        if enable_macro_filter
+        else 0.0
+    )
+    macro_composite = (
+        resolve_macro_composite_regime(as_of_cutoff=as_of_cutoff)
+        if enable_macro_filter
+        else None
+    )
     results = execute_diffs(
         pipeline,
         diffs,
         enable_macro_filter=enable_macro_filter,
         macro_monetary_regime=macro_monetary_regime,
+        macro_composite_regime=macro_composite,
     )
 
     # Step 5: Update dashboard
