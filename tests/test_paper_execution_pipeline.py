@@ -47,6 +47,7 @@ from scripts.run_paper_execution_pipeline import (
     DEFAULT_CAPITAL,
     resolve_macro_monetary_regime,
     resolve_macro_composite_regime,
+    compute_futures_hedge_diff,
 )
 from omega.execution.broker_gateway import OrderSide
 from omega.quant.risk.realtime_risk import RealtimeRiskGuard, RiskLimits, RiskVerdict
@@ -1149,5 +1150,70 @@ def test_run_paper_execution_pipeline_macro_composite_blocks_buy(tmp_path, monke
     assert summary["total_executed"] == 1
     assert summary["completed"] == 0  # BLOCKED_MACRO is not COMPLETED
     assert mock_pipeline.submit_order.call_count == 0
+
+
+def test_compute_futures_hedge_diff_all_regimes():
+    """Verify compute_futures_hedge_diff correctly computes contracts for all regimes."""
+    capital = 1_300_000_000.0  # 1.3 billion VND -> contract value at 1300 is 130M -> exactly 10 contracts for 100%
+    price = 1300.0
+
+    # 1. NORMAL (code 0) -> 0% hedge, no current pos -> None
+    res_norm = compute_futures_hedge_diff({"regime_code": 0}, capital=capital, vn30_price=price)
+    assert res_norm is None
+
+    # 2. CAUTION (code 1) -> 20% hedge of 1.3B = 260M -> 2 contracts Short (SELL)
+    res_caut = compute_futures_hedge_diff({"regime_code": 1}, capital=capital, vn30_price=price)
+    assert res_caut is not None
+    assert res_caut.symbol == "VN30F1M"
+    assert res_caut.side == "SELL"
+    assert res_caut.quantity == 2
+    assert res_caut.target_weight == -0.20
+
+    # 3. ALERT (code 2) -> 65% hedge of 1.3B = 845M -> 6.5 -> 6 contracts (half-to-even) or 7 contracts
+    res_alert = compute_futures_hedge_diff({"regime_code": 2}, capital=capital, vn30_price=price)
+    assert res_alert is not None
+    assert res_alert.symbol == "VN30F1M"
+    assert res_alert.side == "SELL"
+    assert res_alert.quantity in (6, 7)
+    assert res_alert.target_weight == -0.65
+
+    # 4. CRITICAL (code 3) -> 100% hedge of 1.3B = 1300M -> 10 contracts
+    res_crit = compute_futures_hedge_diff({"regime_code": 3}, capital=capital, vn30_price=price)
+    assert res_crit is not None
+    assert res_crit.symbol == "VN30F1M"
+    assert res_crit.side == "SELL"
+    assert res_crit.quantity == 10
+    assert res_crit.target_weight == -1.0
+
+    # 5. Covering short when transitioning back to NORMAL:
+    curr = {"VN30F1M": {"shares": 5, "weight": -0.5}}
+    res_cover = compute_futures_hedge_diff({"regime_code": 0}, current_positions=curr, capital=capital, vn30_price=price)
+    assert res_cover is not None
+    assert res_cover.symbol == "VN30F1M"
+    assert res_cover.side == "BUY"
+    assert res_cover.quantity == 5
+    assert res_cover.target_weight == 0.0
+
+
+def test_update_dashboard_macro_hedging_persisted(tmp_path):
+    """Verify update_dashboard persists macro_hedging regime in risk_status.json."""
+    from scripts.run_paper_execution_pipeline import _load_json
+
+    signal = {"date": "2026-06-19", "positions": {}, "capital": 100_000_000.0}
+    macro = {
+        "regime_code": 1,
+        "regime_name": "CAUTION",
+        "reason": "MACRO_CAUTION_EVALUATED",
+    }
+    update_dashboard(signal, [], session_dir=tmp_path, macro_composite=macro)
+
+    risk_status = _load_json(tmp_path / "risk_status.json")
+    assert risk_status is not None
+    assert "macro_hedging" in risk_status
+    assert risk_status["macro_hedging"]["regime_code"] == 1
+    assert risk_status["macro_hedging"]["regime_name"] == "CAUTION"
+    assert risk_status["macro_hedging"]["hedge_ratio"] == 0.20
+    assert risk_status["macro_hedging"]["hedge_symbol"] == "VN30F1M"
+
 
 

@@ -430,6 +430,54 @@ def compute_order_diffs(
     return diffs
 
 
+def compute_futures_hedge_diff(
+    macro_composite_regime: Optional[Dict[str, Any]],
+    current_positions: Optional[Dict[str, Dict[str, Any]]] = None,
+    capital: float = DEFAULT_CAPITAL,
+    vn30_price: float = 1300.0,
+) -> Optional[OrderDiff]:
+    """
+    Compute dynamic hedging diff on VN30F1M based on macro regime.
+    - Regime 0 (NORMAL): 0% hedge
+    - Regime 1 (CAUTION): 20% short hedge
+    - Regime 2 (ALERT): 65% short hedge
+    - Regime 3 (CRITICAL): 100% short hedge
+    Contract multiplier: 100,000 VND / pt.
+    """
+    if not macro_composite_regime:
+        return None
+    code = macro_composite_regime.get("regime_code", 0)
+    hedge_ratios = {0: 0.0, 1: 0.20, 2: 0.65, 3: 1.0}
+    target_ratio = hedge_ratios.get(code, 0.0)
+
+    contract_value = vn30_price * 100_000.0
+    if contract_value <= 0 or capital <= 0:
+        return None
+
+    target_notional = capital * target_ratio
+    target_contracts = int(round(target_notional / contract_value)) if target_ratio > 0 else 0
+
+    curr_pos = (current_positions or {}).get("VN30F1M", {})
+    current_contracts = int(curr_pos.get("shares", 0))
+    current_ratio = float(curr_pos.get("weight", 0.0))
+
+    delta = target_contracts - current_contracts
+    if delta == 0:
+        return None
+
+    side = "SELL" if delta > 0 else "BUY"
+    qty = abs(delta)
+
+    return OrderDiff(
+        symbol="VN30F1M",
+        side=side,
+        quantity=qty,
+        price=vn30_price,
+        target_weight=-target_ratio,
+        current_weight=-current_ratio,
+    )
+
+
 # ------------------------------------------------------------------ #
 # Pipeline execution
 # ------------------------------------------------------------------ #
@@ -509,7 +557,7 @@ def execute_diffs(
     results = []
     for diff in diffs:
         macro_stress_reason = (macro_composite_regime or {}).get("reason")
-        if diff.side == "BUY" and macro_stress_reason in {"MACRO_FX_OMO_STRESS", "MACRO_MONETARY_TIGHTENING"}:
+        if diff.symbol != "VN30F1M" and diff.side == "BUY" and macro_stress_reason in {"MACRO_FX_OMO_STRESS", "MACRO_MONETARY_TIGHTENING"}:
             logger.warning("Macro stress blocked BUY %s reason=%s", diff.symbol, macro_stress_reason)
             results.append({
                 "symbol": diff.symbol,
@@ -526,7 +574,7 @@ def execute_diffs(
             })
             continue
 
-        if enable_macro_filter and macro_monetary_regime == -1.0 and diff.side == "BUY":
+        if diff.symbol != "VN30F1M" and enable_macro_filter and macro_monetary_regime == -1.0 and diff.side == "BUY":
             logger.warning("Macro tightening blocked BUY %s quantity=%s", diff.symbol, diff.quantity)
             results.append({
                 "symbol": diff.symbol,
@@ -587,6 +635,7 @@ def update_dashboard(
     execution_results: List[Dict[str, Any]],
     session_dir: Optional[Path] = None,
     market_data: Optional[Dict[str, Any]] = None,
+    macro_composite: Optional[Dict[str, Any]] = None,
 ) -> None:
     """
     Update risk_status.json and pnl_latest.json with execution results.
@@ -661,6 +710,13 @@ def update_dashboard(
         "market_data_provenance": market_data or {},
         "breached": existing.get("breached", False),
         "breached_reasons": existing.get("breached_reasons", []),
+        "macro_hedging": {
+            "regime_code": (macro_composite or {}).get("regime_code", 0),
+            "regime_name": (macro_composite or {}).get("regime_name", "NORMAL"),
+            "reason": (macro_composite or {}).get("reason"),
+            "hedge_ratio": 0.20 if (macro_composite or {}).get("regime_code") == 1 else (0.65 if (macro_composite or {}).get("regime_code") == 2 else (1.0 if (macro_composite or {}).get("regime_code") == 3 else 0.0)),
+            "hedge_symbol": "VN30F1M",
+        } if macro_composite else existing.get("macro_hedging", {}),
     }
     _save_json(session_dir / "risk_status.json", risk_status)
 
@@ -768,6 +824,17 @@ def run_paper_execution_pipeline(
     diffs = compute_order_diffs(signal, current_positions, capital)
     logger.info("Computed %d order diffs from signal dated %s", len(diffs), signal.get("date"))
 
+    macro_composite = (
+        resolve_macro_composite_regime(as_of_cutoff=as_of_cutoff)
+        if enable_macro_filter
+        else None
+    )
+    if enable_macro_filter and macro_composite:
+        hedge_diff = compute_futures_hedge_diff(macro_composite, current_positions, capital)
+        if hedge_diff:
+            diffs.append(hedge_diff)
+            logger.info("Added VN30F1M dynamic hedge diff: %s %d contracts", hedge_diff.side, hedge_diff.quantity)
+
     if not diffs:
         logger.info("No orders to execute — portfolio is aligned with target")
         return {
@@ -799,11 +866,6 @@ def run_paper_execution_pipeline(
         if enable_macro_filter
         else 0.0
     )
-    macro_composite = (
-        resolve_macro_composite_regime(as_of_cutoff=as_of_cutoff)
-        if enable_macro_filter
-        else None
-    )
     results = execute_diffs(
         pipeline,
         diffs,
@@ -813,7 +875,7 @@ def run_paper_execution_pipeline(
     )
 
     # Step 5: Update dashboard
-    update_dashboard(signal, results, market_data=market_data)
+    update_dashboard(signal, results, market_data=market_data, macro_composite=macro_composite)
 
     # Step 6: Save results
     result_path = save_execution_results(results, signal, diffs, market_data=market_data)
