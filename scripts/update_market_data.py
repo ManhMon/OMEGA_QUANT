@@ -359,20 +359,22 @@ def _resolve_listing_dates(
                 list_dt = pd.to_datetime(ld)
         except Exception:
             pass
-    elif hasattr(client, "listing_date"):
+    if list_dt is None and hasattr(client, "listing_date"):
         try:
             ld = getattr(client, "listing_date")
             if ld:
                 list_dt = pd.to_datetime(ld)
         except Exception:
             pass
-    elif hasattr(client, "fetch_company_profile") and callable(client.fetch_company_profile):
+    if list_dt is None and hasattr(client, "fetch_company_profile") and callable(client.fetch_company_profile):
         try:
             prof = client.fetch_company_profile(symbol)
             if isinstance(prof, pd.DataFrame) and not prof.empty and "listing_date" in prof.columns:
                 val = prof["listing_date"].dropna().iloc[0]
                 if val:
                     list_dt = pd.to_datetime(val)
+            elif isinstance(prof, dict) and prof.get("listing_date"):
+                list_dt = pd.to_datetime(prof["listing_date"])
         except Exception:
             pass
 
@@ -1405,26 +1407,39 @@ def run_full_history_refetch(
         f"{FULL_HISTORY_START} to {end_date}"
     )
 
+    ordered_symbols = sorted(symbols_to_refetch, key=lambda entry: entry["symbol"])
     frames: List[pd.DataFrame] = []
     stats = {
-        "targets": len(symbols_to_refetch),
+        "targets": len(ordered_symbols),
         "success": 0,
         "failed": 0,
         "details": [],
     }
 
-    for entry in symbols_to_refetch:
+    def refetch_entry(entry: Dict) -> Tuple[Dict, pd.DataFrame]:
         sym = entry["symbol"]
         exchange = exchange_map.get(sym, entry.get("exchange", "UNKNOWN"))
         logger.info(
             f"  Full-history refetch {sym}: {entry.get('reason', 'phase shift')}"
         )
 
+        listing_dt, delisting_dt = _resolve_listing_dates(client, sym)
+        if listing_dt is not None and pd.Timestamp(end_date) < listing_dt:
+            return {"symbol": sym, "status": "pre_listing", "reason": "end_date before listing_date"}, pd.DataFrame()
+        if delisting_dt is not None and pd.Timestamp(FULL_HISTORY_START) > delisting_dt:
+            return {"symbol": sym, "status": "post_delisting", "reason": "start_date after delisting_date"}, pd.DataFrame()
+
         retries = 0
         df = pd.DataFrame()
         while retries < MAX_RETRIES:
             try:
-                df = fetch_one_symbol(client, sym, FULL_HISTORY_START, end_date, exchange)
+                fetch_args = (client, sym, FULL_HISTORY_START, end_date, exchange)
+                fetch_kwargs = {}
+                if listing_dt is not None:
+                    fetch_kwargs["listing_date"] = str(listing_dt.date())
+                if delisting_dt is not None:
+                    fetch_kwargs["delisting_date"] = str(delisting_dt.date())
+                df = fetch_one_symbol(*fetch_args, **fetch_kwargs)
                 break
             except Exception as e:
                 retries += 1
@@ -1440,10 +1455,7 @@ def run_full_history_refetch(
                     )
 
         if df.empty:
-            stats["failed"] += 1
-            stats["details"].append({
-                "symbol": sym, "status": "failed", "reason": "empty",
-            })
+            return {"symbol": sym, "status": "failed", "reason": "empty"}, df
         else:
             valid = (
                 (df["high"] >= df["low"]) &
@@ -1455,25 +1467,35 @@ def run_full_history_refetch(
             )
             df = df[valid].copy()
             if df.empty:
-                stats["failed"] += 1
-                stats["details"].append({
-                    "symbol": sym, "status": "failed",
-                    "reason": "all rows failed OHLC invariant",
-                })
+                return {"symbol": sym, "status": "failed", "reason": "all rows failed OHLC invariant"}, df
             else:
-                stats["success"] += 1
-                frames.append(df)
-                stats["details"].append({
-                    "symbol": sym, "status": "success",
-                    "rows": len(df),
-                    "date_range": f"{df['date'].min()} to {df['date'].max()}",
-                })
                 logger.info(
                     f"  [{sym}] Full-history OK: {len(df)} rows "
                     f"({df['date'].min().date()} to {df['date'].max().date()})"
                 )
+                return {
+                    "symbol": sym, "status": "success", "rows": len(df),
+                    "date_range": f"{df['date'].min()} to {df['date'].max()}",
+                }, df
 
-        time.sleep(RATE_LIMIT_SECONDS)
+    direct_vci = getattr(client, "direct_vci", False) and getattr(client, "source", "").upper() == "VCI"
+    if direct_vci:
+        with ThreadPoolExecutor(max_workers=min(VCI_FETCH_WORKERS, len(ordered_symbols))) as executor:
+            results = list(executor.map(refetch_entry, ordered_symbols))
+    else:
+        results = []
+        for index, entry in enumerate(ordered_symbols):
+            results.append(refetch_entry(entry))
+            if index < len(ordered_symbols) - 1:
+                time.sleep(RATE_LIMIT_SECONDS)
+
+    for detail, df in results:
+        stats["details"].append(detail)
+        if detail["status"] == "success":
+            stats["success"] += 1
+            frames.append(df)
+        else:
+            stats["failed"] += 1
 
     if frames:
         combined = pd.concat(frames, ignore_index=True)
