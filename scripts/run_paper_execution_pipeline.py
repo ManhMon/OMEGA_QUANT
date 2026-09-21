@@ -21,6 +21,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT / "src"))
 
+import os
 import json
 import logging
 import hashlib
@@ -67,16 +68,23 @@ def _load_json(path: Path) -> Optional[Dict[str, Any]]:
 
 
 def _save_json(path: Path, data: Dict[str, Any]) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(".tmp")
         with open(tmp, "w", encoding="utf-8") as fh:
             json.dump(data, fh, indent=2, default=str)
+            fh.flush()
+            os.fsync(fh.fileno())
         tmp.replace(path)
         return True
     except Exception as exc:
+        if tmp.exists():
+            try:
+                tmp.unlink(missing_ok=True)
+            except Exception:
+                pass
         logger.error("Failed to save %s: %s", path, exc)
-        return False
+        raise IOError(f"Failed to durably persist {path}: {exc}") from exc
 
 
 def _sha256(path: Path) -> Optional[str]:
@@ -257,12 +265,30 @@ def resolve_macro_composite_regime(
     as_of_cutoff: Optional[datetime] = None,
     macro_parquet_path: Optional[Path] = None,
 ) -> Dict[str, Any]:
-    try:
-        monetary = resolve_macro_monetary_regime(monetary_snapshot_path, as_of_cutoff=as_of_cutoff)
-    except Exception:
-        monetary = 0.0
+    """
+    Resolve Point-in-Time macro composite regime with fail-closed safety.
+    """
+    cutoff = as_of_cutoff or datetime.now(timezone.utc)
+    if not isinstance(cutoff, datetime):
+        cutoff = cutoff.to_pydatetime()
+    if cutoff.tzinfo is None:
+        raise ValueError("as_of_cutoff must be timezone-aware")
+    cutoff = cutoff.astimezone(timezone.utc)
 
-    # 1. Evaluate Parquet database if specified or available without snapshot override
+    # 1. Resolve monetary regime
+    try:
+        monetary = resolve_macro_monetary_regime(monetary_snapshot_path, as_of_cutoff=cutoff)
+    except Exception as exc:
+        logger.error("Monetary regime resolution failed: %s; failing closed", exc)
+        return {
+            "block": True,
+            "reason": "MACRO_ERROR_FAIL_CLOSED",
+            "macro_monetary_regime": -1.0,
+            "regime_code": 3,
+            "regime_name": "CRITICAL",
+        }
+
+    # 2. Evaluate Parquet database if specified or available without snapshot override
     parquet_file = macro_parquet_path or (
         _REPO_ROOT / "data" / "macro_indicators_daily.parquet"
         if fx_omo_snapshot_path is None
@@ -274,7 +300,7 @@ def resolve_macro_composite_regime(
             from scripts.check_macro_risk_alerts import compute_macro_risk_metrics, evaluate_macro_regime
 
             df_macro = pd.read_parquet(Path(parquet_file))
-            cutoff_str = as_of_cutoff.isoformat() if as_of_cutoff else None
+            cutoff_str = cutoff.isoformat()
             metrics = compute_macro_risk_metrics(df_macro, as_of=cutoff_str)
             code, name, _ = evaluate_macro_regime(metrics)
             if code == 2:
@@ -302,19 +328,83 @@ def resolve_macro_composite_regime(
                     "regime_name": name,
                 }
         except Exception as exc:
-            logger.warning("Parquet macro check failed: %s; falling back to snapshot", exc)
+            logger.error("Parquet macro check failed: %s; failing closed", exc)
+            return {
+                "block": True,
+                "reason": "MACRO_ERROR_FAIL_CLOSED",
+                "macro_monetary_regime": monetary,
+                "regime_code": 3,
+                "regime_name": "CRITICAL",
+            }
 
+    # 3. Evaluate FX/OMO snapshot with strict PIT cutoff
     path = fx_omo_snapshot_path or (_REPO_ROOT / "data" / "fx_omo_regime.json")
     try:
+        if not path.exists():
+            raise FileNotFoundError(f"FX/OMO snapshot not found: {path}")
         payload = json.loads(path.read_text(encoding="utf-8", errors="strict"))
-    except (OSError, UnicodeError, json.JSONDecodeError):
-        return {"block": False, "reason": None, "macro_monetary_regime": monetary}
-    if not isinstance(payload, dict):
-        return {"block": False, "reason": None, "macro_monetary_regime": monetary}
-    fx_stress = bool(payload.get("fx_omo_stress", False))
+    except Exception as exc:
+        logger.error("FX/OMO snapshot load failed: %s; failing closed", exc)
+        return {
+            "block": True,
+            "reason": "MACRO_ERROR_FAIL_CLOSED",
+            "macro_monetary_regime": monetary,
+            "regime_code": 3,
+            "regime_name": "CRITICAL",
+        }
+
+    if isinstance(payload, list):
+        rows = payload
+    elif isinstance(payload, dict):
+        rows = payload.get("snapshots", [payload])
+    else:
+        logger.error("FX/OMO snapshot invalid type; failing closed")
+        return {
+            "block": True,
+            "reason": "MACRO_ERROR_FAIL_CLOSED",
+            "macro_monetary_regime": monetary,
+            "regime_code": 3,
+            "regime_name": "CRITICAL",
+        }
+
+    eligible = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        avail_val = row.get("available_at")
+        if not avail_val:
+            continue
+        try:
+            avail_dt = datetime.fromisoformat(str(avail_val).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if avail_dt.tzinfo is None:
+            raise ValueError("FX/OMO available_at must be timezone-aware")
+        avail_dt = avail_dt.astimezone(timezone.utc)
+        if avail_dt <= cutoff:
+            eligible.append((avail_dt, row))
+
+    if not eligible:
+        logger.error("No FX/OMO snapshot available before or at PIT cutoff %s; failing closed", cutoff.isoformat())
+        return {
+            "block": True,
+            "reason": "MACRO_ERROR_FAIL_CLOSED",
+            "macro_monetary_regime": monetary,
+            "regime_code": 3,
+            "regime_name": "CRITICAL",
+        }
+
+    latest_row = max(eligible, key=lambda item: item[0])[1]
+    fx_stress = bool(latest_row.get("fx_omo_stress", False) or latest_row.get("reason") == "MACRO_FX_OMO_STRESS")
     tightening = monetary == -1.0
     reason = "MACRO_MONETARY_TIGHTENING" if tightening else "MACRO_FX_OMO_STRESS" if fx_stress else None
-    return {"block": bool(reason), "reason": reason, "macro_monetary_regime": monetary}
+    return {
+        "block": bool(reason),
+        "reason": reason,
+        "macro_monetary_regime": monetary,
+        "regime_code": 2 if reason else 0,
+        "regime_name": "ALERT" if reason else "NORMAL",
+    }
 
 
 def resolve_macro_monetary_regime(
@@ -359,8 +449,17 @@ def resolve_macro_monetary_regime(
         raise ValueError("no macro monetary snapshot available at cutoff")
     latest = max(eligible, key=lambda item: item[0])[1]
     raw_value = latest.get("macro_monetary_regime", latest.get("monetary_regime", latest.get("regime")))
-    if isinstance(raw_value, bool) or raw_value is None:
+    if isinstance(raw_value, bool):
         raise ValueError("invalid macro monetary regime")
+    if raw_value is None:
+        if "rate" in latest:
+            try:
+                r_val = float(latest["rate"])
+                raw_value = -1.0 if r_val >= 6.0 else (1.0 if r_val <= 3.0 else 0.0)
+            except Exception as exc:
+                raise ValueError("invalid macro monetary regime") from exc
+        else:
+            raise ValueError("invalid macro monetary regime")
     value = float(raw_value)
     if value not in (-1.0, 0.0, 1.0):
         raise ValueError("invalid macro monetary regime")
@@ -916,3 +1015,5 @@ if __name__ == "__main__":
 
     summary = run_paper_execution_pipeline(signal=signal, dry_run=args.dry_run, enable_macro_filter=args.enable_macro_filter)
     print(json.dumps(summary, indent=2, default=str))
+    if "error" in summary or summary.get("failed", 0) > 0:
+        sys.exit(1)

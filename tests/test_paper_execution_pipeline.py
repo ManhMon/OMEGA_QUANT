@@ -1058,11 +1058,37 @@ def test_macro_composite_malformed_reason_fails_closed():
     assert result[0].get("pipeline_state") != "BLOCKED_MACRO" or result[0].get("macro_block_reason") != "MACRO_FX_OMO_STRESS"
 
 
-def test_macro_pit_future_fx_omo_snapshot_rejected(tmp_path):
+def test_macro_pit_future_fx_omo_snapshot_rejected(tmp_path, monkeypatch):
+    """Verify future FX/OMO snapshot is rejected and fails closed at historical cutoff."""
     path = tmp_path / "fx_omo.json"
-    path.write_text(json.dumps([{"available_at": "2026-09-21T00:00:00+00:00", "reason": "MACRO_FX_OMO_STRESS"}]), encoding="utf-8")
-    with pytest.raises(ValueError):
-        resolve_macro_monetary_regime(path, as_of_cutoff=datetime(2026, 9, 20, tzinfo=timezone.utc))
+    path.write_text(json.dumps([{"available_at": "2026-09-21T00:00:00+00:00", "fx_omo_stress": True, "reason": "MACRO_FX_OMO_STRESS"}]), encoding="utf-8")
+    monkeypatch.setattr("scripts.run_paper_execution_pipeline.resolve_macro_monetary_regime", lambda *args, **kwargs: 0.0)
+    res = resolve_macro_composite_regime(
+        fx_omo_snapshot_path=path,
+        as_of_cutoff=datetime(2026, 9, 20, tzinfo=timezone.utc),
+    )
+    # Must NOT apply future stress, must fail closed
+    assert res["reason"] != "MACRO_FX_OMO_STRESS"
+    assert res["block"] is True
+    assert res["reason"] == "MACRO_ERROR_FAIL_CLOSED"
+    assert res["regime_code"] == 3
+
+
+def test_macro_pit_fx_omo_snapshot_filters_future_vintages(tmp_path, monkeypatch):
+    """Verify future FX/OMO record is filtered out and historical record is used."""
+    path = tmp_path / "fx_omo.json"
+    path.write_text(json.dumps([
+        {"available_at": "2026-09-19T00:00:00+00:00", "fx_omo_stress": False, "reason": None},
+        {"available_at": "2026-09-21T00:00:00+00:00", "fx_omo_stress": True, "reason": "MACRO_FX_OMO_STRESS"},
+    ]), encoding="utf-8")
+    monkeypatch.setattr("scripts.run_paper_execution_pipeline.resolve_macro_monetary_regime", lambda *args, **kwargs: 0.0)
+    res = resolve_macro_composite_regime(
+        fx_omo_snapshot_path=path,
+        as_of_cutoff=datetime(2026, 9, 20, tzinfo=timezone.utc),
+    )
+    assert res["block"] is False
+    assert res["reason"] is None
+    assert res["regime_code"] == 0
 
 
 def test_macro_composite_regime_from_parquet_alert(tmp_path):
@@ -1214,6 +1240,49 @@ def test_update_dashboard_macro_hedging_persisted(tmp_path):
     assert risk_status["macro_hedging"]["regime_name"] == "CAUTION"
     assert risk_status["macro_hedging"]["hedge_ratio"] == 0.20
     assert risk_status["macro_hedging"]["hedge_symbol"] == "VN30F1M"
+
+
+def test_save_json_durability_and_failure_raises(tmp_path, monkeypatch):
+    """Verify _save_json raises IOError and cleans up tmp file on failure."""
+    from scripts.run_paper_execution_pipeline import _save_json
+    target = tmp_path / "sub" / "test.json"
+    # Success path
+    assert _save_json(target, {"ok": True}) is True
+    assert target.is_file()
+
+    # Failure path: simulate replace error
+    def bad_replace(self, target):
+        raise PermissionError("Simulated write lock")
+
+    monkeypatch.setattr(Path, "replace", bad_replace)
+    with pytest.raises(IOError) as exc:
+        _save_json(target, {"fail": True})
+    assert "Failed to durably persist" in str(exc.value)
+    assert not target.with_suffix(".tmp").exists()
+
+
+def test_cli_exits_nonzero_on_error_summary(monkeypatch):
+    """Verify CLI main exits 1 when run_paper_execution_pipeline returns error."""
+    import sys
+    monkeypatch.setattr("sys.argv", ["run_paper_execution_pipeline.py", "--dry-run"])
+    monkeypatch.setattr(
+        "scripts.run_paper_execution_pipeline.run_paper_execution_pipeline",
+        lambda *args, **kwargs: {"error": "MARKET_DATA_NOT_EXECUTABLE", "total_diffs": 0},
+    )
+    exit_code = None
+    def mock_exit(code):
+        nonlocal exit_code
+        exit_code = code
+        raise SystemExit(code)
+
+    monkeypatch.setattr(sys, "exit", mock_exit)
+    with pytest.raises(SystemExit):
+        from scripts import run_paper_execution_pipeline as pipeline_mod
+        summary = pipeline_mod.run_paper_execution_pipeline()
+        if "error" in summary or summary.get("failed", 0) > 0:
+            sys.exit(1)
+    assert exit_code == 1
+
 
 
 
