@@ -251,6 +251,26 @@ def _build_risk_exposures(
 # Diff computation
 # ------------------------------------------------------------------ #
 
+def resolve_macro_composite_regime(
+    monetary_snapshot_path: Optional[Path] = None,
+    fx_omo_snapshot_path: Optional[Path] = None,
+    as_of_cutoff: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """Resolve PIT-safe macro BUY blockers."""
+    monetary = resolve_macro_monetary_regime(monetary_snapshot_path, as_of_cutoff)
+    path = fx_omo_snapshot_path or (_REPO_ROOT / "data" / "fx_omo_regime.json")
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8", errors="strict"))
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return {"block": False, "reason": None, "macro_monetary_regime": monetary}
+    if not isinstance(payload, dict):
+        return {"block": False, "reason": None, "macro_monetary_regime": monetary}
+    fx_stress = bool(payload.get("fx_omo_stress", False))
+    tightening = monetary == -1.0
+    reason = "MACRO_MONETARY_TIGHTENING" if tightening else "MACRO_FX_OMO_STRESS" if fx_stress else None
+    return {"block": bool(reason), "reason": reason, "macro_monetary_regime": monetary}
+
+
 def resolve_macro_monetary_regime(
     snapshot_path: Optional[Path] = None,
     as_of_cutoff: Optional[datetime] = None,
@@ -423,6 +443,7 @@ def execute_diffs(
     *,
     enable_macro_filter: bool = False,
     macro_monetary_regime: Optional[float] = None,
+    macro_composite_regime: Optional[Dict[str, Any]] = None,
 ) -> List[Dict[str, Any]]:
     """
     Submit every diff through LiveTradingPipeline.
@@ -441,6 +462,24 @@ def execute_diffs(
 
     results = []
     for diff in diffs:
+        macro_stress_reason = (macro_composite_regime or {}).get("reason")
+        if diff.side == "BUY" and macro_stress_reason in {"MACRO_FX_OMO_STRESS", "MACRO_MONETARY_TIGHTENING"}:
+            logger.warning("Macro stress blocked BUY %s reason=%s", diff.symbol, macro_stress_reason)
+            results.append({
+                "symbol": diff.symbol,
+                "side": diff.side,
+                "quantity": diff.quantity,
+                "price": diff.price,
+                "pipeline_state": "BLOCKED_MACRO",
+                "order_id": None,
+                "error": "macro_stress_buy_blocked",
+                "target_weight": diff.target_weight,
+                "current_weight": diff.current_weight,
+                "macro_monetary_regime": macro_monetary_regime,
+                "macro_block_reason": macro_stress_reason,
+            })
+            continue
+
         if enable_macro_filter and macro_monetary_regime == -1.0 and diff.side == "BUY":
             logger.warning("Macro tightening blocked BUY %s quantity=%s", diff.symbol, diff.quantity)
             results.append({
@@ -454,6 +493,7 @@ def execute_diffs(
                 "target_weight": diff.target_weight,
                 "current_weight": diff.current_weight,
                 "macro_monetary_regime": macro_monetary_regime,
+                "macro_block_reason": (macro_composite_regime or {}).get("reason", "MACRO_MONETARY_TIGHTENING"),
             })
             continue
         side = OrderSide.BUY if diff.side == "BUY" else OrderSide.SELL
@@ -478,6 +518,7 @@ def execute_diffs(
             "target_weight": diff.target_weight,
             "current_weight": diff.current_weight,
             "macro_monetary_regime": macro_monetary_regime,
+            "macro_block_reason": (macro_composite_regime or {}).get("reason"),
         }
         results.append(record)
 

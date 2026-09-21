@@ -1020,3 +1020,45 @@ def test_run_pipeline_macro_cutoff_propagation(monkeypatch):
 
     assert captured.get("as_of_cutoff") == cutoff
 
+
+def test_macro_fx_omo_stress_blocks_buy_with_reason():
+    buy = OrderDiff("FPT", "BUY", 100, 100000.0, 0.1, 0.0)
+    pipeline = MagicMock()
+    result = execute_diffs(
+        pipeline,
+        [buy],
+        macro_composite_regime={"reason": "MACRO_FX_OMO_STRESS"},
+    )
+    assert result[0]["pipeline_state"] == "BLOCKED_MACRO"
+    assert result[0]["macro_block_reason"] == "MACRO_FX_OMO_STRESS"
+    assert pipeline.submit_order.call_count == 0
+
+
+def test_macro_monetary_tightening_composite_blocks_buy():
+    buy = OrderDiff("VNM", "BUY", 100, 50000.0, 0.1, 0.0)
+    pipeline = MagicMock()
+    result = execute_diffs(
+        pipeline,
+        [buy],
+        macro_composite_regime={"reason": "MACRO_MONETARY_TIGHTENING"},
+    )
+    assert result[0]["macro_block_reason"] == "MACRO_MONETARY_TIGHTENING"
+
+
+def test_macro_composite_malformed_reason_fails_closed():
+    buy = OrderDiff("HPG", "BUY", 100, 20000.0, 0.1, 0.0)
+    pipeline = MagicMock()
+    result = execute_diffs(
+        pipeline,
+        [buy],
+        macro_composite_regime={"reason": "UNKNOWN"},
+    )
+    assert result[0].get("pipeline_state") != "BLOCKED_MACRO" or result[0].get("macro_block_reason") != "MACRO_FX_OMO_STRESS"
+
+
+def test_macro_pit_future_fx_omo_snapshot_rejected(tmp_path):
+    path = tmp_path / "fx_omo.json"
+    path.write_text(json.dumps([{"available_at": "2026-09-21T00:00:00+00:00", "reason": "MACRO_FX_OMO_STRESS"}]), encoding="utf-8")
+    with pytest.raises(ValueError):
+        resolve_macro_monetary_regime(path, as_of_cutoff=datetime(2026, 9, 20, tzinfo=timezone.utc))
+
