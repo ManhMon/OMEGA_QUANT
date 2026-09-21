@@ -53,7 +53,7 @@ ROOT_CAUSE_SWEEP_BLOCK_RE = re.compile(
     r"(?P<payload>.*?)\r?\n```[ \t]*(?=\r?\n(?:\r?\n)?(?:## |\Z)|\Z)"
 )
 PYTEST_NODE_ID_RE = re.compile(
-    r"^tests/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.py::[A-Za-z0-9_:\[\].,/=+\-]+$"
+    r"^tests/(?:[A-Za-z0-9_.-]+/)*[A-Za-z0-9_.-]+\.py::[A-Za-z0-9_:\[\].,/=+\-\\\r\n]+$"
 )
 SHELL_METACHAR_RE = re.compile(r"[;&|`$<>^%!\"'()\r\n\x00]")
 WINDOWS_DRIVE_RE = re.compile(r"^[A-Za-z]:")
@@ -67,6 +67,7 @@ FORBIDDEN_PATHS = (
     r"C:\Users\GHC\.agents", r".codex\memories",
 )
 FORBIDDEN_SUFFIX = "non-authoritative scan evidence only; no reliance."
+MODEL_LINE_RE = re.compile(r"(?m)^- \*\*Subagent Model\*\*: `([^`]+)`[ \t]*$")
 BASELINE_H2 = (
     "## Summary", "## Repo-Local Files Read", "## Changes Made",
     "## Verification", "## Forbidden Path Scan",
@@ -303,6 +304,14 @@ def _load_and_verify_anti_drip_contract(
     errors = _schema_errors(payload, ANTI_DRIP_CONTRACT_SCHEMA, "contract")
     if errors or not isinstance(payload, dict):
         return None, None, errors
+    passed_ids = [item["dimension"] for item in payload["passed_dimensions"]]
+    failed_ids = [item["dimension"] for item in payload["failed_dimensions"]]
+    if len(passed_ids) != len(set(passed_ids)):
+        return None, None, ["ANTI_DRIP[E304] duplicate dimension ID in passed_dimensions"]
+    if len(failed_ids) != len(set(failed_ids)):
+        return None, None, ["ANTI_DRIP[E304] duplicate dimension ID in failed_dimensions"]
+    if set(passed_ids) & set(failed_ids):
+        return None, None, ["ANTI_DRIP[E304] overlapping dimension ID across passed_dimensions and failed_dimensions"]
     if payload["session_id"] != session_id:
         return None, None, ["ANTI_DRIP[E303] contract session_id mismatch"]
     mode, source = payload["mode"], payload["source_audit"]
@@ -454,7 +463,7 @@ def _validate_finding_sweep_coverage(contract: Mapping[str, Any], sweep: Mapping
 
 
 def _validate_pytest_node_id(node_id: str, repo_root: Path) -> str | None:
-    if not isinstance(node_id, str) or not 1 <= len(node_id) <= 512 or SHELL_METACHAR_RE.search(node_id):
+    if not isinstance(node_id, str) or not 1 <= len(node_id) <= 512 or SHELL_METACHAR_RE.search(node_id.replace("\\n", "").replace("\\r", "")):
         return f"ANTI_DRIP[E603] invalid or unsafe pytest node ID: {node_id!r}"
     if WINDOWS_DRIVE_RE.match(node_id) or node_id.startswith(("/", "\\")) or PYTEST_NODE_ID_RE.fullmatch(node_id) is None:
         return f"ANTI_DRIP[E603] invalid pytest node ID shape: {node_id!r}"
@@ -482,7 +491,7 @@ def _collect_pytest_node_ids(
                                    timeout=timeout_seconds, check=False)
     except (subprocess.TimeoutExpired, OSError) as exc:
         return False, [f"ANTI_DRIP[E603] pytest collection failed: {exc}"]
-    lines = {line.strip().replace("\\", "/") for line in completed.stdout.splitlines() if line.strip()}
+    lines = {line.strip() for line in completed.stdout.splitlines() if line.strip()}
     missing = [node_id for node_id in node_ids if node_id not in lines]
     if completed.returncode != 0 or missing:
         detail = " | ".join(line.strip() for line in (completed.stdout + "\n" + completed.stderr).splitlines() if line.strip())[:2000]
@@ -522,6 +531,30 @@ def _validate_envelope(content: str, session_id: str, role_id: int, role_name: s
         return ["ANTI_DRIP[E303] report date/session suffix mismatch"]
     valid, message = _validate_l2_report_content(content, role_id, role_name)
     return [] if valid else [f"ANTI_DRIP[E704] repo-local role/skill evidence invalid: {message}"]
+
+
+def _verify_l2_model_metadata(session_id: str, report_content: str, repo_root: Path) -> list[str]:
+    metadata_path = repo_root / SESSION_REL / f"l2_metadata_{session_id}.json"
+    sidecar_path = metadata_path.with_name(metadata_path.name + ".sha256")
+    if any(not path.is_file() or path.is_symlink() for path in (metadata_path, sidecar_path)):
+        return ["ANTI_DRIP[E305] authoritative L2 model metadata pair missing or unsafe"]
+    try:
+        raw = metadata_path.read_bytes()
+        sidecar = sidecar_path.read_bytes()
+        payload = _strict_json(raw.decode("utf-8", errors="strict"))
+    except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+        return [f"ANTI_DRIP[E305] invalid authoritative L2 model metadata: {exc}"]
+    digest = hashlib.sha256(raw).hexdigest()
+    if sidecar != f"{digest}  {metadata_path.name}\n".encode("ascii"):
+        return ["ANTI_DRIP[E302] authoritative L2 model metadata SHA-256 mismatch"]
+    if not isinstance(payload, dict) or set(payload) != {"session_id", "role_id", "role_name", "subagent_model", "model"}:
+        return ["ANTI_DRIP[E402] authoritative L2 model metadata schema mismatch"]
+    if payload["session_id"] != session_id:
+        return ["ANTI_DRIP[E303] authoritative L2 model metadata session mismatch"]
+    matches = MODEL_LINE_RE.findall(report_content)
+    if len(matches) != 1 or matches[0] != payload["subagent_model"]:
+        return ["ANTI_DRIP[E303] report Subagent Model does not match authoritative metadata"]
+    return []
 
 
 def validate_anti_drip_report(
@@ -572,6 +605,8 @@ def validate_anti_drip_report(
     if not role_match:
         return None, ["ANTI_DRIP[E303] missing canonical report role metadata"]
     errors = _validate_envelope(report_content, session_id, int(role_match.group("id")), role_match.group("name"), mode == "remediation")
+    if not errors and int(role_match.group("id")) == 11:
+        errors = _verify_l2_model_metadata(session_id, report_content, root)
     return (mode, []) if not errors else (None, errors)
 
 

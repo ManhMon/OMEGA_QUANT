@@ -1,229 +1,375 @@
-#!/usr/bin/env python3
-"""
-sod_pipeline.py - Full L2→validate→L3→enforcer pipeline in one command.
+﻿#!/usr/bin/env python3
+"""Run the bounded L2 -> validation -> L3 -> enforcer SoD pipeline."""
 
-Eliminates L1 intermediate wake-ups between steps, saving ~80K context tokens per gate.
+from __future__ import annotations
 
-Usage:
-    python scripts/sod_pipeline.py <l2_role> <l3_role> <gate> <slug> "<task>" "<scope>" [--risk low|high] [--dry-run]
-
-Example:
-    python scripts/sod_pipeline.py data-engineer code-reviewer SYNTHETIC_FIXTURES tests/fixtures "Implement fixtures" "tests/fixtures/" --risk low
-
-Stages:
-    1. Dispatch L2 OpenCode (waits for completion)
-    2. Run validate_l2_report.py (blocks L3 if fail)
-    3. Dispatch L3 Codex (waits for completion)
-    4. Run sod_gate_enforcer.py
-
-Exit codes:
-    0 = Full pipeline PASS
-    1 = L2 validation failed (L3 not dispatched)
-    2 = L3 audit [NEEDS_FIX]
-    3 = Enforcer failed
-"""
-import sys
-import subprocess
+import argparse
+from datetime import datetime
+import hashlib
 import json
+import re
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
-from datetime import datetime
+from typing import NamedTuple
 
-REPO_ROOT = Path(__file__).parent.parent
+REPO_ROOT = Path(__file__).resolve().parent.parent
+MAX_REMEDIATIONS = 3
+GRAPH_EVIDENCE_SCHEMA = {
+    "affected_files", "blast_radius", "dependencies", "detail_files", "detail_files_truncated",
+    "generated_at", "graph_commit", "graph_db", "graph_tool_root", "impact_query", "rebuilt",
+    "relationships", "repo_commit", "schema_version", "scope_content_hashes", "scope_dirty",
+    "scope_files", "session_id",
+}
+DISPATCH_L2_KEYS = {"SESSION_ID", "ROLE_ID", "ROLE_NAME", "CO_ROLE_IDS", "CO_ROLE_NAMES", "GATE", "MODEL", "SUBAGENT_MODEL", "RISK", "ANTI_DRIP_MODE", "ANTI_DRIP_CONTRACT", "ANTI_DRIP_CONTRACT_SHA256"}
+DISPATCH_L3_KEYS = {"L3_SESSION_ID", "L3_ROLE_ID", "L3_ROLE_NAME", "L2_ROLE_ID", "L2_ROLE_NAME", "MODEL", "SUBAGENT_MODEL", "RISK", "REPORT", "GATE"}
 
 
-def run(cmd, desc, check=True):
-    print(f"\n{'='*60}")
-    print(f"  STAGE: {desc}")
-    print(f"{'='*60}")
-    print(f"  CMD: {cmd[:120]}...")
-    if any(cmd.lstrip().startswith(prefix) for prefix in ("try {", "if (", "$", "throw ", "if (-not")):
-        ps_file = None
-        ps_dir = REPO_ROOT / ".ly_state" / "session"
-        ps_dir.mkdir(parents=True, exist_ok=True)
-        try:
-            with tempfile.NamedTemporaryFile(
-                mode="w", encoding="utf-8", suffix=".ps1", prefix="_pipeline_step_",
-                dir=ps_dir, delete=False
-            ) as handle:
-                handle.write(
-                    "\n$ErrorActionPreference = 'Stop'\n"
-                    "$global:LASTEXITCODE = 0\n"
-                    "try {\n"
-                    "    & {\n"
-                    "        " + cmd + "\n"
-                    "    }\n"
-                    "} catch {\n"
-                    "    [Console]::Error.WriteLine($_.Exception.Message)\n"
-                    "    exit 1\n"
-                    "}\n"
-                    "if (-not $?) { exit $LASTEXITCODE }\n"
-                    "exit 0\n"
-                )
-                ps_file = Path(handle.name)
-            result = subprocess.run(
-                ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(ps_file)],
-                cwd=str(REPO_ROOT),
-                capture_output=False, text=True
-            )
-        finally:
-            if ps_file and ps_file.exists():
-                try:
-                    ps_file.unlink()
-                except Exception:
-                    pass
-    else:
-        result = subprocess.run(
-            cmd, shell=True, cwd=str(REPO_ROOT),
-            capture_output=False, text=True
+class ReportSnapshot(NamedTuple):
+    state: str
+    content: str | None
+
+
+def verify_graph_evidence(
+    path_value: str,
+    expected_sha256: str | None = None,
+    expected_session: str | None = None,
+    expected_scope: list[str] | None = None,
+    allow_dirty: bool = False,
+) -> dict[str, object]:
+    """Verify the exact authoritative graph artifact before pipeline use."""
+    evidence_path = path_value
+    expected_digest = expected_sha256 or _read_graph_evidence_sha256(evidence_path)
+    path = (REPO_ROOT / evidence_path).resolve()
+    if not path.is_file() or not path.is_relative_to(REPO_ROOT):
+        raise RuntimeError(f"missing graph evidence: {evidence_path}")
+    with open(path, "rb") as handle:
+        raw = handle.read()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != expected_digest:
+        raise RuntimeError(f"graph evidence integrity mismatch: {evidence_path}")
+    try:
+        evidence = json.loads(raw.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid graph evidence: {evidence_path}") from exc
+    if not isinstance(evidence, dict) or set(evidence) != GRAPH_EVIDENCE_SCHEMA:
+        raise RuntimeError(f"graph evidence schema mismatch: {evidence_path}")
+    scope = evidence["scope_files"]
+    if evidence["schema_version"] != 1 or (expected_session and evidence["session_id"] != expected_session):
+        raise RuntimeError(f"graph evidence identity mismatch: {evidence_path}")
+    if type(evidence["schema_version"]) is not int or not all(isinstance(evidence[key], str) for key in ("generated_at", "graph_commit", "graph_db", "graph_tool_root", "repo_commit", "session_id")) or type(evidence["rebuilt"]) is not bool or type(evidence["scope_dirty"]) is not bool or type(evidence["detail_files_truncated"]) is not bool:
+        raise RuntimeError(f"graph evidence field types mismatch: {evidence_path}")
+    if (expected_scope and scope != expected_scope) or any(not isinstance(item, str) for item in scope) or evidence["detail_files"] != scope or evidence["graph_commit"] != evidence["repo_commit"] or (evidence["scope_dirty"] is not False and not allow_dirty):
+        raise RuntimeError(f"graph evidence scope mismatch: {evidence_path}")
+    commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=REPO_ROOT, text=True).strip()
+    if evidence["repo_commit"] != commit:
+        raise RuntimeError(f"graph evidence commit mismatch: {evidence_path}")
+    if not isinstance(evidence["scope_content_hashes"], dict) or set(evidence["scope_content_hashes"]) != set(scope):
+        raise RuntimeError(f"graph evidence content hash schema mismatch: {evidence_path}")
+    if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in evidence["scope_content_hashes"].values()):
+        raise RuntimeError(f"graph evidence content hash types mismatch: {evidence_path}")
+    actual_hashes = {}
+    for relative_path in scope:
+        file_path = (REPO_ROOT / relative_path).resolve()
+        if not file_path.is_file() or not file_path.is_relative_to(REPO_ROOT):
+            raise RuntimeError(f"graph evidence scope file missing: {relative_path}")
+        actual_hashes[relative_path] = hashlib.sha256(file_path.read_bytes()).hexdigest()
+    if actual_hashes != evidence["scope_content_hashes"] and not allow_dirty:
+        raise RuntimeError(f"graph evidence content hash mismatch: {evidence_path}")
+    for section in ("affected_files", "dependencies"):
+        if not isinstance(evidence[section], dict) or set(evidence[section]) != set(scope):
+            raise RuntimeError(f"graph evidence {section} scope mismatch: {evidence_path}")
+    def valid_leaf(item: object) -> bool:
+        return (
+            isinstance(item, dict)
+            and set(item) == {"files", "result_count", "summary"}
+            and isinstance(item["files"], list)
+            and all(isinstance(file, str) for file in item["files"])
+            and type(item["result_count"]) is int
+            and item["result_count"] >= 0
+            and isinstance(item["summary"], str)
         )
-    if check and result.returncode != 0:
+
+    def valid_count(item: dict[str, object]) -> bool:
+        match = re.fullmatch(r"Found (\d+) result\(s\) for .+", item["summary"])
+        return bool(match) and int(match.group(1)) == item["result_count"]
+
+    for item in evidence["affected_files"].values():
+        if not valid_leaf(item):
+            raise RuntimeError(f"graph evidence affected schema mismatch: {evidence_path}")
+    if any(
+        evidence["affected_files"][key]["files"] != [key]
+        or evidence["affected_files"][key]["result_count"] < len(evidence["affected_files"][key]["files"])
+        or not valid_count(evidence["affected_files"][key])
+        for key in scope
+    ):
+        raise RuntimeError(f"graph evidence affected file binding mismatch: {evidence_path}")
+    for item in evidence["dependencies"].values():
+        if not isinstance(item, dict) or set(item) != {"importers", "imports"} or any(not valid_leaf(value) for value in item.values()):
+            raise RuntimeError(f"graph evidence dependency schema mismatch: {evidence_path}")
+    if not isinstance(evidence["relationships"], dict) or any(
+        not isinstance(node, dict)
+        or not node
+        or any(not valid_leaf(leaf) for leaf in node.values())
+        for node in evidence["relationships"].values()
+    ):
+        raise RuntimeError(f"graph evidence relationship schema mismatch: {evidence_path}")
+    blast = evidence["blast_radius"]
+    if not isinstance(blast, dict) or set(blast) != {"impacted_files", "summary", "total_impacted", "truncated"}:
+        raise RuntimeError(f"graph evidence blast schema mismatch: {evidence_path}")
+    if not isinstance(blast["impacted_files"], list) or not all(isinstance(item, str) for item in blast["impacted_files"]):
+        raise RuntimeError(f"graph evidence impact types mismatch: {evidence_path}")
+    if type(blast["total_impacted"]) is not int or blast["total_impacted"] < len(blast["impacted_files"]) or type(blast["truncated"]) is not bool:
+        raise RuntimeError(f"graph evidence impact count mismatch: {evidence_path}")
+    impact = evidence["impact_query"]
+    if not isinstance(impact, dict) or set(impact) != {"batch_count", "batches", "complete", "covered_scope_count", "protocol", "requested_scope_count"}:
+        raise RuntimeError(f"graph evidence query schema mismatch: {evidence_path}")
+    if any(type(impact[key]) is not int for key in ("batch_count", "covered_scope_count", "requested_scope_count")) or type(impact["complete"]) is not bool or not isinstance(impact["batches"], list) or not isinstance(impact["protocol"], str) or not impact["protocol"] or impact["batch_count"] != len(impact["batches"]) or impact["requested_scope_count"] != len(scope) or impact["covered_scope_count"] != len(scope) or impact["complete"] is not True:
+        raise RuntimeError(f"graph evidence query completeness mismatch: {evidence_path}")
+    for index, batch in enumerate(impact["batches"], 1):
+        if not isinstance(batch, dict) or set(batch) != {"batch_index", "impacted_file_count", "response_bytes", "response_sha256", "scope_count", "scope_files", "total_impacted", "truncated"}:
+            raise RuntimeError(f"graph evidence batch schema mismatch: {evidence_path}")
+        if any(type(batch[key]) is not int or batch[key] < 0 for key in ("batch_index", "impacted_file_count", "response_bytes", "scope_count", "total_impacted")) or batch["batch_index"] != index or not re.fullmatch(r"[0-9a-f]{64}", batch["response_sha256"]) or type(batch["truncated"]) is not bool or not isinstance(batch["scope_files"], list) or any(not isinstance(item, str) for item in batch["scope_files"]) or batch["scope_count"] != len(batch["scope_files"]) or batch["total_impacted"] < batch["impacted_file_count"]:
+            raise RuntimeError(f"graph evidence batch scope mismatch: {evidence_path}")
+    if [item for batch in impact["batches"] for item in batch["scope_files"]] != scope:
+        raise RuntimeError(f"graph evidence batch scope mismatch: {evidence_path}")
+    if blast["total_impacted"] != sum(batch["total_impacted"] for batch in impact["batches"]) or blast["truncated"] != any(batch["truncated"] for batch in impact["batches"]):
+        raise RuntimeError(f"graph evidence blast/query mismatch: {evidence_path}")
+    return {"path": evidence_path, "sha256": expected_digest, **evidence}
+
+
+def _read_graph_evidence_sha256(evidence_path: str) -> str:
+    sidecar = (REPO_ROOT / evidence_path).with_suffix(".sha256")
+    if not sidecar.is_file():
+        raise RuntimeError(f"graph evidence sidecar missing: {sidecar}")
+    digest = sidecar.read_text(encoding="ascii").strip()
+    if not re.fullmatch(r"[0-9a-f]{64}", digest):
+        raise RuntimeError(f"graph evidence sidecar digest invalid: {sidecar}")
+    return digest
+
+
+def _current_graph_binding(slug: str, evidence_path: str | None = None) -> tuple[str, str]:
+    if evidence_path is None:
+        candidates = sorted((REPO_ROOT / ".ly_state" / "session").glob(f"graph_evidence_*_{slug}_*.json"))
+        if len(candidates) != 1:
+            raise RuntimeError(f"expected one graph evidence artifact for slug: {slug}")
+        evidence_path = candidates[0].relative_to(REPO_ROOT).as_posix()
+    return evidence_path, _read_graph_evidence_sha256(evidence_path)
+
+
+def run(cmd: str | list[str], desc: str, check: bool = True) -> int:
+    """Run one stage without shell interpolation or a nested PowerShell scope."""
+    print(f"\n{'=' * 60}\n  STAGE: {desc}\n{'=' * 60}")
+    if isinstance(cmd, list):
+        result = subprocess.run(cmd, cwd=REPO_ROOT, text=True)
+    elif _is_powershell(cmd):
+        result = _run_powershell(cmd)
+    else:
+        raise ValueError("run() accepts argv lists or PowerShell commands only")
+    if check and result.returncode:
         print(f"\n[FAIL] {desc} — exit code {result.returncode}")
     return result.returncode
 
 
-def capture(cmd):
-    result = subprocess.run(
-        cmd, shell=True, cwd=str(REPO_ROOT),
-        capture_output=True, text=True
-    )
-    return result.returncode, result.stdout.strip()
+def _is_powershell(command: str) -> bool:
+    return command.lstrip().startswith(("try {", "if (", "$", "throw ", "& ", "echo \"\" |"))
 
 
-def parse_dispatch_output(output):
-    """Extract key=value pairs from dispatch script output."""
-    meta = {}
-    for line in output.split("\n"):
-        if "=" in line and not line.startswith("---"):
-            k, v = line.split("=", 1)
-            meta[k.strip()] = v.strip()
-    return meta
+def _run_powershell(command: str) -> subprocess.CompletedProcess:
+    """Execute generated PowerShell directly; no child scope masks exit state."""
+    session_dir = REPO_ROOT / ".ly_state" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    script_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", suffix=".ps1", prefix="_pipeline_step_",
+            dir=session_dir, delete=False,
+        ) as handle:
+            handle.write("$ErrorActionPreference = 'Stop'\n")
+            handle.write(command)
+            handle.write("\nif (-not $?) { exit $LASTEXITCODE }\n")
+            script_path = Path(handle.name)
+        return subprocess.run(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(script_path)],
+            cwd=REPO_ROOT, text=True,
+        )
+    finally:
+        if script_path:
+            try:
+                script_path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
-def main():
-    if len(sys.argv) < 7:
-        print("Usage: python scripts/sod_pipeline.py <l2_role> <l3_role> <gate> <slug> <task> <scope> [--risk low|high] [--dry-run]")
-        sys.exit(1)
+def capture(cmd: list[str]) -> tuple[int, str]:
+    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
+    return result.returncode, (result.stdout or "").strip()
 
-    l2_role = sys.argv[1]
-    l3_role = sys.argv[2]
-    gate = sys.argv[3]
-    slug = sys.argv[4]
-    task = sys.argv[5]
-    scope = sys.argv[6]
-    risk = "high"
-    dry_run = False
 
-    for i, arg in enumerate(sys.argv):
-        if arg == "--risk" and i + 1 < len(sys.argv):
-            risk = sys.argv[i + 1]
-        if arg == "--dry-run":
-            dry_run = True
+def parse_dispatch_output(output: str, *, required: set[str] | None = None) -> dict[str, str]:
+    metadata: dict[str, str] = {}
+    allowed = DISPATCH_L2_KEYS | DISPATCH_L3_KEYS
+    for line in output.split("---COMMAND---", 1)[0].splitlines():
+        if "=" not in line or line.startswith("---"):
+            continue
+        raw_key, raw_value = line.split("=", 1)
+        key, value = raw_key.strip(), raw_value.strip()
+        if not key or key not in allowed or key in metadata or (not value and key not in {"CO_ROLE_IDS", "CO_ROLE_NAMES"}):
+            raise ValueError("invalid dispatch metadata")
+        metadata[key] = value
+    if required is None:
+        required = {"L3_SESSION_ID", "L3_ROLE_ID", "REPORT"} if any(key.startswith("L3_") or key == "REPORT" for key in metadata) else {"SESSION_ID", "ROLE_ID"}
+    if not required <= metadata.keys():
+        raise ValueError("missing dispatch metadata")
+    schema = DISPATCH_L3_KEYS if required <= DISPATCH_L3_KEYS else DISPATCH_L2_KEYS
+    if set(metadata) - schema:
+        raise ValueError("mixed dispatch metadata schema")
+    return metadata
 
-    today = datetime.now().strftime("%Y%m%d")
 
-    print(f"\n{'#'*60}")
-    print(f"  SOD PIPELINE: {gate}")
-    print(f"  L2: {l2_role} -> L3: {l3_role} -> Enforcer")
-    print(f"  Risk: {risk}")
-    print(f"{'#'*60}")
+def extract_findings(report_path: str) -> str:
+    if not report_path:
+        return "Address all L3 audit findings and regressions."
+    path = (REPO_ROOT / report_path).resolve()
+    if not path.is_file() or not path.is_relative_to(REPO_ROOT):
+        return "Address all L3 audit findings and regressions."
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return "Address all L3 audit findings and regressions."
+    findings = [re.sub(r"[\r\n\t]+", " ", line.lstrip("# -*").strip())
+                for line in text.splitlines() if re.match(r"^\s*[-*#]*\s*F-\d{3}\b", line)]
+    return "; ".join(dict.fromkeys(findings))[:4000] or "Address all L3 audit findings and regressions."
 
-    # Stage 1: Generate L2 dispatch command
-    rc, l2_out = capture(
-        f'{sys.executable} scripts/dispatch_l2.py {l2_role} {gate} {slug} "{task}" "{scope}"'
-    )
-    if rc != 0:
-        print(f"[FAIL] dispatch_l2.py failed: {l2_out}")
-        sys.exit(1)
 
-    l2_meta = parse_dispatch_output(l2_out)
-    session_id = l2_meta.get("SESSION_ID", f"l2_role0_{slug}_{today}")
-    role_id = l2_meta.get("ROLE_ID", "0")
+def _read_fresh_report(report_path: str, previous_snapshot: ReportSnapshot) -> str | None:
+    if not report_path:
+        return None
+    if previous_snapshot.state == "unreadable":
+        return None
+    try:
+        path = (REPO_ROOT / report_path).resolve()
+        if not path.is_relative_to(REPO_ROOT) or not path.is_file():
+            return None
+        report = path.read_text(encoding="utf-8")
+        return None if previous_snapshot.content is not None and report == previous_snapshot.content else report
+    except (OSError, UnicodeDecodeError):
+        return None
 
-    if dry_run:
-        print(f"\n[DRY-RUN] Would dispatch L2:\n{l2_out}")
-        print(f"\n[DRY-RUN] Then validate, dispatch L3 ({risk}), then enforcer.")
-        sys.exit(0)
 
-    # Extract command from output
-    cmd_lines = l2_out.split("---COMMAND---\n")
-    if len(cmd_lines) < 2:
-        print(f"[FAIL] Could not extract L2 command from dispatch output")
-        sys.exit(1)
-    l2_cmd = cmd_lines[1].strip()
+def _read_report_snapshot(report_path: str) -> ReportSnapshot:
+    if not report_path:
+        return ReportSnapshot("unreadable", None)
+    try:
+        path = (REPO_ROOT / report_path).resolve()
+        if not path.is_relative_to(REPO_ROOT):
+            return ReportSnapshot("unreadable", None)
+        if not path.exists():
+            return ReportSnapshot("missing", None)
+        if not path.is_file():
+            return ReportSnapshot("unreadable", None)
+        return ReportSnapshot("readable", path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError):
+        return ReportSnapshot("unreadable", None)
 
-    # Stage 1: Run L2
-    rc = run(l2_cmd, f"L2 OpenCode: {l2_role}")
-    if rc != 0:
-        print(f"[FAIL] L2 exited {rc}")
-        sys.exit(1)
 
-    # Stage 2: Validate L2 report
-    rc = run(
-        f'{sys.executable} scripts/validate_l2_report.py {session_id} {role_id} {l2_role}',
-        "Pre-L3 Validation"
-    )
-    if rc != 0:
-        print(f"\n[BLOCKED] L2 report validation failed. Fix L2 report and re-run pipeline.")
-        print(f"  Report: .ly_state/session/{session_id}.md")
-        sys.exit(1)
+def _dispatch_l2(args: argparse.Namespace, task: str) -> tuple[dict[str, str], str]:
+    command = [sys.executable, "scripts/dispatch_l2.py", args.l2_role, args.gate, args.slug, task, args.scope]
+    if args.risk:
+        command += ["--risk", args.risk]
+    if args.model:
+        command += ["--model", args.model]
+    if args.dry_run:
+        command.append("--dry-run")
+    if args.graph_evidence:
+        command += ["--graph-evidence", args.graph_evidence]
+    rc, output = capture(command)
+    if rc:
+        raise SystemExit(f"[FAIL] dispatch_l2.py failed: {output}")
+    meta = parse_dispatch_output(output, required={"SESSION_ID", "ROLE_ID", "ROLE_NAME", "GATE", "MODEL", "RISK", "ANTI_DRIP_MODE", "ANTI_DRIP_CONTRACT", "ANTI_DRIP_CONTRACT_SHA256"})
+    marker = "---COMMAND---\n"
+    if marker not in output:
+        raise SystemExit("[FAIL] Could not extract L2 command")
+    return meta, output.split(marker, 1)[1].strip()
 
-    # Stage 3: Generate and run L3
-    rc, l3_out = capture(
-        f'{sys.executable} scripts/dispatch_l3.py {l3_role} {gate} {session_id} {l2_role} "{scope}" --risk {risk}'
-    )
-    if rc != 0:
-        print(f"[FAIL] dispatch_l3.py failed: {l3_out}")
-        sys.exit(1)
 
-    l3_meta = parse_dispatch_output(l3_out)
-    l3_cmd_lines = l3_out.split("---COMMAND---\n")
-    if len(l3_cmd_lines) < 2:
-        print(f"[FAIL] Could not extract L3 command")
-        sys.exit(1)
-    l3_cmd = l3_cmd_lines[1].strip()
+def _dispatch_l3(args: argparse.Namespace, session_id: str) -> tuple[dict[str, str], str]:
+    command = [sys.executable, "scripts/dispatch_l3.py", args.l3_role, args.gate, session_id, args.l2_role, args.scope]
+    if args.risk:
+        command += ["--risk", args.risk]
+    if args.model:
+        command += ["--model", args.model]
+    if args.subagent_model:
+        command += ["--subagent-model", args.subagent_model]
+    rc, output = capture(command)
+    if rc:
+        raise SystemExit(f"[FAIL] dispatch_l3.py failed: {output}")
+    marker = "---COMMAND---\n"
+    if marker not in output:
+        raise SystemExit("[FAIL] Could not extract L3 command")
+    return parse_dispatch_output(output, required={"L3_SESSION_ID", "L3_ROLE_ID", "L3_ROLE_NAME", "L2_ROLE_ID", "L2_ROLE_NAME", "MODEL", "SUBAGENT_MODEL", "RISK", "REPORT", "GATE"}), output.split(marker, 1)[1].strip()
 
-    rc = run(l3_cmd, f"L3 Codex Audit: {l3_role} (model: {l3_meta.get('MODEL', risk)})")
-    # L3 exit code 0 doesn't mean APPROVED - check verdict
-    report_path = l3_meta.get("REPORT", "")
-    if report_path and Path(report_path).exists():
-        content = Path(report_path).read_text(encoding="utf-8")
-        if "[NEEDS_FIX]" in content:
-            print(f"\n[NEEDS_FIX] L3 audit returned NEEDS_FIX.")
-            print(f"  Report: {report_path}")
-            # Auto-run lesson extraction hard gate before exit
-            print(f"\n[AUTO] Running extract_lessons.py (lessons_extraction_hard_gate_20260726)...")
-            rc_lessons = run(
-                f'{sys.executable} scripts/extract_lessons.py',
-                "Lesson Extraction Hard Gate",
-                check=False
-            )
-            if rc_lessons == 0:
-                print(f"  [OK] Lessons extracted. Review .agents/knowledge/lessons.jsonl")
-            else:
-                print(f"  [WARN] extract_lessons.py failed (rc={rc_lessons}). Review manually.")
-            print(f"\n  Next: Fix scope, re-run pipeline.")
-            sys.exit(2)
-        elif "[APPROVED]" not in content:
-            print(f"\n[WARN] No clear verdict found in {report_path}")
-            sys.exit(2)
 
-    # Stage 4: Enforcer
-    rc = run(f'{sys.executable} scripts/sod_gate_enforcer.py', "SoD Gate Enforcer")
-    if rc != 0:
-        print(f"\n[FAIL] Enforcer exit {rc}")
-        sys.exit(3)
+def parse_args(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("l2_role")
+    parser.add_argument("l3_role")
+    parser.add_argument("gate")
+    parser.add_argument("slug")
+    parser.add_argument("task")
+    parser.add_argument("scope")
+    parser.add_argument("--risk", choices=("low", "high"), default="high")
+    parser.add_argument("--model")
+    parser.add_argument("--subagent-model")
+    parser.add_argument("--max-remediations", type=int, default=MAX_REMEDIATIONS)
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--graph-evidence")
+    return parser.parse_args(argv)
 
-    print(f"\n{'='*60}")
-    print(f"  PIPELINE COMPLETE: {gate}")
-    print(f"  L2: {session_id}")
-    print(f"  L3: {l3_meta.get('L3_SESSION_ID', 'unknown')}")
-    print(f"  Verdict: [APPROVED]")
-    print(f"  Enforcer: [PASS]")
-    if risk == "low":
-        print(f"  TOKEN SAVER: Final deep audit SKIPPED (low-risk gate).")
-    print(f"{'='*60}")
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv or sys.argv[1:])
+    baseline_binding = None
+    if args.graph_evidence:
+        baseline_binding = _current_graph_binding(args.slug, args.graph_evidence)
+    if baseline_binding:
+        verify_graph_evidence(*baseline_binding, expected_scope=args.scope.split(), allow_dirty=args.dry_run)
+    if not 0 <= args.max_remediations <= MAX_REMEDIATIONS:
+        raise SystemExit("--max-remediations must be between 0 and 3")
+    task = args.task
+    for cycle in range(args.max_remediations + 1):
+        l2_meta, l2_command = _dispatch_l2(args, task)
+        if args.dry_run:
+            print(l2_command)
+            return 0
+        if run(l2_command, f"L2 OpenCode: {args.l2_role}"):
+            return 1
+        if baseline_binding:
+            candidate_binding = _current_graph_binding(args.slug, args.graph_evidence)
+            verify_graph_evidence(*candidate_binding, expected_scope=args.scope.split())
+            if candidate_binding == baseline_binding:
+                raise SystemExit("[FAIL] candidate graph evidence was not regenerated")
+        session_id = l2_meta.get("SESSION_ID", f"l2_role0_{args.slug}_{datetime.now():%Y%m%d}")
+        role_id = l2_meta.get("ROLE_ID", "0")
+        if run([sys.executable, "scripts/validate_l2_report.py", session_id, role_id, args.l2_role], "Pre-L3 Validation"):
+            return 1
+
+        l3_meta, l3_command = _dispatch_l3(args, session_id)
+        report_path = l3_meta.get("REPORT", "")
+        previous_snapshot = _read_report_snapshot(report_path)
+        l3_rc = run(l3_command, f"L3 Codex Audit: {args.l3_role}", check=False)
+        report = _read_fresh_report(report_path, previous_snapshot)
+        if l3_rc == 0 and report and "[APPROVED]" in report and "[NEEDS_FIX]" not in report:
+            return 0 if run([sys.executable, "scripts/sod_gate_enforcer.py"], "SoD Gate Enforcer") == 0 else 3
+        if run([sys.executable, "scripts/extract_lessons.py"], "Lesson Extraction Hard Gate", check=False):
+            return 2
+        if cycle == args.max_remediations:
+            return 2
+        task = f"{args.task}. REMEDIATION FIX FOR L3 AUDIT FINDINGS (Cycle {cycle + 2}): {extract_findings(report_path)}"
+    return 2
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
+

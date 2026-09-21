@@ -505,6 +505,30 @@ def _pair_bytes(evidence_path: Path) -> tuple[bytes | None, bytes | None]:
     return evidence, lock
 
 
+def _existing_graph_evidence(session_id: str, root: Path, relative_path: str | None = None) -> dict:
+    evidence_path = ensure_session_containment(
+        root / relative_path if relative_path else root / ".ly_state" / "session" / f"graph_evidence_{session_id}.json",
+        root,
+    )
+    evidence, sidecar = _pair_bytes(evidence_path)
+    if evidence is None or sidecar is None:
+        raise RuntimeError("dry-run requires existing graph evidence")
+    digest = hashlib.sha256(evidence).hexdigest()
+    if sidecar.decode("ascii").strip() != digest:
+        raise RuntimeError("dry-run graph evidence digest mismatch")
+    payload = json.loads(evidence.decode("utf-8"))
+    if not isinstance(payload, dict):
+        raise RuntimeError("dry-run graph evidence is malformed")
+    blast = payload.get("blast_radius", {})
+    impact = payload.get("impact_query", {})
+    return {"_repo_root": str(root), "path": evidence_path.relative_to(root).as_posix(),
+            "sha256": digest, "repo_commit": payload.get("repo_commit"),
+            "scope_files": payload.get("scope_files", []),
+            "impacted_files": blast.get("impacted_files", []),
+            "total_impacted": blast.get("total_impacted", 0), "truncated": blast.get("truncated", False),
+            "impact_query_complete": impact.get("complete", False), "impact_batch_count": impact.get("batch_count", 0)}
+
+
 def _restore_graph_evidence(evidence_path: Path, previous: tuple[bytes | None, bytes | None]) -> None:
     lock_path = evidence_path.with_suffix(".sha256")
     evidence, lock = previous
@@ -1305,12 +1329,18 @@ def _parse_dimensions(content: str, path: Path) -> tuple[tuple[tuple[int, str], 
         match = MATRIX_ROW_RE.fullmatch(line)
         if not match:
             continue
-        cells = match.group("cells").upper()
-        states = [state for state in ("PASS", "FAIL") if re.search(rf"(?:\[{state}\]|\b{state}\b)", cells)]
+        cells = match.group("cells")
+        states = [
+            state
+            for cell in cells.split("|")
+            for state in ("PASS", "FAIL")
+            if re.search(rf"(?:\[{state}\]|\b{state}\b)", cell)
+        ]
         dimension, name = int(match.group("dimension")), match.group("name").strip()
-        if len(states) != 1 or (dimension in results and results[dimension] != (name, states[0])):
+        unique_states = sorted(set(states))
+        if len(unique_states) != 1 or (dimension in results and results[dimension] != (name, unique_states[0])):
             raise RuntimeError(f"audit dimension matrix is conflicting: {path}")
-        results[dimension] = (name, states[0])
+        results[dimension] = (name, unique_states[0])
     passed = tuple((number, name) for number, (name, state) in sorted(results.items()) if state == "PASS")
     failed = tuple((number, name) for number, (name, state) in sorted(results.items()) if state == "FAIL")
     return passed, failed
@@ -1485,11 +1515,10 @@ def build_regression_clause(classes: list[str] | None = None) -> str:
         f"error class listed below and prove each remains handled; any regression is automatic NEEDS_FIX: {enumerated}."
     )
 
-MODELS = {
-    "high": "9router/cx/gpt-5.6-luna",
-    "medium": "9router/cx/gpt-5.6-luna",
-    "low": "9router/cx/gpt-5.6-luna"
-}
+L2_LEAD_MODELS = ("9router/cx/gpt-5.6-luna", "9router/cx/gpt-5.6-sol", "cx/gpt-5.6-luna", "cx/gpt-5.6-sol")
+L2_SUBAGENT_MODELS = ("9router/ag/gemini-3.8-flash", "9router/ag/gemini-3.8-flash-high", "ag/gemini-3.8-flash", "ag/gemini-3.8-flash-high")
+MODELS = {"high": L2_LEAD_MODELS[0], "medium": L2_LEAD_MODELS[0], "low": L2_LEAD_MODELS[0]}
+DEFAULT_L2_SUBAGENT_MODEL = L2_SUBAGENT_MODELS[0]
 VALID_RISK_LEVELS = ("low", "medium", "high")
 
 HIGH_RISK_PATTERNS = [
@@ -1546,7 +1575,7 @@ def parse_frontmatter(content: str) -> dict:
     return result
 
 
-def _parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | None, list[str]]:
+def _parse_cli_args(args: list[str]):
     """Strictly parse positional arguments and optional repeatable flags."""
     if any(not isinstance(arg, str) or _CONTROL_RE.search(arg) for arg in args):
         print("[ERROR] CLI arguments must be control-free strings.", file=sys.stderr)
@@ -1556,6 +1585,10 @@ def _parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | Non
     co_roles = []
     token_saver = False
     explicit_model = None
+    explicit_l2_model = None
+    explicit_l2_subagent_model = None
+    dry_run = False
+    graph_evidence_path = None
     i = 0
     while i < len(args):
         arg = args[i]
@@ -1593,6 +1626,28 @@ def _parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | Non
             explicit_model = args[i + 1]
             i += 2
             continue
+        elif arg == "--dry-run":
+            dry_run = True
+            i += 1
+            continue
+        elif arg == "--graph-evidence":
+            if graph_evidence_path is not None or i + 1 >= len(args):
+                print("[ERROR] Flag --graph-evidence requires exactly one value.", file=sys.stderr)
+                sys.exit(2)
+            graph_evidence_path = args[i + 1]
+            i += 2
+            continue
+        elif arg in ("--l2-model", "--l2-subagent-model"):
+            target = "explicit_l2_model" if arg == "--l2-model" else "explicit_l2_subagent_model"
+            if locals()[target] is not None or i + 1 >= len(args):
+                print(f"[ERROR] Flag {arg} requires exactly one value.", file=sys.stderr)
+                sys.exit(2)
+            if target == "explicit_l2_model":
+                explicit_l2_model = args[i + 1]
+            else:
+                explicit_l2_subagent_model = args[i + 1]
+            i += 2
+            continue
         elif arg.startswith("-"):
             print(f"[ERROR] Unknown or unsupported flag: '{arg}'.", file=sys.stderr)
             sys.exit(2)
@@ -1607,7 +1662,7 @@ def _parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | Non
         )
         sys.exit(2)
 
-    return pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, co_roles, token_saver, explicit_model
+    return pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, co_roles, token_saver, explicit_model, explicit_l2_model, explicit_l2_subagent_model, dry_run, graph_evidence_path
 
 
 def parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | None]:
@@ -1687,7 +1742,7 @@ def resolve_l2_roles(primary_name: str, co_role_names: list[str], repo_root: Pat
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    role_name, gate_name, task_slug, task_desc, scope, explicit_risk, co_role_names, token_saver, explicit_model = _parse_cli_args(sys.argv[1:])
+    role_name, gate_name, task_slug, task_desc, scope, explicit_risk, co_role_names, token_saver, explicit_model, explicit_l2_model, explicit_l2_subagent_model, dry_run, graph_evidence_path = _parse_cli_args(sys.argv[1:])
     validate_identifier(role_name, "role_name")
     validate_identifier(gate_name, "gate_name")
     validate_identifier(task_slug, "task_slug")
@@ -1702,12 +1757,11 @@ def main():
     else:
         risk, risk_reason = infer_risk(scope)
 
-    if explicit_model:
-        model = explicit_model
-    elif token_saver:
-        model = MODELS["low"]
-    else:
-        model = MODELS[risk]
+    model = explicit_l2_model or explicit_model or (MODELS["low"] if token_saver else MODELS[risk])
+    subagent_model = explicit_l2_subagent_model or DEFAULT_L2_SUBAGENT_MODEL
+    if model not in L2_LEAD_MODELS or subagent_model not in L2_SUBAGENT_MODELS:
+        print("[ERROR] invalid L2 lead or subagent model; cross-tier model rejected", file=sys.stderr)
+        return 2
 
     # 1. Resolve every repo-local role and skill before dispatch side effects.
     try:
@@ -1721,15 +1775,20 @@ def main():
     session_id = f"l2_role{role_id}_{task_slug}_{today}"
 
     # 3. Lock before the lesson helper or any other subprocess can spawn.
-    lock_path = acquire_session_lock(session_id)
+    lock_path = None if dry_run else acquire_session_lock(session_id)
     try:
-        graph_evidence = run_graph_predispatch_gate(session_id, scope, REPO_ROOT)
+        graph_evidence = (
+            _existing_graph_evidence(session_id, REPO_ROOT, graph_evidence_path)
+            if dry_run else run_graph_predispatch_gate(session_id, scope, REPO_ROOT)
+        )
         entries = load_sanitized_lesson_entries(role_id, task_desc)
         lessons_block = build_lessons_data_block(entries)
         _generate_and_print(
             roles, gate_name, task_desc, scope,
             session_id, lessons_block, risk, risk_reason, model, graph_evidence,
+            subagent_model=subagent_model,
             token_saver=token_saver,
+            dry_run=dry_run,
         )
     except (RuntimeError, OSError, UnicodeError, ValueError) as exc:
         print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
@@ -1741,7 +1800,9 @@ def main():
 
 def _generate_and_print(roles, gate_name, task_desc, scope,
                         session_id, lessons_block, risk, risk_reason, model, graph_evidence,
-                        token_saver: bool = False):
+                        subagent_model=DEFAULT_L2_SUBAGENT_MODEL,
+                        token_saver: bool = False,
+                        dry_run: bool = False):
     primary = roles[0]
     co_roles = roles[1:]
     role_name = primary["name"]
@@ -1759,10 +1820,24 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         if token_saver else ""
     )
     outcome = extract_prior_audit_outcomes(gate_name, REPO_ROOT)
-    contract = build_anti_drip_contract(session_id, gate_name, REPO_ROOT, outcome)
-    contract_path, contract_sidecar_path, contract_sha256 = write_anti_drip_contract(
-        REPO_ROOT, session_id, contract
+    contract_path = ensure_session_containment(
+        REPO_ROOT / ".ly_state" / "session" / f"anti_drip_contract_{session_id}.json", REPO_ROOT
     )
+    if dry_run and contract_path.is_file():
+        contract_data = contract_path.read_bytes()
+        contract = json.loads(contract_data.decode("utf-8"))
+        contract_sha256 = hashlib.sha256(contract_data).hexdigest()
+        contract_sidecar_path = contract_path.with_suffix(".sha256")
+        if not contract_sidecar_path.is_file() or contract_sidecar_path.read_text(encoding="ascii").split()[0] != contract_sha256:
+            raise RuntimeError("dry-run anti-drip contract digest mismatch")
+    else:
+        contract = build_anti_drip_contract(session_id, gate_name, REPO_ROOT, outcome)
+        contract_sha256 = hashlib.sha256(canonical_json_bytes(contract)).hexdigest()
+        contract_sidecar_path = contract_path.with_suffix(".sha256")
+        if not dry_run:
+            contract_path, contract_sidecar_path, contract_sha256 = write_anti_drip_contract(
+                REPO_ROOT, session_id, contract
+            )
     anti_drip_clause = build_anti_drip_prompt_clause(
         contract_path, contract_sha256, contract, REPO_ROOT
     )
@@ -1804,6 +1879,7 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         f"write L2 report to .ly_state/session/{session_id}.md. "
         f"Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing.\n"
         f"{adversarial_clause}\n"
+        f"MANDATORY HIERARCHICAL SUBAGENT WORKER DIRECTIVE: Delegate bounded repository exploration and implementation-support work through task(agent='explorer'|'general', ...). Use selected SUBAGENT_MODEL {subagent_model}. The lead retains integration, validation, and report ownership and must not delegate approval or SoD decisions.\n"
         f"L2 REPORT FORMAT (MANDATORY - copy exactly): The report MUST contain these sections in order: "
         f"(1) Header with Role, Gate, Session, Date fields. "
         f"(2) '## Summary' with concise overview. "
@@ -1826,8 +1902,22 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
     prompt_dir = REPO_ROOT / ".ly_state" / "session"
     prompt_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = ensure_session_containment(prompt_dir / f"prompt_{session_id}.txt", REPO_ROOT)
-    expected_digest = write_prompt_with_sha256(prompt_path, prompt)
-    prompt_bytes = prompt_path.read_bytes()
+    expected_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+    if not dry_run:
+        expected_digest = write_prompt_with_sha256(prompt_path, prompt)
+    metadata = {"session_id": session_id, "role_id": role_id, "role_name": role_name, "subagent_model": subagent_model, "model": model}
+    metadata_raw = (json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("utf-8")
+    metadata_path = ensure_session_containment(prompt_dir / f"l2_metadata_{session_id}.json", REPO_ROOT)
+    metadata_sidecar = metadata_path.with_name(metadata_path.name + ".sha256")
+    if not dry_run:
+        for path, data in ((metadata_path, metadata_raw), (metadata_sidecar, f"{hashlib.sha256(metadata_raw).hexdigest()}  {metadata_path.name}\n".encode("ascii"))):
+            tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+            with open(tmp, "wb") as handle:
+                handle.write(data); handle.flush(); os.fsync(handle.fileno())
+            if path.exists() and path.read_bytes() != data:
+                tmp.unlink(missing_ok=True); raise RuntimeError("authoritative L2 metadata already differs")
+            os.replace(tmp, path)
+    prompt_bytes = prompt.encode("utf-8") if dry_run else prompt_path.read_bytes()
     if hashlib.sha256(prompt_bytes).hexdigest() != expected_digest:
         raise RuntimeError("prompt transport SHA-256 mismatch after write")
     if prompt_bytes.startswith(b"\xef\xbb\xbf"):
@@ -1862,6 +1952,7 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
     print(f"CO_ROLE_NAMES={','.join(role['name'] for role in co_roles)}")
     print(f"GATE={gate_name}")
     print(f"MODEL={model}")
+    print(f"SUBAGENT_MODEL={subagent_model}")
     print(f"RISK={risk} ({risk_reason})")
     print(f"ANTI_DRIP_MODE={contract['mode']}")
     print(f"ANTI_DRIP_CONTRACT={contract_path.relative_to(REPO_ROOT).as_posix()}")

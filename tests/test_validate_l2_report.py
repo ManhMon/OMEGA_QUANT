@@ -65,6 +65,7 @@ def report(mode, digest, payload=None):
 - **Anti-Drip Mode**: `{mode}`
 - **Anti-Drip Contract**: `{CONTRACT_REL}`
 - **Anti-Drip Contract SHA-256**: `{digest}`
+- **Subagent Model**: `9router/ag/gemini-3.8-flash`
 
 ## Summary
 
@@ -108,6 +109,9 @@ def case(tmp_path):
     contract_path.write_bytes(raw)
     contract_path.with_suffix(".sha256").write_bytes(f"{digest}  {contract_path.name}\n".encode("ascii"))
     (session / f"prompt_{SESSION}.txt").write_text(validator._canonical_prompt_block(SESSION, payload, digest) + "\n", encoding="utf-8", newline="\n")
+    metadata = json.dumps({"session_id": SESSION, "role_id": 11, "role_name": "devops-engineer", "subagent_model": "9router/ag/gemini-3.8-flash", "model": "9router/cx/gpt-5.6-luna"}, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode() + b"\n"
+    (session / f"l2_metadata_{SESSION}.json").write_bytes(metadata)
+    (session / f"l2_metadata_{SESSION}.json.sha256").write_bytes(f"{hashlib.sha256(metadata).hexdigest()}  l2_metadata_{SESSION}.json\n".encode("ascii"))
     sweep_payload = sweep(digest, payload["source_audit"]["sha256"])
     report_path = session / f"{SESSION}.md"
     report_path.write_text(report("remediation", digest, sweep_payload), encoding="utf-8", newline="\n")
@@ -137,6 +141,30 @@ def test_valid_baseline_has_no_sweep(case):
     (case["root"] / f".ly_state/session/prompt_{SESSION}.txt").write_text(validator._canonical_prompt_block(SESSION, payload, digest) + "\n", encoding="utf-8", newline="\n")
     case["report"].write_text(report("baseline", digest), encoding="utf-8", newline="\n")
     assert validate(case) == ("baseline", [])
+
+
+def _assert_dimension_contract_rejected(case, mutation):
+    payload = copy.deepcopy(case["contract"])
+    mutation(payload)
+    raw = canonical(payload)
+    path = case["root"] / CONTRACT_REL
+    path.write_bytes(raw)
+    path.with_suffix(".sha256").write_bytes(f"{hashlib.sha256(raw).hexdigest()}  {path.name}\n".encode("ascii"))
+    mode, errors = validate(case)
+    assert mode is None
+    assert any("E304" in error for error in errors)
+
+
+def test_dimension_ids_reject_duplicates(case):
+    _assert_dimension_contract_rejected(case, lambda payload: payload["passed_dimensions"].extend([
+        {"dimension": 13, "name": "Schema drift"}, {"dimension": 13, "name": "Schema drift again"}
+    ]))
+
+
+def test_dimension_ids_reject_overlap(case):
+    _assert_dimension_contract_rejected(case, lambda payload: payload["passed_dimensions"].append(
+        {"dimension": 16, "name": "Secret redaction"}
+    ))
 
 
 @pytest.mark.parametrize("target", ["contract", "sidecar", "prompt", "report", "sweep"])
@@ -216,4 +244,3 @@ def test_main_options_parsing_and_validation(case):
 
     # Unrecognized option
     assert validator.main([SESSION, "11", "devops-engineer", "--unrecognized"], repo_root=case["root"]) == 2
-

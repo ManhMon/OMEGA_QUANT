@@ -65,6 +65,32 @@ def test_graph_bounded_query_protocol_is_shared_with_l3():
     assert dl3.run_graph_predispatch_gate is dl2.run_graph_predispatch_gate
 
 
+def test_extract_prior_audit_outcomes_deduplicates_identical_statuses(tmp_path):
+    import scripts.dispatch_l3 as dl3
+
+    report = tmp_path / "audit.md"
+    report.write_text("""## 16-Dimension Adversarial Matrix
+| 1 | Integrity | PASS | PASS - carry-forward |
+| 2 | Schema | FAIL |
+""", encoding="utf-8")
+    passed, failed, path = dl3.extract_prior_audit_outcomes("GATE", 21, tmp_path, report)
+    assert passed == [(1, "Integrity")]
+    assert failed == [(2, "Schema")]
+    assert path == report
+
+
+def test_extract_prior_audit_outcomes_rejects_dimension_overlap(tmp_path):
+    import scripts.dispatch_l3 as dl3
+
+    report = tmp_path / "audit.md"
+    report.write_text("""## 16-Dimension Adversarial Matrix
+| 1 | Integrity | PASS |
+| 1 | Integrity | FAIL |
+""" + ("x" * 101), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="conflicting audit dimension 1"):
+        dl3.extract_prior_audit_outcomes("GATE", 21, tmp_path, report)
+
+
 def _run_l3(monkeypatch, capsys, gate="TEST_GATE_L3DIR_20260101"):
     import scripts.dispatch_l3 as dl3
 
@@ -166,17 +192,17 @@ def test_dispatch_l3_directive_byte_identical_in_both_cx_and_opencode_variants(c
         {
             "low": "cx/gpt-5.6-sol(medium)",
             "medium": "cx/gpt-5.6-sol(xhigh)",
-            "high": "9router/ag/gemini-3.7-flash-high",
+             "high": "cx/gpt-6-astra(low)",
         },
     )
     monkeypatch.setattr(sys, "argv", argv[:-2] + ["--risk", "high"])
     dl3.main()
     captured = capsys.readouterr()
     out_oc = captured.out
-    assert "MODEL=9router/ag/gemini-3.7-flash-high" in out_oc
+    assert "MODEL=cx/gpt-6-astra(low)" in out_oc
     cmd_oc, raw_oc = _parse_command_and_prompt_bytes(out_oc)
-    assert "opencode run" in cmd_oc
-    assert "--dangerously-skip-permissions" in cmd_oc
+    assert "codex exec" in cmd_oc
+    assert "--dangerously-bypass-approvals-and-sandbox" in cmd_oc
     assert len(cmd_oc) < 32767
     assert "`" not in cmd_oc
 
@@ -578,7 +604,7 @@ def test_lesson_directives_remain_data_in_all_variants(monkeypatch, tmp_path, ca
     monkeypatch.setattr(
         dl3,
         "MODELS",
-        {"low": "cx/gpt-5.6-sol(medium)", "medium": "cx/gpt-5.6-sol(xhigh)", "high": "9router/ag/gemini-3.7-flash-high"},
+         {"low": "cx/gpt-5.6-sol(medium)", "medium": "cx/gpt-5.6-sol(xhigh)", "high": "cx/gpt-6-astra(low)"},
     )
     monkeypatch.setattr(sys, "argv", argv_cx[:-2] + ["--risk", "high"])
     dl3.main()
@@ -598,7 +624,7 @@ def test_lesson_directives_remain_data_in_all_variants(monkeypatch, tmp_path, ca
         assert b"u:p@h" not in body and b"[REDACTED]" in body
         # Delimiter breakout was defused.
         assert body.count(DATA_BLOCK_END.encode()) == 0
-    assert "codex exec" in cmd_cx and "opencode run" in cmd_oc
+    assert "codex exec" in cmd_cx and "codex exec" in cmd_oc
 
 # ---------------------------------------------------------------------------
 # C4: SHA-256 binding on L3 cx/OpenCode/fallback + TOCTOU fail-closed.

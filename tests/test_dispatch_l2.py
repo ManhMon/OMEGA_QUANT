@@ -107,6 +107,38 @@ def test_parse_cli_args_exit_2_on_invalid_flag():
     assert excinfo.value.code == 2
 
 
+def test_parse_cli_args_accepts_dry_run_flag():
+    parsed = dispatch_l2._parse_cli_args([
+        "data-engineer", "TEST_GATE", "slug", "desc", "scope", "--dry-run"
+    ])
+    assert parsed[-2] is True
+
+
+def test_dry_run_preserves_authoritative_artifacts(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(dispatch_l2, "REPO_ROOT", tmp_path)
+    session_id = "l2_role15_dry_run_20260922"
+    contract = dispatch_l2.build_anti_drip_contract(session_id, "TEST_GATE", tmp_path, None)
+    contract_path, sidecar_path, _ = dispatch_l2.write_anti_drip_contract(tmp_path, session_id, contract)
+    graph_path = tmp_path / ".ly_state" / "session" / f"graph_evidence_{session_id}.json"
+    graph_path.parent.mkdir(parents=True, exist_ok=True)
+    graph_path.write_bytes(b'{"repo_commit":"commit","scope_files":[],'
+                          b'"blast_radius":{"impacted_files":[],"total_impacted":0,"truncated":false},'
+                          b'"impact_query":{"complete":true,"batch_count":0}}')
+    graph_path.with_suffix(".sha256").write_text(
+        hashlib.sha256(graph_path.read_bytes()).hexdigest(), encoding="ascii"
+    )
+    before = {path: path.read_bytes() for path in (contract_path, sidecar_path, graph_path, graph_path.with_suffix(".sha256"))}
+    monkeypatch.setattr(dispatch_l2, "build_graph_prompt_evidence", lambda evidence: "GRAPH")
+    dispatch_l2._generate_and_print(
+        [{"name": "data-engineer", "role_id": 15, "role_file": ".agents/agent/data-engineer.md", "skill_files": []}],
+        "TEST_GATE", "task", "scope", session_id, "lessons", "low", "test", "model",
+        {"path": graph_path.relative_to(tmp_path).as_posix()}, dry_run=True,
+    )
+    assert {path: path.read_bytes() for path in before} == before
+    assert not (tmp_path / ".ly_state" / "session" / f"prompt_{session_id}.txt").exists()
+    assert "---COMMAND---" in capsys.readouterr().out
+
+
 def test_parse_cli_args_exit_2_on_insufficient_positional_args():
     with pytest.raises(SystemExit) as excinfo:
         parse_cli_args(["data-engineer", "TEST_GATE", "slug"])
@@ -1055,6 +1087,38 @@ def test_remediation_extracts_structured_finding_and_sanitizes_secret(tmp_path):
     assert outcome.findings == (dispatch_l2.AuditFinding(
         "F-004", "high", "Plaintext backup survives replacement failure", ("BACKUP_LEAK=True",)
     ),)
+
+
+def test_parse_dimensions_accepts_repeated_identical_status_cells():
+    content = """## 16-Dimension Adversarial Matrix
+
+| Dimension | Name | Result |
+|---:|---|---|
+| 1 | Integrity | PASS | PASS - verified in prior cycle; zero regression on scope diff |
+"""
+    assert dispatch_l2._parse_dimensions(content, Path("audit.md")) == (((1, "Integrity"),), ())
+
+
+def test_parse_dimensions_rejects_conflicting_status_cells():
+    for result_cells in ("[PASS] | [FAIL]", "[FAIL] | [PASS]"):
+        content = f"""## 16-Dimension Adversarial Matrix
+
+| Dimension | Name | Result |
+|---:|---|---|
+| 1 | Integrity | {result_cells} |
+"""
+        with pytest.raises(RuntimeError, match="audit dimension matrix is conflicting"):
+            dispatch_l2._parse_dimensions(content, Path("audit.md"))
+
+
+def test_parse_dimensions_ignores_lowercase_prose_status_words():
+    content = """## 16-Dimension Adversarial Matrix
+
+| Dimension | Name | Result |
+|---:|---|---|
+| 1 | Integrity | PASS | evidence mentions pass/fail in prose |
+"""
+    assert dispatch_l2._parse_dimensions(content, Path("audit.md")) == (((1, "Integrity"),), ())
 
 
 def test_conflicting_latest_verdict_fails_closed(tmp_path):

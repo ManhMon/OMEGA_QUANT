@@ -56,12 +56,14 @@ except ImportError:  # direct script execution: python scripts/dispatch_l3.py
 REPO_ROOT = Path(__file__).parent.parent
 AGENT_ROOT = REPO_ROOT / ".agents" / "agent"
 
-MODELS = {
+L3_LEAD_MODELS = {
     "low": "cx/gpt-5.6-sol(medium)",
     "medium": "cx/gpt-5.6-sol(medium)",
     "high": "cx/gpt-6-astra(low)",
     # fallback khi GPT 429: Aurora WebChat (gpt-5-6-thinking trên port 8080 qua scripts/run_l3_audit.py)
 }
+L3_SUBAGENT_MODELS = ("cx/gpt-5.6-luna", "9router/cx/gpt-5.6-luna")
+MODELS = L3_LEAD_MODELS
 VALID_RISK_LEVELS = ("low", "high")
 
 FALLBACK_MODEL = "chatgpt-web/gpt-5-6-thinking"
@@ -273,7 +275,10 @@ def main():
     if explicit_subagent_model:
         subagent_model = subagent_aliases.get(explicit_subagent_model.lower(), explicit_subagent_model)
     else:
-        subagent_model = "9router/ag/gemini-3.8-flash-high"
+        subagent_model = L3_SUBAGENT_MODELS[0]
+    if model not in set(L3_LEAD_MODELS.values()) or subagent_model not in L3_SUBAGENT_MODELS:
+        print("[ERROR] invalid L3 lead or subagent model; cross-tier model rejected", file=sys.stderr)
+        sys.exit(2)
 
     today = datetime.now().strftime("%Y%m%d")
 
@@ -385,8 +390,8 @@ def extract_prior_audit_outcomes(
         if "16-Dimension Adversarial Matrix" not in content:
             continue
 
-        passed = []
-        failed = []
+        passed = {}
+        failed = {}
         in_matrix = False
         for line in content.splitlines():
             if "16-Dimension Adversarial Matrix" in line:
@@ -400,23 +405,29 @@ def extract_prior_audit_outcomes(
                     num = int(m.group(1))
                     name = m.group(2).strip()
                     res = m.group(3).strip().upper()
-                    if "[PASS]" in res or res == "PASS":
-                        passed.append((num, name))
-                    elif "[FAIL]" in res or res == "FAIL":
-                        failed.append((num, name))
+                    state = "PASS" if "[PASS]" in res or res == "PASS" else "FAIL" if "[FAIL]" in res or res == "FAIL" else None
+                    if state is not None:
+                        target = passed if state == "PASS" else failed
+                        other = failed if state == "PASS" else passed
+                        if (num in target and target[num] != name) or num in other:
+                            raise RuntimeError(f"conflicting audit dimension {num}: {path}")
+                        target[num] = name
                 else:
                     m_list = re.match(r"^\s*(\d{1,2})\.\s*([^:]+):\s*(.+)$", line)
                     if m_list:
                         num = int(m_list.group(1))
                         name = m_list.group(2).strip()
                         res = m_list.group(3).strip().upper()
-                        if "PASS" in res:
-                            passed.append((num, name))
-                        elif "FAIL" in res:
-                            failed.append((num, name))
+                        state = "PASS" if "PASS" in res else "FAIL" if "FAIL" in res else None
+                        if state is not None:
+                            target = passed if state == "PASS" else failed
+                            other = failed if state == "PASS" else passed
+                            if (num in target and target[num] != name) or num in other:
+                                raise RuntimeError(f"conflicting audit dimension {num}: {path}")
+                            target[num] = name
 
         if passed or failed:
-            return passed, failed, path
+            return sorted(passed.items()), sorted(failed.items()), path
 
     return [], [], None
 
