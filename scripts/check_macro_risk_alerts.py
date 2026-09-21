@@ -26,26 +26,36 @@ def compute_macro_risk_metrics(
     on_caution: float = 5.0,
     on_alert: float = 6.0,
 ) -> Dict[str, Any]:
+    if not isinstance(z_window, int) or z_window <= 0:
+        raise ValueError("z_window_must_be_positive")
+    if not isinstance(vol_window, int) or vol_window <= 0:
+        raise ValueError("vol_window_must_be_positive")
+
     if not REQUIRED_COLUMNS.issubset(df_macro.columns):
         raise ValueError("missing_schema")
 
     df = df_macro.copy()
 
-    # Explicit PIT boundary enforcement (F-001 from earlier cycle)
-    if "timestamp" in df.columns:
+    # Explicit PIT boundary enforcement: require timestamp if as_of is provided
+    if as_of is not None:
+        if "timestamp" not in df.columns:
+            raise ValueError("as_of_requires_timestamp_column")
+        cutoff = pd.to_datetime(as_of, errors="coerce", utc=True)
+        if cutoff is pd.NaT:
+            raise ValueError("invalid_as_of_cutoff")
+        df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
+        if df["timestamp"].isna().any():
+            raise ValueError("invalid_timestamp")
+        if (df["timestamp"] > cutoff).any():
+            raise ValueError("future_rows_exceed_cutoff")
+        df = df[df["timestamp"] <= cutoff].sort_values("timestamp")
+    elif "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"], errors="coerce", utc=True)
         if df["timestamp"].isna().any():
             raise ValueError("invalid_timestamp")
         df = df.sort_values("timestamp")
-        if as_of is not None:
-            cutoff = pd.to_datetime(as_of, errors="coerce", utc=True)
-            if cutoff is pd.NaT:
-                raise ValueError("invalid_as_of_cutoff")
-            if (df["timestamp"] > cutoff).any():
-                raise ValueError("future_rows_exceed_cutoff")
-            df = df[df["timestamp"] <= cutoff]
 
-    # Explicit numeric schema coercion and finite verification (F-002)
+    # Explicit numeric schema coercion and finite verification
     for col in REQUIRED_COLUMNS:
         df[col] = pd.to_numeric(df[col], errors="coerce")
         if df[col].isna().any() or not np.isfinite(df[col]).all():
@@ -56,7 +66,7 @@ def compute_macro_risk_metrics(
 
     fx = df["usd_vnd"]
 
-    # F-001: Explicit denominator finite/non-zero guard preventing any NaN / RuntimeWarning
+    # Explicit denominator finite/non-zero guard preventing any NaN / RuntimeWarning
     roll_std = fx.rolling(z_window).std()
     roll_mean = fx.rolling(z_window).mean()
     std_val = float(roll_std.iloc[-1]) if len(roll_std) > 0 and pd.notna(roll_std.iloc[-1]) else 0.0
@@ -130,17 +140,24 @@ def run_monitor(data_path: str = "data/macro_indicators.parquet", **kwargs: Any)
             **{
                 k: v
                 for k, v in kwargs.items()
-                if k in {"as_of", "caution_z", "alert_z", "on_caution", "on_alert"}
+                if k in {"as_of", "z_window", "vol_window", "caution_z", "alert_z", "on_caution", "on_alert"}
             },
         )
-        code, name, metrics = evaluate_macro_regime(result)
+        code, name, metrics = evaluate_macro_regime(
+            result,
+            **{
+                k: v
+                for k, v in kwargs.items()
+                if k in {"caution_z", "alert_z", "on_caution", "on_alert"}
+            },
+        )
         if kwargs.get("as_json"):
             print(json.dumps({"code": code, "regime": name, "metrics": metrics}, default=str))
         elif not kwargs.get("silent"):
             print(name)
         return code
     except Exception:
-        return 2
+        return 3
 
 
 def main() -> int:
@@ -165,9 +182,15 @@ def main() -> int:
             on_caution=args.on_caution,
             on_alert=args.on_alert,
         )
-        code, name, metrics = evaluate_macro_regime(result)
+        code, name, metrics = evaluate_macro_regime(
+            result,
+            caution_z=args.caution_z,
+            alert_z=args.alert_z,
+            on_caution=args.on_caution,
+            on_alert=args.on_alert,
+        )
     except Exception:
-        sys.exit(2)
+        sys.exit(3)
 
     if not args.silent:
         if args.json:
