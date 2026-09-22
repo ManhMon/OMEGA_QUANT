@@ -46,6 +46,116 @@ def test_l2_dispatch_passes_dry_run_as_an_argument(monkeypatch):
     assert seen[0][-1] == "--dry-run"
 
 
+def test_plan_aliases_default_and_enable():
+    assert pipeline.parse_args(["worker", "auditor", "GATE", "slug", "task", "file.py"]).with_plan is False
+    assert pipeline.parse_args(["worker", "auditor", "GATE", "slug", "task", "file.py", "--with-plan"]).with_plan is True
+    assert pipeline.parse_args(["worker", "auditor", "GATE", "slug", "task", "file.py", "--plan"]).with_plan is True
+
+
+def test_plan_validator_requires_fresh_identity_and_exact_scope(tmp_path, monkeypatch):
+    monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
+    (tmp_path / "file.py").write_text("x", encoding="utf-8")
+    valid = """# Implementation Plan
+## Planning Run ID
+run-1
+## Gate
+GATE
+## Goal
+goal
+## Authorized Scope
+- file.py
+## Technical Design
+design
+## Verification Plan
+tests
+"""
+    assert pipeline._validate_plan(valid, "run-1", "GATE", "file.py") == valid
+    with pytest.raises(RuntimeError, match="run id mismatch"):
+        pipeline._validate_plan(valid.replace("run-1", "old"), "run-1", "GATE", "file.py")
+    with pytest.raises(RuntimeError, match="heading cardinality"):
+        pipeline._validate_plan(valid + "\n## Unknown\nvalue\n", "run-1", "GATE", "file.py")
+
+
+def test_phase_zero_failure_blocks_l2(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
+    called = []
+    monkeypatch.setattr(pipeline, "_run_planning_phase", lambda args: (_ for _ in ()).throw(RuntimeError("planner failed")))
+    monkeypatch.setattr(pipeline, "_dispatch_l2", lambda *args: called.append("l2"))
+    assert pipeline.main(["worker", "auditor", "GATE", "slug", "task", "file.py", "--with-plan"]) == 2
+    assert called == []
+
+
+def _planning_args():
+    return pipeline.parse_args(["worker", "auditor", "GATE", "slug", "task", "file.py", "--with-plan"])
+
+
+def _valid_planner_output(run_id):
+    return f"""# Implementation Plan
+## Planning Run ID
+{run_id}
+## Gate
+GATE
+## Goal
+goal
+## Authorized Scope
+- file.py
+## Technical Design
+design
+## Verification Plan
+tests
+"""
+
+
+def test_plan_path_rejects_symlink_and_reparse(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
+    session = tmp_path / ".ly_state" / "session"
+    session.mkdir(parents=True)
+    plan = session / "implementation_plan.md"
+    plan.write_text("old", encoding="utf-8")
+    monkeypatch.setattr(Path, "is_symlink", lambda self: self == plan)
+    with pytest.raises(RuntimeError, match="identity invalid"):
+        pipeline._plan_path()
+    monkeypatch.setattr(Path, "is_symlink", lambda self: False)
+    monkeypatch.setattr(Path, "lstat", lambda self: type("Stat", (), {"st_file_attributes": 0x400, "st_nlink": 1})())
+    with pytest.raises(RuntimeError, match="identity invalid"):
+        pipeline._plan_path()
+
+
+def test_planning_resets_stale_plan_before_spawn_and_publishes_durably(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
+    (tmp_path / "file.py").write_text("x", encoding="utf-8")
+    plan = tmp_path / ".ly_state" / "session" / "implementation_plan.md"
+    plan.parent.mkdir(parents=True)
+    plan.write_text("stale", encoding="utf-8")
+    seen = []
+
+    def fake_run(*args, **kwargs):
+        seen.append(plan.exists())
+        run_id = kwargs["input"].decode().split("PLANNING_RUN_ID: ", 1)[1].split("\n", 1)[0]
+        return type("Result", (), {"returncode": 0, "stdout": _valid_planner_output(run_id).encode(), "stderr": b""})()
+
+    monkeypatch.setattr(pipeline.subprocess, "run", fake_run)
+    pipeline._run_planning_phase(_planning_args())
+    assert seen == [False]
+    assert plan.read_text(encoding="utf-8").startswith("# Implementation Plan")
+
+
+def test_planner_invalid_utf8_fails_closed(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(pipeline.subprocess, "run", lambda *a, **k: type("Result", (), {"returncode": 0, "stdout": b"\xff", "stderr": b""})())
+    with pytest.raises(RuntimeError, match="valid UTF-8"):
+        pipeline._run_planning_phase(_planning_args())
+
+
+def test_planner_error_redacts_bounded_secrets(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(pipeline.subprocess, "run", lambda *a, **k: type("Result", (), {"returncode": 1, "stdout": b"", "stderr": b"Bearer secret-token-123"})())
+    with pytest.raises(RuntimeError) as excinfo:
+        pipeline._run_planning_phase(_planning_args())
+    assert "secret-token-123" not in str(excinfo.value)
+    assert "[REDACTED]" in str(excinfo.value)
+
+
 def test_main_dry_run_uses_bound_artifact_and_tolerates_dirty_scope(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
     artifact = tmp_path / "evidence.json"

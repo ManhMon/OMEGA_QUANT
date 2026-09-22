@@ -160,6 +160,11 @@ def test_dispatch_l3_cli_embeds_directive_and_preserves_format(monkeypatch, caps
     ):
         assert marker in prompt_text
     assert "ANTI-POLLING & ZERO-IDLE DIRECTIVE (ANTI_POLLING_ZERO_IDLE_20260918)" in prompt_text
+    assert "SYNCHRONOUS PYTEST EXCEPTION" in prompt_text
+    assert "probe_test_exec MUST run these per-file slices sequentially" in prompt_text
+    assert "pre_run_sha256=" in prompt_text
+    assert "Fallback verdict validation is mandatory" in prompt_text
+    assert "--enable multi_agent" in command
 
 
 def test_dispatch_l3_directive_byte_identical_in_both_cx_and_opencode_variants(capsys, monkeypatch, tmp_path):
@@ -243,53 +248,58 @@ HOSTILE_IDENTIFIERS = [
 ]
 
 
-@pytest.mark.parametrize("hostile", HOSTILE_IDENTIFIERS, ids=lambda v: re.sub(r"\W+", "_", v)[:40] or "empty")
-def test_dispatch_l2_rejects_hostile_task_slug_fail_closed(hostile):
-    res = subprocess.run(
-        [
-            sys.executable,
-            "scripts/dispatch_l2.py",
-            "data-engineer",
-            "TEST_GATE_HOSTILE",
-            hostile,
-            "desc",
-            "scope",
-            "--risk",
-            "low",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO_ROOT),
-    )
-    assert res.returncode != 0
-    assert "[ERROR]" in res.stderr
-    # Injected statement must never reach a session ID or generated command.
-    assert "SESSION_ID=" not in res.stdout
-    assert "---COMMAND---" not in res.stdout
+def test_dispatch_l2_rejects_hostile_task_slug_fail_closed():
+    for hostile in HOSTILE_IDENTIFIERS:
+        res = subprocess.run(
+            [
+                sys.executable,
+                "scripts/dispatch_l2.py",
+                "data-engineer",
+                "TEST_GATE_HOSTILE",
+                hostile,
+                "desc",
+                "scope",
+                "--risk",
+                "low",
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(REPO_ROOT),
+        )
+        assert res.returncode != 0
+        assert "[ERROR]" in res.stderr
+        # Injected statement must never reach a session ID or generated command.
+        assert "SESSION_ID=" not in res.stdout
+        assert "---COMMAND---" not in res.stdout
 
 
-@pytest.mark.parametrize("field_index,field_name", [(3, "gate_name"), (4, "l2_session_id"), (5, "l2_role_name"), (2, "l3_role_name")])
-@pytest.mark.parametrize("hostile", ["../evil", "a;b", "a'b", "$(calc)", "a b", "slüg", "a" * 65])
-def test_dispatch_l3_rejects_hostile_identifiers_fail_closed(field_index, field_name, hostile):
-    argv = [
-        sys.executable,
-        "scripts/dispatch_l3.py",
-        "code-reviewer",
-        "TEST_GATE_HOSTILE_L3",
-        "l2_role15_ok_session_20260826",
-        "data-engineer",
-        "tests/",
-        "--risk",
-        "low",
-    ]
-    argv[field_index] = hostile
-    res = subprocess.run(argv, capture_output=True, text=True, cwd=str(REPO_ROOT))
-    assert res.returncode != 0, f"{field_name}={hostile!r} must be rejected"
-    assert "[ERROR]" in res.stderr
-    # No metadata, no report path, no command may be emitted for hostile input.
-    assert "---COMMAND---" not in res.stdout
-    assert "REPORT=" not in res.stdout
-    assert "L3_SESSION_ID=" not in res.stdout
+def test_dispatch_l3_rejects_hostile_identifiers_fail_closed():
+    for field_index, field_name in (
+        (3, "gate_name"),
+        (4, "l2_session_id"),
+        (5, "l2_role_name"),
+        (2, "l3_role_name"),
+    ):
+        for hostile in ["../evil", "a;b", "a'b", "$(calc)", "a b", "slüg", "a" * 65]:
+            argv = [
+                sys.executable,
+                "scripts/dispatch_l3.py",
+                "code-reviewer",
+                "TEST_GATE_HOSTILE_L3",
+                "l2_role15_ok_session_20260826",
+                "data-engineer",
+                "tests/",
+                "--risk",
+                "low",
+            ]
+            argv[field_index] = hostile
+            res = subprocess.run(argv, capture_output=True, text=True, cwd=str(REPO_ROOT))
+            assert res.returncode != 0, f"{field_name}={hostile!r} must be rejected"
+            assert "[ERROR]" in res.stderr
+            # No metadata, no report path, no command may be emitted for hostile input.
+            assert "---COMMAND---" not in res.stdout
+            assert "REPORT=" not in res.stdout
+            assert "L3_SESSION_ID=" not in res.stdout
 
 
 # ---------------------------------------------------------------------------
@@ -443,9 +453,8 @@ def test_parse_cli_args_valid_supported_orders():
     assert parsed[4] == "tests/" and parsed[5] == "low" and parsed[6] is True
 
 
-@pytest.mark.parametrize(
-    "argv",
-    [
+def test_parse_cli_args_hostile_matrix_exits_2():
+    for argv in (
         [*_valid_l3_argv(), "--unknown"],
         [*_valid_l3_argv(), "--risk", "low", "--risk", "high"],
         [*_valid_l3_argv(), "--run", "--run"],
@@ -455,19 +464,17 @@ def test_parse_cli_args_valid_supported_orders():
         [*_valid_l3_argv(), "--run=true"],                   # assignment form
         ["--", *_valid_l3_argv()],                           # bare --
         [*_valid_l3_argv(), "extra-positional"],             # extra positional
-        [*_valid_l3_argv()[:4]],                             # missing scope
+        [*_valid_l3_argv()[:4]],                              # missing scope
         [*_valid_l3_argv(), "\u2013risk", "low"],            # unicode dash variant
         ["code\u000breviewer", *_valid_l3_argv()[1:]],       # vertical tab control char
         ["code\rrunner", *_valid_l3_argv()[1:]],             # CR inside token
         [*_valid_l3_argv(), "--Run"],                        # case-sensitive flag
         [*_valid_l3_argv(), "-r"],                           # short flag rejected
         ["--risk", "low", "--run", *_valid_l3_argv()[0:4]],  # still only 4 positionals
-    ],
-)
-def test_parse_cli_args_hostile_matrix_exits_2(argv):
-    with pytest.raises(SystemExit) as excinfo:
-        parse_cli_args(argv)
-    assert excinfo.value.code == 2
+    ):
+        with pytest.raises(SystemExit) as excinfo:
+            parse_cli_args(argv)
+        assert excinfo.value.code == 2
 
 
 def test_parse_cli_args_duplicate_run_exits_2():
@@ -560,6 +567,37 @@ def test_dispatch_l3_releases_lock_after_generation(monkeypatch, tmp_path, capsy
     dl3.main()
     session_dir = tmp_path / ".ly_state" / "session"
     assert not list(session_dir.glob("dispatch_*.lock"))
+
+
+def test_fallback_verdict_requires_one_standalone_verdict():
+    for content in ("prose\n[APPROVED]", "[APPROVED]\n[NEEDS_FIX]", "[APPROVED]\nprose"):
+        assert re.fullmatch(r"\A\s*\[(APPROVED|NEEDS_FIX)\]\s*\Z", content) is None
+
+
+def test_fallback_verdict_accepts_exact_single_verdict():
+    for content in ("[APPROVED]", "\n[NEEDS_FIX]\n"):
+        assert re.fullmatch(r"\A\s*\[(APPROVED|NEEDS_FIX)\]\s*\Z", content)
+
+
+def test_explicit_model_injection_is_rejected_before_side_effect(monkeypatch, tmp_path):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["dispatch_l3.py", "code-reviewer", "GATE", "l2_role15_session", "data-engineer", "tests/", "--model", 'x"; Write-Output INJECTED; "'])
+    with pytest.raises(SystemExit) as excinfo:
+        dl3.main()
+    assert excinfo.value.code == 2
+    assert not any(tmp_path.rglob("prompt_*.txt"))
+
+
+def test_generated_model_argument_is_powershell_single_quoted(monkeypatch, tmp_path, capsys):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["dispatch_l3.py", "code-reviewer", "GATE_QUOTED_20260922", "l2_role15_session_20260922", "data-engineer", "tests/", "--model", "astra(low)"])
+    dl3.main()
+    command = capsys.readouterr().out.split("---COMMAND---", 1)[1]
+    assert "-m 'cx/gpt-6-astra(low)'" in command
 
 # ---------------------------------------------------------------------------
 # C3: lessons travel only as sanitized DATA; malformed schema -> empty block.

@@ -19,6 +19,8 @@ import sys
 import subprocess
 import json
 import re
+import hashlib
+import os
 from pathlib import Path
 from datetime import datetime
 
@@ -260,7 +262,10 @@ def main():
             "astra": "cx/gpt-6-astra(low)",
             "astra(low)": "cx/gpt-6-astra(low)",
         }
-        model = model_aliases.get(explicit_model.lower(), explicit_model)
+        model = model_aliases.get(explicit_model.lower())
+        if model is None:
+            print("[ERROR] invalid or unapproved L3 lead model", file=sys.stderr)
+            sys.exit(2)
     else:
         model = MODELS[risk]
 
@@ -444,7 +449,8 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         gate_name, l3_role_id, REPO_ROOT, report_full
     )
 
-    # Backup prior report file before touching if it has content
+    # Reset the canonical report before either auditor can run. Stale verdicts
+    # must never satisfy a later pipeline transaction.
     if report_full.is_file() and report_full.stat().st_size > 100:
         prior_content = report_full.read_text(encoding="utf-8", errors="replace")
         idx = 1
@@ -452,9 +458,12 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
             idx += 1
         backup_path = report_full.parent / f"{report_full.stem}_cycle{idx}.md"
         backup_path.write_text(prior_content, encoding="utf-8")
-
+    empty_tmp = report_full.with_name(f".{report_full.name}.{os.getpid()}.tmp")
     report_full.parent.mkdir(parents=True, exist_ok=True)
-    report_full.touch()
+    empty_tmp.write_bytes(b"")
+    os.replace(empty_tmp, report_full)
+    pre_run_digest = hashlib.sha256(b"").hexdigest()
+    pre_run_mtime_ns = report_full.stat().st_mtime_ns
 
     # 5. Get lessons as sanitized structured DATA only
     entries = load_sanitized_lesson_entries(l3_role_id, gate_name)
@@ -507,8 +516,16 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         f"REQUIREMENTS: first run Set-Location '{REPO_ROOT}'; "
         f"use repo-relative paths from REPO_ROOT only; never read/write Antigravity scratch paths. "
         f"ANTI-POLLING & ZERO-IDLE DIRECTIVE (ANTI_POLLING_ZERO_IDLE_20260918): NEVER poll, loop, or repeatedly run git status, task status, or audit scripts to wait for background execution; stop calling tools immediately and end the turn when waiting for commands. "
+        f"SYNCHRONOUS PYTEST EXCEPTION: a bounded synchronous probe_test_exec is permitted for atomic verification; run each scoped test slice once, collect exit code/stdout/stderr, then report PASS/FAIL/TIMEOUT. Do not poll or idle-wait. "
         f"{adversarial_directive} "
         f"{subagent_clause}"
+        f"probe_test_exec MUST run these per-file slices sequentially, each timeout 300 seconds: "
+        f"python -m pytest tests/test_sod_pipeline.py -q -p no:cacheprovider; "
+        f"python -m pytest tests/test_dispatch_l2.py -q -p no:cacheprovider; "
+        f"python -m pytest tests/test_dispatch_l3.py -q -p no:cacheprovider; "
+        f"python -m pytest tests/test_validate_l2_report.py -q -p no:cacheprovider. "
+        f"Report reset/snapshot evidence: pre_run_sha256={pre_run_digest}, pre_run_mtime_ns={pre_run_mtime_ns}; verify the report is newly written before verdict. "
+        f"Fallback verdict validation is mandatory: validate the fresh report after fallback, exact standalone verdict only, fail closed on missing/stale/prose/duplicate/conflicting verdict. "
         f"AUDIT EVIDENCE CHECKLIST: "
         f"1. Verify l2_role_id={l2_role_id} != l3_role_id={l3_role_id}. "
         f"2. Verify code changes match approved scope. "
@@ -540,16 +557,24 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
     if model.startswith("cx/"):
         cmd = (
             f'if (-not (Test-Path {ps_quote(report_path.replace("/", chr(92)))})) {{ New-Item -ItemType File -Path {ps_quote(report_path.replace("/", chr(92)))} -Force | Out-Null }}; '
-            f'{read_stmt} echo "" | codex exec -m "{model}" --enable multi_agent -s danger-full-access '
+             f'{read_stmt} echo "" | codex exec -m {ps_quote(model)} --enable multi_agent -s danger-full-access '
             f'--dangerously-bypass-approvals-and-sandbox $__OMEGA_PROMPT; '
-            f'if ($LASTEXITCODE -ne 0 -and $LASTEXITCODE -ne 2) {{ '
-            f'python scripts/run_l3_audit.py {gate_name} --prompt-file {ps_quote(str(prompt_path))} --model gpt-5-6-thinking '
-            f'}}'
+            f'$codexExit = $LASTEXITCODE; '
+            f'$fallbackExit = 0; '
+            f'$reportPath = {ps_quote(report_path.replace("/", chr(92)))}; '
+             f'$freshVerdict = (Test-Path -LiteralPath $reportPath) -and ((Get-Item -LiteralPath $reportPath).Length -gt 0) -and ((Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8) -match \'\\A\\s*\\[(APPROVED|NEEDS_FIX)\\]\\s*\\z\'); '
+            f'if ($codexExit -ne 0 -or -not $freshVerdict) {{ '
+            f'[System.IO.File]::WriteAllBytes($reportPath, [byte[]]@()); '
+            f'python scripts/run_l3_audit.py {gate_name} --prompt-file {ps_quote(str(prompt_path))} --model gpt-5-6-thinking; '
+            f'$fallbackExit = $LASTEXITCODE '
+            f'}}; '
+             f'$fallbackFresh = (Test-Path -LiteralPath $reportPath) -and ((Get-Item -LiteralPath $reportPath).Length -gt 0) -and ((Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8) -match \'\\A\\s*\\[(APPROVED|NEEDS_FIX)\\]\\s*\\z\'); '
+            f'if ($fallbackExit -ne 0 -or -not $fallbackFresh) {{ exit 2 }}'
         )
     else:
         cmd = (
-            f'{read_stmt} echo "" | opencode run -m "{model}" --pure --dangerously-skip-permissions '
-            f'--dir "{REPO_ROOT}" $__OMEGA_PROMPT'
+             f'{read_stmt} echo "" | opencode run -m {ps_quote(model)} --pure --dangerously-skip-permissions '
+             f'--dir {ps_quote(str(REPO_ROOT))} $__OMEGA_PROMPT'
         )
 
     # 7. Output

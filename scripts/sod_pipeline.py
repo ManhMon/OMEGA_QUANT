@@ -11,6 +11,9 @@ import re
 import subprocess
 import sys
 import tempfile
+import os
+import secrets
+from datetime import timezone
 from pathlib import Path
 from typing import NamedTuple
 
@@ -24,6 +27,18 @@ GRAPH_EVIDENCE_SCHEMA = {
 }
 DISPATCH_L2_KEYS = {"SESSION_ID", "ROLE_ID", "ROLE_NAME", "CO_ROLE_IDS", "CO_ROLE_NAMES", "GATE", "MODEL", "SUBAGENT_MODEL", "RISK", "ANTI_DRIP_MODE", "ANTI_DRIP_CONTRACT", "ANTI_DRIP_CONTRACT_SHA256"}
 DISPATCH_L3_KEYS = {"L3_SESSION_ID", "L3_ROLE_ID", "L3_ROLE_NAME", "L2_ROLE_ID", "L2_ROLE_NAME", "MODEL", "SUBAGENT_MODEL", "RISK", "REPORT", "GATE"}
+PLAN_MAX_BYTES = 1_048_576
+PLANNER_STREAM_MAX_BYTES = 64 * 1024
+SECRET_PATTERN = re.compile(r"(?i)(bearer\s+[^\s,;]+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]+|sk-[A-Za-z0-9_-]+)")
+PLANNER_MODEL = "cx/gpt-6-astra(low)"
+PLAN_HEADINGS = (
+    ("Planning Run ID",),
+    ("Gate",),
+    ("Goal", "Muc tieu"),
+    ("Authorized Scope", "Ranh gioi SoD va pham vi"),
+    ("Technical Design", "Thiet ke ky thuat"),
+    ("Verification Plan", "Ke hoach xac minh"),
+)
 
 
 class ReportSnapshot(NamedTuple):
@@ -325,7 +340,136 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-remediations", type=int, default=MAX_REMEDIATIONS)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--graph-evidence")
+    parser.add_argument("--with-plan", "--plan", action="store_true", dest="with_plan")
     return parser.parse_args(argv)
+
+
+def _plan_path() -> Path:
+    session_root = (REPO_ROOT / ".ly_state" / "session").resolve()
+    path = session_root / "implementation_plan.md"
+    if path.parent != session_root or not path.is_relative_to(session_root):
+        raise RuntimeError("plan path escapes session root")
+    if path.exists():
+        stat = path.lstat()
+        if path.is_symlink() or getattr(stat, "st_file_attributes", 0) & 0x400 or getattr(stat, "st_nlink", 1) > 1:
+            raise RuntimeError("plan path identity invalid")
+    return path
+
+
+def _fsync_directory(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+        try:
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        pass
+
+
+def _redact(text: bytes) -> str:
+    return SECRET_PATTERN.sub("[REDACTED]", text.decode("utf-8", errors="replace")[:PLANNER_STREAM_MAX_BYTES])
+
+
+def _plan_sections(raw: str) -> dict[str, list[str]]:
+    if not raw or raw.startswith("\ufeff") or "\x00" in raw or any(ord(c) < 32 and c not in "\n\r\t" for c in raw):
+        raise RuntimeError("invalid plan encoding")
+    lines = raw.splitlines()
+    if len(raw.encode("utf-8")) > PLAN_MAX_BYTES or not lines or lines[0] not in ("# Implementation Plan", "# Ke hoach trien khai"):
+        raise RuntimeError("invalid plan header or size")
+    headings = [(line[3:], index) for index, line in enumerate(lines) if line.startswith("## ")]
+    if len(headings) != len(PLAN_HEADINGS):
+        raise RuntimeError("invalid plan heading cardinality")
+    selected: dict[str, list[str]] = {}
+    for index, ((aliases), (title, _)) in enumerate(zip(PLAN_HEADINGS, headings)):
+        if title not in aliases:
+            raise RuntimeError("invalid plan heading order")
+        end = headings[index + 1][1] if index + 1 < len(headings) else len(lines)
+        selected[aliases[0]] = lines[headings[index][1] + 1:end]
+    return selected
+
+
+def _scalar_section(lines: list[str], field: str) -> str:
+    values = [line.strip() for line in lines if line.strip() and not line.lstrip().startswith("#")]
+    if len(values) != 1:
+        raise RuntimeError(f"invalid plan {field}")
+    value = values[0].strip("`").strip()
+    if any(ord(c) < 32 and c not in "\t" for c in value):
+        raise RuntimeError(f"invalid plan {field}")
+    return value
+
+
+def _validate_plan(raw: str, run_id: str, gate: str, scope: str) -> str:
+    sections = _plan_sections(raw)
+    if _scalar_section(sections["Planning Run ID"], "run id") != run_id:
+        raise RuntimeError("plan run id mismatch")
+    if _scalar_section(sections["Gate"], "gate") != gate:
+        raise RuntimeError("plan gate mismatch")
+    from scripts.dispatch_l2 import _scope_files
+    listed = []
+    for line in sections["Authorized Scope"]:
+        value = line.strip().lstrip("-*").strip().strip("`")
+        if value:
+            listed.append(value)
+    if len(listed) != len(set(listed)) or _scope_files(" ".join(listed), REPO_ROOT) != _scope_files(scope, REPO_ROOT):
+        raise RuntimeError("plan scope mismatch")
+    for name in ("Goal", "Technical Design", "Verification Plan"):
+        if not any(line.strip() for line in sections[name]):
+            raise RuntimeError(f"empty plan section: {name}")
+    return raw
+
+
+def _run_planning_phase(args: argparse.Namespace) -> None:
+    run_id = f"planning_{args.slug}_{datetime.now(timezone.utc):%Y%m%dT%H%M%S}_{secrets.token_hex(8)}"
+    plan_path = _plan_path()
+    prompt = (
+        f"REPO_ROOT: {REPO_ROOT}\nROLE: 26 planning-architect\nGATE: {args.gate}\n"
+        f"PLANNING_RUN_ID: {run_id}\nAUTHORIZED_SCOPE: {args.scope}\nTASK: {args.task}\n"
+        "Write only the exact markdown plan to stdout. Use the required six sections, put the exact run ID and gate in scalar sections, and list one authorized repo-relative file per line."
+    )
+    session_dir = plan_path.parent
+    session_dir.mkdir(parents=True, exist_ok=True)
+    lock_path = session_dir / f".{plan_path.name}.lock"
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise RuntimeError("planning transaction lock contention") from exc
+    try:
+        if plan_path.exists() and not plan_path.is_file():
+            raise RuntimeError("plan path is not a regular file")
+        if plan_path.exists():
+            plan_path.unlink()
+            _fsync_directory(session_dir)
+        if args.dry_run:
+            print(f"PLAN_RUN_ID={run_id}\nPLAN_MODEL={PLANNER_MODEL}\nPLAN_SHA256={hashlib.sha256(prompt.encode()).hexdigest()}")
+            return
+        prompt_bytes = prompt.encode("utf-8")
+        result = subprocess.run(
+            ["codex", "exec", "-m", PLANNER_MODEL, "--dangerously-bypass-approvals-and-sandbox"],
+            cwd=REPO_ROOT, input=prompt_bytes, capture_output=True, timeout=900, shell=False,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"planning process failed: {_redact(result.stderr or b'')}")
+        raw_bytes = (result.stdout or b"")[:PLANNER_STREAM_MAX_BYTES]
+        try:
+            raw = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise RuntimeError("planning output is not valid UTF-8") from exc
+        _validate_plan(raw, run_id, args.gate, args.scope)
+        tmp = plan_path.with_name(f".{plan_path.name}.{run_id}.tmp")
+        with open(tmp, "wb") as handle:
+            handle.write(raw.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, plan_path)
+        _fsync_directory(session_dir)
+        published = plan_path.read_bytes()
+        if hashlib.sha256(published).hexdigest() != hashlib.sha256(raw.encode("utf-8")).hexdigest():
+            raise RuntimeError("published plan digest mismatch")
+        _validate_plan(published.decode("utf-8"), run_id, args.gate, args.scope)
+    finally:
+        os.close(fd)
+        lock_path.unlink(missing_ok=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -338,6 +482,14 @@ def main(argv: list[str] | None = None) -> int:
     if not 0 <= args.max_remediations <= MAX_REMEDIATIONS:
         raise SystemExit("--max-remediations must be between 0 and 3")
     task = args.task
+    if args.with_plan:
+        try:
+            _run_planning_phase(args)
+        except (OSError, RuntimeError, subprocess.SubprocessError, TimeoutError) as exc:
+            print(f"[FAIL] Phase 0 planning: {exc}", file=sys.stderr)
+            return 2
+        if args.dry_run:
+            return 0
     for cycle in range(args.max_remediations + 1):
         l2_meta, l2_command = _dispatch_l2(args, task)
         if args.dry_run:
