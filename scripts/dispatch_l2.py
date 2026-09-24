@@ -2,7 +2,7 @@
 """
 dispatch_l2.py - Pure generator for exact L2 OpenCode dispatch command.
 
-Generates validated powershell command string. Pure generator: no execution, no shell=True.
+Generates validated powershell command string. Pure generator: no execution, no shell=True. Security invariant: redact credentials before surfacing subprocess failures.
 
 Usage:
     python scripts/dispatch_l2.py <role_name> <gate_name> <task_slug> "<task_description>" "<scope>" [--risk low|high] [--co-role <role_name>]...
@@ -1179,7 +1179,7 @@ AUDIT_GATE_RE = re.compile(
     r"(?im)^[ \t]*[-*][ \t]+(?:\*\*)?Gate(?:\*\*)?[ \t]*:[ \t]*`?"
     r"(?P<gate>[A-Za-z0-9_-]{1,128})`?[ \t]*$"
 )
-VERDICT_SECTION_RE = re.compile(r"(?ims)^##[ \t]+Verdict[ \t]*\r?\n(?P<body>.*?)(?=^##[ \t]+|\Z)")
+VERDICT_SECTION_RE = re.compile(r"(?ims)^##[ \t]+(?:.*?[ \t]+)?Verdict[ \t]*\r?\n(?P<body>.*?)(?=^##[ \t]+|\Z)")
 VERDICT_FIELD_RE = re.compile(
     r"(?im)^[ \t]*(?:[-*][ \t]+)?\*{0,2}(?:final[_ -]?verdict|verdict|status)"
     r"[ \t]*:?\*{0,2}[ \t]*:?[ \t]*`?\*{0,2}\[(?P<verdict>APPROVED|NEEDS_FIX)\]"
@@ -1190,8 +1190,8 @@ MATRIX_ROW_RE = re.compile(
 )
 FINDINGS_HEADING_RE = re.compile(r"(?im)^##[ \t]+(?P<blocking>Blocking[ \t]+)?Findings?[ \t]*$")
 FINDING_START_RE = re.compile(
-    r"(?im)^(?:#{3,6}[ \t]+|[-*][ \t]+)?\*{0,2}(?P<finding_id>F-[0-9]{3})\*{0,2}[ \t]*"
-    r"(?:[-:\u2013\u2014][ \t]*)?(?P<title>[^\r\n]{1,200}?)\s*$"
+    r"(?im)^(?:#{3,6}[ \t]+|[-*][ \t]+|\d+\.[ \t]+)?\*{0,2}(?P<finding_id>F-[0-9]{3})\*{0,2}[ \t]*"
+    r"(?:[-:\u2013\u2014][ \t]*)?(?P<title>[^\r\n*]+?)(?:\*{0,2}[.:]|\*{2}|\r?\n|$)"
 )
 SEVERITY_RE = re.compile(
     r"(?im)^[ \t]*[-*]?[ \t]*\*{0,2}Severity\*{0,2}[ \t]*:[ \t]*\*{0,2}"
@@ -1336,6 +1336,8 @@ def _parse_dimensions(content: str, path: Path) -> tuple[tuple[tuple[int, str], 
             for state in ("PASS", "FAIL")
             if re.search(rf"(?:\[{state}\]|\b{state}\b)", cell)
         ]
+        if not states and any(re.search(r"\bN/?A\b", cell, re.IGNORECASE) for cell in cells.split("|")):
+            states = ["PASS"]
         dimension, name = int(match.group("dimension")), match.group("name").strip()
         unique_states = sorted(set(states))
         if len(unique_states) != 1 or (dimension in results and results[dimension] != (name, unique_states[0])):
@@ -1357,6 +1359,7 @@ def extract_prior_audit_outcomes(
         valid = (
             resolved.parent == audit_dir and path.suffix == ".md" and path.is_file()
             and not path.is_symlink() and path.stat().st_size >= AUDIT_MIN_BYTES
+            and not path.name.endswith(("_evidence.md", "_out.md"))
         )
         if not valid:
             if strict:
@@ -1515,9 +1518,9 @@ def build_regression_clause(classes: list[str] | None = None) -> str:
         f"error class listed below and prove each remains handled; any regression is automatic NEEDS_FIX: {enumerated}."
     )
 
-L2_LEAD_MODELS = ("9router/cx/gpt-5.6-luna", "9router/cx/gpt-5.6-sol", "cx/gpt-5.6-luna", "cx/gpt-5.6-sol")
-L2_SUBAGENT_MODELS = ("9router/ag/gemini-3.8-flash", "9router/ag/gemini-3.8-flash-high", "ag/gemini-3.8-flash", "ag/gemini-3.8-flash-high")
-MODELS = {"high": L2_LEAD_MODELS[0], "medium": L2_LEAD_MODELS[0], "low": L2_LEAD_MODELS[0]}
+L2_LEAD_MODELS = ("9router/cx/gpt-6-sol", "9router/cx/gpt-6-luna")
+L2_SUBAGENT_MODELS = ("9router/bzl/qwen3.7-flash",)
+MODELS = {"high": L2_LEAD_MODELS[0], "medium": L2_LEAD_MODELS[1], "low": L2_LEAD_MODELS[1]}
 DEFAULT_L2_SUBAGENT_MODEL = L2_SUBAGENT_MODELS[0]
 VALID_RISK_LEVELS = ("low", "medium", "high")
 
@@ -1589,6 +1592,8 @@ def _parse_cli_args(args: list[str]):
     explicit_l2_subagent_model = None
     dry_run = False
     graph_evidence_path = None
+    model_decision_path = None
+    model_decision_digest = None
     i = 0
     while i < len(args):
         arg = args[i]
@@ -1637,6 +1642,22 @@ def _parse_cli_args(args: list[str]):
             graph_evidence_path = args[i + 1]
             i += 2
             continue
+        elif arg in ("--model-decision-path", "--model-decision-digest"):
+            if i + 1 >= len(args):
+                print(f"[ERROR] Flag {arg} requires exactly one value.", file=sys.stderr)
+                sys.exit(2)
+            if arg == "--model-decision-path":
+                if model_decision_path is not None:
+                    print("[ERROR] Duplicate --model-decision-path flag provided.", file=sys.stderr)
+                    sys.exit(2)
+                model_decision_path = args[i + 1]
+            else:
+                if model_decision_digest is not None:
+                    print("[ERROR] Duplicate --model-decision-digest flag provided.", file=sys.stderr)
+                    sys.exit(2)
+                model_decision_digest = args[i + 1]
+            i += 2
+            continue
         elif arg in ("--l2-model", "--l2-subagent-model"):
             target = "explicit_l2_model" if arg == "--l2-model" else "explicit_l2_subagent_model"
             if locals()[target] is not None or i + 1 >= len(args):
@@ -1662,7 +1683,10 @@ def _parse_cli_args(args: list[str]):
         )
         sys.exit(2)
 
-    return pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, co_roles, token_saver, explicit_model, explicit_l2_model, explicit_l2_subagent_model, dry_run, graph_evidence_path
+    if (model_decision_path is None) != (model_decision_digest is None):
+        print("[ERROR] model decision path and digest must be supplied together.", file=sys.stderr)
+        sys.exit(2)
+    return pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, co_roles, token_saver, explicit_model, explicit_l2_model, explicit_l2_subagent_model, dry_run, graph_evidence_path, model_decision_path, model_decision_digest
 
 
 def parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | None]:
@@ -1742,7 +1766,7 @@ def resolve_l2_roles(primary_name: str, co_role_names: list[str], repo_root: Pat
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    role_name, gate_name, task_slug, task_desc, scope, explicit_risk, co_role_names, token_saver, explicit_model, explicit_l2_model, explicit_l2_subagent_model, dry_run, graph_evidence_path = _parse_cli_args(sys.argv[1:])
+    role_name, gate_name, task_slug, task_desc, scope, explicit_risk, co_role_names, token_saver, explicit_model, explicit_l2_model, explicit_l2_subagent_model, dry_run, graph_evidence_path, model_decision_path, model_decision_digest = _parse_cli_args(sys.argv[1:])
     validate_identifier(role_name, "role_name")
     validate_identifier(gate_name, "gate_name")
     validate_identifier(task_slug, "task_slug")
@@ -1757,22 +1781,40 @@ def main():
     else:
         risk, risk_reason = infer_risk(scope)
 
-    model = explicit_l2_model or explicit_model or (MODELS["low"] if token_saver else MODELS[risk])
-    subagent_model = explicit_l2_subagent_model or DEFAULT_L2_SUBAGENT_MODEL
-    if model not in L2_LEAD_MODELS or subagent_model not in L2_SUBAGENT_MODELS:
-        print("[ERROR] invalid L2 lead or subagent model; cross-tier model rejected", file=sys.stderr)
-        return 2
-
-    # 1. Resolve every repo-local role and skill before dispatch side effects.
+    # Resolve identity before loading a bound decision; session binding prevents replay.
     try:
         roles = resolve_l2_roles(role_name, co_role_names)
     except RuntimeError as exc:
         print(f"[ERROR] {exc}", file=sys.stderr)
         sys.exit(2)
     role_id = roles[0]["role_id"]
-
-    # 2. Build session ID (task_slug allowlisted above; role_id validated 6-16)
     session_id = f"l2_role{role_id}_{task_slug}_{today}"
+    # Decision binding below rejects replay across role, gate, session, and risk.
+
+    if model_decision_path:
+        from scripts.jev_model_router import load_decision
+        try:
+            decision = load_decision(
+                model_decision_path,
+                model_decision_digest,
+                expected_role="l2",
+                expected_gate=gate_name,
+                expected_session_id=session_id,
+                expected_risk=risk,
+            )
+            model = decision["lead_model"]
+            subagent_model = decision["subagent_model"]
+        except (OSError, ValueError, KeyError, UnicodeError) as exc:
+            print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
+            return 2
+    else:
+        model = explicit_l2_model or explicit_model or (MODELS["low"] if token_saver else MODELS[risk])
+        subagent_model = explicit_l2_subagent_model or DEFAULT_L2_SUBAGENT_MODEL
+    if model not in L2_LEAD_MODELS or subagent_model not in L2_SUBAGENT_MODELS:
+        print("[ERROR] invalid L2 lead or subagent model; cross-tier model rejected", file=sys.stderr)
+        return 2
+
+    # Identity and session were resolved before loading the bound model decision.
 
     # 3. Lock before the lesson helper or any other subprocess can spawn.
     lock_path = None if dry_run else acquire_session_lock(session_id)

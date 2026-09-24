@@ -4,10 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
+import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+import tempfile
+import time
+from ast import AST, Assert, Compare, Constant, FunctionDef, If, Pass, parse, walk
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Mapping, Sequence
 
@@ -617,9 +622,374 @@ def _emit_failures(errors: Sequence[str], *, fatal: bool = False) -> None:
     print(("RESULT: [ERROR]" if fatal else "RESULT: [NEEDS_FIX]") + f" - {len(errors)} issue(s); do not dispatch L3.")
 
 
+def _strict_confidence(value: object, field: str) -> float:
+    if type(value) is not float or not math.isfinite(value) or not 0.0 <= value <= 1.0:
+        raise ValueError(f"{field} confidence must be a finite float in [0, 1]")
+    return value
+
+
+def validate_pre_audit_schema(payload: Mapping[str, Any]) -> bool:
+    required = {"schema_version", "gate", "session_id", "role", "scope", "fingerprints",
+                "verifier", "ast_findings", "judgments", "scores", "routing", "generated_at"}
+    optional = {"jev_available", "jev_raw_response"}  # Jev integration fields
+    keys = set(payload)
+    if not required <= keys or not keys <= (required | optional) or payload["schema_version"] != "1.0":
+        raise ValueError("invalid pre-audit schema keys or version")
+    if not isinstance(payload["scope"], list) or not payload["scope"] or not all(isinstance(v, str) for v in payload["scope"]):
+        raise ValueError("invalid pre-audit scope")
+    fingerprints = payload["fingerprints"]
+    if not isinstance(fingerprints, dict) or set(fingerprints) != set(payload["scope"]):
+        raise ValueError("invalid pre-audit fingerprints")
+    if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) for value in fingerprints.values()):
+        raise ValueError("invalid pre-audit fingerprint digest")
+    routing = payload["routing"]
+    if not isinstance(routing, dict) or set(routing) != {"routing", "reason_code", "evidence_refs", "confidence"}:
+        raise ValueError("invalid routing schema")
+    if routing["routing"] not in {"BLOCK", "PROBE", "JUDGE"}:
+        raise ValueError("invalid routing value")
+    _strict_confidence(routing["confidence"], "routing")
+    for judgment in payload["judgments"]:
+        if not isinstance(judgment, dict) or set(judgment) != {"field", "value", "confidence", "evidence_ref", "source"}:
+            raise ValueError("invalid judgment schema")
+        if type(judgment["value"]) is not bool:
+            raise ValueError("judgment value must be bool")
+        _strict_confidence(judgment["confidence"], judgment["field"])
+    for score in payload["scores"]:
+        if not isinstance(score, dict) or set(score) != {"field", "value", "confidence", "conditions"}:
+            raise ValueError("invalid score schema")
+        if type(score["value"]) is not float or not math.isfinite(score["value"]):
+            raise ValueError("score value must be a finite float")
+        _strict_confidence(score["confidence"], score["field"])
+    verifier = payload["verifier"]
+    if not isinstance(verifier, dict) or type(verifier.get("exit_code")) is not int:
+        raise ValueError("invalid verifier schema")
+    generated_at = payload["generated_at"]
+    try:
+        timestamp = datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+    except (AttributeError, ValueError) as exc:
+        raise ValueError("invalid pre-audit timestamp") from exc
+    if timestamp.tzinfo is None or timestamp > datetime.now(timezone.utc):
+        raise ValueError("invalid pre-audit timestamp")
+    if routing["routing"] == "JUDGE" and verifier["exit_code"] != 0:
+        raise ValueError("JUDGE routing requires a passing verifier")
+    if "jev_available" in payload and type(payload["jev_available"]) is not bool:
+        raise ValueError("jev_available must be bool")
+    return True
+
+
+def snapshot_fingerprints(paths: Sequence[Path]) -> dict[str, str]:
+    return {path.as_posix(): hashlib.sha256(path.read_bytes()).hexdigest() for path in paths}
+
+
+def verify_fingerprints(paths: Sequence[Path], before: Mapping[str, str]) -> tuple[str, str]:
+    after = snapshot_fingerprints(paths)
+    return ("JUDGE", "CLEAN") if dict(before) == after else ("BLOCK", "PIT_FINGERPRINT_DRIFT")
+
+
+def scan_test_ast(tree: AST, path: str) -> list[dict[str, object]]:
+    findings: list[dict[str, object]] = []
+    for node in walk(tree):
+        if isinstance(node, Assert) and isinstance(node.test, Constant) and node.test.value is True:
+            findings.append({"rule_id": "TRIVIAL_ASSERT", "certainty": "CERTAIN", "path": path, "line": node.lineno})
+        if isinstance(node, Assert) and isinstance(node.test, Compare):
+            compare = node.test
+            if isinstance(compare.left, Constant) and compare.comparators and isinstance(compare.comparators[0], Constant) and compare.left.value == compare.comparators[0].value:
+                findings.append({"rule_id": "TRIVIAL_ASSERT", "certainty": "CERTAIN", "path": path, "line": node.lineno})
+        if isinstance(node, FunctionDef) and node.name.startswith("test_") and len(node.body) == 1 and isinstance(node.body[0], Pass):
+            findings.append({"rule_id": "EMPTY_TEST", "certainty": "CERTAIN", "path": path, "line": node.lineno})
+        if isinstance(node, If) and isinstance(node.test, Constant) and node.test.value is False:
+            findings.append({"rule_id": "DISABLED_ASSERT", "certainty": "CERTAIN", "path": path, "line": node.lineno})
+    return findings
+
+
+def run_jev_judgments(report_text: str, test_output: str, scope_files: list[str]) -> dict[str, Any] | None:
+    """Gọi TypeSafe Jev API cho semantic quality checks. Returns None nếu unavailable."""
+    try:
+        from typesafe_sdk import Noul, Score, TypeSafeClient  # type: ignore[import-untyped]
+    except ImportError:
+        print("WARN: typesafe-sdk not installed, skipping Jev judgments")
+        return None
+    state = {
+        "l2_report_excerpt": report_text[:4000],
+        "test_output_excerpt": test_output[:2000],
+        "scope_file_count": len(scope_files),
+        "scope_files": scope_files[:20],
+    }
+    questions = {
+        "genuine_testing": Noul(
+            instructions=(
+                "Do the test results in `test_output_excerpt` demonstrate "
+                "genuine verification of the code changes described in "
+                "`l2_report_excerpt`? Look for: meaningful assertions, "
+                "edge case coverage, non-trivial test logic."
+            ),
+        ),
+        "fabricated_evidence": Noul(
+            instructions=(
+                "Does `l2_report_excerpt` contain fabricated or "
+                "copy-pasted evidence that does not match the actual "
+                "test output in `test_output_excerpt`?"
+            ),
+        ),
+        "test_quality": Score(
+            instructions=(
+                "Rate the depth and rigor of testing shown in "
+                "`test_output_excerpt` for the scope described."
+            ),
+            criteria=[
+                "Shallow: only happy-path tests, no edge cases",
+                "Adequate: covers main paths and some edge cases",
+                "Thorough: covers edge cases, error paths, boundary conditions",
+            ],
+        ),
+    }
+    for attempt in range(2):
+        try:
+            with TypeSafeClient() as client:
+                response = client.system_one(state=state, questions=questions)
+            return {
+                "genuine_testing": {"noul": response.nouls["genuine_testing"].noul},
+                "fabricated_evidence": {"noul": response.nouls["fabricated_evidence"].noul},
+                "test_quality": {
+                    "score": response.scores["test_quality"].score,
+                    "confidence": response.scores["test_quality"].confidence,
+                },
+            }
+        except Exception as exc:
+            status = getattr(exc, "status", None)
+            is_rate_limited = status == 429 or re.search(r"\b429\b|too many requests|rate limit", str(exc), re.IGNORECASE)
+            if is_rate_limited and attempt == 0:
+                time.sleep(1)
+                continue
+            from dispatch_l2 import redact_credentials
+            print(f"WARN: Jev API error: {redact_credentials(str(exc))[:500]}, skipping Jev judgments")
+            return None
+    return None
+
+def _atomic_write_bytes(target: Path, raw: bytes) -> None:
+    fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    temp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
+
+def _acquire_pre_audit_lock(lock: Path) -> int:
+    for attempt in range(2):
+        try:
+            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            os.write(fd, str(os.getpid()).encode("ascii"))
+            os.fsync(fd)
+            return fd
+        except FileExistsError:
+            if attempt:
+                raise
+            try:
+                stat = lock.stat()
+                owner = int(lock.read_text(encoding="ascii"))
+                alive = False
+                if sys.platform.startswith("win"):
+                    import ctypes
+                    SYNCHRONIZE = 0x00100000
+                    handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, owner)
+                    if handle:
+                        alive = True
+                        ctypes.windll.kernel32.CloseHandle(handle)
+                    else:
+                        alive = False
+                else:
+                    try:
+                        os.kill(owner, 0)
+                        alive = True
+                    except ProcessLookupError:
+                        alive = False
+                    except OSError as _exc:
+                        import errno as _errno
+                        alive = (_exc.errno == _errno.EPERM)
+                if not alive:
+                    if lock.stat() == stat:
+                        lock.unlink()
+                else:
+                    raise FileExistsError(f"pre-audit lock is busy or unreadable: {lock}")
+            except (OSError, ValueError) as _exc:
+                raise FileExistsError(f"pre-audit lock is busy or unreadable: {lock}") from _exc
+    raise FileExistsError(lock)
+
+
+def _merge_jev_into_routing(
+    base_routing: dict[str, object], jev: dict[str, Any] | None,
+) -> tuple[dict[str, object], list[dict[str, object]], list[dict[str, object]]]:
+    """Merge Jev signals into routing. Returns (routing, judgments, scores).
+
+    Deterministic BLOCK always wins. Jev can only escalate JUDGE -> PROBE or PROBE -> BLOCK.
+    """
+    judgments: list[dict[str, object]] = []
+    scores: list[dict[str, object]] = []
+    if jev is None:
+        return base_routing, judgments, scores
+    genuine_noul = float(jev["genuine_testing"]["noul"])
+    fab_noul = float(jev["fabricated_evidence"]["noul"])
+    tq_score = float(jev["test_quality"]["score"])
+    tq_conf = float(jev["test_quality"]["confidence"])
+    judgments.append({
+        "field": "jev_genuine_testing", "value": genuine_noul > 0.5,
+        "confidence": min(1.0, max(0.0, abs(genuine_noul - 0.5) * 2)),
+        "evidence_ref": f"JEV_API:genuine_testing:noul={genuine_noul:.3f}", "source": "JEV",
+    })
+    judgments.append({
+        "field": "jev_fabricated_evidence", "value": fab_noul > 0.5,
+        "confidence": min(1.0, max(0.0, abs(fab_noul - 0.5) * 2)),
+        "evidence_ref": f"JEV_API:fabricated_evidence:noul={fab_noul:.3f}", "source": "JEV",
+    })
+    scores.append({
+        "field": "jev_test_quality", "value": tq_score,
+        "confidence": min(1.0, max(0.0, tq_conf)),
+        "conditions": f"score={tq_score:.2f},conf={tq_conf:.3f}",
+    })
+    # ponytail: Jev can only escalate, never downgrade a deterministic decision
+    routing = dict(base_routing)
+    if routing["routing"] != "BLOCK":
+        if fab_noul > 0.7 and abs(fab_noul - 0.5) * 2 > 0.6:
+            routing = {"routing": "BLOCK", "reason_code": "JEV_FABRICATED_EVIDENCE",
+                       "evidence_refs": [f"noul={fab_noul:.3f}"], "confidence": min(1.0, abs(fab_noul - 0.5) * 2)}
+        elif routing["routing"] != "BLOCK":
+            probe_reasons = []
+            if genuine_noul < 0.3:
+                probe_reasons.append(f"genuine_testing={genuine_noul:.3f}")
+            if tq_score < 1.0 and tq_conf > 0.5:
+                probe_reasons.append(f"test_quality={tq_score:.2f}")
+            if fab_noul > 0.5 and fab_noul <= 0.7:
+                probe_reasons.append(f"fabricated_evidence={fab_noul:.3f}")
+            if probe_reasons and routing["routing"] == "JUDGE":
+                routing = {"routing": "PROBE", "reason_code": "JEV_SEMANTIC_CONCERN",
+                           "evidence_refs": probe_reasons, "confidence": 0.75}
+    return routing, judgments, scores
+
+
+def resolve_routing(*, pytest_exit: int, cheat_certain: bool, uncertain_findings: bool) -> dict[str, object]:
+    if pytest_exit != 0 or cheat_certain:
+        return {"routing": "BLOCK", "reason_code": "VERIFIER_OR_CHEAT", "evidence_refs": [], "confidence": 1.0}
+    if uncertain_findings:
+        return {"routing": "PROBE", "reason_code": "UNCERTAIN_AST", "evidence_refs": [], "confidence": 0.75}
+    return {"routing": "JUDGE", "reason_code": "CLEAN_PASS", "evidence_refs": [], "confidence": 1.0}
+
+
+def write_atomic_pre_audit(payload: Mapping[str, Any], session_dir: Path, session_id: str) -> tuple[Path, Path]:
+    # Security invariant: pre-audit publication uses atomic replace with rollback.
+    validate_pre_audit_schema(payload)
+    session_dir.mkdir(parents=True, exist_ok=True)
+    target = session_dir / f"pre_audit_{session_id}.json"
+    sidecar = target.with_suffix(".sha256")
+    lock = session_dir / f".pre_audit_{session_id}.lock"
+    lock_fd = _acquire_pre_audit_lock(lock)
+    temp = sidecar_temp = None
+    try:
+        temp_fd, temp_name = tempfile.mkstemp(prefix=f"pre_audit_{session_id}.", suffix=".tmp", dir=session_dir)
+        os.close(temp_fd)
+        temp = Path(temp_name)
+        raw = (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
+        with temp.open("wb") as handle:
+            handle.write(raw)
+            handle.flush()
+            os.fsync(handle.fileno())
+        digest = hashlib.sha256(raw).hexdigest()
+        sidecar_fd, sidecar_name = tempfile.mkstemp(prefix=f"pre_audit_{session_id}.", suffix=".sha256.tmp", dir=session_dir)
+        os.close(sidecar_fd)
+        sidecar_temp = Path(sidecar_name)
+        old_target = target.read_bytes() if target.exists() else None
+        old_sidecar = sidecar.read_bytes() if sidecar.exists() else None
+        with sidecar_temp.open("w", encoding="ascii", newline="\n") as handle:
+            handle.write(f"{digest}  {target.name}\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp, target)
+        os.replace(sidecar_temp, sidecar)
+    except Exception:
+        if temp:
+            temp.unlink(missing_ok=True)
+        if sidecar_temp:
+            sidecar_temp.unlink(missing_ok=True)
+        old_target = locals().get("old_target")
+        old_sidecar = locals().get("old_sidecar")
+        if old_target is None:
+            target.unlink(missing_ok=True)
+        else:
+            _atomic_write_bytes(target, old_target)
+        if old_sidecar is None:
+            sidecar.unlink(missing_ok=True)
+        else:
+            _atomic_write_bytes(sidecar, old_sidecar)
+        raise
+    finally:
+        os.close(lock_fd)
+        try:
+            if lock.read_text(encoding="ascii") == str(os.getpid()):
+                lock.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return target, sidecar
+
+
+def run_pre_audit(session_id: str, role_name: str, gate: str, scope: Sequence[str], root: Path, execution_timeout: int = 180) -> tuple[int, dict[str, str]]:
+    paths = []
+    for value in scope:
+        error = _validate_repo_relative_posix_path(value, root)
+        path = root / PurePosixPath(value)
+        if error or path.is_symlink() or not path.is_file():
+            raise ValueError(f"invalid pre-audit scope path: {value}")
+        paths.append(path)
+    before_paths = snapshot_fingerprints(paths)
+    before = {value: before_paths[path.as_posix()] for value, path in zip(scope, paths, strict=True)}
+    test_scope = [value for value in scope if value.startswith("tests/")]
+    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *test_scope]
+    try:
+        if not test_scope:
+            result = None
+            exit_code = 2
+        else:
+            result = subprocess.run(command, cwd=root, shell=False, capture_output=True, text=True, timeout=execution_timeout)
+            exit_code = result.returncode
+    except subprocess.TimeoutExpired:
+        print(f"ANTI_DRIP[E105] verifier execution timed out after {execution_timeout}s")
+        exit_code = 2
+    except OSError:
+        exit_code = 2
+    findings = []
+    for path in paths:
+        if path.suffix == ".py" and "test" in path.name:
+            findings.extend(scan_test_ast(parse(path.read_text(encoding="utf-8")), path.relative_to(root).as_posix()))
+    drift_route, drift_reason = verify_fingerprints(paths, before_paths)
+    routing = resolve_routing(pytest_exit=exit_code, cheat_certain=any(f["certainty"] == "CERTAIN" for f in findings), uncertain_findings=False)
+    if drift_route == "BLOCK":
+        routing = {"routing": "BLOCK", "reason_code": drift_reason, "evidence_refs": [], "confidence": 1.0}
+    # Jev semantic judgments (supplementary, graceful degradation)
+    report_path = root / SESSION_REL / f"{session_id}.md"
+    report_text = report_path.read_text(encoding="utf-8", errors="replace") if report_path.exists() else ""
+    test_output = getattr(result, "stdout", "") if "result" in dir() else ""  # noqa: F841
+    jev_results = run_jev_judgments(report_text, test_output, list(scope))
+    routing, jev_judgments, jev_scores = _merge_jev_into_routing(routing, jev_results)
+    payload = {"schema_version": "1.0", "gate": gate, "session_id": session_id, "role": role_name,
+               "scope": list(scope), "fingerprints": before, "verifier": {"exit_code": exit_code},
+               "ast_findings": findings, "judgments": jev_judgments, "scores": jev_scores, "routing": routing,
+               "generated_at": datetime.now(timezone.utc).isoformat(),
+               "jev_available": jev_results is not None,
+               "jev_raw_response": jev_results}
+    artifact, sidecar = write_atomic_pre_audit(payload, root / SESSION_REL, session_id)
+    metadata = {"PRE_AUDIT_PATH": artifact.relative_to(root).as_posix(), "PRE_AUDIT_SHA256": hashlib.sha256(artifact.read_bytes()).hexdigest()}
+    return (1 if routing["routing"] == "BLOCK" else 0), metadata
+
+
 def main(argv: Sequence[str] | None = None, repo_root: Path | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     collect_timeout = 60
+    execution_timeout = 180
+    pre_audit = False
+    pre_audit_gate: str | None = None
+    pre_audit_scope: list[str] = []
     pos_args: list[str] = []
     i = 0
     while i < len(args):
@@ -645,6 +1015,27 @@ def main(argv: Sequence[str] | None = None, repo_root: Path | None = None) -> in
                 _emit_failures(["ANTI_DRIP[E101] timeout must be a positive integer"], fatal=True)
                 return 2
             i += 1
+        elif arg == "--execution-timeout":
+            if i + 1 >= len(args) or args[i + 1] not in {str(value) for value in (120, 180, 300)}:
+                _emit_failures(["ANTI_DRIP[E101] execution timeout must be 120, 180, or 300"], fatal=True)
+                return 2
+            execution_timeout = int(args[i + 1])
+            i += 2
+        elif arg == "--pre-audit":
+            pre_audit = True
+            i += 1
+        elif arg == "--gate":
+            if i + 1 >= len(args):
+                _emit_failures(["ANTI_DRIP[E101] missing value for --gate"], fatal=True)
+                return 2
+            pre_audit_gate = args[i + 1]
+            i += 2
+        elif arg == "--scope":
+            if i + 1 >= len(args):
+                _emit_failures(["ANTI_DRIP[E101] missing value for --scope"], fatal=True)
+                return 2
+            pre_audit_scope = [value for value in args[i + 1].split() if value]
+            i += 2
         elif arg.startswith("-"):
             _emit_failures([f"ANTI_DRIP[E101] unrecognized option: {arg!r}"], fatal=True)
             return 2
@@ -667,6 +1058,18 @@ def main(argv: Sequence[str] | None = None, repo_root: Path | None = None) -> in
         _emit_failures(["ANTI_DRIP[E101] invalid L2 role arguments"], fatal=True)
         return 2
     root = (repo_root or REPO_ROOT).resolve()
+    code = 0
+    if pre_audit:
+        if not pre_audit_gate or not pre_audit_scope:
+            _emit_failures(["ANTI_DRIP[E101] --pre-audit requires --gate and --scope"], fatal=True)
+            return 2
+        try:
+            code, metadata = run_pre_audit(session_id, role_name, pre_audit_gate, pre_audit_scope, root, execution_timeout)
+        except (OSError, UnicodeError, ValueError) as exc:
+            _emit_failures([f"ANTI_DRIP[E105] pre-audit failed closed: {exc}"], fatal=True)
+            return 2
+        print(f"PRE_AUDIT_PATH={metadata['PRE_AUDIT_PATH']}")
+        print(f"PRE_AUDIT_SHA256={metadata['PRE_AUDIT_SHA256']}")
     report_path = root / SESSION_REL / f"{session_id}.md"
     if not report_path.exists() or report_path.is_symlink() or not report_path.is_file():
         _emit_failures(["ANTI_DRIP[E102] L2 report missing or not a regular non-symlink file"])
@@ -693,6 +1096,9 @@ def main(argv: Sequence[str] | None = None, repo_root: Path | None = None) -> in
     if not valid:
         _emit_failures([f"ANTI_DRIP[E303] L2 role/spec validation failed: {message}"])
         return 1
+    if pre_audit and code:
+        _emit_failures(["ANTI_DRIP[E105] pre-audit verifier did not pass"])
+        return code
     print(f"RESULT: [PASS] - anti-drip L2 report validated; session={session_id}; role={role_id} {role_name}; mode={mode}.")
     return 0
 

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 """Run the bounded L2 -> validation -> L3 -> enforcer SoD pipeline."""
 
 from __future__ import annotations
@@ -18,6 +18,14 @@ from pathlib import Path
 from typing import NamedTuple
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+try:
+    from scripts.jev_model_router import evaluate_model_decision, validate_standalone_verdict
+except ImportError:
+    from jev_model_router import evaluate_model_decision, validate_standalone_verdict
+
 MAX_REMEDIATIONS = 3
 GRAPH_EVIDENCE_SCHEMA = {
     "affected_files", "blast_radius", "dependencies", "detail_files", "detail_files_truncated",
@@ -25,12 +33,12 @@ GRAPH_EVIDENCE_SCHEMA = {
     "relationships", "repo_commit", "schema_version", "scope_content_hashes", "scope_dirty",
     "scope_files", "session_id",
 }
-DISPATCH_L2_KEYS = {"SESSION_ID", "ROLE_ID", "ROLE_NAME", "CO_ROLE_IDS", "CO_ROLE_NAMES", "GATE", "MODEL", "SUBAGENT_MODEL", "RISK", "ANTI_DRIP_MODE", "ANTI_DRIP_CONTRACT", "ANTI_DRIP_CONTRACT_SHA256"}
-DISPATCH_L3_KEYS = {"L3_SESSION_ID", "L3_ROLE_ID", "L3_ROLE_NAME", "L2_ROLE_ID", "L2_ROLE_NAME", "MODEL", "SUBAGENT_MODEL", "RISK", "REPORT", "GATE"}
+DISPATCH_L2_KEYS = {"SESSION_ID", "ROLE_ID", "ROLE_NAME", "CO_ROLE_IDS", "CO_ROLE_NAMES", "GATE", "MODEL", "SUBAGENT_MODEL", "RISK", "ANTI_DRIP_MODE", "ANTI_DRIP_CONTRACT", "ANTI_DRIP_CONTRACT_SHA256", "MODEL_DECISION_PATH", "MODEL_DECISION_DIGEST"}
+DISPATCH_L3_KEYS = {"L3_SESSION_ID", "L3_ROLE_ID", "L3_ROLE_NAME", "L2_ROLE_ID", "L2_ROLE_NAME", "MODEL", "SUBAGENT_MODEL", "RISK", "REPORT", "GATE", "PRE_AUDIT_PATH", "PRE_AUDIT_SHA256", "MODEL_DECISION_PATH", "MODEL_DECISION_DIGEST"}
 PLAN_MAX_BYTES = 1_048_576
 PLANNER_STREAM_MAX_BYTES = 64 * 1024
 SECRET_PATTERN = re.compile(r"(?i)(bearer\s+[^\s,;]+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]+|sk-[A-Za-z0-9_-]+)")
-PLANNER_MODEL = "cx/gpt-6-astra(low)"
+PLANNER_MODEL = "cx/gpt-6-sol"
 PLAN_HEADINGS = (
     ("Planning Run ID",),
     ("Gate",),
@@ -295,6 +303,8 @@ def _dispatch_l2(args: argparse.Namespace, task: str) -> tuple[dict[str, str], s
         command += ["--risk", args.risk]
     if args.model:
         command += ["--model", args.model]
+    if getattr(args, "model_decision_path", None):
+        command += ["--model-decision-path", args.model_decision_path, "--model-decision-digest", args.model_decision_digest]
     if args.dry_run:
         command.append("--dry-run")
     if args.graph_evidence:
@@ -317,6 +327,10 @@ def _dispatch_l3(args: argparse.Namespace, session_id: str) -> tuple[dict[str, s
         command += ["--model", args.model]
     if args.subagent_model:
         command += ["--subagent-model", args.subagent_model]
+    if getattr(args, "model_decision_path", None):
+        command += ["--model-decision-path", args.model_decision_path, "--model-decision-digest", args.model_decision_digest]
+    if getattr(args, "pre_audit_path", None):
+        command += ["--pre-audit-path", args.pre_audit_path, "--pre-audit-sha256", args.pre_audit_sha256]
     rc, output = capture(command)
     if rc:
         raise SystemExit(f"[FAIL] dispatch_l3.py failed: {output}")
@@ -340,8 +354,14 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--max-remediations", type=int, default=MAX_REMEDIATIONS)
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--graph-evidence")
+    parser.add_argument("--jev", action="store_true")
+    parser.add_argument("--model-decision-path")
+    parser.add_argument("--model-decision-digest")
     parser.add_argument("--with-plan", "--plan", action="store_true", dest="with_plan")
-    return parser.parse_args(argv)
+    parsed = parser.parse_args(argv)
+    if (parsed.model or parsed.subagent_model) and parsed.jev:
+        parser.error("--model and --subagent-model cannot be used with Jev routing")
+    return parsed
 
 
 def _plan_path() -> Path:
@@ -490,7 +510,20 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if args.dry_run:
             return 0
+    if args.jev and args.max_remediations > 2:
+        args.max_remediations = 2
     for cycle in range(args.max_remediations + 1):
+        if args.jev:
+            from scripts.dispatch_l2 import resolve_l2_role
+            role_id = resolve_l2_role(args.l2_role)["role_id"]
+            session_id = f"l2_role{role_id}_{args.slug}_{datetime.now().strftime('%Y%m%d')}"
+            l2_decision_path = REPO_ROOT / ".ly_state" / "session" / f"jev_model_decision_l2_{args.slug}_{cycle + 1}.json"
+            l2_decision = evaluate_model_decision(
+                role="l2", risk=args.risk, cycle=cycle + 1, gate=args.gate,
+                session_id=session_id, task=task, decision_path=l2_decision_path,
+            )
+            args.model_decision_path = l2_decision_path.relative_to(REPO_ROOT).as_posix()
+            args.model_decision_digest = l2_decision["decision_digest"]
         l2_meta, l2_command = _dispatch_l2(args, task)
         if args.dry_run:
             print(l2_command)
@@ -502,17 +535,43 @@ def main(argv: list[str] | None = None) -> int:
             verify_graph_evidence(*candidate_binding, expected_scope=args.scope.split())
             if candidate_binding == baseline_binding:
                 raise SystemExit("[FAIL] candidate graph evidence was not regenerated")
-        session_id = l2_meta.get("SESSION_ID", f"l2_role0_{args.slug}_{datetime.now():%Y%m%d}")
+        session_id = l2_meta["SESSION_ID"]
+        if args.jev and l2_decision["session_id"] != session_id:
+            raise SystemExit("[FAIL] L2 decision session binding mismatch")
         role_id = l2_meta.get("ROLE_ID", "0")
-        if run([sys.executable, "scripts/validate_l2_report.py", session_id, role_id, args.l2_role], "Pre-L3 Validation"):
+        validation_command = [sys.executable, "scripts/validate_l2_report.py", session_id, role_id, args.l2_role,
+                              "--pre-audit", "--gate", args.gate, "--scope", args.scope]
+        validation_rc, validation_output = capture(validation_command)
+        print(_redact(validation_output.encode("utf-8")))
+        if validation_rc:
             return 1
+        lines = dict(line.split("=", 1) for line in validation_output.splitlines() if "=" in line)
+        if {"PRE_AUDIT_PATH", "PRE_AUDIT_SHA256"} - lines.keys():
+            return 1
+        args.pre_audit_path = lines["PRE_AUDIT_PATH"]
+        args.pre_audit_sha256 = lines["PRE_AUDIT_SHA256"]
 
+        if args.jev:
+            l3_decision_path = REPO_ROOT / ".ly_state" / "session" / f"jev_model_decision_l3_{args.slug}_{cycle + 1}.json"
+            l3_decision = evaluate_model_decision(
+                role="l3", risk=args.risk, cycle=cycle + 1, gate=args.gate,
+                session_id=session_id, task=task,
+                decision_path=l3_decision_path,
+            )
+            args.model_decision_path = l3_decision_path.relative_to(REPO_ROOT).as_posix()
+            args.model_decision_digest = l3_decision["decision_digest"]
         l3_meta, l3_command = _dispatch_l3(args, session_id)
         report_path = l3_meta.get("REPORT", "")
         previous_snapshot = _read_report_snapshot(report_path)
         l3_rc = run(l3_command, f"L3 Codex Audit: {args.l3_role}", check=False)
         report = _read_fresh_report(report_path, previous_snapshot)
-        if l3_rc == 0 and report and "[APPROVED]" in report and "[NEEDS_FIX]" not in report:
+        verdict = None
+        if l3_rc == 0 and report:
+            try:
+                verdict = validate_standalone_verdict(report)
+            except ValueError:
+                pass
+        if verdict == "APPROVED":
             return 0 if run([sys.executable, "scripts/sod_gate_enforcer.py"], "SoD Gate Enforcer") == 0 else 3
         if run([sys.executable, "scripts/extract_lessons.py"], "Lesson Extraction Hard Gate", check=False):
             return 2

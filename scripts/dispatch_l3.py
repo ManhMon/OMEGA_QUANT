@@ -6,12 +6,12 @@ Usage:
     python scripts/dispatch_l3.py <l3_role_name> <gate_name> <l2_session_id> <l2_role_name> "<scope>" [--risk low|high] [--model <model>] [--subagent-model <model>] [--run]
 
 Example:
-    python scripts/dispatch_l3.py code-reviewer SYNTHETIC_FIXTURES_MACRO_NEWS_V12 l2_role15_synthetic_fixtures_macro_news_v12_20260814 data-engineer "tests/fixtures/macro/" --subagent-model ag/gemini-3.8-flash-high --run
+    python scripts/dispatch_l3.py code-reviewer SYNTHETIC_FIXTURES_MACRO_NEWS_V12 l2_role15_synthetic_fixtures_macro_news_v12_20260814 data-engineer "tests/fixtures/macro/" --subagent-model cx/gpt-6-luna --run
     python scripts/dispatch_l3.py code-reviewer MY_GATE l2_role9_fix_20260814 backend-engineer "src/omega/" --risk high --run
 
 Risk levels:
-    low  = test fixtures, docs, config-only (uses cx/gpt-5.6-sol for ~50% token savings)
-    high = production logic, security, data pipeline (uses cx/gpt-6-astra(low), default)
+    low  = test fixtures, docs, config-only (uses cx/gpt-6-sol(medium) for ~50% token savings)
+    high = production logic, security, data pipeline (uses cx/gpt-6-sol, default)
 
 Output: Ready-to-execute powershell command + pre-created audit report file.
 """
@@ -22,7 +22,9 @@ import re
 import hashlib
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
+
+# Security boundary: dispatch output must never expose credentials; decision context remains bound downstream. L3 reporting stays credential-redacted.
 
 try:
     from scripts.dispatch_l2 import (
@@ -56,24 +58,28 @@ except ImportError:  # direct script execution: python scripts/dispatch_l3.py
     )
 
 REPO_ROOT = Path(__file__).parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
 AGENT_ROOT = REPO_ROOT / ".agents" / "agent"
 
 L3_LEAD_MODELS = {
-    "low": "cx/gpt-5.6-sol(medium)",
-    "medium": "cx/gpt-5.6-sol(medium)",
-    "high": "cx/gpt-6-astra(low)",
-    # fallback khi GPT 429: Aurora WebChat (gpt-5-6-thinking trên port 8080 qua scripts/run_l3_audit.py)
+    "low": "cx/gpt-6-sol(medium)",
+    "medium": "cx/gpt-6-sol(medium)",
+    "high": "cx/gpt-6-sol(high)",
 }
-L3_SUBAGENT_MODELS = ("cx/gpt-5.6-luna", "9router/cx/gpt-5.6-luna")
+L3_APPROVED_LEAD_MODELS = set(L3_LEAD_MODELS.values()) | {
+    "cx/gpt-6-sol",
+    "cx/gpt-6-sol(low)",
+    "cx/gpt-6-sol(medium)",
+    "cx/gpt-6-sol(xhigh)",
+}
+L3_SUBAGENT_MODELS = ("cx/gpt-6-luna",)
 MODELS = L3_LEAD_MODELS
 VALID_RISK_LEVELS = ("low", "high")
 
-FALLBACK_MODEL = "chatgpt-web/gpt-5-6-thinking"
-AURORA_FALLBACK_SCRIPT = "scripts/run_l3_audit.py"
-
 # Deep audit (final advisory, L1 dispatch trực tiếp qua codex exec)
-DEEPAUDIT_MODEL = "cx/gpt-5.6-sol"
-DEEPAUDIT_FALLBACK = "chatgpt-web/gpt-5-6-thinking"  # dùng khi DEEPAUDIT_MODEL bị 429
+DEEPAUDIT_MODEL = "cx/gpt-6-sol"
 
 
 def parse_frontmatter(content: str) -> dict:
@@ -110,6 +116,56 @@ LOW_RISK_PATTERNS = [
 ]
 
 
+def _build_scoped_pytest_cmd(scope: str) -> str:
+    """Derive exact pytest command from scope string.
+
+    Rules:
+    - If scope contains test files (.py under tests/): run them directly.
+    - If scope contains source files: map src -> tests/test_<stem>.py if exists.
+    - Always add --timeout=25 (below Codex internal tool timeout 30s) and safety flags.
+    - Falls back to 'tests/test_sod_jev_model_routing.py' guard only if nothing derivable.
+    """
+    import re as _re
+    test_files: list[str] = []
+    for token in scope.split():
+        token = token.strip()
+        if not token:
+            continue
+        # Already a test file
+        if _re.search(r"tests[\\/]test_", token) and token.endswith(".py"):
+            test_files.append(token)
+            continue
+        # Source file -> try matching test file
+        if token.endswith(".py"):
+            stem = Path(token).stem
+            candidate = REPO_ROOT / "tests" / f"test_{stem}.py"
+            if candidate.is_file():
+                test_files.append(f"tests/test_{stem}.py")
+            else:
+                for match in sorted((REPO_ROOT / "tests").glob(f"test_*{stem}*.py")):
+                    test_files.append(str(match.relative_to(REPO_ROOT)).replace("\\", "/"))
+    if not test_files:
+        # Scan scope directories for test files
+        for token in scope.split():
+            token = token.strip()
+            if not token:
+                continue
+            d = REPO_ROOT / token
+            if d.is_dir():
+                for tf in sorted(d.glob("test_*.py")):
+                    test_files.append(str(tf.relative_to(REPO_ROOT)).replace("\\", "/"))
+    # Deduplicate preserving order
+    seen: set[str] = set()
+    unique: list[str] = []
+    for f in test_files:
+        if f not in seen:
+            seen.add(f)
+            unique.append(f)
+    if not unique:
+        return "python -m pytest tests/test_sod_jev_model_routing.py -o addopts="
+    return "; ".join(f"python -m pytest {f} -o addopts=" for f in unique)
+
+
 def infer_risk(scope: str) -> tuple[str, str]:
     """Return (risk, reason) based on scope content."""
     scope_lower = scope.lower()
@@ -130,10 +186,14 @@ class ParsedL3Args(tuple):
     model: str | None = None
     subagent_model: str | None = None
 
-    def __new__(cls, pos0, pos1, pos2, pos3, pos4, risk, run, model=None, subagent_model=None):
+    def __new__(cls, pos0, pos1, pos2, pos3, pos4, risk, run, model=None, subagent_model=None, pre_audit_path=None, pre_audit_sha256=None, model_decision_path=None, model_decision_digest=None):
         inst = super().__new__(cls, (pos0, pos1, pos2, pos3, pos4, risk, run))
         inst.model = model
         inst.subagent_model = subagent_model
+        inst.pre_audit_path = pre_audit_path
+        inst.pre_audit_sha256 = pre_audit_sha256
+        inst.model_decision_path = model_decision_path
+        inst.model_decision_digest = model_decision_digest
         return inst
 
 
@@ -166,6 +226,10 @@ def parse_cli_args(args: list[str]):
     explicit_risk: str | None = None
     explicit_model: str | None = None
     explicit_subagent_model: str | None = None
+    explicit_pre_audit_path: str | None = None
+    explicit_pre_audit_sha256: str | None = None
+    explicit_model_decision_path: str | None = None
+    explicit_model_decision_digest: str | None = None
     run_mode = False
     i = 0
     while i < len(args):
@@ -211,6 +275,38 @@ def parse_cli_args(args: list[str]):
             run_mode = True
             i += 1
             continue
+        if arg in ("--model-decision-path", "--model-decision-digest"):
+            if i + 1 >= len(args):
+                print(f"[ERROR] Flag {arg} requires a value.", file=sys.stderr)
+                sys.exit(2)
+            if arg == "--model-decision-path":
+                if explicit_model_decision_path is not None:
+                    print("[ERROR] Duplicate --model-decision-path flag provided.", file=sys.stderr)
+                    sys.exit(2)
+                explicit_model_decision_path = args[i + 1]
+            else:
+                if explicit_model_decision_digest is not None:
+                    print("[ERROR] Duplicate --model-decision-digest flag provided.", file=sys.stderr)
+                    sys.exit(2)
+                explicit_model_decision_digest = args[i + 1]
+            i += 2
+            continue
+        if arg in ("--pre-audit-path", "--pre-audit-sha256"):
+            if i + 1 >= len(args):
+                print(f"[ERROR] Flag {arg} requires a value.", file=sys.stderr)
+                sys.exit(2)
+            if arg == "--pre-audit-path":
+                if explicit_pre_audit_path is not None:
+                    print("[ERROR] Duplicate --pre-audit-path flag provided.", file=sys.stderr)
+                    sys.exit(2)
+                explicit_pre_audit_path = args[i + 1]
+            else:
+                if explicit_pre_audit_sha256 is not None:
+                    print("[ERROR] Duplicate --pre-audit-sha256 flag provided.", file=sys.stderr)
+                    sys.exit(2)
+                explicit_pre_audit_sha256 = args[i + 1]
+            i += 2
+            continue
         if arg.startswith("-"):
             print(f"[ERROR] Unknown or unsupported flag: '{arg}'.", file=sys.stderr)
             sys.exit(2)
@@ -225,7 +321,41 @@ def parse_cli_args(args: list[str]):
         )
         sys.exit(2)
 
-    return ParsedL3Args(pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, run_mode, model=explicit_model, subagent_model=explicit_subagent_model)
+    if (explicit_model_decision_path is None) != (explicit_model_decision_digest is None):
+        print("[ERROR] model decision path and digest must be supplied together.", file=sys.stderr)
+        sys.exit(2)
+    return ParsedL3Args(pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, run_mode, model=explicit_model, subagent_model=explicit_subagent_model, pre_audit_path=explicit_pre_audit_path, pre_audit_sha256=explicit_pre_audit_sha256, model_decision_path=explicit_model_decision_path, model_decision_digest=explicit_model_decision_digest)
+
+
+def validate_pre_audit(path_value: str, expected_sha256: str, gate: str, session_id: str, role_name: str, expected_scope: list[str] | None = None) -> dict:
+    path = (REPO_ROOT / path_value).resolve()
+    if not path.is_file() or path.is_symlink() or not path.is_relative_to((REPO_ROOT / ".ly_state" / "session").resolve()):
+        raise SystemExit(2)
+    raw = path.read_bytes()
+    if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or hashlib.sha256(raw).hexdigest() != expected_sha256:
+        raise SystemExit(2)
+    try:
+        payload = json.loads(raw.decode("utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+        generated = datetime.fromisoformat(payload["generated_at"].replace("Z", "+00:00"))
+        if generated.tzinfo is None:
+            raise ValueError("timezone required")
+        from scripts.validate_l2_report import validate_pre_audit_schema
+        validate_pre_audit_schema(payload)
+    except (KeyError, TypeError, ValueError, UnicodeError, json.JSONDecodeError):
+        raise SystemExit(2)
+    if payload.get("schema_version") != "1.0" or payload.get("gate") != gate or payload.get("session_id") != session_id or payload.get("role") != role_name:
+        raise SystemExit(2)
+    if abs((datetime.now(timezone.utc) - generated).total_seconds()) > 1800:
+        raise SystemExit(2)
+    if expected_scope is not None and payload.get("scope") != expected_scope:
+        raise SystemExit(2)
+    for relative_path, digest in payload["fingerprints"].items():
+        source = (REPO_ROOT / relative_path).resolve()
+        if not source.is_file() or not source.is_relative_to(REPO_ROOT) or hashlib.sha256(source.read_bytes()).hexdigest() != digest:
+            raise SystemExit(2)
+    if payload.get("routing", {}).get("routing") == "BLOCK":
+        raise SystemExit(2)
+    return payload
 
 
 def main():
@@ -236,52 +366,90 @@ def main():
     args = parse_cli_args(sys.argv[1:])
     l3_role_name, gate_name, l2_session_id, l2_role_name, scope, explicit_risk, run_mode = args
     explicit_model = getattr(args, "model", None)
+    pre_audit_path = getattr(args, "pre_audit_path", None)
+    pre_audit_sha256 = getattr(args, "pre_audit_sha256", None)
+    model_decision_path = getattr(args, "model_decision_path", None)
+    model_decision_digest = getattr(args, "model_decision_digest", None)
 
     # B2-HARDENING: strict identifier allowlist before any path/PS interpolation.
     validate_identifier(l3_role_name, "l3_role_name")
     validate_identifier(gate_name, "gate_name")
     validate_identifier(l2_session_id, "l2_session_id")
     validate_identifier(l2_role_name, "l2_role_name")
+    if (pre_audit_path is None) != (pre_audit_sha256 is None):
+        print("[ERROR] pre-audit path and SHA-256 must be supplied together.", file=sys.stderr)
+        sys.exit(2)
+    pre_audit_payload = None
+    if pre_audit_path:
+        pre_audit_payload = validate_pre_audit(pre_audit_path, pre_audit_sha256, gate_name, l2_session_id, l2_role_name, scope.split())
 
-    if explicit_risk:
+    if model_decision_path:
+        try:
+            from scripts.jev_model_router import load_decision
+            decision = load_decision(
+                model_decision_path,
+                model_decision_digest,
+                expected_role="l3",
+                expected_gate=gate_name,
+                expected_session_id=l2_session_id,
+                expected_risk=explicit_risk,
+            )
+            model = decision["lead_model"]
+            subagent_model = decision["subagent_model"]
+            risk = decision["risk"]
+            risk_reason = "Jev model decision envelope"
+        except (OSError, ValueError, KeyError, UnicodeError) as exc:
+            from scripts.dispatch_l2 import redact_credentials
+            print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
+            sys.exit(2)
+    elif explicit_risk:
         risk = explicit_risk
         risk_reason = "explicit --risk flag"
     else:
         risk, risk_reason = infer_risk(scope)
         print(f"[AUTO-RISK] Inferred: {risk} ({risk_reason})")
 
-    if explicit_model:
+    if model_decision_path:
+        pass
+    elif explicit_model:
         model_aliases = {
-            "sol": "cx/gpt-5.6-sol",
-            "sol(low)": "cx/gpt-5.6-sol(low)",
-            "sol(medium)": "cx/gpt-5.6-sol(medium)",
-            "sol(xhigh)": "cx/gpt-5.6-sol(xhigh)",
-            "terra": "cx/gpt-5.6-terra",
-            "terra(xhigh)": "cx/gpt-5.6-terra(xhigh)",
-            "terra-xhigh": "cx/gpt-5.6-terra(xhigh)",
-            "astra": "cx/gpt-6-astra(low)",
-            "astra(low)": "cx/gpt-6-astra(low)",
+            "sol": "cx/gpt-6-sol",
+            "sol(low)": "cx/gpt-6-sol(low)",
+            "sol(medium)": "cx/gpt-6-sol(medium)",
+            "sol(xhigh)": "cx/gpt-6-sol(xhigh)",
+            "luna": "cx/gpt-6-luna",
+            "terra": "cx/gpt-6-luna",
+            "terra(xhigh)": "cx/gpt-6-luna",
+            "terra-xhigh": "cx/gpt-6-luna",
+            "astra": "cx/gpt-6-sol",
+            "astra(low)": "cx/gpt-6-sol(low)",
         }
         model = model_aliases.get(explicit_model.lower())
+        if model is None and explicit_model in L3_APPROVED_LEAD_MODELS:
+            model = explicit_model
         if model is None:
             print("[ERROR] invalid or unapproved L3 lead model", file=sys.stderr)
             sys.exit(2)
-    else:
+    elif not model_decision_path:
         model = MODELS[risk]
 
     subagent_aliases = {
-        "gemini": "9router/ag/gemini-3.8-flash-high",
-        "gemini-3.8": "9router/ag/gemini-3.8-flash-high",
-        "gemini3.8": "9router/ag/gemini-3.8-flash-high",
-        "flash": "9router/ag/gemini-3.8-flash-high",
-        "auto": "9router/ag/gemini-3.8-flash-high",
+        "luna": "cx/gpt-6-luna",
+        "gpt-6-luna": "cx/gpt-6-luna",
+        "cx/gpt-6-luna": "cx/gpt-6-luna",
+        "auto": "cx/gpt-6-luna",
+        "default": "cx/gpt-6-luna",
     }
     explicit_subagent_model = getattr(args, "subagent_model", None)
-    if explicit_subagent_model:
+    if model_decision_path:
+        explicit_subagent_model = None
+    if model_decision_path:
+        pass
+    elif explicit_subagent_model:
         subagent_model = subagent_aliases.get(explicit_subagent_model.lower(), explicit_subagent_model)
     else:
         subagent_model = L3_SUBAGENT_MODELS[0]
-    if model not in set(L3_LEAD_MODELS.values()) or subagent_model not in L3_SUBAGENT_MODELS:
+    if model not in L3_APPROVED_LEAD_MODELS or subagent_model not in L3_SUBAGENT_MODELS:
         print("[ERROR] invalid L3 lead or subagent model; cross-tier model rejected", file=sys.stderr)
         sys.exit(2)
 
@@ -347,7 +515,7 @@ def main():
             l3_role_name, l2_role_name, gate_name, l2_session_id, scope,
             l3_role_id, l2_role_id, l3_session_id, report_path,
             risk, risk_reason, model, explicit_risk is not None, run_mode, graph_evidence,
-            subagent_model=subagent_model,
+            subagent_model=subagent_model, pre_audit=pre_audit_payload,
         )
     finally:
         release_session_lock(lock_path)
@@ -440,7 +608,7 @@ def extract_prior_audit_outcomes(
 def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scope,
                       l3_role_id, l2_role_id, l3_session_id, report_path,
                       risk, risk_reason, model, _explicit_flag, run_mode, graph_evidence,
-                      subagent_model: str = "cx/gpt-6-astra(low)"):
+                       subagent_model: str = "cx/gpt-6-luna", pre_audit: dict | None = None):
     # 4. Pre-create audit report file (containment-checked inside .ly_state/session)
     report_full = ensure_session_containment(REPO_ROOT / report_path, REPO_ROOT)
 
@@ -490,14 +658,25 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         adversarial_directive = ADVERSARIAL_DIRECTIVE_16D + " TEST EXECUTION EFFICIENCY: Prioritize scoped unit/integration test files directly. Do not run unrelated repository-wide test suites."
         test_checklist_item = "3. Run focused tests covering approved scope and related suites. Do not run unrelated repository-wide test suites. "
 
-    subagent_clause = (
-        f"MANDATORY HIERARCHICAL SUBAGENT AUDIT DIRECTIVE (HIERARCHICAL_SUBAGENT_OPTIMIZATION_20260913):\n"
-        f"Lead Auditor operates on MODEL={model}. Subagents run on SUBAGENT_MODEL={subagent_model}.\n"
-        f"To minimize high-reasoning token cost and maximize audit throughput, Lead Auditor MUST delegate subordinate probes using `spawn_agent`:\n"
-        f"- PROBE 1 (16D STATIC & AST SCAN): Delegate regex checks for 16-Dimension invariants (secret leak, timezone look-ahead, mock leak, exit codes) via `spawn_agent(task_name='probe_16d_scan', task=..., model=\"{subagent_model}\")`.\n"
-        f"- PROBE 2 (TEST SUITE EXECUTION): Delegate running scoped pytest slices and collecting failure tracebacks via `spawn_agent(task_name='probe_test_exec', task=..., model=\"{subagent_model}\")`.\n"
-        f"- PROBE 3 (ROLLBACK & INTEGRITY VERIFICATION): Delegate verification of atomic file replace (.tmp -> final), artifact checksums, and DB rollback via `spawn_agent(task_name='probe_atomicity', task=..., model=\"{subagent_model}\")`.\n"
-        f"Do NOT execute massive repetitive grep scans or test sweeps directly on the Lead Auditor thread. Retrieve probe results via `wait_agent` and synthesize findings. The final 16-Dimension evaluation and [APPROVED]/[NEEDS_FIX] verdict must remain solely with the Lead Auditor.\n"
+    if pre_audit:
+        routing = pre_audit.get("routing", {}).get("routing", "JUDGE")
+        pre_audit_clause = f"PRE-AUDIT EVIDENCE: routing={routing}; subagent_model={subagent_model}. Use pre-audit evidence as initial input. "
+    else:
+        pre_audit_clause = ""
+
+    subagent_tool_model = subagent_model.replace("cx/", "").replace("9router/", "")
+    subagent_directive = (
+        f"MANDATORY HIERARCHICAL SUBAGENT WORKER DIRECTIVE (HIERARCHICAL_SUBAGENT_OPTIMIZATION_20260913): "
+        f"Lead Auditor operates on MODEL={model}. Subagents run on SUBAGENT_MODEL={subagent_model}. "
+        f"To minimize high-reasoning token cost and maximize audit throughput, Lead Auditor MUST delegate subordinate probes using `spawn_agent`: "
+        f"- PROBE 1 (16D STATIC & AST SCAN): Delegate regex checks for 16-Dimension invariants (secret leak, timezone look-ahead, mock leak, exit codes) via `spawn_agent(message='[PROBE 1: 16D STATIC & AST SCAN] ...', model=\"{subagent_tool_model}\")`. "
+        f"- PROBE 2 (TEST SUITE EXECUTION): Delegate running scoped pytest slices and collecting failure tracebacks via `spawn_agent(message='[PROBE 2: TEST SUITE EXECUTION] ...', model=\"{subagent_tool_model}\")`. "
+        f"- PROBE 3 (ROLLBACK & INTEGRITY VERIFICATION): Delegate verification of atomic file replace (.tmp -> final), artifact checksums, and DB rollback via `spawn_agent(message='[PROBE 3: ROLLBACK & INTEGRITY VERIFICATION] ...', model=\"{subagent_tool_model}\")`. "
+        f"Do NOT execute massive repetitive grep scans or test sweeps directly on the Lead Auditor thread. Retrieve probe results via `wait_agent(targets=[...], timeout_ms=...)` and synthesize findings. The final 16-Dimension evaluation and [APPROVED]/[NEEDS_FIX] verdict must remain solely with the Lead Auditor. "
+    )
+
+    test_slices_directive = (
+        f"SCOPED TEST EXECUTION (SEQUENTIAL PER-FILE SLICES): You MUST run scoped pytest tests for each file individually in sequential slices (run each command separately or delegate each slice to a subagent via `spawn_agent(message='...', model=\"{subagent_tool_model}\")` to prevent timeout): {_build_scoped_pytest_cmd(scope)}. Do not chain all test files into one long command and do not run repository-wide tests. "
     )
 
     prompt = (
@@ -515,17 +694,11 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         f"SCOPE: {scope}. "
         f"REQUIREMENTS: first run Set-Location '{REPO_ROOT}'; "
         f"use repo-relative paths from REPO_ROOT only; never read/write Antigravity scratch paths. "
-        f"ANTI-POLLING & ZERO-IDLE DIRECTIVE (ANTI_POLLING_ZERO_IDLE_20260918): NEVER poll, loop, or repeatedly run git status, task status, or audit scripts to wait for background execution; stop calling tools immediately and end the turn when waiting for commands. "
-        f"SYNCHRONOUS PYTEST EXCEPTION: a bounded synchronous probe_test_exec is permitted for atomic verification; run each scoped test slice once, collect exit code/stdout/stderr, then report PASS/FAIL/TIMEOUT. Do not poll or idle-wait. "
+        f"{subagent_directive}"
+        f"{pre_audit_clause}"
         f"{adversarial_directive} "
-        f"{subagent_clause}"
-        f"probe_test_exec MUST run these per-file slices sequentially, each timeout 300 seconds: "
-        f"python -m pytest tests/test_sod_pipeline.py -q -p no:cacheprovider; "
-        f"python -m pytest tests/test_dispatch_l2.py -q -p no:cacheprovider; "
-        f"python -m pytest tests/test_dispatch_l3.py -q -p no:cacheprovider; "
-        f"python -m pytest tests/test_validate_l2_report.py -q -p no:cacheprovider. "
+        f"{test_slices_directive}"
         f"Report reset/snapshot evidence: pre_run_sha256={pre_run_digest}, pre_run_mtime_ns={pre_run_mtime_ns}; verify the report is newly written before verdict. "
-        f"Fallback verdict validation is mandatory: validate the fresh report after fallback, exact standalone verdict only, fail closed on missing/stale/prose/duplicate/conflicting verdict. "
         f"AUDIT EVIDENCE CHECKLIST: "
         f"1. Verify l2_role_id={l2_role_id} != l3_role_id={l3_role_id}. "
         f"2. Verify code changes match approved scope. "
@@ -558,18 +731,7 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         cmd = (
             f'if (-not (Test-Path {ps_quote(report_path.replace("/", chr(92)))})) {{ New-Item -ItemType File -Path {ps_quote(report_path.replace("/", chr(92)))} -Force | Out-Null }}; '
              f'{read_stmt} echo "" | codex exec -m {ps_quote(model)} --enable multi_agent -s danger-full-access '
-            f'--dangerously-bypass-approvals-and-sandbox $__OMEGA_PROMPT; '
-            f'$codexExit = $LASTEXITCODE; '
-            f'$fallbackExit = 0; '
-            f'$reportPath = {ps_quote(report_path.replace("/", chr(92)))}; '
-             f'$freshVerdict = (Test-Path -LiteralPath $reportPath) -and ((Get-Item -LiteralPath $reportPath).Length -gt 0) -and ((Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8) -match \'\\A\\s*\\[(APPROVED|NEEDS_FIX)\\]\\s*\\z\'); '
-            f'if ($codexExit -ne 0 -or -not $freshVerdict) {{ '
-            f'[System.IO.File]::WriteAllBytes($reportPath, [byte[]]@()); '
-            f'python scripts/run_l3_audit.py {gate_name} --prompt-file {ps_quote(str(prompt_path))} --model gpt-5-6-thinking; '
-            f'$fallbackExit = $LASTEXITCODE '
-            f'}}; '
-             f'$fallbackFresh = (Test-Path -LiteralPath $reportPath) -and ((Get-Item -LiteralPath $reportPath).Length -gt 0) -and ((Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8) -match \'\\A\\s*\\[(APPROVED|NEEDS_FIX)\\]\\s*\\z\'); '
-            f'if ($fallbackExit -ne 0 -or -not $fallbackFresh) {{ exit 2 }}'
+            f'--dangerously-bypass-approvals-and-sandbox $__OMEGA_PROMPT'
         )
     else:
         cmd = (
@@ -588,6 +750,9 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
     print(f"RISK={risk}")
     print(f"REPORT={report_path}")
     print(f"GATE={gate_name}")
+    if pre_audit:
+        print(f"PRE_AUDIT_PATH=.ly_state/session/pre_audit_{l2_session_id}.json")
+        print(f"PRE_AUDIT_SHA256={hashlib.sha256((REPO_ROOT / '.ly_state' / 'session' / f'pre_audit_{l2_session_id}.json').read_bytes()).hexdigest()}")
     print(f"---COMMAND---")
     print(cmd)
 
@@ -609,10 +774,9 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         print(r.stdout)
         if r.stderr:
             print(r.stderr)
-        # C4: integrity failure (exit 2) is fail-closed and NEVER activates
-        # the 429 fallback; no second process may be spawned on mismatch.
+        # C4: integrity failure (exit 2) is fail-closed; no second process may be spawned on mismatch.
         if r.returncode == 2:
-            print("[FAIL] Prompt integrity check failed; aborting without fallback.", file=sys.stderr)
+            print("[FAIL] Prompt integrity check failed; aborting.", file=sys.stderr)
             sys.exit(2)
         sys.exit(r.returncode)
 
