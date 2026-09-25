@@ -4,11 +4,14 @@ import os
 import time
 from tempfile import TemporaryDirectory
 from pathlib import Path
+from types import SimpleNamespace
+import sys
 
 import pandas as pd
+import pyarrow.parquet as pq
 import pytest
 
-from omega.data.macro_news_pipeline import MacroNewsPipeline, RSSAdapter, SCHEMA, ScraperAdapter, V1_SCHEMA, VnstockNewsAdapter, _stop_provider_process, load_source_registry, load_universe_snapshot
+from omega.data.macro_news_pipeline import MacroNewsPipeline, RSSAdapter, SCHEMA, ScraperAdapter, V1_SCHEMA, VnstockNewsAdapter, _stop_provider_process, _vnstock_news_worker, load_source_registry, load_universe_snapshot
 
 
 RSS = b"""<rss><channel><item><title>Policy update</title><link>https://example.com/a</link><description>Details</description><pubDate>Tue, 12 Aug 2026 09:00:00 +0700</pubDate></item><item><title>Missing date</title><link>https://example.com/b</link></item></channel></rss>"""
@@ -194,12 +197,24 @@ def test_vnstock_broken_pipe_terminates_provider_process(monkeypatch):
     assert parent.closed and process.daemon and process.terminated and not process.is_alive()
 
 
+def test_vnstock_error_does_not_expose_provider_credentials(monkeypatch):
+    universe = load_universe_snapshot(b'{"schema_version":1,"universe_id":"vci_hsx_hnx","universe_version":"20260812","generated_at":"2026-08-12T00:00:00Z","effective_from":"2026-08-12T00:00:00Z","effective_to":null,"members":[{"ticker":"AAA","exchange":"HSX"}]}', datetime(2026, 8, 12, 1, tzinfo=timezone.utc))
+
+    def fail(*_):
+        raise RuntimeError("Authorization: Bearer SECRET")
+
+    monkeypatch.setattr(VnstockNewsAdapter, "_fetch_page", fail)
+    _, errors = VnstockNewsAdapter(universe).fetch(datetime(2026, 8, 12, tzinfo=timezone.utc), datetime(2026, 8, 12, 1, tzinfo=timezone.utc), datetime(2026, 8, 12, 1, tzinfo=timezone.utc))
+    assert errors == ["AAA: RuntimeError"]
+
+
 def test_v1_migration_preserves_legacy_available_at(tmp_path):
     output = tmp_path / "macro_news.parquet"
     legacy_available_at = datetime(2026, 8, 12, 1, 5, tzinfo=timezone.utc)
     pd.DataFrame([["CafeF", "Title", "Summary", "https://example.com/a", datetime(2026, 8, 12, 1, tzinfo=timezone.utc), legacy_available_at, datetime(2026, 8, 12, 3, tzinfo=timezone.utc)]], columns=V1_SCHEMA).to_parquet(output, index=False)
 
-    stored = MacroNewsPipeline.persist(pd.DataFrame(columns=SCHEMA), output)
+    MacroNewsPipeline.persist(pd.DataFrame(columns=SCHEMA), output)
+    stored = pd.read_parquet(output)
 
     assert pd.to_datetime(stored.loc[0, "available_at"], utc=True) == pd.Timestamp(legacy_available_at)
 
@@ -265,4 +280,95 @@ def test_persist_revalidates_parquet_identity_bindings(tmp_path):
     incoming = MacroNewsPipeline._frame(RSSAdapter().parse("cafef_macro", "https://example.com/feed.rss", RSS, datetime(2026, 8, 12, 3, tzinfo=timezone.utc)))
 
     MacroNewsPipeline.persist(incoming, output)
-    assert len(MacroNewsPipeline.persist(pd.DataFrame(columns=SCHEMA), output)) == 1
+    assert len(pd.read_parquet(output)) == 1
+
+
+def test_cli_resumes_raw_backlog_across_two_runs(tmp_path, monkeypatch):
+    from scripts import run_macro_news_pipeline as cli
+    from omega.data import macro_news_llm, macro_news_pipeline
+
+    as_of = datetime(2026, 9, 25, tzinfo=timezone.utc)
+    universe = tmp_path / "universe.json"
+    universe.write_text('{"schema_version":1,"universe_id":"vci_hsx_hnx","universe_version":"20260925","generated_at":"2026-09-24T00:00:00Z","effective_from":"2026-09-24T00:00:00Z","effective_to":null,"members":[{"ticker":"AAA","exchange":"HSX"}]}')
+    records = []
+    for index in range(101):
+        records.extend(RSSAdapter().parse("cafef_macro", "https://example.com/feed.rss", f"<rss><channel><item><title>Article {index}</title><link>https://example.com/{index}</link><pubDate>Thu, 24 Sep 2026 09:00:00 +0700</pubDate></item></channel></rss>".encode(), as_of))
+    incoming = MacroNewsPipeline._frame(records)
+    monkeypatch.setattr(cli, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(cli, "_args", lambda: SimpleNamespace(vnstock_universe=universe, as_of=as_of, hours_back=48, sources_config=Path("sources.json"), max_articles=1000, raw_output=Path("raw.parquet"), llm_output=Path("llm.parquet"), llm_links_output=Path("links.parquet"), ingest_only=False, session_dir=Path("session")))
+    monkeypatch.setattr(cli, "_validate_universe_before_import", lambda *_: universe.read_bytes())
+    monkeypatch.setattr(macro_news_pipeline, "load_source_registry", lambda *_: [{"source_id": "vnstock_vci", "enabled": True, "kind": "vnstock", "required": False, "max_items": 1000, "request_interval_seconds": 0, "timeout_seconds": 1, "max_response_bytes": 1000, "source_delay_minutes": 0}])
+    monkeypatch.setattr(macro_news_pipeline.VnstockNewsAdapter, "fetch", lambda *_: ([], []))
+    monkeypatch.setattr(macro_news_pipeline.MacroNewsPipeline, "fetch", lambda *_: incoming)
+    monkeypatch.setattr("omega.core.llm_config.resolve_alpha_llm_config", lambda *_: {})
+    monkeypatch.setattr("omega.core.llm_config.sanitize_llm_config", lambda *_: {})
+    seen = []
+
+    def extract(self, batch, output, links, as_of=None):
+        seen.append(batch["raw_record_id"].tolist())
+        previous = pd.read_parquet(output) if output.exists() else pd.DataFrame(columns=["news_id"])
+        pd.concat([previous, batch["raw_record_id"].rename("news_id").to_frame()], ignore_index=True).to_parquet(output, index=False)
+
+    monkeypatch.setattr(macro_news_llm.MacroNewsLLMExtractor, "extract", extract)
+    assert cli.main() == 0
+    assert cli.main() == 0
+    assert [len(batch) for batch in seen] == [100, 1]
+    assert len(set(seen[0] + seen[1])) == 101
+
+
+def test_provider_cap_rejects_before_ipc(monkeypatch):
+    class Connection:
+        sent = None
+        closed = False
+
+        def send(self, value): self.sent = value
+        def close(self): self.closed = True
+
+    monkeypatch.setitem(sys.modules, "vnstock", SimpleNamespace(Company=lambda **_: SimpleNamespace(news=lambda: pd.DataFrame({"news_title": ["x" * 1000]}))))
+    connection = Connection()
+    _vnstock_news_worker(connection, "AAA", 100)
+    assert connection.sent == (False, "ValueError") and connection.closed
+
+
+def test_persist_rollback_on_corrupt_history(tmp_path):
+    output = tmp_path / "raw.parquet"
+    record = RSSAdapter().parse("cafef_macro", "https://example.com/feed.rss", RSS, datetime(2026, 8, 12, 3, tzinfo=timezone.utc))[0]
+    incoming = MacroNewsPipeline._frame([record])
+    MacroNewsPipeline.persist(incoming, output)
+    corrupt = incoming.copy()
+    corrupt.loc[0, "content_hash"] = "0" * 64
+    corrupt.to_parquet(output, index=False)
+    original = output.read_bytes()
+    with pytest.raises(ValueError, match="identity bindings"):
+        MacroNewsPipeline.persist(incoming, output)
+    assert output.read_bytes() == original
+
+
+def test_persist_returns_only_incoming_after_256_and_deduplicates(tmp_path):
+    output = tmp_path / "raw.parquet"
+    ingested = datetime(2026, 8, 12, 3, tzinfo=timezone.utc)
+    records = [RSSAdapter().parse("cafef_macro", "https://example.com/feed.rss", f"<rss><channel><item><title>Article {i}</title><link>https://example.com/{i}</link><pubDate>Tue, 12 Aug 2026 09:00:00 +0700</pubDate></item></channel></rss>", ingested)[0] for i in range(257)]
+    original = MacroNewsPipeline._frame(records[:256])
+    MacroNewsPipeline.persist(original, output)
+
+    result = MacroNewsPipeline.persist(MacroNewsPipeline._frame(records[255:]), output)
+
+    assert len(result) == 2
+    assert pq.ParquetFile(output).metadata.num_rows == 257
+    assert set(pd.read_parquet(output, columns=["raw_record_id"])["raw_record_id"]) == {record["raw_record_id"] for record in records}
+
+
+def test_vnstock_keeps_bounded_top_items_across_universe(monkeypatch):
+    import json
+
+    payload = {"schema_version": 1, "universe_id": "vci", "universe_version": "1", "generated_at": "2026-08-12T00:00:00Z", "effective_from": "2026-08-12T00:00:00Z", "effective_to": None, "members": [{"ticker": f"A{i:02d}", "exchange": "HSX"} for i in range(60)]}
+    universe = load_universe_snapshot(json.dumps(payload).encode(), datetime(2026, 8, 13, tzinfo=timezone.utc))
+    adapter = VnstockNewsAdapter(universe, max_items=3)
+    monkeypatch.setattr(adapter, "_fetch_page", lambda ticker, _: pd.DataFrame([{"news_title": ticker, "public_date": f"2026-08-12T{int(ticker[1:]) % 24:02d}:00:00Z", "id": ticker}]))
+    monkeypatch.setitem(sys.modules, "vnstock", SimpleNamespace())
+
+    records, errors = adapter.fetch(datetime(2026, 8, 12, tzinfo=timezone.utc), datetime(2026, 8, 13, tzinfo=timezone.utc), datetime(2026, 8, 13, tzinfo=timezone.utc))
+
+    assert errors == []
+    assert len(records) == 3
+    assert [record["published_at"].hour for record in records] == [23, 23, 22]

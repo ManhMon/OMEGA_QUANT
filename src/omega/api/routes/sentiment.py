@@ -1,11 +1,13 @@
 import asyncio
+import heapq
 import json
 import math
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
+import pyarrow.parquet as pq
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
@@ -130,20 +132,34 @@ class MacroNewsRecord(dict):
         self[name] = value
 
 
-def _load_macro_news_records(limit: int = 50, ticker: Optional[str] = None, sector: Optional[str] = None) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
+def _load_macro_news_records(limit: int = 50, ticker: Optional[str] = None, sector: Optional[str] = None, as_of: Optional[datetime] = None) -> List[Dict[str, Any]]:
+    if limit < 1:
+        return []
+    q_sym = ticker.upper().strip() if ticker else None
+    q_sec = sector.upper().strip() if sector else None
+    heap: List[Tuple[float, str, MacroNewsRecord]] = []
     is_synthetic = False
     source_name = "parquet_store"
+
+    def _push_record(pub_dt_val: datetime, rec_key: str, rec: MacroNewsRecord) -> None:
+        ts = pub_dt_val.timestamp()
+        if len(heap) < limit:
+            heapq.heappush(heap, (ts, rec_key, rec))
+        elif ts > heap[0][0]:
+            heapq.heapreplace(heap, (ts, rec_key, rec))
 
     # 1. Try reading from macro_news.parquet first
     if MACRO_NEWS_PATH.exists():
         try:
-            df_m = pd.read_parquet(MACRO_NEWS_PATH)
-            if not df_m.empty:
+            with pq.ParquetFile(MACRO_NEWS_PATH) as parquet:
                 source_name = "parquet_macro_news"
-                for idx, row in df_m.iterrows():
+                batches = parquet.iter_batches(batch_size=256)
+                for idx, row in ((idx, row) for batch_number, batch in enumerate(batches) for idx, row in batch.to_pandas().iterrows()):
                     sym = row.get("origin_ticker")
                     sym_str = str(sym).upper().strip() if pd.notna(sym) and str(sym).strip() else "MACRO"
+                    sec = str(row.get("origin_exchange", "Macro"))
+                    if (q_sym and (pd.isna(sym) or sym_str != q_sym)) or (q_sec and sec.upper() != q_sec):
+                        continue
                     rec_id = str(row.get("raw_record_id", f"rec_{idx}")).strip()
                     title = str(row.get("title", ""))
                     if not title:
@@ -156,20 +172,25 @@ def _load_macro_news_records(limit: int = 50, ticker: Optional[str] = None, sect
                         if pd.isna(pub_dt):
                             continue
                         pub = pub_dt.isoformat()
+                        if as_of is not None:
+                            available = pd.to_datetime(row.get("available_at"), utc=True)
+                            if pd.isna(available) or pub_dt > available or available > as_of:
+                                continue
                     except Exception:
                         continue
-                    items.append(MacroNewsRecord({
+                    _push_record(pub_dt, f"mnews_{sym_str}_{rec_id}_{idx}", MacroNewsRecord({
                         "news_id": f"mnews_{sym_str}_{rec_id}_{idx}",
                         "title": title,
                         "summary": str(row.get("summary", "") or "") if pd.notna(row.get("summary")) else None,
                         "source": str(row.get("source_name", "CafeF")),
                         "symbol": str(sym) if pd.notna(sym) and sym else None,
-                        "sector": str(row.get("origin_exchange", "Macro")),
+                        "sector": sec,
                         "sentiment_score": 0.0,
                         "polarity": "NEUTRAL",
                         "macro_tags": ["Macro", "Vietnam", "Policy"],
                         "entities": [str(sym)] if pd.notna(sym) and sym else ["SBV", "VND"],
                         "published_at": pub,
+                        "available_at": available.isoformat() if as_of is not None else row.get("available_at"),
                         "url": str(row.get("url", "")) if pd.notna(row.get("url")) else None,
                         "is_synthetic": False,
                         "source_name": source_name,
@@ -178,16 +199,17 @@ def _load_macro_news_records(limit: int = 50, ticker: Optional[str] = None, sect
             pass
 
     # 2. Try reading from news_sentiment_2015_now.parquet
-    if len(items) < limit and NEWS_SENTIMENT_PATH.exists():
+    if NEWS_SENTIMENT_PATH.exists():
         try:
-            df_s = pd.read_parquet(NEWS_SENTIMENT_PATH)
-            if not df_s.empty:
+            with pq.ParquetFile(NEWS_SENTIMENT_PATH) as parquet:
                 source_name = "parquet_news_sentiment"
-                if "publish_time" in df_s.columns:
-                    df_s = df_s.sort_values("publish_time", ascending=False)
-                for idx, row in df_s.iterrows():
+                batches = parquet.iter_batches(batch_size=256)
+                for idx, row in ((idx, row) for batch in batches for idx, row in batch.to_pandas().iterrows()):
                     sym = row.get("symbol")
                     sym_str = str(sym).upper().strip() if pd.notna(sym) and str(sym).strip() else "GEN"
+                    sec = "Financials" if sym in ["MBB", "TCB", "VCB", "SSI"] else ("Materials" if sym in ["HPG", "DGC"] else "Technology")
+                    if (q_sym and (pd.isna(sym) or sym_str != q_sym)) or (q_sec and sec.upper() != q_sec):
+                        continue
                     sha_str = str(row.get("payload_sha256", f"sha_{idx}"))[:16].strip()
                     score = _sanitize_float(row.get("sentiment_score"), 0.0)
                     pol = "BULLISH" if score > 0.1 else ("BEARISH" if score < -0.1 else "NEUTRAL")
@@ -202,28 +224,33 @@ def _load_macro_news_records(limit: int = 50, ticker: Optional[str] = None, sect
                         if pd.isna(pub_dt):
                             continue
                         pub = pub_dt.isoformat()
+                        if as_of is not None:
+                            available = pd.to_datetime(row.get("available_at"), utc=True)
+                            if pd.isna(available) or pub_dt > available or available > as_of:
+                                continue
                     except Exception:
                         continue
-                    items.append(MacroNewsRecord({
+                    _push_record(pub_dt, f"snews_{sym_str}_{sha_str}_{idx}", MacroNewsRecord({
                         "news_id": f"snews_{sym_str}_{sha_str}_{idx}",
                         "title": title,
                         "summary": None,
                         "source": str(row.get("source", "CafeF")),
                         "symbol": str(sym) if pd.notna(sym) and sym else None,
-                        "sector": "Financials" if sym in ["MBB", "TCB", "VCB", "SSI"] else ("Materials" if sym in ["HPG", "DGC"] else "Technology"),
+                        "sector": sec,
                         "sentiment_score": score,
                         "polarity": pol,
                         "macro_tags": ["HOSE", "Liquidity", "Earnings"],
                         "entities": [str(sym)] if pd.notna(sym) and sym else ["HOSE", "VNINDEX"],
                         "published_at": pub,
+                        "available_at": available.isoformat() if as_of is not None else row.get("available_at"),
                         "url": str(row.get("url", "")) if pd.notna(row.get("url")) else None,
                         "is_synthetic": False,
                         "source_name": source_name,
                     }))
-                    if len(items) >= limit * 2:
-                        break
         except Exception:
             pass
+
+    items: List[Dict[str, Any]] = [rec for _, _, rec in sorted(heap, key=lambda x: x[0], reverse=True)]
 
     # 3. Fallback mock generator if disk dataset is sparse
     if not items:
@@ -363,7 +390,7 @@ async def get_vsi_sentiment(
         now_dt = datetime.now(timezone.utc)
 
     engine = VSIPortfolioEngine()
-    news_items_raw = _load_macro_news_records(limit=50)
+    news_items_raw = _load_macro_news_records(limit=50, as_of=now_dt)
 
     # Convert to SentimentData for VSI Engine, filtering by published_at <= as_of and preserving actual publication timestamp
     sentiment_data_list: List[SentimentData] = []
@@ -379,7 +406,12 @@ async def get_vsi_sentiment(
             continue
 
         # Filter rows by <= as_of (now_dt) cutoff
-        if item_pub_dt > now_dt:
+        available_raw = item.get("available_at")
+        try:
+            available_dt = pd.to_datetime(available_raw, utc=True).to_pydatetime()
+        except (ValueError, TypeError, AttributeError):
+            continue
+        if item_pub_dt > available_dt or available_dt > now_dt:
             continue
 
         sentiment_data_list.append(

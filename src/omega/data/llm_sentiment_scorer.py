@@ -106,7 +106,7 @@ class LLMSentimentScorer:
                 model = "configured"
                 source = "llm"
             except Exception as exc:
-                fallback_reason = str(exc) or exc.__class__.__name__  # preserve fail-closed reason
+                fallback_reason = type(exc).__name__
 
         label = "positive" if score > 0.2 else "negative" if score < -0.2 else "neutral"
         return SentimentResult(

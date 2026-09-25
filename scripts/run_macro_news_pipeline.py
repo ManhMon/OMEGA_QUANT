@@ -6,11 +6,15 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sqlite3
 import sys
+import tempfile
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
@@ -86,27 +90,60 @@ def main() -> int:
     static_records = static_pipeline.fetch(cutoff, args.as_of)
     incoming = MacroNewsPipeline()._frame(vnstock_records + static_records.to_dict("records"))
     raw_path = REPO_ROOT / args.raw_output
-    existing = pd.read_parquet(raw_path) if raw_path.exists() else pd.DataFrame(columns=SCHEMA)
-    if list(existing.columns) == ["source", "title", "summary", "url", "published_at", "available_at", "ingested_at"]:
-        existing = MacroNewsPipeline._migrate_v1(existing)
-    existing_ids = set(existing["raw_record_id"])
-    raw = MacroNewsPipeline.persist(incoming, raw_path)
+    with tempfile.TemporaryDirectory() as directory, closing(sqlite3.connect(str(Path(directory) / "history.sqlite"))) as history:
+        history.execute("CREATE TABLE records (raw_record_id TEXT PRIMARY KEY, revision_id TEXT, article_id TEXT)")
+        if raw_path.exists():
+            previous = pq.ParquetFile(raw_path)
+            legacy = list(previous.schema_arrow.names) != SCHEMA
+            try:
+                for chunk in previous.iter_batches(batch_size=256, columns=None if legacy else ["raw_record_id", "revision_id", "article_id"]):
+                    frame = MacroNewsPipeline._migrate_v1(chunk.to_pandas()) if legacy else chunk.to_pandas()
+                    history.executemany("INSERT OR IGNORE INTO records VALUES (?, ?, ?)", frame[["raw_record_id", "revision_id", "article_id"]].itertuples(index=False, name=None))
+            finally:
+                previous.close()
+        new_records = incoming.loc[[history.execute("SELECT 1 FROM records WHERE raw_record_id=?", (record_id,)).fetchone() is None for record_id in incoming["raw_record_id"]]]
+        inserted = len(new_records)
+        provenance_inserted = sum(history.execute("SELECT 1 FROM records WHERE revision_id=? LIMIT 1", (revision,)).fetchone() is not None for revision in new_records["revision_id"])
+        revised = sum(history.execute("SELECT 1 FROM records WHERE article_id=? LIMIT 1", (article,)).fetchone() is not None and history.execute("SELECT 1 FROM records WHERE revision_id=? LIMIT 1", (revision,)).fetchone() is None for article, revision in new_records[["article_id", "revision_id"]].itertuples(index=False, name=None))
+    MacroNewsPipeline.persist(incoming, raw_path)
+    raw_count = pq.ParquetFile(raw_path).metadata.num_rows
     exchange_counts = {exchange: sum(member_exchange == exchange for _, member_exchange in universe.members) for exchange in ("HSX", "HNX", "UPCOM")}
     source_health = {"vnstock_vci": {"status": "failed" if vnstock_errors else "healthy" if vnstock_records else "healthy_empty", "attempts": len(universe.members), "accepted": len(vnstock_records), "rejected": 0, "errors": vnstock_errors}, **static_pipeline.source_health}
     for entry in registry:
         if not entry["enabled"]: source_health[entry["source_id"]] = {"status": "disabled", "attempts": 0, "accepted": 0, "rejected": 0, "reason": entry["disabled_reason"]}
     required_failed = any(entry["required"] and source_health.get(entry["source_id"], {}).get("status") == "failed" for entry in registry)
-    incoming_ids = set(incoming["raw_record_id"])
-    inserted = len(incoming_ids - existing_ids)
-    existing_revisions = set(existing["revision_id"])
-    existing_articles = set(existing["article_id"])
-    new_records = incoming.loc[~incoming["raw_record_id"].isin(existing_ids)]
-    manifest = {"run_id": args.as_of.strftime("%Y%m%dT%H%M%SZ"), "as_of": args.as_of.isoformat(), "raw_schema_version": 2, "universe_input_name": args.vnstock_universe.name, "universe_schema_version": 1, "universe_id": universe.universe_id, "universe_version": universe.universe_version, "universe_sha256": universe.universe_sha256, "universe_generated_at": universe.generated_at.isoformat(), "universe_effective_from": universe.effective_from.isoformat(), "universe_effective_to": universe.effective_to.isoformat() if universe.effective_to else None, "ticker_count": len(universe.members), "ticker_count_by_exchange": exchange_counts, "source_health": source_health, "raw_records": len(raw), "raw_inserted": inserted, "raw_skipped": len(incoming_ids) - inserted, "raw_provenance_inserted": int(new_records["revision_id"].isin(existing_revisions).sum()), "raw_revised": int((new_records["article_id"].isin(existing_articles) & ~new_records["revision_id"].isin(existing_revisions)).sum()), "cache_hits": 0, "extraction_successes": 0, "extraction_failures": 0, "links_inserted": 0, "links_skipped": 0, "retrospective_extraction": not args.ingest_only and any(pd.to_datetime(raw["ingested_at"], utc=True) > pd.to_datetime(raw["published_at"], utc=True)), "effective_llm_runtime": None, "final_exit_state": "required_source_failed" if required_failed else "success"}
+    manifest = {"run_id": args.as_of.strftime("%Y%m%dT%H%M%SZ"), "as_of": args.as_of.isoformat(), "raw_schema_version": 2, "universe_input_name": args.vnstock_universe.name, "universe_schema_version": 1, "universe_id": universe.universe_id, "universe_version": universe.universe_version, "universe_sha256": universe.universe_sha256, "universe_generated_at": universe.generated_at.isoformat(), "universe_effective_from": universe.effective_from.isoformat(), "universe_effective_to": universe.effective_to.isoformat() if universe.effective_to else None, "ticker_count": len(universe.members), "ticker_count_by_exchange": exchange_counts, "source_health": source_health, "raw_records": raw_count, "raw_inserted": inserted, "raw_skipped": len(incoming) - inserted, "raw_provenance_inserted": provenance_inserted, "raw_revised": revised, "cache_hits": 0, "extraction_successes": 0, "extraction_failures": 0, "links_inserted": 0, "links_skipped": 0, "retrospective_extraction": False, "effective_llm_runtime": None, "final_exit_state": "required_source_failed" if required_failed else "success"}
     if not args.ingest_only:
         try:
             from omega.core.llm_config import resolve_alpha_llm_config, sanitize_llm_config
-            from omega.data.macro_news_llm import MacroNewsLLMExtractor
-            extractor = MacroNewsLLMExtractor(REPO_ROOT); extractor.extract(raw, REPO_ROOT / args.llm_output, REPO_ROOT / args.llm_links_output)
+            from omega.data.macro_news_llm import MAX_EXTRACT_RECORDS, MacroNewsLLMExtractor
+            llm_path = REPO_ROOT / args.llm_output
+            with tempfile.TemporaryDirectory() as directory, closing(sqlite3.connect(str(Path(directory) / "extracted.sqlite"))) as extracted:
+                extracted.execute("CREATE TABLE ids (id TEXT PRIMARY KEY)")
+                if llm_path.exists():
+                    previous = pq.ParquetFile(llm_path)
+                    try:
+                        for chunk in previous.iter_batches(batch_size=256, columns=["news_id"]):
+                            extracted.executemany("INSERT OR IGNORE INTO ids VALUES (?)", ((value,) for value in chunk.column(0).to_pylist()))
+                    finally:
+                        previous.close()
+                selected = []
+                previous = pq.ParquetFile(raw_path)
+                try:
+                    for chunk in previous.iter_batches(batch_size=256):
+                        frame = chunk.to_pandas()
+                        eligible = frame.loc[pd.to_datetime(frame["available_at"], utc=True) <= args.as_of]
+                        for row in eligible.itertuples(index=False, name=None):
+                            record = dict(zip(frame.columns, row))
+                            if extracted.execute("SELECT 1 FROM ids WHERE id=?", (record["raw_record_id"],)).fetchone() is None:
+                                selected.append(record)
+                                if len(selected) == MAX_EXTRACT_RECORDS: break
+                        if len(selected) == MAX_EXTRACT_RECORDS: break
+                finally:
+                    previous.close()
+            batch = pd.DataFrame(selected, columns=SCHEMA)
+            manifest["retrospective_extraction"] = bool(not batch.empty and (pd.to_datetime(batch["ingested_at"], utc=True) > pd.to_datetime(batch["published_at"], utc=True)).any())
+            extractor = MacroNewsLLMExtractor(REPO_ROOT); extractor.extract(batch, REPO_ROOT / args.llm_output, REPO_ROOT / args.llm_links_output, as_of=args.as_of)
             manifest.update(extractor.metrics); manifest["effective_llm_runtime"] = sanitize_llm_config(resolve_alpha_llm_config(REPO_ROOT))
         except Exception as exc: manifest["llm_error_type"] = type(exc).__name__; manifest["final_exit_state"] = "llm_failed"
     manifest_dir = REPO_ROOT / args.session_dir / "macro_news_runs"

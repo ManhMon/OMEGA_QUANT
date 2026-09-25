@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import heapq
 import html
 import ipaddress
 import json
@@ -10,10 +11,11 @@ import multiprocessing
 import os
 import re
 import socket
+import sqlite3
 import tempfile
 import time
 from io import BytesIO
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
@@ -23,6 +25,8 @@ from urllib.parse import urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import requests
 
 DEFAULT_OUTPUT_PATH = Path("data/macro_news.parquet")
@@ -152,13 +156,76 @@ def _safe_response(response: Any, original_url: str, settings: Mapping[str, Any]
     return bytes(content)
 
 
-def _vnstock_news_worker(connection: Any, ticker: str) -> None:
+def _vnstock_news_worker(connection: Any, ticker: str, max_response_bytes: int) -> None:
+    job = None
     try:
+        ceiling = max_response_bytes * 16 + 512_000_000
+        if multiprocessing.current_process().name != "MainProcess":
+            if os.name != "nt":
+                import resource
+                _, hard = resource.getrlimit(resource.RLIMIT_AS)
+                if hard != resource.RLIM_INFINITY:
+                    ceiling = min(ceiling, hard)
+                resource.setrlimit(resource.RLIMIT_AS, (ceiling, hard))
+            else:
+                import ctypes
+                from ctypes import wintypes
+
+                class IO_COUNTERS(ctypes.Structure):
+                    _fields_ = [(name, ctypes.c_uint64) for name in (
+                        "ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                        "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+                class BASIC_LIMITS(ctypes.Structure):
+                    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64),
+                                ("PerJobUserTimeLimit", ctypes.c_int64),
+                                ("LimitFlags", wintypes.DWORD),
+                                ("MinimumWorkingSetSize", ctypes.c_size_t),
+                                ("MaximumWorkingSetSize", ctypes.c_size_t),
+                                ("ActiveProcessLimit", wintypes.DWORD),
+                                ("Affinity", ctypes.c_size_t),
+                                ("PriorityClass", wintypes.DWORD),
+                                ("SchedulingClass", wintypes.DWORD)]
+
+                class EXTENDED_LIMITS(ctypes.Structure):
+                    _fields_ = [("BasicLimitInformation", BASIC_LIMITS),
+                                ("IoInfo", IO_COUNTERS),
+                                ("ProcessMemoryLimit", ctypes.c_size_t),
+                                ("JobMemoryLimit", ctypes.c_size_t),
+                                ("PeakProcessMemoryUsed", ctypes.c_size_t),
+                                ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+                kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+                kernel.CreateJobObjectW.argtypes = (ctypes.c_void_p, wintypes.LPCWSTR)
+                kernel.CreateJobObjectW.restype = wintypes.HANDLE
+                kernel.SetInformationJobObject.argtypes = (wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD)
+                kernel.SetInformationJobObject.restype = wintypes.BOOL
+                kernel.AssignProcessToJobObject.argtypes = (wintypes.HANDLE, wintypes.HANDLE)
+                kernel.AssignProcessToJobObject.restype = wintypes.BOOL
+                kernel.GetCurrentProcess.restype = wintypes.HANDLE
+                kernel.CloseHandle.argtypes = (wintypes.HANDLE,)
+                job = kernel.CreateJobObjectW(None, None)
+                if not job:
+                    raise OSError("cannot create provider memory job")
+                limits = EXTENDED_LIMITS()
+                limits.BasicLimitInformation.LimitFlags = 0x100  # JOB_OBJECT_LIMIT_PROCESS_MEMORY
+                limits.ProcessMemoryLimit = ceiling
+                if not kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits)):
+                    raise OSError("cannot cap provider memory")
+                if not kernel.AssignProcessToJobObject(job, kernel.GetCurrentProcess()):
+                    raise OSError("cannot assign provider memory job")
         from vnstock import Company
-        connection.send((True, Company(symbol=ticker, source="VCI").news()))
+        frame = Company(symbol=ticker, source="VCI").news()
+        if not isinstance(frame, pd.DataFrame):
+            raise ValueError("vnstock news must be a DataFrame")
+        if frame.memory_usage(deep=True).sum() > max_response_bytes:
+            raise ValueError("vnstock response exceeds byte cap")
+        connection.send((True, frame))
     except Exception as exc:
-        connection.send((False, f"{type(exc).__name__}: {exc}"))
+        connection.send((False, type(exc).__name__))
     finally:
+        if job is not None:
+            kernel.CloseHandle(job)
         connection.close()
 
 
@@ -313,12 +380,13 @@ class VnstockNewsAdapter:
         cutoff, as_of = _utc(cutoff), _utc(as_of)
         if cutoff > as_of: raise ValueError("cutoff must not exceed as_of")
         try: import vnstock
-        except ImportError as exc: return [], [f"vnstock dependency unavailable: {exc}"]
-        records: list[dict[str, Any]] = []; errors: list[str] = []
+        except ImportError: return [], ["vnstock dependency unavailable"]
+        records: list[tuple[tuple[Any, ...], dict[str, Any]]] = []; errors: list[str] = []
+        seen: set[str] = set()
         for ticker, exchange in self.universe.members:
             try:
                 time.sleep(self.request_interval_seconds)
-                frame = self._fetch_page(ticker)
+                frame = self._fetch_page(ticker, None)
                 if not isinstance(frame, pd.DataFrame): raise ValueError("vnstock news must be a DataFrame")
                 if frame.memory_usage(deep=True).sum() > self.max_response_bytes: raise ValueError("vnstock response exceeds byte cap")
                 if not {"news_title", "public_date"}.issubset(frame.columns): raise ValueError("vnstock news missing required columns")
@@ -326,15 +394,23 @@ class VnstockNewsAdapter:
                     published = _parse_published_at(str(item["public_date"]))
                     if not published or not cutoff <= published <= as_of or published + timedelta(minutes=self.source_delay_minutes) > as_of: continue
                     source_url = item.get("url") or item.get("news_url"); source_id = item.get("id") or item.get("news_id")
-                    records.append(_record("vnstock_vci", "vnstock VCI", "vnstock", str(item["news_title"]), item.get("news_short_content"), source_url, published, ingested_at, source_tier="aggregator", source_record_id=str(source_id) if pd.notna(source_id) else None, origin_ticker=ticker, origin_exchange=exchange, universe=self.universe, raw_timestamp=str(item["public_date"]), payload=_canonical(item.to_dict()), source_delay_minutes=self.source_delay_minutes))
-            except Exception as exc: errors.append(f"{ticker}: {exc}")
-        records = sorted({record["raw_record_id"]: record for record in records}.values(), key=lambda record: (-record["published_at"].timestamp(), str(record["source_record_id"] or ""), str(record["canonical_url"] or ""), str(record["origin_ticker"]), str(record["origin_exchange"])))
-        return records[:self.max_items], errors
+                    record = _record("vnstock_vci", "vnstock VCI", "vnstock", str(item["news_title"]), item.get("news_short_content"), source_url, published, ingested_at, source_tier="aggregator", source_record_id=str(source_id) if pd.notna(source_id) else None, origin_ticker=ticker, origin_exchange=exchange, universe=self.universe, raw_timestamp=str(item["public_date"]), payload=_canonical(item.to_dict()), source_delay_minutes=self.source_delay_minutes)
+                    if record["raw_record_id"] in seen: continue
+                    key = (record["published_at"].timestamp(), str(record["source_record_id"] or ""), str(record["canonical_url"] or ""), str(record["origin_ticker"]), str(record["origin_exchange"]), record["raw_record_id"])
+                    if len(records) < self.max_items:
+                        heapq.heappush(records, (key, record))
+                        seen.add(record["raw_record_id"])
+                    elif key > records[0][0]:
+                        removed = heapq.heapreplace(records, (key, record))[1]
+                        seen.remove(removed["raw_record_id"])
+                        seen.add(record["raw_record_id"])
+            except Exception as exc: errors.append(f"{ticker}: {type(exc).__name__}")
+        return [record for _, record in sorted(records, key=lambda pair: (-pair[0][0], *pair[0][1:]))], errors
 
-    def _fetch_page(self, ticker: str) -> pd.DataFrame:
+    def _fetch_page(self, ticker: str, cursor: str | None = None) -> pd.DataFrame:
         context = multiprocessing.get_context()
         parent, child = context.Pipe(duplex=False)
-        process = context.Process(target=_vnstock_news_worker, args=(child, ticker))
+        process = context.Process(target=_vnstock_news_worker, args=(child, ticker, self.max_response_bytes))
         process.daemon = True
         process.start()
         child.close()
@@ -384,7 +460,7 @@ class MacroNewsPipeline:
                 records.extend(accepted)
                 self.source_health[source] = {"status": "healthy" if accepted else "healthy_empty", "attempts": 1, "duration_seconds": round(time.monotonic() - started, 3), "accepted": len(accepted), "rejected": len(parsed) - len(accepted)}
             except Exception as exc:
-                self.source_health[source] = {"status": "failed", "attempts": 1, "duration_seconds": round(time.monotonic() - started, 3), "accepted": 0, "rejected": 0, "error": str(exc)}
+                self.source_health[source] = {"status": "failed", "attempts": 1, "duration_seconds": round(time.monotonic() - started, 3), "accepted": 0, "rejected": 0, "error": type(exc).__name__}
         return self._frame(records)
     @staticmethod
     def _frame(records: list[dict[str, Any]]) -> pd.DataFrame:
@@ -393,15 +469,45 @@ class MacroNewsPipeline:
     @staticmethod
     def persist(incoming: pd.DataFrame, output_path: Path | str) -> pd.DataFrame:
         output_path = Path(output_path); output_path.parent.mkdir(parents=True, exist_ok=True)
+        MacroNewsPipeline._validate(incoming)
         with _writer_lock(output_path):
-            existing = pd.read_parquet(output_path) if output_path.exists() else pd.DataFrame(columns=SCHEMA)
-            if list(existing.columns) == V1_SCHEMA: existing = MacroNewsPipeline._migrate_v1(existing)
-            MacroNewsPipeline._validate(existing); MacroNewsPipeline._validate(incoming)
-            merged = pd.concat([existing, incoming], ignore_index=True).drop_duplicates("raw_record_id", keep="first"); MacroNewsPipeline._validate(merged)
+            previous = pq.ParquetFile(output_path) if output_path.exists() else None
             with tempfile.NamedTemporaryFile(dir=output_path.parent, suffix=".parquet", delete=False) as handle: temporary = Path(handle.name)
-            try: merged.to_parquet(temporary, index=False); os.replace(temporary, output_path)
-            finally: temporary.unlink(missing_ok=True)
-        return MacroNewsPipeline._frame(merged.to_dict("records"))
+            try:
+                with tempfile.TemporaryDirectory(dir=output_path.parent) as directory:
+                    with closing(sqlite3.connect(str(Path(directory) / "ids.sqlite"))) as ids:
+                        ids.execute("CREATE TABLE seen (id TEXT PRIMARY KEY)")
+                        writer = None
+                        try:
+                            def write_chunk(chunk: pd.DataFrame) -> None:
+                                nonlocal writer
+                                MacroNewsPipeline._validate(chunk)
+                                keep = []
+                                for record_id in chunk["raw_record_id"]:
+                                    keep.append(ids.execute("INSERT OR IGNORE INTO seen VALUES (?)", (record_id,)).rowcount == 1)
+                                if any(keep):
+                                    if writer is None:
+                                        writer = pq.ParquetWriter(temporary, pa.Table.from_pandas(chunk.loc[keep], preserve_index=False).schema)
+                                    writer.write_table(pa.Table.from_pandas(chunk.loc[keep], schema=writer.schema, preserve_index=False))
+
+                            if previous is not None:
+                                legacy = list(previous.schema_arrow.names) == V1_SCHEMA
+                                for batch in previous.iter_batches(batch_size=256):
+                                    chunk = batch.to_pandas()
+                                    write_chunk(MacroNewsPipeline._migrate_v1(chunk) if legacy else chunk)
+                            write_chunk(incoming)
+                            if writer is None:
+                                writer = pq.ParquetWriter(temporary, pa.Table.from_pandas(incoming, preserve_index=False).schema)
+                        finally:
+                            if writer is not None: writer.close()
+                if previous is not None:
+                    previous.close()
+                    previous = None
+                os.replace(temporary, output_path)
+            finally:
+                if previous is not None: previous.close()
+                temporary.unlink(missing_ok=True)
+        return incoming
     @staticmethod
     def _migrate_v1(frame: pd.DataFrame) -> pd.DataFrame:
         if list(frame.columns) != V1_SCHEMA: raise ValueError("Invalid macro news store schema")
