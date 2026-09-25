@@ -19,7 +19,7 @@ from filelock import FileLock, Timeout
 import pandas as pd
 import requests
 
-from omega.core.llm_config import resolve_alpha_llm_config
+from omega.core.llm_config import classify_jev, resolve_alpha_llm_config
 
 logger = logging.getLogger(__name__)
 
@@ -42,8 +42,8 @@ OUTPUT_COLUMNS = [
     "available_at",
 ]
 
-ALLOWED_TRENDS = {"tightening", "neutral", "easing"}
-ALLOWED_REGIMES = {"inflation", "deflation", "stagflation", "other"}
+ALLOWED_TRENDS = {"tightening", "neutral", "easing", "improving", "stable", "deteriorating"}
+ALLOWED_REGIMES = {"inflation", "deflation", "stagflation", "other", "risk_on", "risk_off", "neutral"}
 
 SYSTEM_PROMPT = (
     "You are a macroeconomic analyst for Vietnam equity markets. "
@@ -94,7 +94,7 @@ class MacroLLMInterpreter:
         config = llm_config or resolve_alpha_llm_config(self.repo_root)
         self.config = config
         self.provider = config.get("provider", "mock")
-        if self.provider not in {"mock", "openai-compatible"}:
+        if self.provider not in {"mock", "openai-compatible", "jev"}:
             raise ValueError(f"unsupported provider: {self.provider}")
         if self.provider == "openai-compatible":
             if not all(isinstance(config.get(k), str) and config[k].strip() for k in ("api_key", "base_url", "model")):
@@ -280,6 +280,46 @@ class MacroLLMInterpreter:
             raise ValueError(f"failed to read macro indicators parquet: {exc}") from exc
 
         context = self.build_context(df_ind, as_of_ts)
+        if self.provider == "jev":
+            eligible = df_ind.loc[(pd.to_datetime(df_ind["available_at"], utc=True) <= as_of_ts) & (pd.to_datetime(df_ind["ingested_at"], utc=True) <= as_of_ts)]
+            available_at = pd.to_datetime(eligible["available_at"], utc=True).max()
+            if not context["records"] or pd.isna(available_at):
+                raise ValueError("no PIT-eligible macro evidence for JEV")
+            decision = await asyncio.to_thread(
+                classify_jev, domain="macro", facts=context,
+                choices={"regime": ("risk_on", "neutral", "risk_off"), "trend": ("improving", "stable", "deteriorating")},
+                cache_path=self.repo_root / "data" / "jev_decisions.sqlite",
+                as_of=as_of_ts.to_pydatetime(), available_at=available_at.to_pydatetime(), model=self.model,
+            )
+            labels = decision["selected"]
+            if (not isinstance(labels, dict) or type(labels.get("trend")) is not str
+                    or type(labels.get("regime")) is not str
+                    or labels["trend"] not in ("improving", "stable", "deteriorating")
+                    or labels["regime"] not in ("risk_on", "neutral", "risk_off")):
+                raise ValueError("invalid JEV macro labels")
+            result = pd.DataFrame([{
+                "extraction_id": decision["fingerprint"], "prompt_version": "macro_jev_v1",
+                "model": self.model, "provider": "jev", "request_sha256": decision["fingerprint"],
+                "response_sha256": _sha256(_canonical_bytes(labels)), "indicator_set": json.dumps(context["indicator_set"]),
+                "as_of": as_of_ts, "trend": labels["trend"], "regime": labels["regime"],
+                "narrative": "", "macro_score": round(({"risk_on": 1.0, "neutral": 0.0, "risk_off": -1.0}[labels["regime"]] + {"improving": 1.0, "stable": 0.0, "deteriorating": -1.0}[labels["trend"]]) / 2, 6), "extracted_at": pd.Timestamp(decision["decided_at"]),
+                "available_at": pd.Timestamp(decision["decided_at"]),
+            }], columns=OUTPUT_COLUMNS)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with FileLock(f"{out_path}.lock", timeout=60):
+                existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame(columns=OUTPUT_COLUMNS)
+                if set(OUTPUT_COLUMNS) - set(existing.columns):
+                    raise ValueError("invalid schema in macro LLM interpretation store")
+                existing = existing[OUTPUT_COLUMNS]
+                combined = pd.concat([existing, result], ignore_index=True).drop_duplicates("extraction_id", keep="first")
+                with tempfile.NamedTemporaryFile(dir=out_path.parent, suffix=".parquet", delete=False) as handle:
+                    temp_file = Path(handle.name)
+                try:
+                    combined.to_parquet(temp_file, index=False)
+                    os.replace(temp_file, out_path)
+                finally:
+                    temp_file.unlink(missing_ok=True)
+            return combined if not filter_as_of else combined.loc[pd.to_datetime(combined["available_at"], utc=True) <= as_of_ts].copy()
         context_bytes = _canonical_bytes(context)
 
         request_payload = {
@@ -320,6 +360,7 @@ class MacroLLMInterpreter:
                 missing_cols = set(OUTPUT_COLUMNS) - set(existing.columns)
                 if missing_cols:
                     raise ValueError(f"invalid schema in macro LLM interpretation store: missing columns {missing_cols}")
+                existing = existing[OUTPUT_COLUMNS]
 
                 if not existing.empty and "extraction_id" in existing.columns:
                     cached = existing.loc[existing["extraction_id"] == extraction_id]
@@ -372,6 +413,7 @@ class MacroLLMInterpreter:
                 missing_cols = set(OUTPUT_COLUMNS) - set(existing.columns)
                 if missing_cols:
                     raise ValueError(f"invalid schema in macro LLM interpretation store: missing columns {missing_cols}")
+                existing = existing[OUTPUT_COLUMNS]
 
             incoming = pd.DataFrame([new_row], columns=OUTPUT_COLUMNS)
             combined = pd.concat([existing, incoming], ignore_index=True) if not existing.empty else incoming

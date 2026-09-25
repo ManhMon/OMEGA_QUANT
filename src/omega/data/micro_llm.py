@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import math
+from numbers import Integral
 import os
 from pathlib import Path
 import tempfile
@@ -19,7 +20,7 @@ from filelock import FileLock
 import pandas as pd
 import requests
 
-from omega.core.llm_config import resolve_alpha_llm_config
+from omega.core.llm_config import classify_jev, resolve_alpha_llm_config
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +100,7 @@ class MicroLLMInterpreter:
         config = llm_config or resolve_alpha_llm_config(self.repo_root)
         self.config = config
         self.provider = config.get("provider", "mock")
-        if self.provider not in {"mock", "openai-compatible"}:
+        if self.provider not in {"mock", "openai-compatible", "jev"}:
             raise ValueError(f"unsupported provider: {self.provider}")
         if self.provider == "openai-compatible":
             if not all(isinstance(config.get(k), str) and config[k].strip() for k in ("api_key", "base_url", "model")):
@@ -352,6 +353,11 @@ class MicroLLMInterpreter:
             now_utc = datetime.now(timezone.utc)
             df = df.loc[(df_avail <= now_utc) & (df_ingest <= now_utc)].copy()
 
+        if not df.empty and not df["fiscal_year"].map(lambda year: isinstance(year, Integral) and not isinstance(year, bool) and 1900 <= year <= 2100).all():
+            raise ValueError("fiscal_year must be an integer in 1900..2100")
+        if not df.empty and not df["fiscal_quarter"].map(lambda q: isinstance(q, Integral) and not isinstance(q, bool) and 1 <= q <= 4).all():
+            raise ValueError("fiscal_quarter must be an integer in 1..4")
+
         # Deterministic latest revision selection per (symbol, fiscal_year, fiscal_quarter, endpoint, item_code) (H-01)
         if not df.empty:
             df["_avail_dt"] = pd.to_datetime(df["available_at"], utc=True)
@@ -363,6 +369,47 @@ class MicroLLMInterpreter:
             df = df.sort_values(sort_cols, ascending=[True] * len(sort_cols))
             df = df.drop_duplicates(subset=sort_keys, keep="last")
             df = df.drop(columns=["_avail_dt", "_ingest_dt", "_rev_id"], errors="ignore")
+
+        if self.provider == "jev":
+            rows = []
+            for (sym, year, quarter, period), group in df.groupby(["symbol", "fiscal_year", "fiscal_quarter", "period_type"]):
+                facts = {"symbol": str(sym), "fiscal_year": int(year), "fiscal_quarter": int(quarter),
+                         "period_type": str(period), "financials": self.build_pivot_data(group)}
+                if not facts["financials"]:
+                    continue
+                cutoff = as_of_ts or pd.Timestamp.now(tz=timezone.utc)
+                available_at = pd.to_datetime(group["available_at"], utc=True).max()
+                decision = await asyncio.to_thread(
+                    classify_jev, domain="micro", facts=facts,
+                    choices={"quality": ("strong", "neutral", "weak", "distressed"),
+                             "growth": ("high", "moderate", "low", "negative"),
+                             "cash": ("positive", "neutral", "negative")},
+                    cache_path=self.repo_root / "data" / "jev_decisions.sqlite",
+                    as_of=cutoff.to_pydatetime(), available_at=available_at.to_pydatetime(), model=self.model,
+                )
+                labels = decision["selected"]
+                rows.append({"extraction_id": decision["fingerprint"], "prompt_version": "micro_jev_v1",
+                             "model": self.model, "provider": "jev", "request_sha256": decision["fingerprint"],
+                             "response_sha256": _sha256(_canonical_bytes(labels)), "symbol": sym,
+                             "fiscal_year": year, "fiscal_quarter": quarter, "period_type": period,
+                              "quality": labels["quality"], "growth_signal": {"high": 1.0, "moderate": 0.5, "low": 0.0, "negative": -1.0}[labels["growth"]], "cash_signal": {"positive": 1.0, "neutral": 0.0, "negative": -1.0}[labels["cash"]],
+                              "narrative": "", "micro_score": round(({"strong": 1.0, "neutral": 0.0, "weak": -0.5, "distressed": -1.0}[labels["quality"]] + {"high": 1.0, "moderate": 0.5, "low": 0.0, "negative": -1.0}[labels["growth"]] + {"positive": 1.0, "neutral": 0.0, "negative": -1.0}[labels["cash"]]) / 3, 6), "extracted_at": pd.Timestamp(decision["decided_at"]),
+                             "available_at": pd.Timestamp(decision["decided_at"])})
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with FileLock(f"{out_path}.lock", timeout=60):
+                existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame(columns=OUTPUT_COLUMNS)
+                if set(OUTPUT_COLUMNS) - set(existing.columns):
+                    raise ValueError("invalid schema in micro LLM interpretation store")
+                existing = existing[OUTPUT_COLUMNS]
+                combined = pd.concat([existing, pd.DataFrame(rows, columns=OUTPUT_COLUMNS)], ignore_index=True).drop_duplicates("extraction_id", keep="first")
+                with tempfile.NamedTemporaryFile(dir=out_path.parent, suffix=".parquet", delete=False) as handle:
+                    temp_file = Path(handle.name)
+                try:
+                    combined.to_parquet(temp_file, index=False)
+                    os.replace(temp_file, out_path)
+                finally:
+                    temp_file.unlink(missing_ok=True)
+            return self._filter_output(combined, as_of_ts, symbol, period_type)
 
         out_path.parent.mkdir(parents=True, exist_ok=True)
         lock_path = f"{out_path}.lock"
@@ -381,6 +428,7 @@ class MicroLLMInterpreter:
                 missing_cols = set(OUTPUT_COLUMNS) - set(existing.columns)
                 if missing_cols:
                     raise ValueError(f"invalid schema in micro LLM interpretation store: missing columns {missing_cols}")
+                existing = existing[OUTPUT_COLUMNS]
 
             if df.empty:
                 return self._filter_output(existing, as_of_ts, symbol, period_type)
@@ -471,6 +519,7 @@ class MicroLLMInterpreter:
                         missing_cols = set(OUTPUT_COLUMNS) - set(current_existing.columns)
                         if missing_cols:
                             raise ValueError(f"invalid schema in micro LLM interpretation store: missing columns {missing_cols}")
+                        current_existing = current_existing[OUTPUT_COLUMNS]
 
                     combined = pd.concat([current_existing, incoming], ignore_index=True) if not current_existing.empty else incoming
                     combined = combined.drop_duplicates(subset=["extraction_id"], keep="last")
@@ -493,6 +542,7 @@ class MicroLLMInterpreter:
                         missing_cols = set(OUTPUT_COLUMNS) - set(combined.columns)
                         if missing_cols:
                             raise ValueError(f"invalid schema in micro LLM interpretation store: missing columns {missing_cols}")
+                        combined = combined[OUTPUT_COLUMNS]
                     else:
                         combined = existing
         else:
@@ -506,6 +556,7 @@ class MicroLLMInterpreter:
                     missing_cols = set(OUTPUT_COLUMNS) - set(combined.columns)
                     if missing_cols:
                         raise ValueError(f"invalid schema in micro LLM interpretation store: missing columns {missing_cols}")
+                    combined = combined[OUTPUT_COLUMNS]
                 else:
                     combined = existing
 
