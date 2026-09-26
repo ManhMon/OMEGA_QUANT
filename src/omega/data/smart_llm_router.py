@@ -15,9 +15,39 @@ import json
 import logging
 import math
 import threading
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 logger = logging.getLogger(__name__)
+
+COPILOT_INTENTS = ("GENERAL_SYNTHESIS", "ALPHA_AST", "MACRO_SENTIMENT", "RISK_TCA", "PRICE_DRIVERS", "EXECUTION_REBALANCE")
+COPILOT_ROUTES = ("global_profile", "alpha_quant", "news_sentiment", "macro_micro")
+COPILOT_TOOLS = ("none", "navigate_ui", "set_focus_ticker", "filter_screener", "set_timeframe", "set_theme", "update_market_data", "execute_quant_script", "trigger_backtest")
+
+
+def classify_copilot_request(
+    query: str, *, as_of: datetime, available_at: datetime, cache_path: Path,
+    model: str = "jev-system-one",
+) -> Dict[str, Any]:
+    """Classify routing metadata only; never authorize tool execution from model output."""
+    if not isinstance(query, str) or not query.strip() or len(query) > 2000:
+        raise ValueError("invalid copilot query")
+    from omega.core.llm_config import classify_jev
+
+    envelope = classify_jev(
+        domain="copilot-router-v1", facts={"query": query.strip()},
+        choices={"intent": COPILOT_INTENTS, "tool": COPILOT_TOOLS, "route": COPILOT_ROUTES,
+                 "system_2_warranted": ("no", "yes")},
+        cache_path=cache_path, as_of=as_of, available_at=available_at, model=model,
+    )
+    selected = envelope["selected"]
+    if (not isinstance(selected, dict) or
+            any(type(selected.get(key)) is not str or selected[key] not in options
+                for key, options in (("intent", COPILOT_INTENTS), ("tool", COPILOT_TOOLS),
+                                     ("route", COPILOT_ROUTES), ("system_2_warranted", ("no", "yes"))))):
+        raise ValueError("invalid copilot routing classification")
+    return {**selected, "cache_key": envelope.get("fingerprint"),
+            "attempts": envelope.get("attempts", 1)}
 
 ROUTER_VERSION = "smart_llm_router_v1"
 

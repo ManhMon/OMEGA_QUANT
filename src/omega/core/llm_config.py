@@ -24,8 +24,10 @@ def classify_jev(
         raise ValueError("JEV source not available at cutoff")
     if not choices or any(not options or len(set(options)) != len(options) for options in choices.values()):
         raise ValueError("invalid JEV choice allowlist")
+    # ponytail: daily query cache; add intraday buckets when routing depends on live facts.
+    cutoff = as_of.astimezone(timezone.utc).date().isoformat()
     payload = {"version": 1, "domain": domain, "facts": facts, "choices": choices,
-               "as_of": as_of.isoformat(), "available_at": available_at.isoformat(), "model": model}
+               "cutoff_date": cutoff, "model": model}
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     fingerprint = hashlib.sha256(raw).hexdigest()
     if cache_path.exists() and not cache_path.is_file():
@@ -37,9 +39,9 @@ def classify_jev(
         row = db.execute("SELECT envelope FROM decisions WHERE fingerprint=?", (fingerprint,)).fetchone()
         if row:
             envelope = json.loads(row[0])
-            _validate_jev_envelope(envelope, fingerprint, domain, choices, as_of, available_at, model)
+            _validate_jev_envelope(envelope, fingerprint, domain, choices, as_of, available_at, model, cached=True)
             return envelope
-    from typesafe_sdk import Choice, TypeSafeClient, TypeSafeAPIConnectionError, TypeSafeAPITimeoutError, TypeSafeInternalServerError
+    from typesafe_sdk import Choice, TypeSafeClient, TypeSafeAPIConnectionError, TypeSafeAPITimeoutError, TypeSafeInternalServerError, TypeSafeRateLimitError
 
     questions = {key: Choice(instructions=f"Select {key} from evidence only", criteria={option: None for option in options}) for key, options in choices.items()}
     for attempt in range(1, 3):
@@ -50,7 +52,7 @@ def classify_jev(
             if any(type(selected[key]) is not str or selected[key] not in options for key, options in choices.items()):
                 raise ValueError("JEV choice outside allowlist")
             break
-        except (TypeSafeAPIConnectionError, TypeSafeAPITimeoutError, TypeSafeInternalServerError):
+        except (TypeSafeAPIConnectionError, TypeSafeAPITimeoutError, TypeSafeInternalServerError, TypeSafeRateLimitError):
             if attempt == 2:
                 raise RuntimeError("JEV unavailable after two attempts") from None
             time.sleep(2.0)
@@ -62,13 +64,14 @@ def classify_jev(
         db.execute("INSERT OR IGNORE INTO decisions VALUES (?, ?)", (fingerprint, json.dumps(envelope, sort_keys=True)))
         stored = db.execute("SELECT envelope FROM decisions WHERE fingerprint=?", (fingerprint,)).fetchone()
     result = json.loads(stored[0])
-    _validate_jev_envelope(result, fingerprint, domain, choices, as_of, available_at, model)
+    _validate_jev_envelope(result, fingerprint, domain, choices, as_of, available_at, model,
+                           cached=result != envelope)
     return result
 
 
 def _validate_jev_envelope(
     envelope: Any, fingerprint: str, domain: str, choices: dict[str, tuple[str, ...]],
-    as_of: datetime, available_at: datetime, model: str,
+    as_of: datetime, available_at: datetime, model: str, cached: bool = False,
 ) -> None:
     """Tu choi metadata cache sai lech hoac vi pham moc thoi gian PIT."""
     expected = {"version", "fingerprint", "domain", "choices", "selected", "as_of", "available_at", "decided_at", "model", "attempts"}
@@ -86,9 +89,11 @@ def _validate_jev_envelope(
             and type(envelope["as_of"]) is str and type(envelope["available_at"]) is str
             and type(envelope["decided_at"]) is str
             and all(ts.tzinfo is not None and ts.utcoffset() is not None for ts in timestamps)
-            and timestamps[0] == as_of and timestamps[1] == available_at
+            and timestamps[0].astimezone(timezone.utc).date() == as_of.astimezone(timezone.utc).date()
+            and timestamps[0] <= as_of and timestamps[1] <= available_at
             and timestamps[1] <= timestamps[0]
             and timestamps[2] >= timestamps[1]
+            and (not cached or (timestamps[2] <= as_of and timestamps[2] <= available_at))
             and type(envelope["choices"]) is dict
             and envelope["choices"] == {k: list(v) for k, v in choices.items()}
             and isinstance(envelope["selected"], dict)

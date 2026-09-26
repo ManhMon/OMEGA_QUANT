@@ -18,6 +18,8 @@ from omega.quant.safe_expression_eval import safe_eval_expression
 from omega.core.pipeline import OmegaPipeline, PipelineConfig, PipelineResult
 from omega.data.loader import DataLoader
 from omega.data.calendar import VNTradingCalendar
+from omega.data.smart_llm_router import classify_copilot_request
+from pathlib import Path
 
 import socket
 import urllib.parse
@@ -1634,6 +1636,27 @@ async def ask_copilot(req: CopilotAskRequest) -> Dict[str, Any]:
     elif any(k in q_lower for k in ["macro", "vĩ mô", "vsi", "lãi suất", "sbv", "regime"]):
         profile_key = "macro_micro"
 
+    classification = None
+    jev_started = time.monotonic()
+    jev_provenance = {"status": "disabled", "cache_key": None, "fallback_reason": None,
+                      "attempts": 0, "latency": 0.0}
+    cache_path = os.getenv("OMEGA_COPILOT_JEV_CACHE_PATH")
+    if cache_path:
+        try:
+            # No future telemetry enters the classifier: only the request and its receipt time.
+            classification = await asyncio.to_thread(
+                classify_copilot_request, raw_query, as_of=datetime.now(timezone.utc),
+                available_at=datetime.fromisoformat(now_iso), cache_path=Path(cache_path),
+            )
+            profile_key = classification["route"]
+            jev_provenance.update(status="success", cache_key=classification.get("cache_key"),
+                                  attempts=classification.get("attempts", 1))
+        except Exception as exc:
+            classification = None
+            jev_provenance.update(status="fallback", fallback_reason=type(exc).__name__, attempts=1)
+        finally:
+            jev_provenance["latency"] = time.monotonic() - jev_started
+
     prof = _IN_MEMORY_LLM_CONFIG.get(profile_key, _IN_MEMORY_LLM_CONFIG.get("global_profile", {}))
     api_key = prof.get("api_key")
     provider = (prof.get("provider") or "openai").lower().strip()
@@ -1683,6 +1706,9 @@ async def ask_copilot(req: CopilotAskRequest) -> Dict[str, Any]:
             "Output format: Output either valid JSON with keys ('response_vi', 'response_en', 'intent', 'metrics', 'suggested_actions') "
             "or direct natural language markdown text. If natural language is provided, maintain institutional quant depth."
         )
+        if classification is not None and classification["system_2_warranted"] == "yes":
+            system_prompt += "\nUse deliberate multi-step reasoning; cross-check quantitative claims against telemetry before answering."
+            temperature = min(temperature, 0.1)
 
         messages = [
             {"role": "system", "content": system_prompt},
@@ -1889,6 +1915,8 @@ async def ask_copilot(req: CopilotAskRequest) -> Dict[str, Any]:
         else:
             metrics_out = fb["metrics"]
         actions_out = fb["suggested_actions"]
+    elif classification is not None:
+        detected_intent = classification["intent"]
 
     # 4. Autonomous Intent Tool Dispatch
     executed_tools: List[Dict[str, Any]] = []
@@ -1983,6 +2011,15 @@ async def ask_copilot(req: CopilotAskRequest) -> Dict[str, Any]:
             parameters={"ticker": ticker}
         ))
 
+    # Classification selects only safe UI actions; privileged tools require explicit user intent.
+    if classification is not None and not tool_requests:
+        jev_tool = classification["tool"]
+        if jev_tool == "set_focus_ticker":
+            tool_requests.append(CopilotToolExecutionRequest(tool_name=jev_tool, parameters={"ticker": ticker}))
+        elif jev_tool == "navigate_ui" and active_mod in ("macro_cockpit", "quant_screener", "alpha_factory"):
+            tool_requests.append(CopilotToolExecutionRequest(
+                tool_name=jev_tool, parameters={"module": active_mod, "current_module": active_mod}))
+
     for t_req in tool_requests:
         try:
             t_res = await execute_copilot_tool(t_req)
@@ -2000,9 +2037,9 @@ async def ask_copilot(req: CopilotAskRequest) -> Dict[str, Any]:
                 "tool_name": t_req.tool_name,
                 "action_type": "UNKNOWN",
                 "status": "error",
-                "target": t_req.parameters.get("module") or t_req.parameters.get("ticker"),
+                "target": t_req.parameters.get("module") or t_req.parameters.get("ticker") or t_req.parameters.get("strategy_id"),
                 "parameters": t_req.parameters,
-                "result": {"error": str(e)},
+                "result": {"error": type(e).__name__},
                 "timestamp": now_iso,
             })
 
@@ -2017,8 +2054,11 @@ async def ask_copilot(req: CopilotAskRequest) -> Dict[str, Any]:
         "metrics": metrics_out,
         "suggested_actions": actions_out,
         "executed_tools": executed_tools,
+        "jev_provenance": jev_provenance,
         "confidence": 0.96 if llm_responded else 0.94,
     }
+    if classification is not None:
+        res["system_2_warranted"] = classification["system_2_warranted"] == "yes"
     return sanitize_val(res)
 
 

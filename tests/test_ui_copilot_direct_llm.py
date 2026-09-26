@@ -5,6 +5,8 @@ import pytest
 from starlette.testclient import TestClient
 from unittest.mock import patch, AsyncMock
 import httpx
+from datetime import datetime
+from omega.core.llm_config import classify_jev
 from omega.api.server import app
 import omega.api.routes.copilot as copilot
 
@@ -19,6 +21,112 @@ def restore_llm_config():
 @pytest.fixture
 def client():
     return TestClient(app)
+
+
+@pytest.mark.parametrize("stored_as_of,stored_available,decided,caller_as_of,caller_available", [
+    ("09:00", "08:00", "11:00", "10:00", "09:00"),
+    ("09:00", "08:00", "09:30", "10:00", "09:00"),
+    ("09:00", "08:00", "08:30", "10:00", "08:00"),
+])
+def test_jev_cache_rejects_future_decision(tmp_path, stored_as_of, stored_available, decided, caller_as_of, caller_available):
+    import sqlite3
+
+    def stamp(hhmm):
+        return datetime.fromisoformat(f"2026-09-26T{hhmm}:00+00:00")
+
+    path = tmp_path / "jev.db"
+    choices = {"route": ("global_profile", "fallback")}
+    with patch("typesafe_sdk.TypeSafeClient") as sdk:
+        sdk.return_value.__enter__.return_value.system_one.return_value.choices = {
+            "route": type("ChoiceResult", (), {"choice": "global_profile"})()
+        }
+        with patch("omega.core.llm_config.datetime") as clock:
+            clock.now.return_value = stamp("08:00")
+            clock.fromisoformat.side_effect = datetime.fromisoformat
+            first = classify_jev(domain="copilot", facts={"query": "VCB"}, choices=choices,
+                                 cache_path=path, as_of=stamp(stored_as_of),
+                                 available_at=stamp(stored_available), model="jev")
+    with sqlite3.connect(path) as db:
+        envelope = json.loads(db.execute("SELECT envelope FROM decisions").fetchone()[0])
+        envelope["decided_at"] = stamp(decided).isoformat()
+        before = json.dumps(envelope)
+        db.execute("UPDATE decisions SET envelope=?", (before,))
+    assert json.loads(before)["fingerprint"] == first["fingerprint"]
+    with pytest.raises(ValueError, match="invalid JEV cache envelope"):
+        classify_jev(domain="copilot", facts={"query": "VCB"}, choices=choices,
+                     cache_path=path, as_of=stamp(caller_as_of),
+                     available_at=stamp(caller_available), model="jev")
+    with sqlite3.connect(path) as db:
+        assert db.execute("SELECT envelope FROM decisions").fetchone()[0] == before
+
+
+@pytest.mark.parametrize("warranted", ["yes", "no"])
+def test_jev_system_two_changes_execution_prompt(client, monkeypatch, tmp_path, warranted):
+    monkeypatch.setenv("OMEGA_COPILOT_JEV_CACHE_PATH", str(tmp_path / "jev.db"))
+    monkeypatch.setattr(copilot, "classify_copilot_request", lambda *args, **kwargs: {
+        "route": "global_profile", "intent": "GENERAL_SYNTHESIS", "tool": "none",
+        "system_2_warranted": warranted, "cache_key": "hash", "attempts": 2})
+    copilot._IN_MEMORY_LLM_CONFIG["global_profile"].update(
+        provider="openai", api_key="sk-real-live-active-key-secret-12345",
+        base_url="https://api.openai.com/v1", temperature=0.8)
+    captured = []
+    async def fake_post(*args, **kwargs):
+        captured.append(kwargs["json"])
+        return httpx.Response(200, json={"choices": [{"message": {"content": "answer"}}]},
+                              request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"))
+    with patch.object(httpx.AsyncClient, "post", new_callable=AsyncMock, side_effect=fake_post):
+        response = client.post("/api/v1/copilot/ask", json={"query": "Evaluate VCB"})
+    assert response.status_code == 200
+    assert bool(response.json()["system_2_warranted"]) == (warranted == "yes")
+    assert ("multi-step reasoning" in captured[0]["messages"][0]["content"]) == (warranted == "yes")
+    assert captured[0]["temperature"] == (0.1 if warranted == "yes" else 0.2)
+    assert response.json()["jev_provenance"]["cache_key"] == "hash"
+
+
+def test_jev_safe_tool_and_classifier_failure_provenance(client, monkeypatch, tmp_path):
+    monkeypatch.setenv("OMEGA_COPILOT_JEV_CACHE_PATH", str(tmp_path / "jev.db"))
+    monkeypatch.setattr(copilot, "classify_copilot_request", lambda *args, **kwargs: {
+        "route": "global_profile", "intent": "GENERAL_SYNTHESIS", "tool": "set_focus_ticker",
+        "system_2_warranted": "no", "cache_key": "hash", "attempts": 1})
+    response = client.post("/api/v1/copilot/ask", json={"query": "Evaluate VCB", "context_ticker": "VCB"})
+    assert response.status_code == 200
+    assert response.json()["executed_tools"][0]["tool_name"] == "set_focus_ticker"
+    assert response.json()["jev_provenance"]["status"] == "success"
+    def fail(*args, **kwargs):
+        raise RuntimeError("secret message")
+    monkeypatch.setattr(copilot, "classify_copilot_request", fail)
+    failed = client.post("/api/v1/copilot/ask", json={"query": "Evaluate VCB"})
+    assert failed.status_code == 200
+    assert failed.json()["jev_provenance"]["fallback_reason"] == "RuntimeError"
+    assert failed.json()["jev_provenance"]["status"] == "fallback"
+    assert "secret message" not in str(failed.json())
+
+
+@pytest.mark.parametrize("query,classification,tool_name", [
+    ("hello", "set_focus_ticker", "set_focus_ticker"),
+    ("trigger backtest", "none", "trigger_backtest"),
+], ids=["hello_dispatch", "trigger_backtest_dispatch"])
+def test_tool_exception_does_not_disclose_secrets(client, monkeypatch, tmp_path, query, classification, tool_name):
+    monkeypatch.setenv("OMEGA_COPILOT_JEV_CACHE_PATH", str(tmp_path / "jev.db"))
+    monkeypatch.setattr(copilot, "classify_copilot_request", lambda *args, **kwargs: {
+        "route": "global_profile", "intent": "GENERAL_SYNTHESIS", "tool": classification,
+        "system_2_warranted": "no", "cache_key": "hash", "attempts": 1})
+    secret = "sk-secret-from-tool-12345"
+
+    async def fail_tool(request):
+        raise RuntimeError(f"upstream rejected {secret} at https://user:pass@example.com/private")
+
+    monkeypatch.setattr(copilot, "execute_copilot_tool", fail_tool)
+    response = client.post("/api/v1/copilot/ask", json={"query": query, "context_ticker": "VCB"})
+    assert response.status_code == 200
+    entry = response.json()["executed_tools"][0]
+    assert entry["tool_name"] == tool_name
+    assert entry["status"] == "error"
+    assert entry["result"]["error"] == "RuntimeError"
+    assert secret not in response.text
+    assert "user:pass" not in response.text
+    if tool_name == "trigger_backtest":
+        assert entry["target"] == "ALPHA_HRP_V2"
 
 # =============================================================================
 # 16-DIMENSION MASTER ADVERSARIAL TEST SUITE: PHASE 17 DIRECT REAL-TIME LLM
