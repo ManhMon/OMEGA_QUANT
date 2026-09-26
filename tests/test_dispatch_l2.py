@@ -111,7 +111,7 @@ def test_parse_cli_args_accepts_dry_run_flag():
     parsed = dispatch_l2._parse_cli_args([
         "data-engineer", "TEST_GATE", "slug", "desc", "scope", "--dry-run"
     ])
-    assert parsed[-2] is True
+    assert parsed[11] is True
 
 
 def test_dry_run_preserves_authoritative_artifacts(tmp_path, monkeypatch, capsys):
@@ -168,7 +168,9 @@ def test_model_mapping():
     for level in ("high", "medium", "low"):
         assert isinstance(MODELS[level], str)
         assert len(MODELS[level]) > 0
-        assert MODELS[level] == "9router/cx/gpt-5.6-luna"
+    assert MODELS["high"] == "9router/cx/gpt-6-sol"
+    assert MODELS["medium"] == "9router/cx/gpt-6-luna"
+    assert MODELS["low"] == "9router/cx/gpt-6-luna"
 
 
 def test_parse_frontmatter():
@@ -225,7 +227,7 @@ def test_dispatch_l2_cli_run_and_prompt_construction():
     assert "---COMMAND---" in stdout
 
     command, prompt_path, prompt = _parse_command_and_prompt(stdout)
-    assert '-m "9router/cx/gpt-5.6-luna"' in command
+    assert '-m "9router/cx/gpt-6-luna"' in command
 
     # Prompt check: 16 dimensions
     assert "MANDATORY 16-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in prompt
@@ -1564,3 +1566,96 @@ def test_f002_validate_l2_report_sweep_schema_and_boundaries():
     ok, errs = _check_required_headings(bad_order_doc, remediation_required=True)
     assert ok is False
     assert any("out of order" in e for e in errs)
+
+
+def test_build_l2_report_scaffold_baseline_and_remediation(tmp_path):
+    from scripts.dispatch_l2 import build_l2_report_scaffold
+    from scripts.validate_l2_report import _check_required_headings, _extract_report_binding
+
+    contract_path = tmp_path / ".ly_state/session/anti_drip_contract_test_session_20260925.json"
+    contract_path.parent.mkdir(parents=True, exist_ok=True)
+    contract_path.write_bytes(b'{}')
+
+    # Baseline mode
+    baseline_contract = {"mode": "baseline", "gate_name": "GATE_TEST_20260925"}
+    baseline_md = build_l2_report_scaffold(
+        session_id="test_session_20260925",
+        role_id=15,
+        role_name="data-engineer",
+        gate_name="GATE_TEST_20260925",
+        contract=baseline_contract,
+        contract_sha256="0" * 64,
+        contract_path=contract_path,
+        source_files=[".agents/agent/data-engineer.md", ".agents/skills/clean-code/SKILL.md"],
+        repo_root=tmp_path,
+    )
+    ok, errs = _check_required_headings(baseline_md, remediation_required=False)
+    assert ok is True, f"Baseline headings invalid: {errs}"
+    binding, errs = _extract_report_binding(baseline_md)
+    assert errs == []
+    assert binding["gate_name"] == "GATE_TEST_20260925"
+    assert binding["session_id"] == "test_session_20260925"
+    assert binding["mode"] == "baseline"
+
+    # Remediation mode
+    rem_contract = {
+        "mode": "remediation",
+        "gate_name": "GATE_TEST_20260925",
+        "required_findings": [
+            {
+                "finding_id": "F-001",
+                "title": "Sample test finding title for testing scaffold generation",
+                "probe_strings": ["test_probe_1"],
+            }
+        ],
+        "source_audit": {
+            "path": ".ly_state/session/audit_reports/role21_test.md",
+            "sha256": "1" * 64,
+        },
+    }
+    rem_md = build_l2_report_scaffold(
+        session_id="test_session_20260925",
+        role_id=15,
+        role_name="data-engineer",
+        gate_name="GATE_TEST_20260925",
+        contract=rem_contract,
+        contract_sha256="0" * 64,
+        contract_path=contract_path,
+        source_files=[".agents/agent/data-engineer.md"],
+        repo_root=tmp_path,
+    )
+    ok, errs = _check_required_headings(rem_md, remediation_required=True)
+    assert ok is True, f"Remediation headings invalid: {errs}"
+    binding, errs = _extract_report_binding(rem_md)
+    assert errs == []
+    assert binding["mode"] == "remediation"
+    assert "## Root-Cause Architectural Sweep" in rem_md
+
+
+def test_format_l2_report_utility(tmp_path, monkeypatch):
+    import json
+    from scripts.format_l2_report import format_l2_report
+    import scripts.format_l2_report as fmt_mod
+
+    monkeypatch.setattr(fmt_mod, "REPO_ROOT", tmp_path)
+    session_id = "l2_role15_test_fmt_20260925"
+    session_dir = tmp_path / ".ly_state" / "session"
+    session_dir.mkdir(parents=True, exist_ok=True)
+
+    contract = {
+        "gate_name": "GATE_TEST_FORMAT_20260925",
+        "mode": "baseline",
+    }
+    contract_bytes = json.dumps(contract).encode("utf-8")
+    (session_dir / f"anti_drip_contract_{session_id}.json").write_bytes(contract_bytes)
+
+    # When report doesn't exist, format_l2_report scaffolds it
+    rc = format_l2_report(session_id, role_id=15, role_name="data-engineer")
+    assert rc == 0
+    report_file = session_dir / f"{session_id}.md"
+    assert report_file.is_file()
+    content = report_file.read_text(encoding="utf-8")
+    assert "# L2 Implementation Report" in content
+    assert f"- **Session**: `{session_id}`" in content
+
+

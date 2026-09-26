@@ -18,13 +18,12 @@ from pathlib import Path
 from typing import Any
 
 L2_LEAD_ALLOWLIST = ("9router/cx/gpt-6-sol", "9router/cx/gpt-6-luna")
-L2_SUBAGENT_ALLOWLIST = ("9router/bzl/qwen3.7-flash",)
+L2_SUBAGENT_ALLOWLIST = ("ag/gemini",)
 L3_LEAD_ALLOWLIST = ("cx/gpt-6-sol", "cx/gpt-6-sol(medium)")
 L3_SUBAGENT_ALLOWLIST = ("cx/gpt-6-luna",)
 TIMEOUT_ALLOWLIST = (120, 180, 300)
 MAX_CYCLES = 3
 MAX_RESPONSE_BYTES = 1_048_576
-LOCK_STALE_SECONDS = 300
 
 
 def validate_standalone_verdict(report: str) -> str:
@@ -137,8 +136,7 @@ def atomic_publish_decision(envelope: dict[str, Any], path: str | Path) -> tuple
                         alive = True
                     except OSError as exc:
                         alive = exc.errno == errno.EPERM
-                stale = time.time() - stat.st_mtime > LOCK_STALE_SECONDS
-                if not alive or stale:
+                if not alive:
                     current = lock.stat()
                     if (current.st_dev, current.st_ino, current.st_mtime_ns) == (stat.st_dev, stat.st_ino, stat.st_mtime_ns):
                         lock.unlink()
@@ -167,6 +165,15 @@ def atomic_publish_decision(envelope: dict[str, Any], path: str | Path) -> tuple
             pass
         temp.unlink(missing_ok=True)
     return target, hashlib.sha256(raw).hexdigest()
+
+
+def _validate_decision_models(role: str, lead: Any, subagent: Any, timeout: Any) -> None:
+    lead_choices = L2_LEAD_ALLOWLIST if role == "l2" else L3_LEAD_ALLOWLIST
+    subagent_choices = L2_SUBAGENT_ALLOWLIST if role == "l2" else L3_SUBAGENT_ALLOWLIST
+    if (type(lead) is not str or lead not in lead_choices
+            or type(subagent) is not str or subagent not in subagent_choices
+            or type(timeout) is not int or timeout not in TIMEOUT_ALLOWLIST):
+        raise ValueError("model decision outside allowlist")
 
 
 def _query_jev_api(
@@ -307,7 +314,7 @@ def evaluate_model_decision(
     if response is not None:
         lead = response.get("lead_model") or (lead_choices[0] if escalated else lead_choices[1])
         subagent = response.get("subagent_model") or subagent_choices[0]
-        timeout = int(response.get("execution_timeout", 180))
+        timeout = response.get("execution_timeout", 180)
         fallback_used = bool(response.get("fallback_used", False))
         fallback_reason = response.get("fallback_reason")
     else:
@@ -325,9 +332,18 @@ def evaluate_model_decision(
         fallback_used = api_result["fallback_used"]
         fallback_reason = api_result["fallback_reason"]
 
+    _validate_decision_models(role, lead, subagent, timeout)
+
     # Monotonic escalation guard: cannot downgrade if escalated
     if escalated and lead != lead_choices[0]:
         lead = lead_choices[0]
+
+    if fallback_reason is not None:
+        try:
+            from scripts.dispatch_l2 import redact_credentials
+        except ImportError:
+            from dispatch_l2 import redact_credentials
+        fallback_reason = redact_credentials(str(fallback_reason))
 
     envelope: dict[str, Any] = {
         "schema_version": "2.0",
@@ -398,6 +414,7 @@ def load_decision(
         raise ValueError("model decision context types mismatch")
     if not isinstance(decision["predecessor_findings"], list) or type(decision["escalated"]) is not bool:
         raise ValueError("model decision field types mismatch")
+    _validate_decision_models(decision["role"], decision["lead_model"], decision["subagent_model"], decision["execution_timeout"])
     checks = (("role", expected_role), ("gate", expected_gate), ("session_id", expected_session_id), ("risk", expected_risk))
     if any(expected is not None and decision[field] != expected for field, expected in checks):
         raise ValueError("model decision context mismatch")

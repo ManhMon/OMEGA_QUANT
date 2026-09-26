@@ -65,7 +65,7 @@ def report(mode, digest, payload=None):
 - **Anti-Drip Mode**: `{mode}`
 - **Anti-Drip Contract**: `{CONTRACT_REL}`
 - **Anti-Drip Contract SHA-256**: `{digest}`
-- **Subagent Model**: `9router/ag/gemini-3.8-flash`
+- **Subagent Model**: `9router/bzl/qwen3.7-flash`
 
 ## Summary
 
@@ -109,7 +109,7 @@ def case(tmp_path):
     contract_path.write_bytes(raw)
     contract_path.with_suffix(".sha256").write_bytes(f"{digest}  {contract_path.name}\n".encode("ascii"))
     (session / f"prompt_{SESSION}.txt").write_text(validator._canonical_prompt_block(SESSION, payload, digest) + "\n", encoding="utf-8", newline="\n")
-    metadata = json.dumps({"session_id": SESSION, "role_id": 11, "role_name": "devops-engineer", "subagent_model": "9router/ag/gemini-3.8-flash", "model": "9router/cx/gpt-5.6-luna"}, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode() + b"\n"
+    metadata = json.dumps({"session_id": SESSION, "role_id": 11, "role_name": "devops-engineer", "subagent_model": "9router/bzl/qwen3.7-flash", "model": "9router/cx/gpt-6-luna"}, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode() + b"\n"
     (session / f"l2_metadata_{SESSION}.json").write_bytes(metadata)
     (session / f"l2_metadata_{SESSION}.json.sha256").write_bytes(f"{hashlib.sha256(metadata).hexdigest()}  l2_metadata_{SESSION}.json\n".encode("ascii"))
     sweep_payload = sweep(digest, payload["source_audit"]["sha256"])
@@ -244,3 +244,167 @@ def test_main_options_parsing_and_validation(case):
 
     # Unrecognized option
     assert validator.main([SESSION, "11", "devops-engineer", "--unrecognized"], repo_root=case["root"]) == 2
+
+
+def test_typesafe_pre_audit_rejects_bool_nan_and_infinity_confidence():
+    base = {"schema_version": "1.0", "gate": "G", "session_id": "s", "role": "devops-engineer",
+            "scope": ["tests/test_probe.py"], "fingerprints": {"tests/test_probe.py": "a" * 64}, "verifier": {"exit_code": 0},
+            "ast_findings": [], "judgments": [], "scores": [],
+            "routing": {"routing": "JUDGE", "reason_code": "CLEAN", "evidence_refs": [], "confidence": 1.0},
+            "generated_at": "2026-09-22T00:00:00+00:00"}
+    for value in (True, float("nan"), float("inf"), -0.1, 1.1):
+        payload = copy.deepcopy(base)
+        payload["routing"]["confidence"] = value
+        with pytest.raises(ValueError):
+            validator.validate_pre_audit_schema(payload)
+
+
+def test_pre_audit_routing_priority_and_atomic_sidecar(tmp_path):
+    assert validator.resolve_routing(pytest_exit=1, cheat_certain=False, uncertain_findings=True)["routing"] == "BLOCK"
+    assert validator.resolve_routing(pytest_exit=0, cheat_certain=True, uncertain_findings=False)["routing"] == "BLOCK"
+    assert validator.resolve_routing(pytest_exit=0, cheat_certain=False, uncertain_findings=True)["routing"] == "PROBE"
+    payload = {"schema_version": "1.0", "gate": "G", "session_id": "s", "role": "devops-engineer",
+               "scope": ["tests/test_probe.py"], "fingerprints": {"tests/test_probe.py": "a" * 64}, "verifier": {"exit_code": 0},
+               "ast_findings": [], "judgments": [], "scores": [],
+               "routing": {"routing": "JUDGE", "reason_code": "CLEAN", "evidence_refs": [], "confidence": 1.0},
+               "generated_at": "2026-09-22T00:00:00+00:00"}
+    artifact, sidecar = validator.write_atomic_pre_audit(payload, tmp_path, "s")
+    digest = hashlib.sha256(artifact.read_bytes()).hexdigest()
+    assert sidecar.read_text(encoding="ascii") == f"{digest}  {artifact.name}\n"
+
+
+def test_pre_audit_publication_rolls_back_pair_on_sidecar_failure(tmp_path, monkeypatch):
+    payload = {"schema_version": "1.0", "gate": "G", "session_id": "s", "role": "r",
+               "scope": ["tests/test_x.py"], "fingerprints": {"tests/test_x.py": "a" * 64},
+               "verifier": {"exit_code": 0}, "ast_findings": [], "judgments": [], "scores": [],
+               "routing": {"routing": "JUDGE", "reason_code": "CLEAN", "evidence_refs": [], "confidence": 1.0},
+               "generated_at": "2026-09-22T00:00:00+00:00"}
+    real_replace = validator.os.replace
+    def fail_sidecar(source, target):
+        if str(target).endswith(".sha256"):
+            raise OSError("disk full")
+        return real_replace(source, target)
+    monkeypatch.setattr(validator.os, "replace", fail_sidecar)
+    with pytest.raises(OSError, match="disk full"):
+        validator.write_atomic_pre_audit(payload, tmp_path, "s")
+    assert not (tmp_path / "pre_audit_s.json").exists()
+    assert not (tmp_path / "pre_audit_s.sha256").exists()
+
+
+def test_pre_audit_without_tests_fails_closed(tmp_path):
+    source = tmp_path / "module.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    code, metadata = validator.run_pre_audit("s", "r", "G", ["module.py"], tmp_path)
+    assert code == 1
+    artifact = json.loads((tmp_path / metadata["PRE_AUDIT_PATH"]).read_text(encoding="utf-8"))
+    assert artifact["verifier"]["exit_code"] != 0
+    assert artifact["routing"]["routing"] == "BLOCK"
+
+
+def test_pre_audit_flag_still_requires_l2_report(tmp_path, monkeypatch):
+    monkeypatch.setattr(validator, "run_pre_audit", lambda *args: (0, {"PRE_AUDIT_PATH": "x", "PRE_AUDIT_SHA256": "a" * 64}))
+    assert validator.main(["l2_role11_missing_20260922", "11", "devops-engineer", "--pre-audit", "--gate", "G", "--scope", "module.py"], repo_root=tmp_path) == 1
+
+
+# === Jev Integration Tests ===
+
+
+def test_jev_graceful_degradation_import_error(monkeypatch):
+    """run_jev_judgments returns None when typesafe-sdk is not installed."""
+    import builtins
+    real_import = builtins.__import__
+
+    def mock_import(name, *args, **kwargs):
+        if name == "typesafe_sdk":
+            raise ImportError("mocked")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", mock_import)
+    result = validator.run_jev_judgments("report", "test output", ["file.py"])
+    assert result is None
+
+
+def test_jev_api_timeout_graceful(monkeypatch):
+    """run_jev_judgments returns None when API raises exception."""
+    def mock_system_one(*args, **kwargs):
+        raise TimeoutError("mocked timeout")
+
+    class MockClient:
+        def __enter__(self): return self
+        def __exit__(self, *a): pass
+        system_one = mock_system_one
+
+    monkeypatch.setattr("typesafe_sdk.TypeSafeClient", MockClient, raising=False)
+    # Force re-import path through the try block
+    result = validator.run_jev_judgments("report", "test output", ["file.py"])
+    # Result is None because the real TypeSafeClient will raise or our mock will
+    assert result is None
+
+
+def test_jev_fabricated_evidence_block():
+    """Jev fabricated_evidence noul > 0.7 escalates to BLOCK."""
+    base = {"routing": "JUDGE", "reason_code": "CLEAN_PASS", "evidence_refs": [], "confidence": 1.0}
+    jev = {
+        "genuine_testing": {"noul": 0.9},
+        "fabricated_evidence": {"noul": 0.85},
+        "test_quality": {"score": 2.0, "confidence": 0.9},
+    }
+    routing, judgments, scores = validator._merge_jev_into_routing(base, jev)
+    assert routing["routing"] == "BLOCK"
+    assert routing["reason_code"] == "JEV_FABRICATED_EVIDENCE"
+    assert len(judgments) == 2
+    assert len(scores) == 1
+
+
+def test_jev_low_genuine_testing_probe():
+    """Jev genuine_testing noul < 0.3 escalates JUDGE to PROBE."""
+    base = {"routing": "JUDGE", "reason_code": "CLEAN_PASS", "evidence_refs": [], "confidence": 1.0}
+    jev = {
+        "genuine_testing": {"noul": 0.15},
+        "fabricated_evidence": {"noul": 0.1},
+        "test_quality": {"score": 1.5, "confidence": 0.8},
+    }
+    routing, judgments, scores = validator._merge_jev_into_routing(base, jev)
+    assert routing["routing"] == "PROBE"
+    assert routing["reason_code"] == "JEV_SEMANTIC_CONCERN"
+    assert any("genuine_testing" in r for r in routing["evidence_refs"])
+
+
+def test_jev_all_clean_judge():
+    """Jev all-clean keeps JUDGE routing."""
+    base = {"routing": "JUDGE", "reason_code": "CLEAN_PASS", "evidence_refs": [], "confidence": 1.0}
+    jev = {
+        "genuine_testing": {"noul": 0.92},
+        "fabricated_evidence": {"noul": 0.05},
+        "test_quality": {"score": 2.0, "confidence": 0.95},
+    }
+    routing, judgments, scores = validator._merge_jev_into_routing(base, jev)
+    assert routing["routing"] == "JUDGE"
+    assert routing["reason_code"] == "CLEAN_PASS"
+
+
+def test_jev_results_in_pre_audit_artifact(tmp_path):
+    """Pre-audit artifact contains jev_available and jev_raw_response fields."""
+    jev_data = {
+        "genuine_testing": {"noul": 0.8},
+        "fabricated_evidence": {"noul": 0.1},
+        "test_quality": {"score": 1.5, "confidence": 0.7},
+    }
+    routing, jev_judgments, jev_scores = validator._merge_jev_into_routing(
+        {"routing": "JUDGE", "reason_code": "CLEAN_PASS", "evidence_refs": [], "confidence": 1.0},
+        jev_data,
+    )
+    payload = {
+        "schema_version": "1.0", "gate": "G", "session_id": "s", "role": "r",
+         "scope": ["tests/test_x.py"], "fingerprints": {"tests/test_x.py": "a" * 64}, "verifier": {"exit_code": 0},
+        "ast_findings": [], "judgments": jev_judgments, "scores": jev_scores,
+        "routing": routing, "generated_at": "2026-09-22T00:00:00+00:00",
+        "jev_available": True, "jev_raw_response": jev_data,
+    }
+    # Schema validation should pass with Jev fields
+    validator.validate_pre_audit_schema(payload)
+    artifact, _ = validator.write_atomic_pre_audit(payload, tmp_path, "s")
+    loaded = json.loads(artifact.read_bytes())
+    assert loaded["jev_available"] is True
+    assert loaded["jev_raw_response"]["genuine_testing"]["noul"] == 0.8
+    assert not artifact.with_suffix(".tmp").exists()

@@ -210,6 +210,7 @@ def _run_powershell(command: str) -> subprocess.CompletedProcess:
             dir=session_dir, delete=False,
         ) as handle:
             handle.write("$ErrorActionPreference = 'Stop'\n")
+            handle.write("if (Test-Path Variable:PSNativeCommandUseErrorActionPreference) { $PSNativeCommandUseErrorActionPreference = $false }\n")
             handle.write(command)
             handle.write("\nif (-not $?) { exit $LASTEXITCODE }\n")
             script_path = Path(handle.name)
@@ -227,7 +228,11 @@ def _run_powershell(command: str) -> subprocess.CompletedProcess:
 
 def capture(cmd: list[str]) -> tuple[int, str]:
     result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
-    return result.returncode, (result.stdout or "").strip()
+    out = (result.stdout or "").strip()
+    if result.returncode != 0 and result.stderr:
+        err = result.stderr.strip()
+        out = f"{out}\n{err}".strip() if out else err
+    return result.returncode, out
 
 
 def parse_dispatch_output(output: str, *, required: set[str] | None = None) -> dict[str, str]:
@@ -358,6 +363,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--model-decision-path")
     parser.add_argument("--model-decision-digest")
     parser.add_argument("--with-plan", "--plan", action="store_true", dest="with_plan")
+    parser.add_argument("--close", action="store_true")
     parsed = parser.parse_args(argv)
     if (parsed.model or parsed.subagent_model) and parsed.jev:
         parser.error("--model and --subagent-model cannot be used with Jev routing")
@@ -464,8 +470,10 @@ def _run_planning_phase(args: argparse.Namespace) -> None:
             print(f"PLAN_RUN_ID={run_id}\nPLAN_MODEL={PLANNER_MODEL}\nPLAN_SHA256={hashlib.sha256(prompt.encode()).hexdigest()}")
             return
         prompt_bytes = prompt.encode("utf-8")
+        print(f"[*] Starting Phase 0 Planning ({PLANNER_MODEL})...")
+        sys.stdout.flush()
         result = subprocess.run(
-            ["codex", "exec", "-m", PLANNER_MODEL, "--dangerously-bypass-approvals-and-sandbox"],
+            ["codex", "exec", "-m", PLANNER_MODEL, "--enable", "multi_agent", "-s", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox"],
             cwd=REPO_ROOT, input=prompt_bytes, capture_output=True, timeout=900, shell=False,
         )
         if result.returncode != 0:
@@ -539,6 +547,10 @@ def main(argv: list[str] | None = None) -> int:
         if args.jev and l2_decision["session_id"] != session_id:
             raise SystemExit("[FAIL] L2 decision session binding mismatch")
         role_id = l2_meta.get("ROLE_ID", "0")
+        format_cmd = [sys.executable, "scripts/format_l2_report.py", session_id, role_id, args.l2_role]
+        format_rc, format_out = capture(format_cmd)
+        if format_rc != 0:
+            print(f"[WARN] format_l2_report: {format_out}", file=sys.stderr)
         validation_command = [sys.executable, "scripts/validate_l2_report.py", session_id, role_id, args.l2_role,
                               "--pre-audit", "--gate", args.gate, "--scope", args.scope]
         validation_rc, validation_output = capture(validation_command)
@@ -572,7 +584,17 @@ def main(argv: list[str] | None = None) -> int:
             except ValueError:
                 pass
         if verdict == "APPROVED":
-            return 0 if run([sys.executable, "scripts/sod_gate_enforcer.py"], "SoD Gate Enforcer") == 0 else 3
+            if run([sys.executable, "scripts/sod_gate_enforcer.py"], "SoD Gate Enforcer") != 0:
+                return 3
+            if args.close:
+                scope_args = [f.strip() for f in args.scope.split() if f.strip()]
+                close_cmd = [
+                    sys.executable, "scripts/update_gate.py", "close", args.gate,
+                    "--message", f"Automated pipeline approved: {args.slug}",
+                    "--scope", *scope_args,
+                ]
+                return run(close_cmd, f"Gate Close Transaction ({args.gate})")
+            return 0
         if run([sys.executable, "scripts/extract_lessons.py"], "Lesson Extraction Hard Gate", check=False):
             return 2
         if cycle == args.max_remediations:

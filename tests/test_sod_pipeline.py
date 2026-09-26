@@ -10,6 +10,15 @@ import scripts.sod_pipeline as pipeline
 GRAPH_ARTIFACT = ".ly_state/session/graph_evidence_l2_role11_sod_pipeline_standardization_20260922.json"
 
 
+@pytest.fixture(autouse=True)
+def _successful_pre_audit_validation(monkeypatch):
+    monkeypatch.setattr(
+        pipeline,
+        "capture",
+        lambda command: (0, "PRE_AUDIT_PATH=x\nPRE_AUDIT_SHA256=" + "a" * 64),
+    )
+
+
 @pytest.mark.skipif(shutil.which("powershell") is None, reason="Windows PowerShell is required for subprocess boundary tests")
 def test_run_powershell_block_propagates_explicit_exit_code(tmp_path, monkeypatch):
     monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
@@ -359,12 +368,32 @@ def test_main_remediates_once_then_enforces(monkeypatch, tmp_path):
         return 0
 
     monkeypatch.setattr(pipeline, "_dispatch_l3", dispatch_l3)
+    monkeypatch.setattr(pipeline, "capture", lambda command: (0, "PRE_AUDIT_PATH=x\nPRE_AUDIT_SHA256=" + "a" * 64))
     monkeypatch.setattr(pipeline, "run", run)
     report = tmp_path / "report.md"
     monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
     assert pipeline.main(["worker", "auditor", "GATE", "slug", "task", "file.py", "--max-remediations", "1"]) == 0
     assert any("extract_lessons.py" in str(command) for command, _ in calls)
     assert any("sod_gate_enforcer.py" in str(command) for command, _ in calls)
+
+
+def test_pre_audit_failure_never_falls_back_to_legacy_validation(monkeypatch, tmp_path):
+    monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(pipeline, "_dispatch_l2", lambda args, task: ({"SESSION_ID": "s", "ROLE_ID": "11"}, "run"))
+    calls = []
+    monkeypatch.setattr(pipeline, "capture", lambda command: (1, "ANTI_DRIP[E105] failed"))
+    monkeypatch.setattr(pipeline, "run", lambda command, desc, check=True: calls.append((command, desc)) or 0)
+    assert pipeline.main(["worker", "auditor", "GATE", "slug", "task", "file.py", "--max-remediations", "0"]) == 1
+    assert not any("Pre-L3 Validation" in desc or "L3 Codex Audit" in desc for _, desc in calls)
+
+
+def test_validation_output_is_redacted(monkeypatch, tmp_path, capsys):
+    monkeypatch.setattr(pipeline, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(pipeline, "_dispatch_l2", lambda args, task: ({"SESSION_ID": "s", "ROLE_ID": "11"}, "run"))
+    monkeypatch.setattr(pipeline, "capture", lambda command: (1, "Bearer top-secret"))
+    monkeypatch.setattr(pipeline, "run", lambda *args, **kwargs: 0)
+    assert pipeline.main(["worker", "auditor", "GATE", "slug", "task", "file.py", "--max-remediations", "0"]) == 1
+    assert "top-secret" not in capsys.readouterr().out
 
 
 def test_main_rejects_approved_stale_report_after_l3_failure(monkeypatch, tmp_path):

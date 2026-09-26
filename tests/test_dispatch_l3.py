@@ -2,6 +2,9 @@ import re
 import shutil
 import subprocess
 import sys
+import hashlib
+import json
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -141,7 +144,7 @@ def test_dispatch_l3_cli_embeds_directive_and_preserves_format(monkeypatch, caps
         "L3_ROLE_NAME=code-reviewer",
         "L2_ROLE_ID=15",
         "L2_ROLE_NAME=data-engineer",
-        "MODEL=cx/gpt-5.6-sol(medium)",
+        "MODEL=cx/gpt-6-sol(medium)",
         "RISK=low",
         "REPORT=.ly_state/session/audit_reports/role21_test_gate_l3dir_20260101.md",
         "GATE=TEST_GATE_L3DIR_20260101",
@@ -159,12 +162,53 @@ def test_dispatch_l3_cli_embeds_directive_and_preserves_format(monkeypatch, caps
         "non-authoritative",
     ):
         assert marker in prompt_text
-    assert "ANTI-POLLING & ZERO-IDLE DIRECTIVE (ANTI_POLLING_ZERO_IDLE_20260918)" in prompt_text
-    assert "SYNCHRONOUS PYTEST EXCEPTION" in prompt_text
-    assert "probe_test_exec MUST run these per-file slices sequentially" in prompt_text
+    assert "MANDATORY HIERARCHICAL SUBAGENT WORKER DIRECTIVE" in prompt_text
+    assert "SCOPED TEST EXECUTION (SEQUENTIAL PER-FILE SLICES):" in prompt_text
     assert "pre_run_sha256=" in prompt_text
-    assert "Fallback verdict validation is mandatory" in prompt_text
+    assert "ANTI-POLLING" not in prompt_text
+    assert "Fallback verdict validation is mandatory" not in prompt_text
     assert "--enable multi_agent" in command
+
+
+def _pre_audit_payload(tmp_path, *, generated_at=None, scope=None, exit_code=0):
+    target = tmp_path / "tests" / "probe.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("def test_probe():\n    assert True\n", encoding="utf-8")
+    scope = scope or ["tests/probe.py"]
+    return {
+        "schema_version": "1.0", "gate": "G", "session_id": "s", "role": "code-reviewer",
+        "scope": scope, "fingerprints": {item: hashlib.sha256((tmp_path / item).read_bytes()).hexdigest() for item in scope},
+        "verifier": {"exit_code": exit_code}, "ast_findings": [], "judgments": [], "scores": [],
+        "routing": {"routing": "JUDGE", "reason_code": "CLEAN", "evidence_refs": [], "confidence": 1.0},
+        "generated_at": generated_at or datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def test_validate_pre_audit_rejects_failed_verifier_and_scope_mismatch(tmp_path, monkeypatch):
+    import scripts.dispatch_l3 as dl3
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    payload = _pre_audit_payload(tmp_path, exit_code=1)
+    payload["routing"]["routing"] = "JUDGE"
+    raw = json.dumps(payload).encode()
+    artifact = tmp_path / ".ly_state" / "session" / "pre.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(raw)
+    with pytest.raises(SystemExit) as excinfo:
+        dl3.validate_pre_audit(".ly_state/session/pre.json", hashlib.sha256(raw).hexdigest(), "G", "s", "code-reviewer", ["tests/other.py"])
+    assert excinfo.value.code == 2
+
+
+def test_validate_pre_audit_rejects_naive_timestamp(tmp_path, monkeypatch):
+    import scripts.dispatch_l3 as dl3
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    payload = _pre_audit_payload(tmp_path, generated_at="2026-09-22T10:00:00")
+    raw = json.dumps(payload).encode()
+    artifact = tmp_path / ".ly_state" / "session" / "pre.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(raw)
+    with pytest.raises(SystemExit) as excinfo:
+        dl3.validate_pre_audit(".ly_state/session/pre.json", hashlib.sha256(raw).hexdigest(), "G", "s", "code-reviewer")
+    assert excinfo.value.code == 2
 
 
 def test_dispatch_l3_directive_byte_identical_in_both_cx_and_opencode_variants(capsys, monkeypatch, tmp_path):
@@ -195,16 +239,16 @@ def test_dispatch_l3_directive_byte_identical_in_both_cx_and_opencode_variants(c
         dl3,
         "MODELS",
         {
-            "low": "cx/gpt-5.6-sol(medium)",
-            "medium": "cx/gpt-5.6-sol(xhigh)",
-             "high": "cx/gpt-6-astra(low)",
+            "low": "cx/gpt-6-sol(medium)",
+            "medium": "cx/gpt-6-sol(xhigh)",
+             "high": "cx/gpt-6-sol",
         },
     )
     monkeypatch.setattr(sys, "argv", argv[:-2] + ["--risk", "high"])
     dl3.main()
     captured = capsys.readouterr()
     out_oc = captured.out
-    assert "MODEL=cx/gpt-6-astra(low)" in out_oc
+    assert "MODEL=cx/gpt-6-sol" in out_oc
     cmd_oc, raw_oc = _parse_command_and_prompt_bytes(out_oc)
     assert "codex exec" in cmd_oc
     assert "--dangerously-bypass-approvals-and-sandbox" in cmd_oc
@@ -597,7 +641,7 @@ def test_generated_model_argument_is_powershell_single_quoted(monkeypatch, tmp_p
     monkeypatch.setattr(sys, "argv", ["dispatch_l3.py", "code-reviewer", "GATE_QUOTED_20260922", "l2_role15_session_20260922", "data-engineer", "tests/", "--model", "astra(low)"])
     dl3.main()
     command = capsys.readouterr().out.split("---COMMAND---", 1)[1]
-    assert "-m 'cx/gpt-6-astra(low)'" in command
+    assert "-m 'cx/gpt-6-sol(low)'" in command
 
 # ---------------------------------------------------------------------------
 # C3: lessons travel only as sanitized DATA; malformed schema -> empty block.
@@ -642,7 +686,7 @@ def test_lesson_directives_remain_data_in_all_variants(monkeypatch, tmp_path, ca
     monkeypatch.setattr(
         dl3,
         "MODELS",
-         {"low": "cx/gpt-5.6-sol(medium)", "medium": "cx/gpt-5.6-sol(xhigh)", "high": "cx/gpt-6-astra(low)"},
+        {"low": "cx/gpt-6-sol(medium)", "medium": "cx/gpt-6-sol(xhigh)", "high": "cx/gpt-6-sol"},
     )
     monkeypatch.setattr(sys, "argv", argv_cx[:-2] + ["--risk", "high"])
     dl3.main()

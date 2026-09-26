@@ -1,5 +1,6 @@
 import hashlib
 import os
+import time
 import sys
 import types
 from datetime import datetime
@@ -268,6 +269,38 @@ def test_decision_publication_recovers_dead_owner_lock(tmp_path):
     assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
     assert not lock.exists()
 
+
+def test_decision_publication_preserves_live_aged_lock(tmp_path):
+    target = tmp_path / "decision.json"
+    target.write_bytes(b"original")
+    lock = tmp_path / ".jev_model_decision.lock"
+    lock.write_text(str(os.getpid()), encoding="ascii")
+    old = time.time() - 600
+    os.utime(lock, (old, old))
+    with pytest.raises(FileExistsError):
+        atomic_publish_decision({"schema_version": "2.0"}, target)
+    assert target.read_bytes() == b"original"
+    assert lock.read_text(encoding="ascii") == str(os.getpid())
+
+
+@pytest.mark.parametrize("field,value", [
+    ("lead_model", "unapproved"), ("subagent_model", "unapproved"),
+    ("execution_timeout", True), ("execution_timeout", "180"),
+    ("execution_timeout", 999),
+])
+@pytest.mark.parametrize("role", ["l2", "l3"])
+def test_decision_allowlist_rejects_response_and_digest_rebound_file(tmp_path, role, field, value):
+    path = tmp_path / "decision.json"
+    valid = evaluate_model_decision(role=role, risk="low", response={}, decision_path=path)
+    with pytest.raises(ValueError, match="allowlist"):
+        evaluate_model_decision(role=role, risk="low", response={field: value}, decision_path=path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload[field] = value
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="allowlist"):
+        load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest())
+    assert valid["decision_digest"] != hashlib.sha256(path.read_bytes()).hexdigest()
+
 def test_sod_pipeline_approved_report_runs_enforcer(monkeypatch, tmp_path):
     monkeypatch.setattr(sod_pipeline, "REPO_ROOT", tmp_path)
     report_path = tmp_path / "audit.md"
@@ -287,8 +320,10 @@ def test_sod_pipeline_approved_report_runs_enforcer(monkeypatch, tmp_path):
     assert any(desc == "SoD Gate Enforcer" and command[1:] == ["scripts/sod_gate_enforcer.py"] for command, desc in calls)
 
 def test_jev_l2_decision_uses_dispatch_session_without_republication(monkeypatch, tmp_path):
+    session_date = datetime.now().strftime("%Y%m%d")
+    monkeypatch.setattr(sod_pipeline, "datetime", types.SimpleNamespace(now=lambda: datetime.strptime(session_date, "%Y%m%d")))
     monkeypatch.setattr(sod_pipeline, "REPO_ROOT", tmp_path)
-    monkeypatch.setattr(sod_pipeline, "_dispatch_l2", lambda *_: ({"SESSION_ID": "l2_role11_slug_20260924", "ROLE_ID": "11"}, "l2"))
+    monkeypatch.setattr(sod_pipeline, "_dispatch_l2", lambda *_: ({"SESSION_ID": f"l2_role11_slug_{session_date}", "ROLE_ID": "11"}, "l2"))
     monkeypatch.setattr(sod_pipeline, "_dispatch_l3", lambda *_: pytest.fail("L3 should not run"))
     monkeypatch.setattr(sod_pipeline, "capture", lambda *_: (1, "validation failed"))
     monkeypatch.setattr(sod_pipeline, "run", lambda *_args, **_kwargs: 0)
@@ -301,7 +336,7 @@ def test_jev_l2_decision_uses_dispatch_session_without_republication(monkeypatch
     monkeypatch.setattr(sod_pipeline, "evaluate_model_decision", decide)
     assert sod_pipeline.main(["devops-engineer", "code-reviewer", "GATE", "slug", "task", "file.py", "--jev"]) == 1
     assert len(published) == 1
-    assert published[0]["session_id"] == f"l2_role11_slug_{datetime.now().strftime('%Y%m%d')}"
+    assert published[0]["session_id"] == f"l2_role11_slug_{session_date}"
 
 def test_standing_regression_classes_are_all_retained():
     from scripts.dispatch_l2 import build_regression_clause, load_regression_classes
@@ -335,7 +370,7 @@ def test_jev_api_called_with_choice_questions(monkeypatch):
             return types.SimpleNamespace(
                 choices={
                     "lead_model": types.SimpleNamespace(choice="9router/cx/gpt-6-sol"),
-                    "subagent_model": types.SimpleNamespace(choice="9router/bzl/qwen3.7-flash"),
+                    "subagent_model": types.SimpleNamespace(choice="ag/gemini"),
                     "execution_timeout": types.SimpleNamespace(choice="180"),
                 }
             )
@@ -349,7 +384,7 @@ def test_jev_api_called_with_choice_questions(monkeypatch):
 
     envelope = evaluate_model_decision(role="l2", risk="low", task="fix something", cycle=1)
     assert envelope["lead_model"] == "9router/cx/gpt-6-sol"
-    assert envelope["subagent_model"] == "9router/bzl/qwen3.7-flash"
+    assert envelope["subagent_model"] == "ag/gemini"
     assert envelope["execution_timeout"] == 180
     assert "lead_model" in recorded["questions"]
     assert "subagent_model" in recorded["questions"]
@@ -380,6 +415,18 @@ def test_fallback_active_on_low_risk_network_error(monkeypatch):
     assert envelope["fallback_used"] is True
     assert "Connection refused" in envelope["fallback_reason"]
     assert envelope["lead_model"] == L2_LEAD_ALLOWLIST[1]
+
+
+def test_fallback_reason_redacted_before_durable_publication(tmp_path):
+    path = tmp_path / "decision.json"
+    envelope = evaluate_model_decision(
+        role="l2", risk="low", decision_path=path,
+        response={"fallback_used": True, "fallback_reason": "https://user:secret@example.org/?api_key=private"},
+    )
+    assert "secret" not in path.read_text(encoding="utf-8")
+    assert "private" not in path.read_text(encoding="utf-8")
+    assert "secret" not in envelope["fallback_reason"]
+    assert load_decision(path, envelope["decision_digest"])["fallback_reason"] == envelope["fallback_reason"]
 
 
 def test_fallback_forbidden_on_high_risk_network_error(monkeypatch):
@@ -458,6 +505,3 @@ def test_decision_and_predecessor_exceeding_bound_fail_closed(tmp_path):
     oversized_dec.write_bytes(b"a" * (MAX_RESPONSE_BYTES + 10))
     with pytest.raises(ValueError, match="decision payload exceeds size bound"):
         load_decision(oversized_dec, "0" * 64)
-
-
-

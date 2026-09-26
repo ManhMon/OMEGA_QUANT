@@ -385,7 +385,10 @@ def main():
 
     if model_decision_path:
         try:
-            from scripts.jev_model_router import load_decision
+            try:
+                from scripts.jev_model_router import load_decision
+            except ImportError:
+                from jev_model_router import load_decision
             decision = load_decision(
                 model_decision_path,
                 model_decision_digest,
@@ -620,12 +623,12 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
     # Reset the canonical report before either auditor can run. Stale verdicts
     # must never satisfy a later pipeline transaction.
     if report_full.is_file() and report_full.stat().st_size > 100:
-        prior_content = report_full.read_text(encoding="utf-8", errors="replace")
+        prior_bytes = report_full.read_bytes()
         idx = 1
         while (report_full.parent / f"{report_full.stem}_cycle{idx}.md").exists():
             idx += 1
         backup_path = report_full.parent / f"{report_full.stem}_cycle{idx}.md"
-        backup_path.write_text(prior_content, encoding="utf-8")
+        backup_path.write_bytes(prior_bytes)
     empty_tmp = report_full.with_name(f".{report_full.name}.{os.getpid()}.tmp")
     report_full.parent.mkdir(parents=True, exist_ok=True)
     empty_tmp.write_bytes(b"")
@@ -735,7 +738,7 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         )
     else:
         cmd = (
-             f'{read_stmt} echo "" | opencode run -m {ps_quote(model)} --pure --dangerously-skip-permissions '
+             f'{read_stmt} echo "" | opencode run -m {ps_quote(model)} --pure --dangerously-skip-permissions --print-logs '
              f'--dir {ps_quote(str(REPO_ROOT))} $__OMEGA_PROMPT'
         )
 
