@@ -32,6 +32,34 @@ def _validated_graph_evidence(monkeypatch):
     )
 
 
+@pytest.fixture(autouse=True)
+def _legacy_l2_report(monkeypatch, tmp_path, request):
+    """Keep legacy prompt tests independent of the separately tested L2 report gate."""
+    if request.node.name.startswith(("test_dispatch_l3_missing_or_unsafe_l2_report", "test_scope_token_run", "test_invalid_argv")):
+        return
+    import scripts.dispatch_l3 as dl3
+
+    original_run = subprocess.run
+
+    def run(command, *args, **kwargs):
+        if isinstance(command, list) and any(str(part).endswith("validate_l2_report.py") for part in command):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        return original_run(command, *args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    original_main = dl3.main
+
+    def main():
+        argv = sys.argv
+        if len(argv) > 3 and re.fullmatch(r"l2_role\d+_[a-z0-9_]+_\d{8}", argv[3]):
+            report = dl3.REPO_ROOT / ".ly_state" / "session" / f"{argv[3]}.md"
+            report.parent.mkdir(parents=True, exist_ok=True)
+            report.write_text("Legacy dispatch fixture.\n" * 16, encoding="utf-8")
+        return original_main()
+
+    monkeypatch.setattr(dl3, "main", main)
+
+
 def _extract_prompt_path(command: str) -> Path:
     """Extract the UTF-8 prompt temp-file path embedded in the generated command."""
     match = re.search(r"\[System\.IO\.File\]::ReadAllBytes\('(.+?)'\)", command)
@@ -97,6 +125,10 @@ def test_extract_prior_audit_outcomes_rejects_dimension_overlap(tmp_path):
 def _run_l3(monkeypatch, capsys, gate="TEST_GATE_L3DIR_20260101"):
     import scripts.dispatch_l3 as dl3
 
+    l2_report = dl3.REPO_ROOT / ".ly_state" / "session" / "l2_role15_test_regression_clause_slug_20260826.md"
+    l2_report.parent.mkdir(parents=True, exist_ok=True)
+    l2_report.write_text("test fixture", encoding="utf-8")
+
     monkeypatch.setattr(
         sys,
         "argv",
@@ -114,6 +146,53 @@ def _run_l3(monkeypatch, capsys, gate="TEST_GATE_L3DIR_20260101"):
     dl3.main()
     captured = capsys.readouterr()
     return SimpleNamespace(returncode=0, stdout=captured.out, stderr=captured.err)
+
+
+def test_dispatch_l3_accepts_role_26_only_for_planning_gate(monkeypatch, capsys):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["scripts/dispatch_l3.py", "code-reviewer", "GATE_PLAN_20260926",
+         "l2_role26_plan_20260926", "planning-architect", "tests/test_dispatch_l3.py", "--risk", "low"],
+    )
+    dl3.main()
+    assert "L2_ROLE_ID=26" in capsys.readouterr().out
+
+
+def test_dispatch_l3_rejects_role_26_for_implementation_gate(monkeypatch, capsys):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["scripts/dispatch_l3.py", "code-reviewer", "GATE_IMPLEMENTATION_20260926",
+         "l2_role26_implementation_20260926", "planning-architect", "tests/test_dispatch_l3.py", "--risk", "low"],
+    )
+    with pytest.raises(SystemExit) as exc:
+        dl3.main()
+    assert exc.value.code == 1
+    assert "l2_role_id must be 6-16, got: 26" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("gate", [
+    "GATE_PLANET_20260926",
+    "GATE_SOD_PLANNING_ROLE_VALIDATION_20260926",
+    "GATE_EXPLANATION_20260926",
+])
+def test_dispatch_l3_rejects_role_26_for_non_plan_token_gate(monkeypatch, capsys, gate):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(sys, "argv", [
+        "scripts/dispatch_l3.py", "code-reviewer", gate,
+        "l2_role26_invalid_plan_gate_20260926", "planning-architect",
+        "tests/test_dispatch_l3.py", "--risk", "low",
+    ])
+    with pytest.raises(SystemExit) as exc:
+        dl3.main()
+    assert exc.value.code == 1
+    assert "l2_role_id must be 6-16, got: 26" in capsys.readouterr().out
 
 
 def test_dispatch_l3_cli_embeds_directive_and_preserves_format(monkeypatch, capsys):
@@ -359,6 +438,8 @@ class _FakeSubprocess:
         self.calls.append((args, kwargs))
         invoked = args[0]
         if isinstance(invoked, list) and invoked and invoked[0] == sys.executable:
+            if any(str(part).endswith("validate_l2_report.py") for part in invoked):
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
             # lessons retrieval helper: unavailable -> empty lessons payload
             return SimpleNamespace(returncode=1, stdout="", stderr="")
         assert isinstance(invoked, list), f"--run must use argument-list execution, got: {invoked!r}"
@@ -419,6 +500,8 @@ def test_dispatch_l3_429_has_no_silent_retry(monkeypatch, tmp_path):
     def fake_run(*args, **kwargs):
         invoked = args[0]
         if isinstance(invoked, list) and invoked and invoked[0] == sys.executable:
+            if any(str(part).endswith("validate_l2_report.py") for part in invoked):
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
             return SimpleNamespace(returncode=1, stdout="", stderr="")
         assert isinstance(invoked, list) and invoked[0] == "powershell"
         assert kwargs.get("shell") in (None, False)
@@ -779,6 +862,8 @@ def test_429_exhaustion_uses_one_bound_digest_attempt(monkeypatch, tmp_path):
     def fake_run(*args, **kwargs):
         invoked = args[0]
         if isinstance(invoked, list) and invoked and invoked[0] == sys.executable:
+            if any(str(part).endswith("validate_l2_report.py") for part in invoked):
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
             return SimpleNamespace(returncode=1, stdout="", stderr="")
         assert isinstance(invoked, list) and invoked[0] == "powershell"
         ps_commands.append(invoked[invoked.index("-Command") + 1])
@@ -813,6 +898,8 @@ def test_integrity_failure_does_not_trigger_fallback(monkeypatch, tmp_path):
     def fake_run(*args, **kwargs):
         invoked = args[0]
         if isinstance(invoked, list) and invoked and invoked[0] == sys.executable:
+            if any(str(part).endswith("validate_l2_report.py") for part in invoked):
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
             return SimpleNamespace(returncode=1, stdout="", stderr="")
         calls.append(invoked[invoked.index("-Command") + 1])
         # First PS execution reports the integrity exit code 2.
@@ -848,3 +935,65 @@ def test_graph_gate_precedes_l3_report_lessons_prompt_and_spawn(monkeypatch, tmp
         dl3.main()
     assert events == []
     assert not (tmp_path / ".ly_state" / "session" / "audit_reports").exists()
+
+
+@pytest.mark.parametrize("report_kind", ["missing", "directory", "symlink"])
+def test_dispatch_l3_missing_or_unsafe_l2_report_fails_before_dispatch(monkeypatch, tmp_path, report_kind):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    session = tmp_path / ".ly_state" / "session"
+    session.mkdir(parents=True)
+    report = session / "l2_role15_fail_closed_20260926.md"
+    if report_kind == "directory":
+        report.mkdir()
+    elif report_kind == "symlink":
+        target = tmp_path / "outside.md"
+        target.write_text("report", encoding="utf-8")
+        try:
+            report.symlink_to(target)
+        except OSError:
+            pytest.skip("symlink creation unavailable")
+
+    events = []
+    monkeypatch.setattr(dl3, "load_sanitized_lesson_entries", lambda *a, **k: events.append("lessons"))
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: events.append("spawn"))
+    monkeypatch.setattr(sys, "argv", ["dispatch_l3.py", "code-reviewer", "FAIL_CLOSED_20260926",
+        "l2_role15_fail_closed_20260926", "data-engineer", "tests/", "--risk", "low"])
+    with pytest.raises(SystemExit) as exc:
+        dl3.main()
+    assert exc.value.code == 2
+    assert events == []
+    assert not (session / "audit_reports").exists()
+
+
+@pytest.mark.parametrize("role_id", [15.0, "15.0", "1e2", float("inf"), float("nan")],
+                         ids=["float", "decimal-string", "exponent-string", "infinity", "nan"])
+def test_validate_l2_role_rejects_non_integer_role_ids(role_id):
+    from scripts.sod_gate_enforcer import validate_l2_role
+
+    valid, message = validate_l2_role(role_id, "data-engineer", {15: {
+        "name": "data-engineer", "tier": 2, "platform": "OpenCode"}}, "GATE")
+    assert not valid
+    assert "must be integer" in message
+
+
+def test_audit_report_path_rejects_symlink_and_resolved_escape(tmp_path, monkeypatch):
+    from scripts import sod_gate_enforcer as sod
+
+    monkeypatch.setattr(sod, "WORKSPACE", tmp_path)
+    audit = tmp_path / ".ly_state" / "session" / "audit_reports"
+    audit.mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("## Verdict\n[APPROVED]\n", encoding="utf-8")
+    linked = audit / "linked.md"
+    try:
+        linked.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation unavailable")
+    assert not sod.validate_audit_report_path(".ly_state/session/audit_reports/linked.md")[0]
+    assert not sod.check_audit_report_content(str(linked), "[APPROVED]")[0]
+
+    escaped_dir = audit / "jump"
+    escaped_dir.symlink_to(tmp_path, target_is_directory=True)
+    assert not sod.validate_audit_report_path(".ly_state/session/audit_reports/jump/outside.md")[0]

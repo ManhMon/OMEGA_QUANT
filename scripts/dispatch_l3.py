@@ -485,6 +485,13 @@ def main():
     l2_fm = parse_frontmatter(l2_role_path.read_text(encoding="utf-8"))
     l2_role_id = l2_fm.get("role_id")
 
+    from scripts.sod_gate_enforcer import load_role_specs, validate_l2_role
+
+    l2_valid, l2_error = validate_l2_role(l2_role_id, l2_role_name, load_role_specs(), gate_name=gate_name)
+    if not l2_valid:
+        print(f"[ERROR] Invalid L2 role: {l2_error}")
+        sys.exit(1)
+
     if l2_role_id == l3_role_id:
         print(f"[ERROR] Writer == Auditor! l2_role_id={l2_role_id} == l3_role_id={l3_role_id}")
         sys.exit(1)
@@ -504,16 +511,23 @@ def main():
     try:
         graph_evidence = run_graph_predispatch_gate(l3_session_id, scope, REPO_ROOT)
         l2_report_file = REPO_ROOT / ".ly_state" / "session" / f"{l2_session_id}.md"
-        if l2_report_file.is_file():
-            val_res = subprocess.run(
-                [sys.executable, str(REPO_ROOT / "scripts" / "validate_l2_report.py"), l2_session_id, str(l2_role_id), l2_role_name],
-                cwd=str(REPO_ROOT),
-                capture_output=True,
-                text=True,
-            )
-            if val_res.returncode != 0:
-                print(f"[ERROR] Pre-L3 validation failed for L2 report {l2_session_id}:\n{val_res.stdout}\n{val_res.stderr}", file=sys.stderr)
-                sys.exit(2)
+        try:
+            safe_report = (not l2_report_file.is_symlink() and l2_report_file.is_file() and
+                           l2_report_file.resolve().is_relative_to((REPO_ROOT / ".ly_state" / "session").resolve()))
+        except (OSError, RuntimeError):
+            safe_report = False
+        if not safe_report:
+            print(f"[ERROR] L2 report missing or unsafe: {l2_session_id}", file=sys.stderr)
+            sys.exit(2)
+        val_res = subprocess.run(
+            [sys.executable, str(REPO_ROOT / "scripts" / "validate_l2_report.py"), l2_session_id, str(l2_role_id), l2_role_name],
+            cwd=str(REPO_ROOT),
+            capture_output=True,
+            text=True,
+        )
+        if val_res.returncode != 0:
+            print(f"[ERROR] Pre-L3 validation failed for L2 report {l2_session_id}:\n{val_res.stdout}\n{val_res.stderr}", file=sys.stderr)
+            sys.exit(2)
         _dispatch_l3_body(
             l3_role_name, l2_role_name, gate_name, l2_session_id, scope,
             l3_role_id, l2_role_id, l3_session_id, report_path,

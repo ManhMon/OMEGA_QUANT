@@ -1067,7 +1067,7 @@ def main(argv: Sequence[str] | None = None, repo_root: Path | None = None) -> in
         role_id = int(role_text)
     except ValueError:
         role_id = -1
-    if not 6 <= role_id <= 16 or CLI_ROLE_NAME_RE.fullmatch(role_name) is None:
+    if not (6 <= role_id <= 16 or (role_id == 26 and role_name == "planning-architect")) or CLI_ROLE_NAME_RE.fullmatch(role_name) is None:
         _emit_failures(["ANTI_DRIP[E101] invalid L2 role arguments"], fatal=True)
         return 2
     root = (repo_root or REPO_ROOT).resolve()
@@ -1105,6 +1105,9 @@ def main(argv: Sequence[str] | None = None, repo_root: Path | None = None) -> in
         _emit_failures(["ANTI_DRIP[E303] report Role metadata does not match CLI role"])
         return 1
     binding, _ = _extract_report_binding(content)
+    if role_id == 26 and re.search(r"(?:^|_)plan(?:_|$)", binding["gate_name"].lower()) is None:
+        _emit_failures(["ANTI_DRIP[E303] planning-architect is valid only for planning gates"])
+        return 1
     valid, message = validate_l2_role(role_id, role_name, load_role_specs(), gate_name=binding["gate_name"])
     if not valid:
         _emit_failures([f"ANTI_DRIP[E303] L2 role/spec validation failed: {message}"])

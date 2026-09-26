@@ -1618,8 +1618,12 @@ def validate_l3_role(role_id, role_name, role_specs: dict) -> tuple[bool, str]:
         tuple: (is_valid: bool, error_message: str)
     """
     try:
+        if isinstance(role_id, bool) or not isinstance(role_id, (int, str)):
+            raise ValueError
+        if isinstance(role_id, str) and not re.fullmatch(r"[+-]?\d+", role_id.strip()):
+            raise ValueError
         role_id_int = int(role_id)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return False, f"l3_role_id must be integer, got: {role_id}"
     
     if not (17 <= role_id_int <= 30):
@@ -1662,11 +1666,15 @@ def validate_l2_role(role_id, role_name, role_specs: dict, gate_name: str = "") 
         tuple: (is_valid: bool, error_message: str)
     """
     try:
+        if isinstance(role_id, bool) or not isinstance(role_id, (int, str)):
+            raise ValueError
+        if isinstance(role_id, str) and not re.fullmatch(r"[+-]?\d+", role_id.strip()):
+            raise ValueError
         role_id_int = int(role_id)
-    except (ValueError, TypeError):
+    except (ValueError, TypeError, OverflowError):
         return False, f"l2_role_id must be integer, got: {role_id}"
     
-    is_planning_role = role_id_int == 26 and ("_plan" in gate_name.lower() or gate_name.lower().endswith("plan") or "plan" in gate_name.lower())
+    is_planning_role = role_id_int == 26 and isinstance(gate_name, str) and re.search(r"(?:^|_)plan(?:_|$)", gate_name.lower()) is not None
     if not (6 <= role_id_int <= 16 or is_planning_role):
         return False, f"l2_role_id must be 6-16, got: {role_id_int}"
     
@@ -1708,7 +1716,7 @@ def validate_audit_report_path(report_path_str: str) -> tuple[bool, str]:
     Returns:
         tuple: (is_valid: bool, error_message: str)
     """
-    if not report_path_str:
+    if not isinstance(report_path_str, str) or not report_path_str:
         return False, "audit_report_path is empty"
     
     # Check for absolute paths (Windows or Unix)
@@ -1721,9 +1729,13 @@ def validate_audit_report_path(report_path_str: str) -> tuple[bool, str]:
     
     # Normalize path and check it's under the required directory
     try:
+        candidate = WORKSPACE / Path(report_path_str)
         normalized = Path(report_path_str).as_posix()
         if not normalized.startswith('.ly_state/session/audit_reports/'):
             return False, f"audit_report_path must be under .ly_state/session/audit_reports/, got: {report_path_str}"
+        audit_root = (WORKSPACE / ".ly_state" / "session" / "audit_reports").resolve()
+        if candidate.is_symlink() or not candidate.resolve().is_relative_to(audit_root):
+            return False, f"audit_report_path is symlinked or escapes audit_reports: {report_path_str}"
     except Exception as e:
         return False, f"invalid audit_report_path: {e}"
     
@@ -1770,7 +1782,7 @@ def check_audit_report_exists(report_path_str: str) -> tuple[bool, str]:
     Returns:
         tuple: (exists: bool, error_message: str)
     """
-    if not report_path_str:
+    if not isinstance(report_path_str, str) or not report_path_str:
         return False, "audit_report_path is empty"
     
     # Try as relative path from workspace
@@ -1781,8 +1793,11 @@ def check_audit_report_exists(report_path_str: str) -> tuple[bool, str]:
         if not report_path.exists():
             return False, f"audit report file not found: {report_path_str}"
     
-    if not report_path.is_file():
-        return False, f"audit report path is not a file: {report_path_str}"
+    try:
+        if report_path.is_symlink() or not report_path.is_file():
+            return False, f"audit report path is symlinked or not a file: {report_path_str}"
+    except (OSError, RuntimeError):
+        return False, f"audit report path is invalid: {report_path_str}"
     
     return True, ""
 
@@ -1797,15 +1812,20 @@ def check_audit_report_content(report_path_str: str, expected_verdict: str) -> t
     Returns:
         tuple: (contains_verdict: bool, error_message: str)
     """
-    # First check file exists
-    exists, error = check_audit_report_exists(report_path_str)
-    if not exists:
-        return False, error
-    
-    # Read content
-    report_path = WORKSPACE / report_path_str
-    if not report_path.exists():
-        report_path = Path(report_path_str)
+    if not isinstance(report_path_str, str) or not report_path_str:
+        return False, "audit_report_path is empty"
+    report_path = Path(report_path_str)
+    relative_input = not report_path.is_absolute()
+    if relative_input:
+        report_path = WORKSPACE / report_path
+    try:
+        if (report_path.is_symlink() or not report_path.is_file() or
+                (relative_input and not report_path.resolve().is_relative_to(WORKSPACE.resolve()))):
+            return False, "audit report path is symlinked, missing, or escapes workspace"
+    except (OSError, RuntimeError):
+        return False, "audit report path is invalid"
+
+    # Read only after rejecting links and validating containment above.
     
     try:
         with _shared_file_lock(report_path):
