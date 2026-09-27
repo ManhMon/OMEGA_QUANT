@@ -1,0 +1,16 @@
+{
+  "schema_version": "jev-w1-contracts/v1",
+  "repo_commit": "1c19b8727e1a12c53e50e226f420dc7dde18669a",
+  "gate": "GATE_JEV_DEEP_INTEGRATION_W1_20260927",
+  "legacy_schema_version": 1,
+  "registered_domain_schema_version": 2,
+  "predecessor_gate": "GATE_JEV_DEEP_INTEGRATION_W0_20260927",
+  "scope_files": [
+    "src/omega/core/llm_config.py",
+    "tests/test_sod_jev_model_routing.py",
+    ".ly_state/session/jev_deep_integration_20260926/W1/scope.md",
+    ".ly_state/session/jev_deep_integration_20260926/W1/input_manifest.json",
+    ".ly_state/session/jev_deep_integration_20260926/W1/matrix_evidence.md",
+    ".ly_state/session/jev_deep_integration_20260926/W1/rollback.md"
+  ]
+}

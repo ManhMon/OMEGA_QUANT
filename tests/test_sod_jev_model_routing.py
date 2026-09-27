@@ -6,6 +6,9 @@ import types
 from datetime import datetime
 # Regression coverage: decision binding, atomic publication, pre-audit, throttling, credential safety.
 import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event
 from pathlib import Path
 
 import pytest
@@ -636,3 +639,264 @@ def test_decision_and_predecessor_exceeding_bound_fail_closed(tmp_path):
     oversized_dec.write_bytes(b"a" * (MAX_RESPONSE_BYTES + 10))
     with pytest.raises(ValueError, match="decision payload exceeds size bound"):
         load_decision(oversized_dec, "0" * 64)
+
+
+def _jev_fixture(monkeypatch):
+    from omega.core import llm_config
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 25, 9, 30, tzinfo=tz)
+    monkeypatch.setattr(llm_config, "datetime", Clock)
+    calls = []
+    class Client:
+        def __init__(self, **kwargs):
+            assert kwargs["timeout"] == 10.0
+        def __enter__(self):
+            return self
+        def __exit__(self, *_):
+            return None
+        def system_one(self, **kwargs):
+            calls.append(kwargs)
+            return types.SimpleNamespace(choices={"outcome": types.SimpleNamespace(choice="mixed")})
+
+    sdk = types.SimpleNamespace(Choice=lambda **kwargs: kwargs, TypeSafeClient=Client)
+    for name in ("TypeSafeAPIConnectionError", "TypeSafeAPITimeoutError", "TypeSafeInternalServerError", "TypeSafeRateLimitError"):
+        setattr(sdk, name, type(name, (Exception,), {}))
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", sdk)
+    return llm_config, calls, sdk
+
+
+def _jev_args(tmp_path):
+    from datetime import timezone
+    return dict(domain="alpha_disagreement", facts={"ticker": "VNM", "value_vnd_full": 50_000},
+                choices={"outcome": ("trend_supported", "reversal_supported", "mixed", "insufficient")},
+                cache_path=tmp_path / "jev.sqlite", as_of=datetime(2026, 9, 25, 10, tzinfo=timezone.utc),
+                available_at=datetime(2026, 9, 25, 9, tzinfo=timezone.utc), model="test",
+                 entity_ids=("VNM",), source_revisions=("r1",), max_calls=2)
+
+
+def test_w1_concurrent_same_key_does_not_hold_writer_during_provider(monkeypatch, tmp_path):
+    llm, calls, sdk = _jev_fixture(monkeypatch)
+    entered, release = Event(), Event()
+    original = sdk.TypeSafeClient.system_one
+
+    def blocked(self, **kwargs):
+        entered.set()
+        assert release.wait(5)
+        return original(self, **kwargs)
+
+    monkeypatch.setattr(sdk.TypeSafeClient, "system_one", blocked)
+    args = _jev_args(tmp_path)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(llm.classify_jev, **args)
+        assert entered.wait(5)
+        with sqlite3.connect(args["cache_path"], timeout=0.1) as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute("INSERT INTO usage VALUES ('2026-09-25', 'other', 0)")
+        second = pool.submit(llm.classify_jev, **args)
+        release.set()
+        assert first.result(timeout=5) == second.result(timeout=5)
+    assert len(calls) == 1
+
+
+def test_w1_registry_and_envelope_cache_replay(monkeypatch, tmp_path):
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    assert len(llm.DOMAIN_REGISTRY) == 11
+    args = _jev_args(tmp_path)
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 25, 9, 30, tzinfo=tz)
+    monkeypatch.setattr(llm, "datetime", Clock)
+    decision = llm.classify_jev(**args)
+    assert decision["status"] == "accepted" and decision["authority"] == "research_only"
+    assert decision["schema_version"] == llm.JEV_SCHEMA_VERSION
+    assert decision["source_hash"] == hashlib.sha256(llm._canonical(args["facts"])).hexdigest()
+    assert decision["selected"] == {"outcome": "mixed"}
+    assert llm.classify_jev(**{**args, "mode": "replay"}) == decision
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("change", [
+    {"as_of": datetime.fromisoformat("2026-09-25T11:00:00+00:00")},
+    {"source_revisions": ("r2",)}, {"entity_ids": ("VCB",)}, {"gate_id": "G2"},
+    {"policy_version": "v2"}, {"prompt_version": "v2"}, {"profile_version": "v2"},
+    {"feature_version": "v2"}, {"dataset_manifest": "m2"}, {"code_revision": "rev2"},
+    {"facts": {"ticker": "VNM", "value_vnd_full": 50_001}},
+])
+def test_w1_cache_key_distinguishes_information_set(monkeypatch, tmp_path, change):
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    args = _jev_args(tmp_path)
+    original = llm.classify_jev(**args)
+    updated = llm.classify_jev(**{**args, **change})
+    assert updated["fingerprint"] != original["fingerprint"] and len(calls) == 2
+
+
+def test_w1_selective_budget_and_429_exhaustion(monkeypatch, tmp_path):
+    llm, calls, sdk = _jev_fixture(monkeypatch)
+    args = _jev_args(tmp_path)
+    for policy in ({"rule_sufficient": True}, {"novelty": False},
+                   {"estimated_benefit": 0.5, "estimated_cost": 1}):
+        with pytest.raises(ValueError, match="JEV skipped"):
+            llm.classify_jev(**{**args, "mode": "selective", **policy})
+    assert calls == []
+    class RateLimited:
+        def __init__(self, **_): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): return None
+        def system_one(self, **_):
+            calls.append("429")
+            raise sdk.TypeSafeRateLimitError("Bearer private-secret")
+    sdk.TypeSafeClient = RateLimited
+    monkeypatch.setattr(llm.time, "sleep", lambda _: None)
+    with pytest.raises(RuntimeError, match="JEV unavailable after two attempts"):
+        llm.classify_jev(**{**args, "estimated_cost": 1, "max_spend": 2})
+    assert calls == ["429", "429"]
+    with pytest.raises(ValueError, match="budget exhausted"):
+        llm.classify_jev(**args)
+
+
+@pytest.mark.parametrize("message", [
+    "provider rejected Authorization: Bearer private-token; HTTP 401",
+    "provider rejected https://user:password@example.org/?api_key=private; HTTP 403",
+    "provider rejected token=private&request=invalid; HTTP 400",
+    "provider rejected sk-secretvalue ghp_privatevalue; HTTP 422",
+], ids=["auth_bearer_401", "url_credentials_403", "query_token_400", "secret_tokens_422"])
+def test_w1_non_transient_provider_errors_are_redacted_and_billed(monkeypatch, tmp_path, message):
+    import sqlite3
+    llm, calls, sdk = _jev_fixture(monkeypatch)
+
+    class FailingClient:
+        def __init__(self, **_): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): return None
+        def system_one(self, **kwargs):
+            calls.append(kwargs)
+            raise RuntimeError(message)
+
+    sdk.TypeSafeClient = FailingClient
+    args = _jev_args(tmp_path)
+    with pytest.raises(RuntimeError) as caught:
+        llm.classify_jev(**{**args, "estimated_cost": 1})
+    assert "provider rejected" in str(caught.value) and "HTTP" in str(caught.value)
+    assert not any(marker in str(caught.value) for marker in ("private", "password", "user", "secretvalue"))
+    assert caught.value.__cause__ is None and caught.value.__context__ is None
+    assert len(calls) == 1
+    with sqlite3.connect(args["cache_path"]) as db:
+        assert db.execute("SELECT COUNT(*), SUM(cost) FROM usage").fetchone() == (1, 1)
+        assert db.execute("SELECT COUNT(*) FROM decisions").fetchone()[0] == 0
+
+
+@pytest.mark.parametrize("invalid", [
+    {"facts": {"x": float("nan")}}, {"facts": {"x": float("inf")}},
+    {"facts": {"api_key": "private"}}, {"facts": {"url": "https://u:pass@example.com"}},
+    {"choices": {"outcome": ("mixed",)}}, {"entity_ids": ["VNM"]},
+    {"max_calls": True}, {"estimated_cost": float("inf")}, {"gate_id": "Bearer private"},
+    {"domain": "../../unsafe"},
+])
+def test_w1_invalid_inputs_never_call_provider(monkeypatch, tmp_path, invalid):
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    with pytest.raises(ValueError):
+        llm.classify_jev(**{**_jev_args(tmp_path), **invalid})
+    assert calls == []
+
+
+def test_w1_corrupt_cache_schema_and_directory_fail_closed(monkeypatch, tmp_path):
+    import sqlite3
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    args = _jev_args(tmp_path)
+    first = llm.classify_jev(**args)
+    with sqlite3.connect(args["cache_path"]) as db:
+        corrupted = {**first, "authority": "bounded_profile"}
+        db.execute("UPDATE decisions SET envelope=?", (json.dumps(corrupted),))
+    with pytest.raises(ValueError, match="invalid JEV cache envelope"):
+        llm.classify_jev(**args)
+    assert len(calls) == 1
+    with pytest.raises(ValueError, match="file"):
+        llm.classify_jev(**{**args, "cache_path": tmp_path})
+
+
+def test_w1_cache_miss_replay_never_networks(monkeypatch, tmp_path):
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    with pytest.raises(ValueError, match="cache miss"):
+        llm.classify_jev(**{**_jev_args(tmp_path), "mode": "replay"})
+    assert calls == []
+
+
+def test_w1_legacy_daily_key_and_versioned_full_cutoff(monkeypatch, tmp_path):
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    args = _jev_args(tmp_path)
+    args.update(domain="test", choices={"outcome": ("mixed", "other")}, max_calls=3)
+    first = llm.classify_jev(**args)
+    later = {**args, "as_of": args["as_of"].replace(hour=11)}
+    assert llm.classify_jev(**later)["fingerprint"] == first["fingerprint"]
+    assert first["version"] == 1 and len(calls) == 1
+    full = llm.classify_jev(**{**args, "schema_version": 2})
+    assert full["version"] == 2
+    assert llm.classify_jev(**{**later, "schema_version": 2})["fingerprint"] != full["fingerprint"]
+    assert len(calls) == 3
+
+
+def test_w1_v2_historical_live_rejected_before_provider_and_cache(monkeypatch, tmp_path):
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    monkeypatch.setattr(llm, "datetime", datetime)
+    args = _jev_args(tmp_path)
+    with pytest.raises(ValueError, match="cutoff precedes invocation"):
+        llm.classify_jev(**args)
+    assert calls == [] and not args["cache_path"].exists()
+
+
+def test_w1_v2_corrupt_historical_cache_rejected_on_replay(monkeypatch, tmp_path):
+    import sqlite3
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    args = _jev_args(tmp_path)
+    envelope = llm.classify_jev(**args)
+    envelope["decided_at"] = envelope["decision_time"] = envelope["generated_at"] = "2026-09-26T09:30:00+00:00"
+    with sqlite3.connect(args["cache_path"]) as db:
+        db.execute("UPDATE decisions SET envelope=?", (json.dumps(envelope),))
+    with pytest.raises(ValueError, match="invalid JEV cache envelope"):
+        llm.classify_jev(**{**args, "mode": "replay"})
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("facts", [
+    {"credential": "opaque"}, {"note": "sk-example-token"},
+    {"nested": [{"private_key": "opaque"}]}, {"note": "ghp_exampletoken"},
+    {"cookie": "opaque"}, {"nested": [{"session_id": "opaque"}]},
+    {"sessionToken": "opaque"}, {"set-cookie": "opaque"},
+])
+def test_w1_sensitive_facts_fail_before_provider_and_cache(monkeypatch, tmp_path, facts):
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    args = _jev_args(tmp_path)
+    with pytest.raises(ValueError, match="invalid JEV facts"):
+        llm.classify_jev(**{**args, "facts": facts})
+    assert calls == [] and not args["cache_path"].exists()
+
+
+def test_w1_usage_cap_blocks_rotating_gates_before_provider(monkeypatch, tmp_path):
+    import sqlite3
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    args = _jev_args(tmp_path)
+    with sqlite3.connect(args["cache_path"]) as db:
+        db.execute("CREATE TABLE usage (day TEXT NOT NULL, gate_id TEXT NOT NULL, cost REAL NOT NULL)")
+        db.executemany("INSERT INTO usage VALUES (?, ?, ?)",
+                       [("2026-09-25", f"gate{i}", 0.0) for i in range(llm.MAX_JEV_ROWS)])
+    with pytest.raises(ValueError, match="usage row limit"):
+        llm.classify_jev(**args)
+    assert calls == []
+
+
+def test_w1_usage_retention_persists_on_replay_miss(monkeypatch, tmp_path):
+    import sqlite3
+    llm, calls, _ = _jev_fixture(monkeypatch)
+    args = _jev_args(tmp_path)
+    with sqlite3.connect(args["cache_path"]) as db:
+        db.execute("CREATE TABLE usage (day TEXT NOT NULL, gate_id TEXT NOT NULL, cost REAL NOT NULL)")
+        db.execute("INSERT INTO usage VALUES ('2020-01-01', 'old', 0)")
+    with pytest.raises(ValueError, match="cache miss"):
+        llm.classify_jev(**{**args, "mode": "replay"})
+    with sqlite3.connect(args["cache_path"]) as db:
+        assert db.execute("SELECT COUNT(*) FROM usage").fetchone()[0] == 0
+    assert calls == []
