@@ -39,6 +39,67 @@ def test_baseline_routes_by_role_and_publishes_digest(tmp_path):
     )["schema_version"] == "2.0"
 
 
+def test_w0_inventory_binds_sources_consumers_and_market_release():
+    import pyarrow.parquet as pq
+
+    root = Path(__file__).resolve().parents[1]
+    manifest = json.loads((root / ".ly_state/session/jev_deep_integration_20260926/W0/input_manifest.json").read_text(encoding="utf-8"))
+    gates = json.loads((root / ".ly_state/session/phase_gates.json").read_text(encoding="utf-8"))
+    assert manifest["repo_commit"] == "74a3b507776b78cf361e8f7f0f4ac0c7efe9e3ae"
+    assert manifest["gate_recorded_in_phase_gates"] is (manifest["gate"] in gates)
+    if manifest["gate_recorded_in_phase_gates"]:
+        receipt = gates[manifest["gate"]]
+        assert receipt["final_verdict"] == "[APPROVED]"
+        assert receipt["l2_session_id"] == "l2_role6_jev_deep_integration_w0_inventory_20260927"
+        assert (root / receipt["audit_report_path"]).is_file()
+    assert all(gates[name]["final_verdict"] == "[APPROVED]" for name in manifest["recorded_approved_gates"])
+    graph = manifest["graph_evidence"]
+    assert graph["sha256"] == "45679feb71de68a995e8581410f17338ba30bdc504fa710dc0a0a0dcb7da72ad"
+    assert hashlib.sha256((root / graph["path"]).read_bytes()).hexdigest() == graph["sha256"]
+    contract = root / ".ly_state/session/anti_drip_contract_l2_role6_jev_deep_integration_w0_inventory_20260927.json"
+    assert hashlib.sha256(contract.read_bytes()).hexdigest() == "44bac89575abe3738712cd5742f710ecbb222163a4785a43b87b71537e33909b"
+    assert json.loads(contract.read_text(encoding="utf-8"))["required_findings"] == []
+    for entry in (*manifest["sources"], *manifest["consumers"], *manifest["datasets"]):
+        path = Path(entry["path"])
+        assert not path.is_absolute() and ".." not in path.parts and (root / path).is_file()
+    consumers = {entry["path"]: entry["call"] for entry in manifest["consumers"]}
+    assert "classify_jev(domain=copilot-router-v1)" in consumers["src/omega/data/smart_llm_router.py"]
+    assert "evaluate_model_decision" in consumers["scripts/sod_pipeline.py"]
+    release, canonical = manifest["datasets"][:2]
+    assert hashlib.sha256((root / release["path"]).read_bytes()).hexdigest() == release["sha256"]
+    assert pq.ParquetFile(root / release["path"]).metadata.num_rows == release["rows"]
+    assert hashlib.sha256((root / canonical["path"]).read_bytes()).hexdigest() == canonical["current_sha256"]
+    assert canonical["current_sha256"] != canonical["release_manifest_canonical_sha256"]
+    for item in manifest["datasets"][2:8]:
+        assert pq.ParquetFile(root / item["path"]).metadata.num_rows == item["rows"]
+    checkpoint = manifest["datasets"][-1]
+    assert json.loads((root / checkpoint["path"]).read_text(encoding="utf-8"))["symbols_count"] == checkpoint["symbols_count_manifest"]
+    assert json.loads((root / checkpoint["routing_plan"]).read_text(encoding="utf-8"))["llm_mode"] == "off"
+
+
+@pytest.mark.parametrize("shard", ["manifest.json", "quant_records.json", "routing_plan.json", "evaluation_records.json"])
+def test_corrupted_hybrid_checkpoint_shards_fail_closed(tmp_path, shard):
+    from scripts.run_hybrid_fundamental import compute_run_contract_hash, parse_cli_args, run_pipeline
+
+    output = tmp_path / "out.parquet"
+    checkpoint = tmp_path / "checkpoint"
+    checkpoint.mkdir()
+    args = parse_cli_args([
+        "--decision-cutoff", "2026-06-15T15:00:00+07:00",
+        "--knowledge-cutoff", "2026-06-15T09:00:00+07:00",
+        "--symbols", "VNM", "--output", str(output),
+        "--checkpoint-dir", str(checkpoint), "--llm-mode", "off", "--resume",
+    ])
+    (checkpoint / "manifest.json").write_text(json.dumps({
+        "schema_version": 1, "run_contract_hash": compute_run_contract_hash(vars(args), ["VNM"]),
+        "status": "in_progress",
+    }), encoding="utf-8")
+    (checkpoint / shard).write_text("{truncated", encoding="utf-8")
+    code, result, summary = run_pipeline(args)
+    assert code == 6 and result is None and summary["status"] == "resume_manifest_corrupted"
+    assert not output.exists()
+
+
 def test_context_bound_decision_rejects_replay(tmp_path):
     path = tmp_path / "decision.json"
     envelope = evaluate_model_decision(role="l3", risk="high", gate="G", session_id="S", decision_path=path)
@@ -62,6 +123,16 @@ def test_schema_drift_fails_closed_after_digest_recomputed(tmp_path):
         load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest())
 
 
+def test_extra_decision_field_fails_closed_even_with_matching_digest(tmp_path):
+    path = tmp_path / "decision.json"
+    evaluate_model_decision(role="l2", risk="low", response={}, decision_path=path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["unexpected_authority"] = "approve"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="schema mismatch"):
+        load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest())
+
+
 def test_digest_tamper_fails_closed(tmp_path):
     path, digest = atomic_publish_decision({"schema_version": "2.0"}, tmp_path / "decision.json")
     path.write_text('{"schema_version":"2.0","tampered":true}', encoding="utf-8")
@@ -76,11 +147,48 @@ def test_nonfinite_and_boolean_inputs_fail_closed(tmp_path):
         json.loads('{"x":NaN}', parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
 
 
+def test_w0_zero_reference_price_does_not_divide():
+    from omega.data.vci_direct import validate_price_bounds
+
+    assert validate_price_bounds(27_000, 0, "HOSE") is True
+    assert validate_price_bounds(27_000, -1, "HOSE") is True
+    assert validate_price_bounds(float("inf"), 0, "HOSE") is False
+
+
+@pytest.mark.parametrize("cycle", [float("nan"), float("inf"), "1", [], True])
+def test_malformed_cycle_rejected_before_publication(tmp_path, cycle):
+    path = tmp_path / "decision.json"
+    with pytest.raises(ValueError, match="invalid routing inputs"):
+        evaluate_model_decision(role="l2", risk="low", cycle=cycle, response={}, decision_path=path)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("cycle", [0, -1, 4])
+def test_out_of_bounds_cycle_rejected_before_publication(tmp_path, cycle):
+    path = tmp_path / "decision.json"
+    with pytest.raises(RuntimeError, match="MAX_REMEDIATIONS_EXCEEDED"):
+        evaluate_model_decision(role="l2", risk="low", cycle=cycle, response={}, decision_path=path)
+    assert not path.exists()
+
+
 def test_high_finding_escalates_l2_and_l3(tmp_path):
     report = tmp_path / "audit.md"
     report.write_text("[NEEDS_FIX] F-001 HIGH", encoding="utf-8")
     assert evaluate_model_decision(role="l2", risk="high", predecessor_report=report)["lead_model"] == L2_LEAD_ALLOWLIST[0]
     assert evaluate_model_decision(role="l3", risk="high", predecessor_report=report)["lead_model"] == L3_LEAD_ALLOWLIST[0]
+
+
+@pytest.mark.parametrize("role,choices", [("l2", L2_LEAD_ALLOWLIST), ("l3", L3_LEAD_ALLOWLIST)])
+def test_high_finding_prevents_provider_downgrade(tmp_path, role, choices):
+    report = tmp_path / "audit.md"
+    report.write_text("[NEEDS_FIX] F-001 HIGH", encoding="utf-8")
+    envelope = evaluate_model_decision(
+        role=role, risk="high", predecessor_report=report,
+        response={"lead_model": choices[1]}, decision_path=tmp_path / "decision.json",
+    )
+    assert envelope["escalated"] is True
+    assert envelope["lead_model"] == choices[0]
+    assert load_decision(tmp_path / "decision.json", envelope["decision_digest"])["lead_model"] == choices[0]
 
 
 def test_l2_and_l3_decisions_are_distinct_and_context_bound(tmp_path):
@@ -139,6 +247,29 @@ def test_prompt_data_escapes_delimiters_and_rejects_controls():
     assert escape_xml_data("<&\"'") == "&lt;&amp;&quot;&apos;"
     with pytest.raises(ValueError):
         escape_xml_data("bad\x00value")
+
+def test_directory_decision_paths_fail_without_publication(tmp_path):
+    directory = tmp_path / "decision.json"
+    directory.mkdir()
+    with pytest.raises(ValueError, match="regular file"):
+        atomic_publish_decision({"schema_version": "2.0"}, directory)
+    with pytest.raises(FileNotFoundError, match="decision file not found"):
+        load_decision(directory, "0" * 64)
+    assert not list(directory.iterdir())
+
+def test_injected_scope_control_character_rejected_before_provider(monkeypatch):
+    calls = []
+    class Client:
+        def __init__(self, **_):
+            calls.append("provider")
+    sdk = types.ModuleType("typesafe_sdk")
+    sdk.Choice, sdk.TypeSafeClient = lambda **_: None, Client
+    for name in ("TypeSafeAPIConnectionError", "TypeSafeAPITimeoutError", "TypeSafeInternalServerError"):
+        setattr(sdk, name, type(name, (Exception,), {}))
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", sdk)
+    with pytest.raises(ValueError, match="control characters"):
+        evaluate_model_decision(role="l2", risk="high", scope=["-x", "bad\x00scope"])
+    assert not calls
 
 def test_jev_retries_429_once_then_returns_judgments(monkeypatch):
     calls = []

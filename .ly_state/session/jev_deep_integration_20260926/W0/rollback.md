@@ -1,0 +1,3 @@
+# W0 rollback
+
+Only inventory documents, scoped routing tests, and L2 report changed. Preserve any pre-task untracked W0 copies before restoring; these documents have no committed pre-W0 revision at baseline `74a3b507776b78cf361e8f7f0f4ac0c7efe9e3ae`. Revert only this task's changes to `tests/test_sod_jev_model_routing.py` and W0/report documents; do not delete another writer's artifacts. No production code, datasets, model cache, order, or gate metadata changed. Recompute graph/contract SHA-256, candidate/canonical dataset hashes, HEAD, gate records, and focused tests before reusing the inventory after any subsequent write.

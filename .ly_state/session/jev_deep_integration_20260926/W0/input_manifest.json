@@ -1,0 +1,52 @@
+{
+  "schema_version": "jev-w0-inventory/v1",
+  "repo_commit": "74a3b507776b78cf361e8f7f0f4ac0c7efe9e3ae",
+  "gate": "GATE_JEV_DEEP_INTEGRATION_W0_20260927",
+  "gate_recorded_in_phase_gates": true,
+  "planning_gate": "GATE_MASTER_PLAN_JEV_DEEP_INTEGRATION_20260926",
+  "recorded_approved_gates": [
+    "GATE_SOD_PIPELINE_JEV_MODEL_ROUTING_20260922",
+    "GATE_JEV_MACRO_MICRO_HYBRID_20260925",
+    "GATE_JEV_MACRO_NEWS_SENTIMENT_20260925",
+    "GATE_JEV_COPILOT_SMART_ROUTER_20260925",
+    "GATE_JEV_SOD_MULTI_AGENT_GOVERNANCE_20260925",
+    "GATE_MASTER_PLAN_JEV_DEEP_INTEGRATION_20260926"
+  ],
+  "graph_evidence": {
+    "path": ".ly_state/session/graph_evidence_l2_role6_jev_deep_integration_w0_inventory_20260927.json",
+    "sha256": "45679feb71de68a995e8581410f17338ba30bdc504fa710dc0a0a0dcb7da72ad",
+    "scope_status": "four documentation files not_indexed; test file indexed; no absence-of-consumers inference"
+  },
+  "sources": [
+    {"path": "src/omega/core/llm_config.py", "contract": "classify_jev(domain,facts,choices,cache_path,as_of,available_at,model): version 1; fingerprint SHA-256 over domain/facts/choices/UTC cutoff_date/model; selected is finite enum; available_at <= as_of; SQLite WAL decisions(fingerprint TEXT PRIMARY KEY, envelope TEXT NOT NULL); cached decisions independently PIT-validated"},
+    {"path": "scripts/jev_model_router.py", "contract": "Separate SoD envelope schema_version 2.0; role/risk/cycle/gate/session/task/lead/subagent/timeout/predecessor_findings/escalated, optional fallback; SHA-256 bound atomic file; role-specific model allowlists and context checking"},
+    {"path": "src/omega/data/vci_direct.py", "contract": "Ingest output OHLCV_COLUMNS: time,ticker,raw_open,raw_high,raw_low,raw_close,adj_ratio,open,high,low,close,volume,value; strict VND_FULL bounds. Released market parquet has a DIFFERENT stored schema: ticker,date,exchange,open,high,low,close,volume,as_of,available_at,source,price_scale,adjusted,rebuild_date"},
+    {"path": "src/omega/data/macro_pipeline.py", "contract": "SCHEMA: indicator,value,observation_date,published_at,available_at,ingested_at,revision_id,source; calendar next_tradable_session"},
+    {"path": "src/omega/data/macro_news_pipeline.py", "contract": "Raw news SCHEMA declared at line 33; on-disk parquet also has listing_sha256,detail_sha256,evidence_state,evidence_hash, so verify consumer-required subset or version explicitly"},
+    {"path": "src/omega/data/micro_llm.py", "contract": "Financial input requires available_at and ingested_at; JEV micro groups symbol,fiscal_year,fiscal_quarter,period_type. Source defaults to data/financial_statements_2015_now.parquet"},
+    {"path": "src/omega/quant/regime/hmm_model.py", "contract": "GaussianHMM4State uses integer labels bear/bull x calm/volatile (0..3), unlike 3-label JEV_ARBITRATED overlay"},
+    {"path": "src/omega/quant/portfolio/regime_overlay.py", "contract": "JEV_ARBITRATED requires macro_llm/news_sentiment frames with value,as_of,available_at; 3 labels BULL/BEAR/SIDEWAYS; historical fallback to HMM when missing/future/invalid"}
+  ],
+  "consumers": [
+    {"path": "src/omega/data/macro_llm.py", "call": "interpret_as_of -> classify_jev(domain=macro)", "input": "data/macro_indicators.parquet", "output": "data/macro_llm_interpretation.parquet"},
+    {"path": "src/omega/data/macro_news_llm.py", "call": "process_dataframe -> classify_jev(domain=macro_news)", "input": "data/macro_news.parquet raw schema", "output": "caller-supplied Parquet"},
+    {"path": "src/omega/data/micro_llm.py", "call": "interpret_as_of -> classify_jev(domain=micro)", "input": "data/financial_statements_2015_now.parquet", "output": "data/micro_llm_interpretation.parquet"},
+    {"path": "src/omega/data/smart_llm_router.py", "call": "classify_copilot_request -> classify_jev(domain=copilot-router-v1)", "downstream": "src/omega/api/routes/copilot.py; classification alone cannot authorize a tool"},
+    {"path": "src/omega/quant/ensemble_optimizer.py", "call": "EnsembleOptimizer.apply_jev_weight_tilt -> classify_jev(domain=alpha_weight_regime)", "downstream": "no production call site found for apply_jev_weight_tilt in src; tests/test_jev_regime_alpha_weighting.py is an explicit caller"},
+    {"path": "src/omega/quant/portfolio/regime_overlay.py", "call": "apply_regime_overlay(strategy=JEV_ARBITRATED) -> classify_jev(domain=regime_arbitration)", "downstream": "src/omega/quant/pipeline_v2.py and src/omega/quant/pipeline/overlays/regime.py call rule_based/HMM only; JEV strategy explicitly used in tests/test_jev_regime_alpha_weighting.py"},
+    {"path": "scripts/sod_pipeline.py", "call": "evaluate_model_decision -> dispatch_l2/dispatch_l3", "downstream": "scripts/dispatch_l2.py and scripts/dispatch_l3.py verify SHA-256/context through load_decision; tests/test_sod_jev_model_routing.py"},
+    {"path": "scripts/run_hybrid_fundamental.py", "call": "load_input_payloads and checkpoint resume", "input": "data/financial_statements_2015_now.parquet and data/macro_indicators.parquet", "downstream": "data/checkpoints/hybrid_fundamental/manifest.json; routing_plan.json says llm_mode=off"},
+    {"path": "src/omega/quant/execution/smart_execution.py", "call": "build_vwap_schedule/build_randomized_twap_schedule", "downstream": "schedule primitives only; no JEV execution consumer or venue support established"}
+  ],
+  "datasets": [
+    {"path": "data/market_releases/20260911T203018693962Z_37f9c7a4/market_2015_now.parquet", "manifest": "data/market_releases/20260911T203018693962Z_37f9c7a4/manifest.json", "sha256": "f44598bdc8b7d28831fbadb67f443ba14809d5010f0194261052cb9fe9c0ec35", "sha256_verified": true, "rows": 1812503, "distinct_tickers": 705, "requested_symbols_manifest": 703, "first_date_row_group_stats": "2015-01-05", "last_date_row_group_stats": "2026-09-11", "coverage_limit": "row-group metadata bounds and distinct ticker count; historical universe, sessions, PIT rows unverified"},
+    {"path": "data/market_2015_now.parquet", "rows": 1776743, "first_date_row_group_stats": "2015-01-05", "last_date_row_group_stats": "2026-06-30", "current_sha256": "3446ab3edf79908c6d2b13a0aa16f6d8ab9c4319e83d4838209cf9d1bcac99ad", "release_manifest_canonical_sha256": "b9662743842657487de4142fb6ec16523239be676b1917cf671184a9148807f0", "coverage_limit": "canonical bytes differ from release receipt; do not substitute release coverage for active consumer data"},
+    {"path": "data/financial_statements_2015_now.parquet", "rows": 482705, "distinct_symbols": 703, "fiscal_period_end_row_group_stats": ["2021-12-31", "2026-12-31"], "coverage_limit": "fiscal period end is not availability; source_publish_at/available_at/ingested_at eligibility and delisting unverified"},
+    {"path": "data/macro_indicators.parquet", "rows": 4734, "observation_date_row_group_stats": ["2009-01-02 17:00:00+00:00", "2026-09-20 17:00:00+00:00"], "coverage_limit": "vintage PIT eligibility not row-verified"},
+    {"path": "data/macro_news.parquet", "rows": 0, "coverage_limit": "no usable raw macro news rows; schema metadata alone does not make W3/W4 ready"},
+    {"path": "data/news_sentiment_2015_now.parquet", "rows": 988, "distinct_symbols": 338, "publish_time_row_group_stats": ["2020-09-07 07:36:00+00:00", "2026-09-12 02:26:10+00:00"], "coverage_limit": "different news product/schema; not evidence of raw macro news or JEV sentiment coverage"},
+    {"path": "data/macro_llm_interpretation.parquet", "rows": 2, "provider_counts": {"openai-compatible": 2}, "coverage_limit": "no JEV macro interpretation rows"},
+    {"path": "data/micro_llm_interpretation.parquet", "rows": 2650, "provider_counts": {"openai-compatible": 2650}, "coverage_limit": "no JEV micro interpretation rows"},
+    {"path": "data/checkpoints/hybrid_fundamental/manifest.json", "symbols_count_manifest": 5, "decision_cutoff": "2026-08-28T00:00:00+00:00", "routing_plan": "data/checkpoints/hybrid_fundamental/routing_plan.json", "llm_mode": "off", "coverage_limit": "manifest-reported only; checkpoint shards and 703-symbol universe not verified"}
+  ]
+}
