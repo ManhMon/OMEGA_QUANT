@@ -1,0 +1,1 @@
+{"schema_version":"w2-input/v1","sources":["src/omega/quant/portfolio/regime_overlay.py","src/omega/quant/regime/hmm_model.py","src/omega/quant/ensemble_optimizer.py","src/omega/core/llm_config.py"],"pit_dataset":null,"model_pit":"retrospective labels do not prove historical model availability","calibration":"not supplied; influence defaults to zero"}

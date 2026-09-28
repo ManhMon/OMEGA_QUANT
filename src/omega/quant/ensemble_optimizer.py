@@ -4,6 +4,8 @@ Optimizes weights between models using SLSQP with constraints.
 """
 
 from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, List, Callable, Optional, Tuple
 import numpy as np
 from scipy.optimize import minimize
@@ -161,6 +163,106 @@ class EnsembleOptimizer:
         utility = -result.fun
         
         return weights, utility
+
+    def apply_jev_weight_tilt(
+        self, base_weights: np.ndarray, model_names: list[str], current_regime: str,
+        alpha_decay_rates: dict[str, float], ic_correlations: dict[str, float],
+        as_of: datetime, available_at: datetime, cache_path: Path,
+        model: str = "jev-hybrid",
+        influence: float = 0.0,
+        alpha_families: Optional[dict[str, str]] = None,
+    ) -> np.ndarray:
+        """Tilt optimized weights only when historical evidence and JEV are valid."""
+        from omega.core.llm_config import classify_jev
+
+        weights = np.asarray(base_weights, dtype=float)
+        if (weights.ndim != 1 or not len(weights) or len(weights) != len(model_names)
+                or len(set(model_names)) != len(model_names) or any(type(n) is not str for n in model_names)
+                or not np.isfinite(weights).all() or (weights < 0).any()
+                or not np.isclose(weights.sum(), 1) or not isinstance(as_of, datetime)
+                or not isinstance(available_at, datetime) or as_of.tzinfo is None
+                or available_at.tzinfo is None or available_at > as_of
+                or type(current_regime) is not str
+                or set(alpha_decay_rates) != set(model_names)
+                 or set(ic_correlations) != set(model_names)
+                 or type(influence) not in (int, float) or not np.isfinite(influence)
+                 or not 0 <= influence <= 1):
+            raise ValueError("invalid JEV weight evidence")
+        low, high = self.config.min_weight, self.config.max_weight
+        if (not np.isfinite([low, high]).all() or low < 0 or high > 1 or low > high
+                or len(weights) * low > 1 or len(weights) * high < 1
+                or (weights < low - 1e-8).any() or (weights > high + 1e-8).any()):
+            raise ValueError("infeasible baseline weights")
+        decay = np.array([alpha_decay_rates[n] for n in model_names], dtype=float)
+        correlation = np.array([ic_correlations[n] for n in model_names], dtype=float)
+        if (not np.isfinite(decay).all() or not np.isfinite(correlation).all()
+                or (decay < 0).any() or (np.abs(correlation) > 1).any()):
+            raise ValueError("invalid alpha metrics")
+        if influence == 0:
+            return weights.copy()
+        if (not isinstance(alpha_families, dict) or set(alpha_families) != set(model_names)
+                or any(f not in ("momentum", "mean_reversion", "defensive") for f in alpha_families.values())):
+            raise ValueError("explicit alpha family mapping required")
+        choices = ("momentum_heavy", "mean_reversion_heavy", "balanced", "defensive")
+        try:
+            result = classify_jev(
+                domain="alpha_weight_regime",
+                facts={"regime": current_regime, "alpha_decay_rates": dict(zip(model_names, decay.tolist())),
+                       "ic_correlations": dict(zip(model_names, correlation.tolist()))},
+                choices={"weight_regime": choices}, cache_path=cache_path,
+                as_of=as_of, available_at=available_at, model=model,
+            )
+            selected = result["selected"]["weight_regime"]
+            if type(selected) is not str or selected not in choices:
+                return weights.copy()
+            if set(result["selected"]) != {"weight_regime"}:
+                return weights.copy()
+            disagreement_result = classify_jev(
+                domain="alpha_disagreement",
+                facts={"regime": current_regime, "alpha_decay_rates": dict(zip(model_names, decay.tolist())),
+                       "ic_correlations": dict(zip(model_names, correlation.tolist()))},
+                choices={"outcome": ("trend_supported", "reversal_supported", "mixed", "insufficient")},
+                cache_path=cache_path, as_of=as_of, available_at=available_at, model=model,
+            )
+            if set(disagreement_result["selected"]) != {"outcome"}:
+                return weights.copy()
+            disagreement = disagreement_result["selected"]["outcome"]
+            if disagreement not in ("trend_supported", "reversal_supported", "mixed"):
+                return weights.copy()
+            if (selected == "momentum_heavy" and disagreement != "trend_supported"
+                    or selected == "mean_reversion_heavy" and disagreement != "reversal_supported"):
+                return weights.copy()
+        except Exception:
+            return weights.copy()
+        momentum = np.array([alpha_families[n] == "momentum" for n in model_names])
+        reversal = np.array([alpha_families[n] == "mean_reversion" for n in model_names])
+        multipliers = np.ones(len(weights))
+        if selected == "momentum_heavy":
+            multipliers[momentum] = 1.25
+            multipliers[reversal] = .75
+        elif selected == "mean_reversion_heavy":
+            multipliers[reversal] = 1.25
+            multipliers[momentum] = .75
+        elif selected == "defensive":
+            multipliers[momentum | reversal] = .75
+        tilted = weights * multipliers
+        if not tilted.sum():
+            return weights.copy()
+        tilted /= tilted.sum()
+        tilted = (1 - influence) * weights + influence * tilted
+        # Preserve SLSQP box constraints by projecting onto the bounded simplex.
+        left, right = float(np.min(tilted - high)), float(np.max(tilted - low))
+        for _ in range(60):
+            midpoint = (left + right) / 2
+            if np.clip(tilted - midpoint, low, high).sum() > 1:
+                left = midpoint
+            else:
+                right = midpoint
+        projected = np.clip(tilted - (left + right) / 2, low, high)
+        if (not np.isfinite(projected).all() or abs(projected.sum() - 1) > 1e-8
+                or (projected < low - 1e-8).any() or (projected > high + 1e-8).any()):
+            return weights.copy()
+        return projected
     
     def deactivate_poor_models(
         self,

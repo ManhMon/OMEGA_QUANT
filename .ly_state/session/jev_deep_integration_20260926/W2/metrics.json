@@ -1,0 +1,1 @@
+{"status":"not_measured","reason":"No frozen PIT dataset or preregistered calibration supplied; no performance result inferred from unit tests.","remediation":"F-001 schema, F-002 early volatility, F-003 historical cache-only boundary tested; no investment-performance estimate"}

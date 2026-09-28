@@ -1,0 +1,14 @@
+{
+  "schema_version": "w2-experiment/v1",
+  "status": "blocked_pending_pit_data_and_calibration",
+  "arms": {
+    "B0": "pure quantitative baseline",
+    "B1": "deterministic rule using identical information",
+    "B2": "existing JEV overlays individually enabled",
+    "B3": "one new JEV extension per comparison",
+    "B4": "distribution-preserving shuffled labels, research-only, no execution"
+  },
+  "required_before_run": ["frozen PIT universe", "train/validation/test dates", "label horizon", "purge and embargo", "seed", "cost model", "minimum effect", "risk noninferiority", "sample-size rationale", "prospective shadow provenance"],
+  "promotion": "disabled until B3 exceeds B0 and B1 out of sample net of all costs",
+  "domain_contract": "regime_arbitration uses regime; alpha_weight_regime uses weight_regime; alpha_disagreement uses outcome"
+}
