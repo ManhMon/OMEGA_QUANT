@@ -44,6 +44,8 @@ OUTPUT_COLUMNS = [
     "micro_score",
     "extracted_at",
     "available_at",
+    "revision_of",
+    "novelty",
 ]
 
 ALLOWED_QUALITIES = {"strong", "neutral", "weak", "distressed"}
@@ -111,8 +113,15 @@ class MicroLLMInterpreter:
         self.model = config.get("model", "mock-model")
         self.max_concurrency = max(1, min(max_concurrency, 5))
         self.timeout = float(config.get("timeout", timeout))
-        self.max_retries = max(1, int(config.get("max_retries", max_retries)))
+        if not math.isfinite(self.timeout) or not 0.1 <= self.timeout <= 60:
+            raise ValueError("timeout must be finite and in [0.1, 60]")
+        retries = config.get("max_retries", max_retries)
+        if isinstance(retries, bool) or not isinstance(retries, Integral) or not 1 <= retries <= 5:
+            raise ValueError("max_retries must be an integer in [1, 5]")
+        self.max_retries = int(retries)
         self.backoff_factor = float(config.get("backoff_factor", backoff_factor))
+        if not math.isfinite(self.backoff_factor) or not 0 <= self.backoff_factor <= 30:
+            raise ValueError("backoff_factor must be finite and in [0, 30]")
 
     def _post(self, body_bytes: bytes) -> dict[str, Any]:
         if self.provider == "mock":
@@ -159,7 +168,7 @@ class MicroLLMInterpreter:
 
                 last_exc = exc
                 if is_retryable and attempt < self.max_retries:
-                    sleep_time = self.backoff_factor * (2 ** (attempt - 1))
+                    sleep_time = min(30, self.backoff_factor * (2 ** (attempt - 1)))
                     logger.warning(
                         "MicroLLMInterpreter POST attempt %d/%d failed with %s; retrying in %.2fs...",
                         attempt,
@@ -394,18 +403,26 @@ class MicroLLMInterpreter:
                              "fiscal_year": year, "fiscal_quarter": quarter, "period_type": period,
                               "quality": labels["quality"], "growth_signal": {"high": 1.0, "moderate": 0.5, "low": 0.0, "negative": -1.0}[labels["growth"]], "cash_signal": {"positive": 1.0, "neutral": 0.0, "negative": -1.0}[labels["cash"]],
                               "narrative": "", "micro_score": round(({"strong": 1.0, "neutral": 0.0, "weak": -0.5, "distressed": -1.0}[labels["quality"]] + {"high": 1.0, "moderate": 0.5, "low": 0.0, "negative": -1.0}[labels["growth"]] + {"positive": 1.0, "neutral": 0.0, "negative": -1.0}[labels["cash"]]) / 3, 6), "extracted_at": pd.Timestamp(decision["decided_at"]),
-                             "available_at": pd.Timestamp(decision["decided_at"])})
+                              "available_at": max(pd.Timestamp(decision["decided_at"]), available_at),
+                              "revision_of": None, "novelty": "new"})
             out_path.parent.mkdir(parents=True, exist_ok=True)
             with FileLock(f"{out_path}.lock", timeout=60):
                 existing = pd.read_parquet(out_path) if out_path.exists() else pd.DataFrame(columns=OUTPUT_COLUMNS)
-                if set(OUTPUT_COLUMNS) - set(existing.columns):
+                if set(OUTPUT_COLUMNS[:-2]) - set(existing.columns):
                     raise ValueError("invalid schema in micro LLM interpretation store")
-                existing = existing[OUTPUT_COLUMNS]
+                existing = existing.reindex(columns=OUTPUT_COLUMNS)
+                for row in rows:
+                    prior = existing.loc[(existing["symbol"] == row["symbol"]) & (existing["fiscal_year"] == row["fiscal_year"]) & (existing["fiscal_quarter"] == row["fiscal_quarter"]) & (existing["period_type"] == row["period_type"])]
+                    if not prior.empty and row["extraction_id"] not in set(prior["extraction_id"]):
+                        row["revision_of"] = prior.iloc[-1]["extraction_id"]
+                        row["novelty"] = "revision"
                 combined = pd.concat([existing, pd.DataFrame(rows, columns=OUTPUT_COLUMNS)], ignore_index=True).drop_duplicates("extraction_id", keep="first")
                 with tempfile.NamedTemporaryFile(dir=out_path.parent, suffix=".parquet", delete=False) as handle:
                     temp_file = Path(handle.name)
                 try:
                     combined.to_parquet(temp_file, index=False)
+                    with temp_file.open("r+b") as durable:
+                        os.fsync(durable.fileno())
                     os.replace(temp_file, out_path)
                 finally:
                     temp_file.unlink(missing_ok=True)
@@ -425,10 +442,10 @@ class MicroLLMInterpreter:
                     raise ValueError(f"corrupt micro LLM interpretation store: {out_path} ({exc})") from exc
 
                 # Fail-closed on missing/invalid required OUTPUT_COLUMNS (H-03)
-                missing_cols = set(OUTPUT_COLUMNS) - set(existing.columns)
+                missing_cols = set(OUTPUT_COLUMNS[:-2]) - set(existing.columns)
                 if missing_cols:
                     raise ValueError(f"invalid schema in micro LLM interpretation store: missing columns {missing_cols}")
-                existing = existing[OUTPUT_COLUMNS]
+                existing = existing.reindex(columns=OUTPUT_COLUMNS)
 
             if df.empty:
                 return self._filter_output(existing, as_of_ts, symbol, period_type)
@@ -441,6 +458,7 @@ class MicroLLMInterpreter:
         semaphore = asyncio.Semaphore(self.max_concurrency)
 
         tasks = []
+        valid_results = []
         for group_keys, group_df in groups:
             if not isinstance(group_keys, tuple):
                 group_keys = (group_keys,)
@@ -498,14 +516,24 @@ class MicroLLMInterpreter:
                     semaphore=semaphore,
                 )
             )
+            if len(tasks) >= self.max_concurrency:
+                batch = await asyncio.gather(*tasks)
+                if any(r is None for r in batch):
+                    raise RuntimeError("micro LLM batch incomplete")
+                valid_results.extend(batch)
+                tasks.clear()
 
         # H-04: Perform LLM inference call outside FileLock
         if tasks:
-            results = await asyncio.gather(*tasks)
-            valid_results = [r for r in results if r is not None]
+            batch = await asyncio.gather(*tasks)
+            if any(r is None for r in batch):
+                raise RuntimeError("micro LLM batch incomplete")
+            valid_results.extend(batch)
 
-            if valid_results:
+        if valid_results:
                 incoming = pd.DataFrame(valid_results, columns=OUTPUT_COLUMNS)
+                incoming["revision_of"] = None
+                incoming["novelty"] = "new"
 
                 # H-04: Acquire FileLock only during read-modify-write
                 with FileLock(lock_path, timeout=60):
@@ -516,22 +544,38 @@ class MicroLLMInterpreter:
                         except Exception as exc:
                             raise ValueError(f"corrupt micro LLM interpretation store: {out_path} ({exc})") from exc
 
-                        missing_cols = set(OUTPUT_COLUMNS) - set(current_existing.columns)
+                        missing_cols = set(OUTPUT_COLUMNS[:-2]) - set(current_existing.columns)
                         if missing_cols:
                             raise ValueError(f"invalid schema in micro LLM interpretation store: missing columns {missing_cols}")
-                        current_existing = current_existing[OUTPUT_COLUMNS]
+                        current_existing = current_existing.reindex(columns=OUTPUT_COLUMNS)
+
+                    incoming = incoming.loc[~incoming["extraction_id"].isin(current_existing["extraction_id"])].copy()
+                    if incoming.empty:
+                        return self._filter_output(current_existing, as_of_ts, symbol, period_type)
+                    for idx, row in incoming.iterrows():
+                        prior = current_existing.loc[
+                            (current_existing["symbol"] == row["symbol"])
+                            & (current_existing["fiscal_year"] == row["fiscal_year"])
+                            & (current_existing["fiscal_quarter"] == row["fiscal_quarter"])
+                            & (current_existing["period_type"] == row["period_type"])
+                        ]
+                        if not prior.empty:
+                            incoming.at[idx, "revision_of"] = prior.iloc[-1]["extraction_id"]
+                            incoming.at[idx, "novelty"] = "revision"
 
                     combined = pd.concat([current_existing, incoming], ignore_index=True) if not current_existing.empty else incoming
-                    combined = combined.drop_duplicates(subset=["extraction_id"], keep="last")
+                    combined = combined.drop_duplicates(subset=["extraction_id"], keep="first")
 
                     with tempfile.NamedTemporaryFile(dir=out_path.parent, suffix=".parquet", delete=False) as handle:
                         temp_file = Path(handle.name)
                     try:
                         combined.to_parquet(temp_file, index=False)
+                        with temp_file.open("r+b") as durable:
+                            os.fsync(durable.fileno())
                         os.replace(temp_file, out_path)
                     finally:
                         temp_file.unlink(missing_ok=True)
-            else:
+        else:
                 with FileLock(lock_path, timeout=60):
                     if out_path.exists():
                         try:
@@ -539,25 +583,10 @@ class MicroLLMInterpreter:
                         except Exception as exc:
                             raise ValueError(f"corrupt micro LLM interpretation store: {out_path} ({exc})") from exc
 
-                        missing_cols = set(OUTPUT_COLUMNS) - set(combined.columns)
+                        missing_cols = set(OUTPUT_COLUMNS[:-2]) - set(combined.columns)
                         if missing_cols:
                             raise ValueError(f"invalid schema in micro LLM interpretation store: missing columns {missing_cols}")
-                        combined = combined[OUTPUT_COLUMNS]
+                        combined = combined.reindex(columns=OUTPUT_COLUMNS)
                     else:
                         combined = existing
-        else:
-            with FileLock(lock_path, timeout=60):
-                if out_path.exists():
-                    try:
-                        combined = pd.read_parquet(out_path)
-                    except Exception as exc:
-                        raise ValueError(f"corrupt micro LLM interpretation store: {out_path} ({exc})") from exc
-
-                    missing_cols = set(OUTPUT_COLUMNS) - set(combined.columns)
-                    if missing_cols:
-                        raise ValueError(f"invalid schema in micro LLM interpretation store: missing columns {missing_cols}")
-                    combined = combined[OUTPUT_COLUMNS]
-                else:
-                    combined = existing
-
         return self._filter_output(combined, as_of_ts, symbol, period_type)

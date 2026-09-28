@@ -10,29 +10,18 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import copy
 import logging
+import math
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
+from omega.data.calendar import VNTradingCalendar
 
 
 logger = logging.getLogger(__name__)
 
 
 def _default_helper_provenance(ex_date: str, provenance: Dict[str, Any]) -> Dict[str, Any]:
-    ex_timestamp = pd.Timestamp(ex_date, tz="UTC")
-    announced_at = provenance.get("announced_at")
-    if announced_at is None:
-        announced_at = (ex_timestamp - pd.Timedelta(days=7)).to_pydatetime()
-    ingested_at = provenance.get("ingested_at", announced_at)
-    available_at = provenance.get("available_at", announced_at)
-    source = provenance.get("source", "HELPER_DEFAULT")
-    return {
-        **provenance,
-        "announced_at": announced_at,
-        "ingested_at": ingested_at,
-        "available_at": available_at,
-        "source": source,
-    }
+    return provenance
 
 
 def _coerce_utc_timestamp(value: Optional[datetime | str], field_name: str) -> Optional[datetime]:
@@ -107,9 +96,9 @@ class CorporateAction:
     def is_available_at(self, as_of_time: datetime) -> bool:
         if self.is_quarantined or self.available_at is None:
             return False
-        if as_of_time.tzinfo is None or as_of_time.utcoffset() is None:
+        if not isinstance(as_of_time, datetime) or as_of_time.tzinfo is None or as_of_time.utcoffset() != UTC.utcoffset(None):
             raise ValueError("as_of_time must be timezone-aware UTC")
-        return self.available_at <= as_of_time.astimezone(UTC)
+        return self.available_at <= as_of_time
 
     def __repr__(self):
         return (
@@ -174,13 +163,13 @@ class CorporateActionAdjuster:
             Adjustment factor (< 1.0)
         """
         dividend_amount = action.params.get('dividend_amount', 0.0)
-        if close_price <= 0:
+        if not math.isfinite(close_price) or close_price <= 0 or not math.isfinite(dividend_amount):
             raise ValueError(f"Invalid close price: {close_price}")
         
         factor = (close_price - dividend_amount) / close_price
         
         # Sanity check: factor should be positive and < 1
-        if factor <= 0 or factor >= 1:
+        if not math.isfinite(factor) or factor <= 0 or factor >= 1:
             raise ValueError(
                 f"Invalid dividend adjustment factor: {factor}. "
                 f"Close: {close_price}, Dividend: {dividend_amount}"
@@ -201,10 +190,12 @@ class CorporateActionAdjuster:
             Adjustment factor (< 1.0 for normal splits)
         """
         split_ratio = action.params.get('split_ratio', 1.0)
-        if split_ratio <= 0:
+        if not math.isfinite(split_ratio) or split_ratio <= 0:
             raise ValueError(f"Invalid split ratio: {split_ratio}")
         
         factor = 1.0 / split_ratio
+        if not math.isfinite(factor):
+            raise ValueError(f"Invalid split ratio: {split_ratio}")
         return factor
     
     def _rights_adjustment_factor(self, action: CorporateAction, close_price: float) -> float:
@@ -223,19 +214,22 @@ class CorporateActionAdjuster:
         rights_ratio = action.params.get('rights_ratio', 0.0)
         rights_price = action.params.get('rights_price', 0.0)
         
-        if close_price <= 0:
+        if (not all(math.isfinite(value) for value in (close_price, rights_ratio, rights_price))
+                or close_price <= 0 or rights_ratio <= 0 or rights_price < 0):
             raise ValueError(f"Invalid close price: {close_price}")
         
         numerator = close_price + rights_ratio * rights_price
         denominator = close_price + rights_ratio * close_price
         
-        if denominator <= 0:
+        if not math.isfinite(numerator) or not math.isfinite(denominator) or denominator <= 0:
             raise ValueError(f"Invalid rights adjustment denominator: {denominator}")
         
         factor = numerator / denominator
+        if not math.isfinite(factor) or factor <= 0:
+            raise ValueError("Invalid rights adjustment factor")
         return factor
     
-    def apply_adjustments(self, data: Dict, price_fields: Optional[List[str]] = None) -> Dict:
+    def apply_adjustments(self, data: Dict, price_fields: Optional[List[str]] = None, *, as_of_time: datetime) -> Dict:
         """
         Apply backward adjustment to CleanDataFrame.
         
@@ -251,11 +245,18 @@ class CorporateActionAdjuster:
         Returns:
             Adjusted CleanDataFrame (new copy)
         """
+        if not isinstance(as_of_time, datetime) or as_of_time.tzinfo is None or as_of_time.utcoffset() != UTC.utcoffset(None):
+            raise ValueError("as_of_time must be timezone-aware UTC")
+        if data.get("price_basis") not in ("raw", "adjusted"):
+            raise ValueError("price_basis must be raw or adjusted")
         if not self.actions:
-            return data
+            return copy.deepcopy(data)
         
         if price_fields is None:
             price_fields = ["open", "high", "low", "close"]
+
+        if data.get("price_basis") == "adjusted":
+            return copy.deepcopy(data)
         
         # Deep copy to avoid mutating original
         adjusted_data = copy.deepcopy(data)
@@ -263,6 +264,13 @@ class CorporateActionAdjuster:
         # Group actions by symbol
         actions_by_symbol = {}
         for action in self.actions:
+            if action.is_quarantined or action.available_at is None:
+                raise ValueError("corporate action missing verified available_at")
+            if not action.is_available_at(as_of_time):
+                continue
+            ex_day = pd.Timestamp(action.ex_date)
+            if not VNTradingCalendar.is_trading_day(ex_day.to_pydatetime()):
+                raise ValueError("corporate action ex_date is not an exchange session")
             if action.symbol not in actions_by_symbol:
                 actions_by_symbol[action.symbol] = []
             actions_by_symbol[action.symbol].append(action)
@@ -307,10 +315,8 @@ class CorporateActionAdjuster:
                 # Calculate adjustment factor
                 try:
                     factor = self.calculate_adjustment_factor(action, close_price)
-                except ValueError as e:
-                    # Skip invalid adjustments
-                    print(f"Warning: Skipping adjustment for {symbol} on {action.ex_date}: {e}")
-                    continue
+                except (ValueError, TypeError, OverflowError) as e:
+                    raise ValueError(f"Invalid adjustment for {symbol} on {action.ex_date}: {e}") from e
                 
                 # Apply factor to all timestamps before ex-date
                 for i in range(ex_date_idx):
@@ -322,13 +328,20 @@ class CorporateActionAdjuster:
                     
                     for field in price_fields:
                         if field in ts_data and ts_data[field] is not None:
-                            ts_data[field] = ts_data[field] * factor
+                            price = ts_data[field] * factor
+                            if not math.isfinite(price):
+                                raise ValueError(f"Non-finite adjusted price: {symbol} {ts} {field}")
+                            ts_data[field] = price
                     
                     # Adjust volume for splits (inverse ratio)
                     if action.action_type == 'split' and 'volume' in ts_data and ts_data['volume'] is not None:
                         split_ratio = action.params.get('split_ratio', 1.0)
-                        ts_data['volume'] = ts_data['volume'] * split_ratio
+                        volume = ts_data['volume'] * split_ratio
+                        if not math.isfinite(volume):
+                            raise ValueError(f"Non-finite adjusted volume: {symbol} {ts}")
+                        ts_data['volume'] = volume
         
+        adjusted_data["price_basis"] = "adjusted"
         return adjusted_data
 
 

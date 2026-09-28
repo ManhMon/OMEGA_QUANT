@@ -16,6 +16,7 @@ import re
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Optional, Dict, List, Tuple, Any
+from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
 
@@ -691,12 +692,11 @@ class DataLoader:
         if not ticker_actions:
             return df, []
         
-        if as_of_time.tzinfo is None or as_of_time.utcoffset() is None:
-            as_of_time = as_of_time.replace(tzinfo=UTC)
+        as_of_time = self._normalize_to_utc_instant(as_of_time).to_pydatetime()
 
         verified_actions = []
         for action in ticker_actions:
-            if pd.Timestamp(action.ex_date).date() > as_of_time.date():
+            if pd.Timestamp(action.ex_date).date() > as_of_time.astimezone(ZoneInfo("Asia/Ho_Chi_Minh")).date():
                 continue
             if getattr(action, "is_quarantined", False):
                 logger.warning(
@@ -723,7 +723,7 @@ class DataLoader:
         # Apply adjustments using CorporateActionAdjuster
         adjuster = CorporateActionAdjuster()
         adjuster.add_actions(ticker_actions)
-        adjusted_data = adjuster.apply_adjustments(clean_data)
+        adjusted_data = adjuster.apply_adjustments(clean_data, as_of_time=as_of_time)
         
         # Convert back to DataFrame
         adjusted_df = self._clean_dataframe_to_df(adjusted_data, ticker)
@@ -777,6 +777,7 @@ class DataLoader:
         
         clean_data = {
             "type": "CleanDataFrame",
+            "price_basis": "raw",
             "index": {
                 "symbol": [ticker] * len(timestamps),
                 "timestamp": timestamps

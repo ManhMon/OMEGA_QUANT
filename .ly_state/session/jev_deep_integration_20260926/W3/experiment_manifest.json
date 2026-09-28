@@ -1,0 +1,1 @@
+{"gate":"GATE_JEV_DEEP_INTEGRATION_W3_20260928","mode":"shadow","test":"tests/test_jev_event_forensics.py","production_veto":false,"remediation":"rem17","publication_digest":"streamed before legacy replacement"}

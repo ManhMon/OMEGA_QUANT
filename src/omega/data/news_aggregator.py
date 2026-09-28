@@ -10,11 +10,13 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import re
+import sqlite3
 import time
 import unicodedata
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from urllib.parse import parse_qsl, urlencode, urljoin, urlsplit, urlunsplit
 from zoneinfo import ZoneInfo
 
@@ -49,6 +51,7 @@ VIETCAP_PAGE_SIZE = 100
 VIETCAP_HISTORICAL_START = datetime(2015, 1, 1, tzinfo=timezone.utc)
 REQUEST_TIMEOUT = 15
 UNIVERSE_PATH = Path(".ly_state/session/vci_universe_hsx_hnx.json")
+DEFAULT_EVENT_HISTORY_PATH = Path(".ly_state/data/news_event_history.sqlite")
 BULLISH_KEYWORDS = {
     "tang",
     "tăng",
@@ -119,18 +122,49 @@ class SentimentInput:
     raw_timestamp: Optional[str] = None
     payload_sha256: Optional[str] = None
     parser_version: str = "news-v10"
+    available_at: Optional[datetime] = None
+    novelty: str = "new"
+    revision_of: Optional[str] = None
+    event_id: Optional[str] = None
 
 
 class NewsAggregator:
     """Vietnamese financial news collector with strict PIT safety."""
 
-    def __init__(self, max_articles_per_source: int = 100):
+    def __init__(
+        self, max_articles_per_source: int = 100,
+        event_history_path: str | Path | None = None, max_history_size: int = 5000,
+    ):
         if max_articles_per_source <= 0:
             raise ValueError("max_articles_per_source must be a positive integer")
+        if type(max_history_size) is not int or max_history_size <= 0:
+            raise ValueError("max_history_size must be a positive integer")
         self.max_articles_per_source = max_articles_per_source
+        self.max_history_size = max_history_size
+        self.event_history_path = Path(event_history_path) if event_history_path is not None else None
+        if self.event_history_path is not None and str(self.event_history_path) == ":memory:":
+            raise ValueError("event_history_path must be a durable file")
         self.last_request_time = {}
         self.rate_limit_seconds = NEWS_RATE_LIMIT_SECONDS
         self._rate_limit_lock = threading.Lock()
+        self._history_lock = threading.Lock()
+        self._event_history: dict[str, SentimentInput] = {}
+        if self.event_history_path is not None:
+            self.event_history_path.parent.mkdir(parents=True, exist_ok=True)
+            with closing(sqlite3.connect(self.event_history_path, timeout=15)) as connection:
+                with connection:
+                    connection.execute(
+                        "CREATE TABLE IF NOT EXISTS news_event_history ("
+                        "event_id TEXT PRIMARY KEY, identity TEXT NOT NULL, available_at TEXT NOT NULL, "
+                        "published_at TEXT NOT NULL, payload TEXT NOT NULL, payload_sha256 TEXT)"
+                    )
+                    columns = {row[1] for row in connection.execute("PRAGMA table_info(news_event_history)")}
+                    if "payload_sha256" not in columns:
+                        connection.execute("ALTER TABLE news_event_history ADD COLUMN payload_sha256 TEXT")
+                    connection.execute(
+                        "CREATE INDEX IF NOT EXISTS news_event_history_available "
+                        "ON news_event_history (available_at)"
+                    )
         self.headers = {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -188,6 +222,134 @@ class NewsAggregator:
             item.timestamp.isoformat(),
             " ".join(sorted(re.findall(r"\w+", normalized_text))),
         )
+
+    @staticmethod
+    def classify_event_revisions(
+        items: List[SentimentInput], as_of: datetime, prior_seen: Optional[dict[str, SentimentInput]] = None
+    ) -> List[SentimentInput]:
+        """Annotate observable articles; retain corrections instead of discarding them."""
+        if not isinstance(as_of, datetime):
+            raise ValueError("as_of must be datetime")
+        cutoff = _as_utc(as_of)
+        NewsAggregator._validate_prior_seen(prior_seen)
+        seen = {
+            identity: prior for identity, prior in (prior_seen or {}).items()
+            if _as_utc(prior.available_at or prior.fetched_at or prior.timestamp) <= cutoff
+            and _as_utc(prior.timestamp) <= cutoff
+        }
+        output = []
+        for item in sorted(items, key=lambda row: _as_utc(row.fetched_at or row.timestamp)):
+            available = _as_utc(item.fetched_at or item.timestamp)
+            if available > cutoff or _as_utc(item.timestamp) > cutoff or _as_utc(item.timestamp) > available:
+                continue
+            item.available_at = available
+            identity = NewsAggregator._event_identity(item)
+            previous = seen.get(identity)
+            if previous is not None and _as_utc(previous.available_at or previous.fetched_at or previous.timestamp) > available:
+                continue
+            if previous is not None and not previous.event_id:
+                raise ValueError("prior news event missing event_id")
+            item.novelty = "new"
+            item.revision_of = None
+            revision = previous is not None and item.text != previous.text
+            if revision:
+                item.event_id = hashlib.sha256(
+                    f"{previous.event_id}:{available.isoformat()}:{item.timestamp.isoformat()}:{item.text}".encode("utf-8")
+                ).hexdigest()
+            else:
+                item.event_id = previous.event_id if previous is not None else hashlib.sha256(identity.encode("utf-8")).hexdigest()
+            if previous is not None:
+                if item.text == previous.text:
+                    item.novelty = "duplicate"
+                else:
+                    item.novelty = "revision"
+                    item.revision_of = previous.event_id
+            if item.novelty != "duplicate":
+                seen[identity] = item
+                output.append(item)
+        return output
+
+    @staticmethod
+    def _event_identity(item: SentimentInput) -> str:
+        return item.url or f"{item.source}:{item.ticker or ''}:{NewsAggregator._dedupe_key(item)[2]}"
+
+    @staticmethod
+    def _validate_prior_seen(prior_seen: Optional[dict[str, SentimentInput]]) -> None:
+        if prior_seen is not None and not isinstance(prior_seen, dict):
+            raise ValueError("invalid prior news event history")
+        for identity, item in (prior_seen or {}).items():
+            if (not isinstance(identity, str) or not isinstance(item, SentimentInput) or item.available_at is None
+                      or not item.event_id or not isinstance(item.timestamp, datetime)
+                      or not isinstance(item.available_at, datetime)
+                      or item.timestamp.tzinfo is None or item.timestamp.utcoffset() is None
+                      or item.available_at.tzinfo is None or item.available_at.utcoffset() is None
+                     or _as_utc(item.timestamp) > _as_utc(item.available_at)
+                    or identity != NewsAggregator._event_identity(item)):
+                raise ValueError("invalid prior news event identity or availability")
+
+    def _load_event_history(self, connection: sqlite3.Connection, as_of: datetime) -> dict[str, SentimentInput]:
+        cutoff = _as_utc(as_of).isoformat()
+        rows = connection.execute(
+            "SELECT identity, event_id, available_at, published_at, payload, payload_sha256 FROM news_event_history "
+            "WHERE available_at <= ? AND published_at <= ? ORDER BY available_at, rowid",
+            (cutoff, cutoff),
+        )
+        history = {}
+        for identity, event_id, available_at, published_at, payload, payload_sha256 in rows:
+            if not payload_sha256 or self._payload_sha256(payload) != payload_sha256:
+                raise ValueError("invalid persisted news event payload digest")
+            data = json.loads(payload)
+            if not isinstance(data, dict):
+                raise ValueError("invalid persisted news event")
+            for key in ("timestamp", "fetched_at", "available_at"):
+                if data.get(key) is not None:
+                    data[key] = datetime.fromisoformat(data[key])
+            item = SentimentInput(**data)
+            if (item.event_id != event_id or self._event_identity(item) != identity
+                     or item.available_at is None or _as_utc(item.available_at).isoformat() != available_at
+                     or _as_utc(item.timestamp).isoformat() != published_at
+                     or _as_utc(item.timestamp) > _as_utc(item.available_at)):
+                raise ValueError("invalid persisted news event identity")
+            self._validate_prior_seen({identity: item})
+            history[identity] = item
+        return history
+
+    def _persist_event_history(self, connection: sqlite3.Connection, events: List[SentimentInput]) -> None:
+        for item in events:
+            data = asdict(item)
+            for key in ("timestamp", "fetched_at", "available_at"):
+                if data[key] is not None:
+                    data[key] = _as_utc(data[key]).isoformat()
+            payload = json.dumps(data, ensure_ascii=False)
+            connection.execute(
+                "INSERT OR IGNORE INTO news_event_history "
+                "(event_id, identity, available_at, published_at, payload, payload_sha256) VALUES (?, ?, ?, ?, ?, ?)",
+                (item.event_id, self._event_identity(item), _as_utc(item.available_at).isoformat(),
+                 _as_utc(item.timestamp).isoformat(), payload, self._payload_sha256(payload)),
+            )
+        connection.execute(
+            "DELETE FROM news_event_history WHERE event_id IN ("
+            "SELECT event_id FROM news_event_history ORDER BY available_at DESC, rowid DESC LIMIT -1 OFFSET ?)",
+            (self.max_history_size,),
+        )
+
+    def _remember_event_history(self, events: List[SentimentInput]) -> None:
+        for item in events:
+            identity = self._event_identity(item)
+            previous = self._event_history.get(identity)
+            if previous is None or _as_utc(item.available_at) >= _as_utc(previous.available_at or previous.fetched_at or previous.timestamp):
+                self._event_history[identity] = replace(item)
+        # ponytail: oldest identities expire at max_history_size; durable event versions use the same cap.
+        if len(self._event_history) > self.max_history_size:
+            oldest = sorted(
+                self._event_history,
+                key=lambda identity: (
+                    _as_utc(self._event_history[identity].available_at or self._event_history[identity].fetched_at
+                            or self._event_history[identity].timestamp), identity,
+                ),
+            )[:len(self._event_history) - self.max_history_size]
+            for identity in oldest:
+                del self._event_history[identity]
 
     def _canonical_url(self, base_url: str, href: Optional[str]) -> Optional[str]:
         if not href:
@@ -328,8 +490,8 @@ class NewsAggregator:
         return frame, next_cursor
 
     def _scrape_vnstock_news(self, as_of_time: datetime, hours_back: int = 24) -> List[SentimentInput]:
-        if as_of_time is None:
-            raise ValueError("as_of_time is mandatory for PIT safety")
+        if not isinstance(as_of_time, datetime):
+            raise ValueError("as_of_time is mandatory datetime for PIT safety")
 
         as_of_time = _as_utc(as_of_time)
         cutoff = as_of_time - timedelta(hours=hours_back)
@@ -382,7 +544,9 @@ class NewsAggregator:
                             fetched_at=as_of_time, raw_timestamp=str(row.get("public_date")),
                             payload_sha256=self._payload_sha256(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)),
                         ))
-                if reached_cutoff or next_cursor is None or next_cursor in seen_cursors:
+                if next_cursor is not None and next_cursor in seen_cursors:
+                    raise ValueError("vnstock cursor pagination repeated cursor")
+                if reached_cutoff or next_cursor is None:
                     break
                 seen_cursors.add(next_cursor)
                 try:
@@ -390,6 +554,8 @@ class NewsAggregator:
                     if frame is None or frame.empty:
                         break
                     self._validate_vnstock_schema(frame)
+                except ValueError:
+                    raise
                 except Exception as exc:
                     logger.warning("vnstock cursor page validation/fetch failed for %s: %s", ticker, exc)
                     break
@@ -577,10 +743,14 @@ class NewsAggregator:
 
     # ── Public API ─────────────────────────────────────────────────
 
-    def fetch_recent_news(self, as_of_time: datetime, hours_back: int = 24) -> List[SentimentInput]:
+    def fetch_recent_news(
+        self, as_of_time: datetime, hours_back: int = 24,
+        prior_seen: Optional[dict[str, SentimentInput]] = None,
+    ) -> List[SentimentInput]:
         """Fetch recent news from all VN sources. Mandatory as_of_time for PIT safety."""
-        if as_of_time is None:
-            raise ValueError("as_of_time is mandatory for PIT safety")
+        if not isinstance(as_of_time, datetime):
+            raise ValueError("as_of_time is mandatory datetime for PIT safety")
+        self._validate_prior_seen(prior_seen)
 
         as_of_time = _as_utc(as_of_time)
         fetched_at = datetime.now(timezone.utc)
@@ -622,16 +792,62 @@ class NewsAggregator:
             for items in executor.map(run_scraper, (self._scrape_cafef, self._scrape_tinnhanhck, self._scrape_vneconomy)):
                 all_news.extend(items)
 
+        with self._history_lock:
+            if self.event_history_path is None:
+                result, events = self._finalize_news(all_news, as_of_time, hours_back, self._event_history, prior_seen)
+                self._remember_event_history(events)
+            else:
+                with closing(sqlite3.connect(self.event_history_path, timeout=15)) as connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    with connection:
+                        history = self._load_event_history(connection, as_of_time)
+                        result, events = self._finalize_news(all_news, as_of_time, hours_back, history, prior_seen)
+                        self._persist_event_history(connection, events)
+                        retained = self._load_event_history(connection, as_of_time)
+                self._event_history = retained
+        return result
+
+    def _finalize_news(
+        self, all_news: list, as_of_time: datetime, hours_back: int,
+        history: dict[str, SentimentInput], prior_seen: Optional[dict[str, SentimentInput]],
+    ) -> tuple[list, list[SentimentInput]]:
+        self._validate_prior_seen(prior_seen)
+        seen_history = {
+            identity: item for identity, item in history.items()
+            if _as_utc(item.available_at or item.fetched_at or item.timestamp) <= as_of_time
+            and _as_utc(item.timestamp) <= as_of_time
+        }
+        for identity, item in (prior_seen or {}).items():
+            if _as_utc(item.available_at or item.fetched_at or item.timestamp) > as_of_time or _as_utc(item.timestamp) > as_of_time:
+                continue
+            previous = seen_history.get(identity)
+            if previous is None or _as_utc(item.available_at or item.fetched_at or item.timestamp) >= _as_utc(
+                previous.available_at or previous.fetched_at or previous.timestamp
+            ):
+                seen_history[identity] = item
+        classified = self.classify_event_revisions(
+            [item for item in all_news if isinstance(item, SentimentInput)], as_of_time, prior_seen=seen_history
+        )
+        for item in all_news:
+            if not isinstance(item, SentimentInput) or item in classified:
+                continue
+            previous = seen_history.get(self._event_identity(item))
+            if previous is not None and item.text == previous.text and _as_utc(item.fetched_at or item.timestamp) <= as_of_time:
+                item.available_at = _as_utc(item.fetched_at or item.timestamp)
+                item.novelty = "duplicate"
+                item.event_id = previous.event_id
+                classified.append(item)
+        classified.extend(item for item in all_news if not isinstance(item, SentimentInput))
         deduplicated = []
         seen = set()
-        for item in all_news:
+        for item in classified:
             if item.timestamp is None or item.timestamp >= as_of_time or item.timestamp <= as_of_time - timedelta(hours=hours_back):
                 continue
             key = self._dedupe_key(item)
-            if key in seen:
+            if key in seen and getattr(item, 'novelty', None) != 'revision':
                 continue
             normalized_title = key[2]
-            if any(
+            if getattr(item, 'novelty', None) != 'revision' and any(
                 not (item.ticker and existing.ticker and item.ticker != existing.ticker)
                 and
                 abs((item.timestamp - existing.timestamp).total_seconds()) <= timedelta(hours=48).total_seconds()
@@ -641,7 +857,8 @@ class NewsAggregator:
                 continue
             seen.add(key)
             deduplicated.append(item)
-        return sorted(deduplicated, key=lambda x: (x.timestamp, self._dedupe_key(x)), reverse=True)
+        events = [item for item in deduplicated if isinstance(item, SentimentInput) and item.novelty != "duplicate"]
+        return sorted(deduplicated, key=lambda x: (x.timestamp, self._dedupe_key(x)), reverse=True), events
 
     @staticmethod
     def _levenshtein_similarity(left: str, right: str) -> float:
