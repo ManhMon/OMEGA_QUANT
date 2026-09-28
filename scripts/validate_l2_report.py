@@ -34,6 +34,10 @@ from sod_gate_enforcer import (  # noqa: E402
     validate_forbidden_path_usage,
     validate_l2_role,
 )
+try:
+    from scripts.jev_model_router import DIMENSION_COUNT  # noqa: E402
+except ImportError:
+    from jev_model_router import DIMENSION_COUNT  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SESSION_REL = PurePosixPath(".ly_state/session")
@@ -96,7 +100,7 @@ EXPECTED_ANTI_DRIP_DIRECTIVE_POINTS = (
 
 DIMENSION_SCHEMA = {
     "type": "object", "additionalProperties": False, "required": ["dimension", "name"],
-    "properties": {"dimension": {"type": "integer", "minimum": 1, "maximum": 16},
+    "properties": {"dimension": {"type": "integer", "minimum": 1, "maximum": DIMENSION_COUNT},
                    "name": {"type": "string", "minLength": 1, "maxLength": 120}},
 }
 FINDING_SCHEMA = {
@@ -146,8 +150,8 @@ ANTI_DRIP_CONTRACT_SCHEMA: dict[str, Any] = {
         "generated_at": {"type": "string", "format": "date-time"},
         "source_audit": {"oneOf": [{"type": "null"}, SOURCE_SCHEMA]},
         "required_findings": {"type": "array", "maxItems": 100, "items": FINDING_SCHEMA},
-        "passed_dimensions": {"type": "array", "maxItems": 16, "items": DIMENSION_SCHEMA},
-        "failed_dimensions": {"type": "array", "maxItems": 16, "items": DIMENSION_SCHEMA},
+        "passed_dimensions": {"type": "array", "maxItems": DIMENSION_COUNT, "items": DIMENSION_SCHEMA},
+        "failed_dimensions": {"type": "array", "maxItems": DIMENSION_COUNT, "items": DIMENSION_SCHEMA},
         "directive": DIRECTIVE_SCHEMA,
     },
 }
@@ -542,7 +546,9 @@ def _validate_envelope(content: str, session_id: str, role_id: int, role_name: s
     suffix = re.search(r"_(20\d{6})$", session_id)
     date_line = next((line for line in lines[:10] if line.startswith("- **Date**: ")), "")
     try:
-        expected_date = datetime.strptime(suffix.group(1), "%Y%m%d").strftime("%Y-%m-%d") if suffix else None
+        report_suffix = re.search(r"_(20\d{6})_(20\d{6})$", session_id)
+        date_token = report_suffix.group(1) if report_suffix else suffix.group(1) if suffix else None
+        expected_date = datetime.strptime(date_token, "%Y%m%d").strftime("%Y-%m-%d") if date_token else None
     except ValueError:
         expected_date = None
     if expected_date is None or date_line != f"- **Date**: `{expected_date}`":
@@ -792,44 +798,69 @@ def _atomic_write_bytes(target: Path, raw: bytes) -> None:
         temp.unlink(missing_ok=True)
 
 def _acquire_pre_audit_lock(lock: Path) -> int:
+    if not sys.platform.startswith("win"):
+        try:
+            from scripts.jev_model_router import _acquire_posix_lock
+        except ImportError:
+            from jev_model_router import _acquire_posix_lock
+
+        return _acquire_posix_lock(
+            lock,
+            b"pre-audit-flock-v1:",
+            f"pre-audit-flock-v1:{os.getpid()}".encode("ascii"),
+            "pre-audit",
+        )
+
     for attempt in range(2):
         try:
-            fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-            os.write(fd, str(os.getpid()).encode("ascii"))
+            from scripts.jev_model_router import _windows_lock_guard
+        except ImportError:
+            from jev_model_router import _windows_lock_guard
+        with _windows_lock_guard(lock):
+            try:
+                fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                if attempt:
+                    raise
+                try:
+                    lock_stat = lock.stat()
+                    owner = int(lock.read_text(encoding="ascii"))
+                    import ctypes
+                    handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, owner)
+                    if handle:
+                        ctypes.windll.kernel32.CloseHandle(handle)
+                        raise FileExistsError(f"pre-audit lock is busy or unreadable: {lock}")
+                    if ctypes.GetLastError() != 87:
+                        raise FileExistsError(f"pre-audit lock is busy or unreadable: {lock}")
+                    current = lock.stat()
+                    if (current.st_dev, current.st_ino) != (lock_stat.st_dev, lock_stat.st_ino) or lock.read_text(encoding="ascii") != str(owner):
+                        raise FileExistsError(f"pre-audit lock changed: {lock}")
+                    lock.unlink()
+                    fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+                except (OSError, ValueError) as exc:
+                    raise FileExistsError(f"pre-audit lock is busy or unreadable: {lock}") from exc
+        owner = str(os.getpid()).encode("ascii")
+        identity = os.fstat(fd)
+        try:
+            written = 0
+            while written < len(owner):
+                count = os.write(fd, owner[written:])
+                if count <= 0:
+                    raise OSError("pre-audit lock owner write made no progress")
+                written += count
             os.fsync(fd)
             return fd
-        except FileExistsError:
-            if attempt:
-                raise
+        except BaseException:
+            os.close(fd)
             try:
-                stat = lock.stat()
-                owner = int(lock.read_text(encoding="ascii"))
-                alive = False
-                if sys.platform.startswith("win"):
-                    import ctypes
-                    SYNCHRONIZE = 0x00100000
-                    handle = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, owner)
-                    if handle:
-                        alive = True
-                        ctypes.windll.kernel32.CloseHandle(handle)
-                    else:
-                        alive = False
-                else:
-                    try:
-                        os.kill(owner, 0)
-                        alive = True
-                    except ProcessLookupError:
-                        alive = False
-                    except OSError as _exc:
-                        import errno as _errno
-                        alive = (_exc.errno == _errno.EPERM)
-                if not alive:
-                    if lock.stat() == stat:
-                        lock.unlink()
-                else:
-                    raise FileExistsError(f"pre-audit lock is busy or unreadable: {lock}")
-            except (OSError, ValueError) as _exc:
-                raise FileExistsError(f"pre-audit lock is busy or unreadable: {lock}") from _exc
+                current = lock.stat()
+                contents = lock.read_bytes()
+                if ((current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino)
+                        and owner.startswith(contents)):
+                    lock.unlink()
+            except OSError:
+                pass
+            raise
     raise FileExistsError(lock)
 
 
@@ -899,11 +930,16 @@ def write_atomic_pre_audit(payload: Mapping[str, Any], session_dir: Path, sessio
     sidecar = target.with_suffix(".sha256")
     lock = session_dir / f".pre_audit_{session_id}.lock"
     lock_fd = _acquire_pre_audit_lock(lock)
+    lock_identity = os.fstat(lock_fd) if sys.platform.startswith("win") else None
     temp = sidecar_temp = None
+    old_target = old_sidecar = None
+    target_replace_attempted = sidecar_replace_attempted = False
     try:
+        old_target = target.read_bytes() if target.exists() else None
+        old_sidecar = sidecar.read_bytes() if sidecar.exists() else None
         temp_fd, temp_name = tempfile.mkstemp(prefix=f"pre_audit_{session_id}.", suffix=".tmp", dir=session_dir)
-        os.close(temp_fd)
         temp = Path(temp_name)
+        os.close(temp_fd)
         raw = (json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False) + "\n").encode("utf-8")
         with temp.open("wb") as handle:
             handle.write(raw)
@@ -911,39 +947,51 @@ def write_atomic_pre_audit(payload: Mapping[str, Any], session_dir: Path, sessio
             os.fsync(handle.fileno())
         digest = hashlib.sha256(raw).hexdigest()
         sidecar_fd, sidecar_name = tempfile.mkstemp(prefix=f"pre_audit_{session_id}.", suffix=".sha256.tmp", dir=session_dir)
-        os.close(sidecar_fd)
         sidecar_temp = Path(sidecar_name)
-        old_target = target.read_bytes() if target.exists() else None
-        old_sidecar = sidecar.read_bytes() if sidecar.exists() else None
+        os.close(sidecar_fd)
         with sidecar_temp.open("w", encoding="ascii", newline="\n") as handle:
             handle.write(f"{digest}  {target.name}\n")
             handle.flush()
             os.fsync(handle.fileno())
+        target_replace_attempted = True
         os.replace(temp, target)
+        sidecar_replace_attempted = True
         os.replace(sidecar_temp, sidecar)
-    except Exception:
+    except BaseException:
         if temp:
-            temp.unlink(missing_ok=True)
+            try:
+                temp.unlink(missing_ok=True)
+            except OSError:
+                pass
         if sidecar_temp:
-            sidecar_temp.unlink(missing_ok=True)
-        old_target = locals().get("old_target")
-        old_sidecar = locals().get("old_sidecar")
-        if old_target is None:
-            target.unlink(missing_ok=True)
-        else:
-            _atomic_write_bytes(target, old_target)
-        if old_sidecar is None:
-            sidecar.unlink(missing_ok=True)
-        else:
-            _atomic_write_bytes(sidecar, old_sidecar)
+            try:
+                sidecar_temp.unlink(missing_ok=True)
+            except OSError:
+                pass
+        if target_replace_attempted:
+            if old_target is None:
+                target.unlink(missing_ok=True)
+            else:
+                _atomic_write_bytes(target, old_target)
+        if sidecar_replace_attempted:
+            if old_sidecar is None:
+                sidecar.unlink(missing_ok=True)
+            else:
+                _atomic_write_bytes(sidecar, old_sidecar)
         raise
     finally:
-        os.close(lock_fd)
-        try:
-            if lock.read_text(encoding="ascii") == str(os.getpid()):
-                lock.unlink(missing_ok=True)
-        except OSError:
-            pass
+        if not sys.platform.startswith("win"):
+            os.close(lock_fd)
+        else:
+            os.close(lock_fd)
+            try:
+                from scripts.jev_model_router import _windows_lock_guard
+                with _windows_lock_guard(lock):
+                    current = lock.stat()
+                    if (current.st_dev, current.st_ino) == (lock_identity.st_dev, lock_identity.st_ino) and lock.read_text(encoding="ascii") == str(os.getpid()):
+                        lock.unlink(missing_ok=True)
+            except OSError:
+                pass
     return target, sidecar
 
 

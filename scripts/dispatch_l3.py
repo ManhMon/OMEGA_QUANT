@@ -28,11 +28,15 @@ from datetime import datetime, timezone
 
 try:
     from scripts.dispatch_l2 import (
-        ADVERSARIAL_DIRECTIVE_16D,
+        ADVERSARIAL_DIRECTIVE_24D,
+        DIMENSION_COUNT,
+        DIMENSION_MATRIX_HEADING_RE,
+        build_dimension_focus_clause,
         build_lessons_data_block,
         build_graph_prompt_evidence,
         build_verified_prompt_read_statement,
         ensure_session_containment,
+        is_safe_repo_local_file,
         load_sanitized_lesson_entries,
         ps_quote,
         write_prompt_with_sha256,
@@ -43,11 +47,15 @@ try:
     )
 except ImportError:  # direct script execution: python scripts/dispatch_l3.py
     from dispatch_l2 import (
-        ADVERSARIAL_DIRECTIVE_16D,
+        ADVERSARIAL_DIRECTIVE_24D,
+        DIMENSION_COUNT,
+        DIMENSION_MATRIX_HEADING_RE,
+        build_dimension_focus_clause,
         build_lessons_data_block,
         build_graph_prompt_evidence,
         build_verified_prompt_read_statement,
         ensure_session_containment,
+        is_safe_repo_local_file,
         load_sanitized_lesson_entries,
         ps_quote,
         write_prompt_with_sha256,
@@ -335,7 +343,8 @@ def validate_pre_audit(path_value: str, expected_sha256: str, gate: str, session
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or hashlib.sha256(raw).hexdigest() != expected_sha256:
         raise SystemExit(2)
     try:
-        payload = json.loads(raw.decode("utf-8"), parse_constant=lambda value: (_ for _ in ()).throw(ValueError(value)))
+        from scripts.jev_model_router import strict_json_loads
+        payload = strict_json_loads(raw)
         generated = datetime.fromisoformat(payload["generated_at"].replace("Z", "+00:00"))
         if generated.tzinfo is None:
             raise ValueError("timezone required")
@@ -370,6 +379,12 @@ def main():
     pre_audit_sha256 = getattr(args, "pre_audit_sha256", None)
     model_decision_path = getattr(args, "model_decision_path", None)
     model_decision_digest = getattr(args, "model_decision_digest", None)
+    if explicit_risk:
+        risk = explicit_risk
+        risk_reason = "explicit --risk flag"
+    else:
+        risk, risk_reason = infer_risk(scope)
+    decision_risk = "low" if risk == "low" else "high"
 
     # B2-HARDENING: strict identifier allowlist before any path/PS interpolation.
     validate_identifier(l3_role_name, "l3_role_name")
@@ -395,21 +410,15 @@ def main():
                 expected_role="l3",
                 expected_gate=gate_name,
                 expected_session_id=l2_session_id,
-                expected_risk=explicit_risk,
+                expected_risk=decision_risk,
             )
             model = decision["lead_model"]
             subagent_model = decision["subagent_model"]
-            risk = decision["risk"]
-            risk_reason = "Jev model decision envelope"
         except (OSError, ValueError, KeyError, UnicodeError) as exc:
             from scripts.dispatch_l2 import redact_credentials
             print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
             sys.exit(2)
-    elif explicit_risk:
-        risk = explicit_risk
-        risk_reason = "explicit --risk flag"
-    else:
-        risk, risk_reason = infer_risk(scope)
+    elif not explicit_risk:
         print(f"[AUTO-RISK] Inferred: {risk} ({risk_reason})")
 
     if model_decision_path:
@@ -460,11 +469,14 @@ def main():
 
     # 1. Validate L3 role
     l3_role_path = AGENT_ROOT / f"{l3_role_name}.md"
-    if not l3_role_path.exists():
-        print(f"[ERROR] L3 role spec not found: {l3_role_path}")
-        sys.exit(1)
-
-    l3_fm = parse_frontmatter(l3_role_path.read_text(encoding="utf-8"))
+    if not is_safe_repo_local_file(l3_role_path, AGENT_ROOT, AGENT_ROOT.parent.parent):
+        print(f"[ERROR] L3 role spec missing or unsafe: {l3_role_name}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        l3_fm = parse_frontmatter(l3_role_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        print(f"[ERROR] L3 role spec unreadable: {l3_role_name}", file=sys.stderr)
+        sys.exit(2)
     l3_role_id = l3_fm.get("role_id")
     l3_tier = l3_fm.get("tier")
     l3_platform = l3_fm.get("platform")
@@ -478,16 +490,19 @@ def main():
 
     # 2. Validate L2 role
     l2_role_path = AGENT_ROOT / f"{l2_role_name}.md"
-    if not l2_role_path.exists():
-        print(f"[ERROR] L2 role spec not found: {l2_role_path}")
-        sys.exit(1)
-
-    l2_fm = parse_frontmatter(l2_role_path.read_text(encoding="utf-8"))
+    if not is_safe_repo_local_file(l2_role_path, AGENT_ROOT, AGENT_ROOT.parent.parent):
+        print(f"[ERROR] L2 role spec missing or unsafe: {l2_role_name}", file=sys.stderr)
+        sys.exit(2)
+    try:
+        l2_fm = parse_frontmatter(l2_role_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError):
+        print(f"[ERROR] L2 role spec unreadable: {l2_role_name}", file=sys.stderr)
+        sys.exit(2)
     l2_role_id = l2_fm.get("role_id")
 
-    from scripts.sod_gate_enforcer import load_role_specs, validate_l2_role
+    from scripts.sod_gate_enforcer import validate_l2_role
 
-    l2_valid, l2_error = validate_l2_role(l2_role_id, l2_role_name, load_role_specs(), gate_name=gate_name)
+    l2_valid, l2_error = validate_l2_role(l2_role_id, l2_role_name, {l2_role_id: l2_fm}, gate_name=gate_name)
     if not l2_valid:
         print(f"[ERROR] Invalid L2 role: {l2_error}")
         sys.exit(1)
@@ -533,6 +548,7 @@ def main():
             l3_role_id, l2_role_id, l3_session_id, report_path,
             risk, risk_reason, model, explicit_risk is not None, run_mode, graph_evidence,
             subagent_model=subagent_model, pre_audit=pre_audit_payload,
+            jev_dimension_focus=decision.get("dimension_focus") if model_decision_path else None,
         )
     finally:
         release_session_lock(lock_path)
@@ -541,7 +557,7 @@ def main():
 def extract_prior_audit_outcomes(
     gate_name: str, l3_role_id: int, repo_root: Path, current_report_path: Path
 ) -> tuple[list[tuple[int, str]], list[tuple[int, str]], Path | None]:
-    """Locate prior audit report for the gate and parse the 16-Dimension table.
+    """Locate prior audit report for the gate and parse the versioned dimension table.
     Returns (passed_dimensions, failed_dimensions, prior_report_path)."""
     candidate_paths: list[Path] = []
 
@@ -571,28 +587,31 @@ def extract_prior_audit_outcomes(
             if f.is_file() and f.stat().st_size > 100 and f not in candidate_paths:
                 candidate_paths.append(f)
 
-    # Find candidate that contains the 16-Dimension matrix
+    # Find current 24D or historical 16D matrices.
     for path in candidate_paths:
         try:
             content = path.read_text(encoding="utf-8", errors="replace")
         except Exception:
             continue
-        if "16-Dimension Adversarial Matrix" not in content:
+        matrix_heading = DIMENSION_MATRIX_HEADING_RE
+        if not matrix_heading.search(content):
             continue
 
         passed = {}
         failed = {}
         in_matrix = False
         for line in content.splitlines():
-            if "16-Dimension Adversarial Matrix" in line:
+            if matrix_heading.search(line):
                 in_matrix = True
                 continue
             if in_matrix:
-                if line.startswith("## ") and "16-Dimension" not in line:
+                if line.startswith("## ") and not matrix_heading.search(line):
                     break
-                m = re.match(r"^\|\s*(\d{1,2})\s*\|\s*([^|]+)\|\s*([^|]+)\|", line)
+                m = re.match(r"^\|\s*(\d{1,3})\s*\|\s*([^|]+)\|\s*([^|]+)\|", line)
                 if m:
                     num = int(m.group(1))
+                    if not 1 <= num <= DIMENSION_COUNT:
+                        raise RuntimeError(f"audit dimension outside dynamic catalog {num}: {path}")
                     name = m.group(2).strip()
                     res = m.group(3).strip().upper()
                     state = "PASS" if "[PASS]" in res or res == "PASS" else "FAIL" if "[FAIL]" in res or res == "FAIL" else None
@@ -603,9 +622,11 @@ def extract_prior_audit_outcomes(
                             raise RuntimeError(f"conflicting audit dimension {num}: {path}")
                         target[num] = name
                 else:
-                    m_list = re.match(r"^\s*(\d{1,2})\.\s*([^:]+):\s*(.+)$", line)
+                    m_list = re.match(r"^\s*(\d{1,3})\.\s*([^:]+):\s*(.+)$", line)
                     if m_list:
                         num = int(m_list.group(1))
+                        if not 1 <= num <= DIMENSION_COUNT:
+                            raise RuntimeError(f"audit dimension outside dynamic catalog {num}: {path}")
                         name = m_list.group(2).strip()
                         res = m_list.group(3).strip().upper()
                         state = "PASS" if "PASS" in res else "FAIL" if "FAIL" in res else None
@@ -625,7 +646,8 @@ def extract_prior_audit_outcomes(
 def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scope,
                       l3_role_id, l2_role_id, l3_session_id, report_path,
                       risk, risk_reason, model, _explicit_flag, run_mode, graph_evidence,
-                       subagent_model: str = "cx/gpt-6-luna", pre_audit: dict | None = None):
+                       subagent_model: str = "cx/gpt-6-luna", pre_audit: dict | None = None,
+                       jev_dimension_focus: int | None = None):
     # 4. Pre-create audit report file (containment-checked inside .ly_state/session)
     report_full = ensure_session_containment(REPO_ROOT / report_path, REPO_ROOT)
 
@@ -662,18 +684,22 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         adversarial_directive = (
             f"MANDATORY FOCUSED RE-AUDIT ADVERSARIAL DIRECTIVE (Audit Round 2+ Incremental): "
             f"In the prior audit cycle ({prior_name}), the following {len(passed_dims)} dimensions were independently verified [PASS]: [{passed_summary}]. "
-            f"EXCLUSION RULE: You DO NOT need to reconstruct full adversarial test cases or re-run exhaustive suites for these already-passed dimensions. "
-            f"In your '## 16-Dimension Adversarial Matrix' table, include all 16 rows, carrying forward the verified [PASS] for these dimensions with note 'PASS - verified in prior cycle; zero regression on scope diff'. "
+            f"Previously passed dimensions remain in scope: verify all {DIMENSION_COUNT} dimensions and include every catalog row, including prior [PASS] rows with a fresh regression check. "
+            f"In your '{DIMENSION_COUNT}-Dimension Adversarial Matrix' table, include all {DIMENSION_COUNT} rows; prior evidence is context, not exemption. "
             f"MANDATORY ACTIVE RE-AUDIT FOCUS: You MUST concentrate deep adversarial verification and provide explicit fresh independent evidence for the {len(failed_dims)} previously FAILED/UNVERIFIED dimensions: [{failed_summary}], "
             f"and verify zero regression across the approved scope diff. "
             f"TEST EXECUTION EFFICIENCY: Prioritize scoped unit/integration test files directly. Do not run unrelated repository-wide test suites. Scope regression is strictly bounded to the approved scope and its direct callers/dependents. Pre-existing failures in unrelated modules outside approved scope diff must not block gate approval."
-        )
+        ) + " " + ADVERSARIAL_DIRECTIVE_24D
         test_checklist_item = (
             f"3. Run focused tests covering approved scope and previously failed dimensions: [{', '.join(str(n) for n, _ in failed_dims)}], plus scope regression. Do not run unrelated test suites outside scope. "
         )
     else:
-        adversarial_directive = ADVERSARIAL_DIRECTIVE_16D + " TEST EXECUTION EFFICIENCY: Prioritize scoped unit/integration test files directly. Do not run unrelated repository-wide test suites."
+        adversarial_directive = ADVERSARIAL_DIRECTIVE_24D + " TEST EXECUTION EFFICIENCY: Prioritize scoped unit/integration test files directly. Do not run unrelated repository-wide test suites."
         test_checklist_item = "3. Run focused tests covering approved scope and related suites. Do not run unrelated repository-wide test suites. "
+
+    focus_clause = build_dimension_focus_clause(jev_dimension_focus)
+    if focus_clause:
+        adversarial_directive += f" {focus_clause}"
 
     if pre_audit:
         routing = pre_audit.get("routing", {}).get("routing", "JUDGE")
@@ -686,10 +712,10 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         f"MANDATORY HIERARCHICAL SUBAGENT WORKER DIRECTIVE (HIERARCHICAL_SUBAGENT_OPTIMIZATION_20260913): "
         f"Lead Auditor operates on MODEL={model}. Subagents run on SUBAGENT_MODEL={subagent_model}. "
         f"To minimize high-reasoning token cost and maximize audit throughput, Lead Auditor MUST delegate subordinate probes using `spawn_agent`: "
-        f"- PROBE 1 (16D STATIC & AST SCAN): Delegate regex checks for 16-Dimension invariants (secret leak, timezone look-ahead, mock leak, exit codes) via `spawn_agent(message='[PROBE 1: 16D STATIC & AST SCAN] ...', model=\"{subagent_tool_model}\")`. "
+        f"- PROBE 1 (24D STATIC & AST SCAN): Delegate regex checks for all dynamic catalog invariants via `spawn_agent(message='[PROBE 1: 24D STATIC & AST SCAN] ...', model=\"{subagent_tool_model}\")`. "
         f"- PROBE 2 (TEST SUITE EXECUTION): Delegate running scoped pytest slices and collecting failure tracebacks via `spawn_agent(message='[PROBE 2: TEST SUITE EXECUTION] ...', model=\"{subagent_tool_model}\")`. "
         f"- PROBE 3 (ROLLBACK & INTEGRITY VERIFICATION): Delegate verification of atomic file replace (.tmp -> final), artifact checksums, and DB rollback via `spawn_agent(message='[PROBE 3: ROLLBACK & INTEGRITY VERIFICATION] ...', model=\"{subagent_tool_model}\")`. "
-        f"Do NOT execute massive repetitive grep scans or test sweeps directly on the Lead Auditor thread. Retrieve probe results via `wait_agent(targets=[...], timeout_ms=...)` and synthesize findings. The final 16-Dimension evaluation and [APPROVED]/[NEEDS_FIX] verdict must remain solely with the Lead Auditor. "
+        f"Do NOT execute massive repetitive grep scans or test sweeps directly on the Lead Auditor thread. Retrieve probe results via `wait_agent(targets=[...], timeout_ms=...)` and synthesize findings. The final 24-Dimension evaluation and [APPROVED]/[NEEDS_FIX] verdict must remain solely with the Lead Auditor. "
     )
 
     test_slices_directive = (

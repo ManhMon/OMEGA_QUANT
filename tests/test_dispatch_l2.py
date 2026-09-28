@@ -107,6 +107,84 @@ def test_parse_cli_args_exit_2_on_invalid_flag():
     assert excinfo.value.code == 2
 
 
+@pytest.mark.parametrize("source_kind", ["role_symlink", "agent_root_symlink", "traversal", "unreadable"])
+def test_dispatch_l2_role_source_escape_fails_closed(monkeypatch, tmp_path, source_kind, capsys):
+    """Role-source containment is a prerequisite shared by all 24 routing dimensions."""
+    repo = tmp_path / "repo"
+    agent_root = repo / ".agents" / "agent"
+    outside = tmp_path / "outside"
+    outside.mkdir(parents=True)
+    repo.mkdir()
+    role = "../outside/devops-engineer" if source_kind == "traversal" else "devops-engineer"
+    role_text = "---\nname: devops-engineer\nrole_id: 11\ntier: 2\nplatform: OpenCode\nskills: [clean-code]\n---\nRole\n"
+    (outside / "devops-engineer.md").write_text(role_text, encoding="utf-8")
+    agent_root.mkdir(parents=True)
+    role_spec = agent_root / "devops-engineer.md"
+    role_spec.write_text(role_text, encoding="utf-8")
+    symlink_paths = set()
+    if source_kind == "agent_root_symlink":
+        real_agent_root = agent_root.with_name("real-agent")
+        agent_root.rename(real_agent_root)
+        try:
+            agent_root.symlink_to(real_agent_root, target_is_directory=True)
+        except OSError:
+            real_agent_root.rename(agent_root)
+            symlink_paths.add(agent_root)
+    elif source_kind == "role_symlink":
+        role_spec.unlink()
+        try:
+            role_spec.symlink_to(outside / "devops-engineer.md")
+        except OSError:
+            role_spec.write_text(role_text, encoding="utf-8")
+            symlink_paths.add(role_spec)
+    elif source_kind == "unreadable":
+        role_spec.write_bytes(b"\xff")
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path in symlink_paths or original_is_symlink(path))
+
+    monkeypatch.setattr(dispatch_l2, "REPO_ROOT", repo)
+    monkeypatch.setattr(dispatch_l2, "AGENT_ROOT", agent_root)
+    monkeypatch.setattr(dispatch_l2, "SKILL_ROOT", repo / ".agents" / "skills")
+    monkeypatch.setattr(dispatch_l2, "run_graph_predispatch_gate", lambda *args: pytest.fail("unsafe role reached graph gate"))
+    monkeypatch.setattr(sys, "argv", ["dispatch_l2.py", role, "GATE", "slug", "task", "tests/"])
+    for dimension in range(1, 25):
+        try:
+            result = dispatch_l2.main()
+        except SystemExit as exc:
+            result = exc.code
+        assert result in (1, 2), f"dimension {dimension} must fail closed"
+        capsys.readouterr()
+
+
+def test_dispatch_l2_repo_local_guard_rejects_resolved_escape(tmp_path):
+    repo = tmp_path / "repo"
+    agent_root = repo / ".agents" / "agent"
+    agent_root.mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    escaped = agent_root / ".." / ".." / ".." / "outside.md"
+    assert not dispatch_l2.is_safe_repo_local_file(escaped, agent_root, repo)
+
+
+def test_resolve_l2_role_rejects_declared_skill_symlink(tmp_path, monkeypatch):
+    repo = tmp_path / "repo"
+    agent_root = repo / ".agents" / "agent"
+    skill_root = repo / ".agents" / "skills"
+    agent_root.mkdir(parents=True)
+    skill_file = skill_root / "clean-code" / "SKILL.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("skill", encoding="utf-8")
+    role_file = agent_root / "devops-engineer.md"
+    role_file.write_text(
+        "---\nname: devops-engineer\nrole_id: 11\ntier: 2\nplatform: OpenCode\nskills: [clean-code]\n---\nRole\n",
+        encoding="utf-8",
+    )
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path == skill_file or original_is_symlink(path))
+    with pytest.raises(RuntimeError, match="REPO_SKILL_ROOT"):
+        dispatch_l2.resolve_l2_role("devops-engineer", repo)
+
+
 def test_parse_cli_args_accepts_dry_run_flag():
     parsed = dispatch_l2._parse_cli_args([
         "data-engineer", "TEST_GATE", "slug", "desc", "scope", "--dry-run"
@@ -137,6 +215,75 @@ def test_dry_run_preserves_authoritative_artifacts(tmp_path, monkeypatch, capsys
     assert {path: path.read_bytes() for path in before} == before
     assert not (tmp_path / ".ly_state" / "session" / f"prompt_{session_id}.txt").exists()
     assert "---COMMAND---" in capsys.readouterr().out
+
+
+def test_jev_focus_is_written_to_l2_prompt(tmp_path, monkeypatch, capsys):
+    session_id = "l2_role15_routed_focus_20260927"
+    monkeypatch.setattr(dispatch_l2, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dispatch_l2, "build_graph_prompt_evidence", lambda _: "GRAPH")
+    dispatch_l2._generate_and_print(
+        [{"name": "data-engineer", "role_id": 15, "role_file": ".agents/agent/data-engineer.md", "skill_files": []}],
+        "TEST_GATE", "task", "tests/test_dispatch_l2.py", session_id, "lessons", "low", "test", "model",
+        {}, jev_dimension_focus=24,
+    )
+    prompt = (tmp_path / ".ly_state/session" / f"prompt_{session_id}.txt").read_text(encoding="utf-8")
+    assert "JEV DIMENSION ROUTING: Give dimension 24 (JEV secret-safe prompt routing)" in prompt
+    assert "MANDATORY 24-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in prompt
+    assert "---COMMAND---" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(("scope", "decision_risk", "expected_result", "token_saver", "risk_flag"), [
+    ("tests/fixtures/data.json", "low", 0, False, None),
+    ("tests/fixtures/data.json", "high", 2, False, None),
+    ("src/omega/core/engine.py", "low", 2, False, None),
+    ("src/omega/core/engine.py", "high", 0, False, None),
+    ("src/omega/data/macro_pipeline.py", "low", 2, False, None),
+    ("src/omega/data/macro_pipeline.py", "high", 0, False, None),
+    ("src/omega/data/macro_pipeline.py", "low", 0, True, None),
+    ("src/omega/data/macro_pipeline.py", "high", 2, True, None),
+    ("src/omega/data/macro_pipeline.py", "low", 0, False, "low"),
+    ("tests/fixtures/data.json", "high", 0, False, "high"),
+], ids=["inferred-low-accept", "inferred-low-reject-downgrade", "inferred-medium-reject-downgrade",
+       "inferred-medium-accept-high", "inferred-high-reject-downgrade", "inferred-high-accept",
+       "token-saver-low-override-accept", "token-saver-low-override-reject", "explicit-low-overrides-high",
+       "explicit-high-overrides-low"])
+def test_l2_cli_binds_jev_decision_to_inferred_risk_when_risk_flag_is_omitted(
+    monkeypatch, tmp_path, capsys, scope, decision_risk, expected_result, token_saver, risk_flag
+):
+    from scripts.jev_model_router import evaluate_model_decision
+
+    import scripts.dispatch_l2 as dl2
+    gate, slug = "JEV_TEST_GATE", "jev_cli_binding"
+    session = f"l2_role15_{slug}_{datetime.now().strftime('%Y%m%d')}"
+    decision_path = tmp_path / "decision.json"
+    envelope = evaluate_model_decision(
+        role="l2", risk=decision_risk, gate=gate, session_id=session, task="task",
+        response={"dimension_focus": 24}, decision_path=decision_path,
+    )
+    captured = {}
+    argv = [
+        "dispatch_l2.py", "data-engineer", gate, slug, "task", scope,
+        "--model-decision-path", str(decision_path), "--model-decision-digest", envelope["decision_digest"],
+        "--dry-run",
+    ]
+    if token_saver:
+        argv.append("--token-saver")
+    if risk_flag:
+        argv.extend(["--risk", risk_flag])
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(dl2, "_existing_graph_evidence", lambda *_: {})
+    monkeypatch.setattr(dl2, "load_sanitized_lesson_entries", lambda *_: [])
+    monkeypatch.setattr(dl2, "build_lessons_data_block", lambda _: "lessons")
+    monkeypatch.setattr(dl2, "_generate_and_print", lambda *args, **kwargs: captured.update(args=args, kwargs=kwargs))
+    result = dl2.main()
+    assert result == expected_result
+    if expected_result:
+        assert "model decision context mismatch" in capsys.readouterr().err
+        assert not captured
+    else:
+        effective_risk = risk_flag or ("low" if token_saver else dl2.infer_risk(scope)[0])
+        assert captured["args"][6] == effective_risk
+        assert captured["kwargs"]["jev_dimension_focus"] == 24
 
 
 def test_parse_cli_args_exit_2_on_insufficient_positional_args():
@@ -229,9 +376,9 @@ def test_dispatch_l2_cli_run_and_prompt_construction():
     command, prompt_path, prompt = _parse_command_and_prompt(stdout)
     assert '-m "9router/cx/gpt-6-luna"' in command
 
-    # Prompt check: 16 dimensions
-    assert "MANDATORY 16-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in prompt
-    for dim_num in range(1, 17):
+    # Prompt check: complete dynamic 24-dimension catalog
+    assert "MANDATORY 24-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in prompt
+    for dim_num in range(1, 25):
         assert f"({dim_num})" in prompt
 
     # Prompt check: headings and format
@@ -262,10 +409,160 @@ def test_graph_prompt_lock_contention_fails_without_sleep(tmp_path):
     evidence = session_dir / "graph.json"
     evidence.write_bytes(b"{}")
     evidence.with_suffix(".sha256").write_text(hashlib.sha256(b"{}").hexdigest(), encoding="ascii")
-    evidence.with_name("graph.json.publish.lock").write_text("active", encoding="ascii")
+    evidence.with_name("graph.json.publish.lock").write_text(str(os.getpid()), encoding="ascii")
     payload = {"_repo_root": str(tmp_path), "path": ".ly_state/session/graph.json", "sha256": hashlib.sha256(b"{}").hexdigest()}
     with pytest.raises(RuntimeError, match="locked by active publisher"):
         dl2.build_graph_prompt_evidence(payload)
+
+
+def _assert_graph_lock_released(lock):
+    fd = dispatch_l2._acquire_graph_publish_lock(lock)
+    dispatch_l2._release_graph_publish_lock(fd, lock)
+
+
+def test_graph_publish_lock_recovers_dead_owner_for_writer_and_reader(tmp_path):
+    evidence = tmp_path / ".ly_state/session/graph.json"
+    evidence.parent.mkdir(parents=True)
+    lock = evidence.with_name(evidence.name + ".publish.lock")
+    lock.write_text("2147483647", encoding="ascii")
+    canonical = b"{}"
+    digest = hashlib.sha256(canonical).hexdigest()
+    previous, fd, path = dispatch_l2._publish_graph_evidence(evidence, canonical, digest)
+    try:
+        assert previous == (None, None)
+        assert path == lock
+    finally:
+        dispatch_l2._release_graph_publish_lock(fd, lock)
+    _assert_graph_lock_released(lock)
+    result = dispatch_l2.build_graph_prompt_evidence({"_repo_root": str(tmp_path),
+        "path": ".ly_state/session/graph.json", "sha256": digest})
+    assert digest in result
+    _assert_graph_lock_released(lock)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX partial flock marker")
+def test_graph_lock_recovers_interrupted_owner_write(tmp_path):
+    lock = tmp_path / "graph.json.publish.lock"
+    lock.write_bytes(b"graph-floc")
+    fd = dispatch_l2._acquire_graph_publish_lock(lock)
+    try:
+        assert lock.read_bytes().startswith(b"graph-flock-v1:")
+    finally:
+        dispatch_l2._release_graph_publish_lock(fd, lock)
+
+
+@pytest.mark.parametrize("reader", [False, True])
+def test_graph_publish_lock_blocks_live_owner(tmp_path, reader):
+    evidence = tmp_path / ".ly_state/session/graph.json"
+    evidence.parent.mkdir(parents=True)
+    canonical = b"{}"
+    digest = hashlib.sha256(canonical).hexdigest()
+    evidence.write_bytes(canonical)
+    evidence.with_suffix(".sha256").write_text(digest, encoding="ascii")
+    lock = evidence.with_name(evidence.name + ".publish.lock")
+    fd = dispatch_l2._acquire_graph_publish_lock(lock)
+    try:
+        with pytest.raises(RuntimeError, match="locked by active publisher"):
+            if reader:
+                dispatch_l2.build_graph_prompt_evidence({"_repo_root": str(tmp_path),
+                    "path": ".ly_state/session/graph.json", "sha256": digest})
+            else:
+                dispatch_l2._publish_graph_evidence(evidence, b'{"new":1}', digest)
+        assert evidence.read_bytes() == canonical
+    finally:
+        dispatch_l2._release_graph_publish_lock(fd, lock)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock ownership")
+def test_graph_lock_stale_successor_cannot_be_reclaimed(tmp_path):
+    import fcntl
+
+    lock = tmp_path / "graph.json.publish.lock"
+    lock.write_text("2147483647", encoding="ascii")
+    owner_fd = os.open(lock, os.O_RDWR)
+    fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(RuntimeError, match="locked by active publisher"):
+            dispatch_l2._acquire_graph_publish_lock(lock)
+        assert lock.read_text(encoding="ascii") == "2147483647"
+        assert lock.stat().st_ino == os.fstat(owner_fd).st_ino
+    finally:
+        os.close(owner_fd)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock ownership")
+@pytest.mark.parametrize("failure", ["write", "fsync"])
+def test_graph_lock_owner_setup_failure_closes_descriptor(tmp_path, monkeypatch, failure):
+    lock = tmp_path / "graph.json.publish.lock"
+    real_open, real_write, real_fsync = os.open, os.write, os.fsync
+    owned = []
+
+    def record_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        if Path(path) == lock:
+            owned.append(fd)
+        return fd
+
+    def fail_write(fd, data):
+        if fd in owned:
+            raise OSError("injected graph lock write")
+        return real_write(fd, data)
+
+    def fail_fsync(fd):
+        if fd in owned:
+            raise OSError("injected graph lock fsync")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", record_open)
+    monkeypatch.setattr(os, failure, fail_write if failure == "write" else fail_fsync)
+    with pytest.raises(OSError, match=f"injected graph lock {failure}"):
+        dispatch_l2._acquire_graph_publish_lock(lock)
+    with pytest.raises(OSError):
+        os.fstat(owned[0])
+    monkeypatch.setattr(os, "open", real_open)
+    monkeypatch.setattr(os, failure, real_write if failure == "write" else real_fsync)
+    _assert_graph_lock_released(lock)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows byte-range ownership")
+def test_graph_windows_lock_owner_replacement_fails_closed(tmp_path):
+    lock = tmp_path / "graph.json.publish.lock"
+    lock.write_text("2147483647", encoding="ascii")
+    fd = dispatch_l2._acquire_graph_publish_lock(lock)
+    try:
+        with pytest.raises(RuntimeError, match="locked by active publisher"):
+            dispatch_l2._acquire_graph_publish_lock(lock)
+        assert lock.is_file()
+    finally:
+        dispatch_l2._release_graph_publish_lock(fd, lock)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows byte-range ownership")
+@pytest.mark.parametrize("failure", ["write", "fsync"])
+def test_graph_windows_lock_setup_failure_releases_owner(tmp_path, monkeypatch, failure):
+    lock = tmp_path / "graph.json.publish.lock"
+    real_write, real_fsync = os.write, os.fsync
+    calls = 0
+
+    def fail_write(fd, data):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("injected graph lock write")
+        return real_write(fd, data)
+
+    def fail_fsync(fd):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("injected graph lock fsync")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, failure, fail_write if failure == "write" else fail_fsync)
+    with pytest.raises(OSError, match=f"injected graph lock {failure}"):
+        dispatch_l2._acquire_graph_publish_lock(lock)
+    monkeypatch.setattr(os, failure, real_write if failure == "write" else real_fsync)
+    _assert_graph_lock_released(lock)
 
 
 def test_dispatch_l2_cli_invalid_role_exit_2():
@@ -403,7 +700,7 @@ def test_lock_cleanup_safety_on_pair_bytes_failure(tmp_path):
     with pytest.raises(RuntimeError, match="partial graph evidence artifact"):
         dl2._publish_graph_evidence(ev, b'{"session":"2"}', hashlib.sha256(b'{"session":"2"}').hexdigest())
 
-    assert not pub_lock.exists(), "publish lock must be cleaned up when _pair_bytes fails"
+    _assert_graph_lock_released(pub_lock)
 
     # Verify retry succeeds without lock contention
     ev.with_suffix(".sha256").write_text(hashlib.sha256(b'{"session":"1"}').hexdigest(), encoding="ascii")
@@ -411,7 +708,7 @@ def test_lock_cleanup_safety_on_pair_bytes_failure(tmp_path):
     assert plock.exists()
     os.close(pfd)
     plock.unlink(missing_ok=True)
-    assert not plock.exists()
+    _assert_graph_lock_released(plock)
 
 
 def test_access_token_and_query_param_redaction():
@@ -577,7 +874,7 @@ def test_f1_base_exception_rollback_and_lock_unlink(tmp_path):
     finally:
         os.replace = orig_replace
 
-    assert not pub_lock.exists(), "publish lock must be unlinked even on KeyboardInterrupt"
+    _assert_graph_lock_released(pub_lock)
     assert ev.read_bytes() == b'{"session":"1"}', "evidence must be preserved on KeyboardInterrupt rollback"
 
 
@@ -610,7 +907,7 @@ def test_f2_lock_cleanup_nested_finally_on_close_oserror(tmp_path):
         os.close = orig_close
         os.replace = orig_replace
 
-    assert not pub_lock.exists(), "publish lock must be unlinked even when os.close raises OSError"
+    _assert_graph_lock_released(pub_lock)
 
 
 def test_f1_run_graph_predispatch_gate_post_publication_base_exception_rollback(tmp_path, monkeypatch):
@@ -667,7 +964,7 @@ def test_f1_run_graph_predispatch_gate_post_publication_base_exception_rollback(
         dl2.run_graph_predispatch_gate(session_id, "a.py", repo_dir)
     assert "Simulated Ctrl+C" in str(excinfo.value)
 
-    assert not pub_lock.exists(), "publish lock must be unlinked after post-pub BaseException"
+    _assert_graph_lock_released(pub_lock)
     assert ev_path.read_bytes() == initial_bytes, "previous evidence must be restored"
     assert sha_path.read_text(encoding="ascii").strip() == initial_sha, "previous sha must be restored"
 
@@ -1123,6 +1420,182 @@ def test_parse_dimensions_ignores_lowercase_prose_status_words():
     assert dispatch_l2._parse_dimensions(content, Path("audit.md")) == (((1, "Integrity"),), ())
 
 
+def test_parse_dimensions_supports_dynamic_catalog_and_rejects_overflow():
+    content = """## 24-Dimension Adversarial Matrix
+| 24 | JEV routing | PASS |
+"""
+    assert dispatch_l2._parse_dimensions(content, Path("audit.md")) == (((24, "JEV routing"),), ())
+    with pytest.raises(RuntimeError, match="outside dynamic catalog"):
+        dispatch_l2._parse_dimensions(content.replace("| 24 |", "| 25 |"), Path("audit.md"))
+
+
+@pytest.mark.parametrize("result_count", [104, 250])
+def test_graph_query_results_accept_up_to_impact_ladder_limit(tmp_path, monkeypatch, result_count):
+    graph_file = tmp_path / "node.py"
+    graph_file.write_text("# graph node", encoding="utf-8")
+    payload = {
+        "status": "ok",
+        "summary": "file summary",
+        "result_count": result_count,
+        "results": [{"file_path": "node.py"} for _ in range(result_count)],
+    }
+
+    assert result_count <= dispatch_l2.GRAPH_IMPACT_MAX_RESULTS_LADDER[-1]
+    assert len(dispatch_l2._validated_results(payload.copy(), tmp_path)) == result_count
+    monkeypatch.setattr(
+        dispatch_l2,
+        "_run_checked",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, json.dumps(payload), ""),
+    )
+    summary, indexed = dispatch_l2._graph_file_summary(tmp_path, "node.py")
+
+    assert indexed is True
+    assert summary == {"summary": "file summary", "result_count": result_count, "files": ["node.py"]}
+
+
+def test_graph_query_results_reject_above_impact_ladder_limit(tmp_path, monkeypatch):
+    graph_file = tmp_path / "node.py"
+    graph_file.write_text("# graph node", encoding="utf-8")
+    payload = {
+        "status": "ok",
+        "summary": "file summary",
+        "result_count": 251,
+        "results": [{"file_path": "node.py"} for _ in range(251)],
+    }
+    monkeypatch.setattr(
+        dispatch_l2,
+        "_run_checked",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess([], 0, json.dumps(payload), ""),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid results"):
+        dispatch_l2._validated_results(payload, tmp_path)
+    with pytest.raises(RuntimeError, match="invalid results"):
+        dispatch_l2._graph_file_summary(tmp_path, "node.py")
+    with pytest.raises(RuntimeError, match="invalid result_count"):
+        dispatch_l2._validated_results({**payload, "results": [], "result_count": 251}, tmp_path)
+
+
+def test_jev_api_failure_keeps_prompt_credentials_redacted_and_fails_closed(monkeypatch, tmp_path):
+    import types
+    from scripts import jev_model_router
+
+    captured = {}
+
+    class FailingClient:
+        def __init__(self, **_): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): return None
+        def system_one(self, **kwargs):
+            captured.update(kwargs)
+            raise ValueError("injected non-retryable provider failure")
+
+    sdk = types.ModuleType("typesafe_sdk")
+    sdk.Choice, sdk.TypeSafeClient = lambda **kwargs: kwargs, FailingClient
+    for name in ("TypeSafeAPIConnectionError", "TypeSafeAPITimeoutError", "TypeSafeInternalServerError"):
+        setattr(sdk, name, type(name, (Exception,), {}))
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", sdk)
+    decision_path = tmp_path / "decision.json"
+
+    with pytest.raises(ValueError, match="injected non-retryable provider failure"):
+        jev_model_router.evaluate_model_decision(
+            role="l2", risk="high", task="Bearer task-secret <scope>",
+            scope=["https://user:scope-password@example.test/?api_key=scope-key"],
+            decision_path=decision_path,
+        )
+
+    serialized_state = json.dumps(captured["state"])
+    assert all(secret not in serialized_state for secret in (
+        "task-secret", "scope-password", "scope-key"
+    ))
+    assert "Bearer [REDACTED]" in captured["state"]["task_context"]
+    assert not decision_path.exists()
+
+
+@pytest.mark.parametrize("path_kind", ["directory", "symlink", "symlink_parent", "unreadable", "invalid_utf8", "missing"])
+def test_jev_predecessor_invalid_paths_fail_closed(tmp_path, monkeypatch, path_kind):
+    import stat
+    from scripts.jev_model_router import L2_LEAD_ALLOWLIST, evaluate_model_decision
+
+    report = tmp_path / "predecessor.md"
+    if path_kind == "directory":
+        report.mkdir()
+    elif path_kind == "symlink":
+        report.write_text("F-001 HIGH", encoding="utf-8")
+        real_lstat = Path.lstat
+        monkeypatch.setattr(
+            Path, "lstat",
+            lambda path: type("Stat", (), {"st_mode": stat.S_IFLNK})() if path == report else real_lstat(path),
+        )
+    elif path_kind == "symlink_parent":
+        parent = tmp_path / "reports"
+        parent.mkdir()
+        report = parent / report.name
+        report.write_text("F-001 HIGH", encoding="utf-8")
+        real_lstat = Path.lstat
+        monkeypatch.setattr(
+            Path, "lstat",
+            lambda path: type("Stat", (), {"st_mode": stat.S_IFLNK})() if path == parent else real_lstat(path),
+        )
+    elif path_kind == "unreadable":
+        report.write_text("F-001 HIGH", encoding="utf-8")
+        real_open = os.open
+
+        def deny_report_open(path, flags, *args, **kwargs):
+            if Path(path) == report:
+                raise PermissionError("injected unreadable predecessor report")
+            return real_open(path, flags, *args, **kwargs)
+
+        monkeypatch.setattr(os, "open", deny_report_open)
+    elif path_kind == "invalid_utf8":
+        report.write_bytes(b"F-001 HIGH \x80\xff")
+
+    decision_path = tmp_path / "decision.json"
+    with pytest.raises(ValueError, match="predecessor report"):
+        evaluate_model_decision(
+            role="l2", risk="high", predecessor_report=report,
+            response={"lead_model": L2_LEAD_ALLOWLIST[1]}, decision_path=decision_path,
+        )
+    assert not decision_path.exists()
+
+
+@pytest.mark.parametrize("invalid_path", ["", 1, True, []])
+def test_jev_predecessor_rejects_invalid_path_inputs(tmp_path, invalid_path):
+    from scripts.jev_model_router import evaluate_model_decision
+
+    decision_path = tmp_path / "decision.json"
+    with pytest.raises(ValueError, match="predecessor report path is invalid"):
+        evaluate_model_decision(
+            role="l2", risk="high", predecessor_report=invalid_path,
+            decision_path=decision_path,
+        )
+    assert not decision_path.exists()
+
+
+def test_jev_predecessor_rejects_path_replacement_during_read(tmp_path, monkeypatch):
+    from scripts.jev_model_router import L2_LEAD_ALLOWLIST, evaluate_model_decision
+
+    report = tmp_path / "predecessor.md"
+    report.write_text("F-001 HIGH", encoding="utf-8")
+    real_open = os.open
+
+    def replace_before_open(path, flags, *args, **kwargs):
+        if Path(path) == report:
+            replacement = report.with_suffix(".replacement")
+            replacement.write_text("F-001 HIGH", encoding="utf-8")
+            os.replace(replacement, report)
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", replace_before_open)
+    decision_path = tmp_path / "decision.json"
+    with pytest.raises(ValueError, match="changed during validation"):
+        evaluate_model_decision(
+            role="l2", risk="high", predecessor_report=report,
+            response={"lead_model": L2_LEAD_ALLOWLIST[1]}, decision_path=decision_path,
+        )
+    assert not decision_path.exists()
+
+
 def test_conflicting_latest_verdict_fails_closed(tmp_path):
     audit_dir = tmp_path / ".ly_state/session/audit_reports"
     audit_dir.mkdir(parents=True)
@@ -1438,33 +1911,21 @@ def test_f001_scope_isolation_traversal_and_flag_injection_faults(tmp_path: Path
     assert resolved == ["valid_script.py"]
 
 
-def test_f001_scope_isolation_prompt_test_constraint_injection():
+def test_f001_scope_isolation_prompt_test_constraint_injection(monkeypatch, tmp_path, capsys):
     """F-001 scope isolation: dispatch_l2 must inject TEST SCOPE CONSTRAINT into prompt."""
-    res = subprocess.run(
-        [
-            sys.executable,
-            "scripts/dispatch_l2.py",
-            "devops-engineer",
-            "GATE_DISPATCH_L2_IMPACT_QUERY_HARDENING_20260917",
-            "test_scope_isolation_slug",
-            "Scope isolation validation",
-            "scripts/dispatch_l2.py",
-            "--risk",
-            "low",
-        ],
-        capture_output=True,
-        text=True,
-        cwd=str(REPO_ROOT),
+    monkeypatch.setattr(dispatch_l2, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dispatch_l2, "build_graph_prompt_evidence", lambda _: "GRAPH")
+    session_id = "l2_role11_test_scope_isolation_slug_20260917"
+    dispatch_l2._generate_and_print(
+        [{"name": "devops-engineer", "role_id": 11,
+          "role_file": ".agents/agent/devops-engineer.md", "skill_files": []}],
+        "GATE_DISPATCH_L2_IMPACT_QUERY_HARDENING_20260917", "Scope isolation validation",
+        "scripts/dispatch_l2.py", session_id, "lessons", "low", "explicit --risk flag",
+        "9router/cx/gpt-6-luna", {},
     )
-    assert res.returncode == 0
-    command, prompt_path, prompt = _parse_command_and_prompt(res.stdout)
-    try:
-        assert "TEST SCOPE CONSTRAINT: Limit test execution to declared scope files and related test suites" in prompt
-        assert "do NOT scan or run the full 4400+ test repository suite" in prompt
-    finally:
-        prompt_path.unlink(missing_ok=True)
-        lock_file = REPO_ROOT / ".ly_state" / "session" / f"dispatch_l2_role11_test_scope_isolation_slug_{datetime.now().strftime('%Y%m%d')}.lock"
-        lock_file.unlink(missing_ok=True)
+    _, _, prompt = _parse_command_and_prompt(capsys.readouterr().out)
+    assert "TEST SCOPE CONSTRAINT: Limit test execution to declared scope files and related test suites" in prompt
+    assert "do NOT scan or run the full 4400+ test repository suite" in prompt
 
 
 def test_f001_scope_isolation_predispatch_mutation_fault(tmp_path, monkeypatch):
@@ -1657,5 +2118,3 @@ def test_format_l2_report_utility(tmp_path, monkeypatch):
     content = report_file.read_text(encoding="utf-8")
     assert "# L2 Implementation Report" in content
     assert f"- **Session**: `{session_id}`" in content
-
-

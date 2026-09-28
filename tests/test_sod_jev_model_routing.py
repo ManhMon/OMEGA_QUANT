@@ -15,6 +15,9 @@ import pytest
 from argparse import Namespace
 
 from scripts.jev_model_router import (
+    ADVERSARIAL_DIRECTIVE_24D,
+    DIMENSION_CATALOG,
+    DIMENSION_COUNT,
     L2_LEAD_ALLOWLIST,
     L3_LEAD_ALLOWLIST,
     atomic_publish_decision,
@@ -23,13 +26,14 @@ from scripts.jev_model_router import (
     load_decision,
     validate_standalone_verdict,
 )
+import scripts.jev_model_router as jev_router
 import scripts.sod_pipeline as sod_pipeline
 import scripts.validate_l2_report as validate_l2_report
 
 
 def test_baseline_routes_by_role_and_publishes_digest(tmp_path):
     path = tmp_path / "decision.json"
-    envelope = evaluate_model_decision(role="l2", risk="low", gate="G", session_id="S", decision_path=path)
+    envelope = evaluate_model_decision(role="l2", risk="low", gate="G", session_id="S", task="task", decision_path=path)
     assert envelope["lead_model"] == L2_LEAD_ALLOWLIST[1]
     assert envelope["decision_digest"] == hashlib.sha256(path.read_bytes()).hexdigest()
     assert load_decision(
@@ -40,6 +44,42 @@ def test_baseline_routes_by_role_and_publishes_digest(tmp_path):
         expected_session_id="S",
         expected_risk="low",
     )["schema_version"] == "2.0"
+
+
+def test_dynamic_dimension_catalog_and_focus_validation(tmp_path):
+    assert DIMENSION_COUNT == 24 and tuple(item[0] for item in DIMENSION_CATALOG) == tuple(range(1, 25))
+    assert "(24) jev secret-safe prompt routing:" in ADVERSARIAL_DIRECTIVE_24D
+    assert validate_l2_report._schema_errors(
+        {"dimension": 24, "name": "JEV routing"}, validate_l2_report.DIMENSION_SCHEMA, "dimension"
+    ) == []
+    assert validate_l2_report._schema_errors(
+        {"dimension": 25, "name": "invalid"}, validate_l2_report.DIMENSION_SCHEMA, "dimension"
+    )
+    for invalid in (0, 25, True, "24", [], float("nan"), float("inf")):
+        with pytest.raises(ValueError, match="dimension_focus"):
+            evaluate_model_decision(
+                role="l2", risk="low", response={"dimension_focus": invalid},
+                decision_path=tmp_path / "invalid.json",
+            )
+        assert not (tmp_path / "invalid.json").exists()
+    with pytest.raises(ValueError, match="model response must be an object"):
+        evaluate_model_decision(role="l2", risk="low", response=[])
+
+
+def test_decision_round_trips_jev_dimension_focus_and_digest(tmp_path):
+    path = tmp_path / "decision.json"
+    decision = evaluate_model_decision(
+        role="l3", risk="high", gate="G", session_id="S", task="task",
+        response={"dimension_focus": 24}, decision_path=path,
+    )
+    assert decision["dimension_focus"] == 24
+    loaded = load_decision(path, decision["decision_digest"], expected_role="l3", expected_gate="G")
+    assert loaded["dimension_focus"] == 24
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["dimension_focus"] = 25
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    with pytest.raises(ValueError, match="dimension_focus"):
+        load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest())
 
 
 def test_w0_inventory_binds_sources_consumers_and_market_release():
@@ -105,7 +145,7 @@ def test_corrupted_hybrid_checkpoint_shards_fail_closed(tmp_path, shard):
 
 def test_context_bound_decision_rejects_replay(tmp_path):
     path = tmp_path / "decision.json"
-    envelope = evaluate_model_decision(role="l3", risk="high", gate="G", session_id="S", decision_path=path)
+    envelope = evaluate_model_decision(role="l3", risk="high", gate="G", session_id="S", task="task", decision_path=path)
     for kwargs in (
         {"expected_role": "l2"},
         {"expected_gate": "OTHER"},
@@ -118,7 +158,7 @@ def test_context_bound_decision_rejects_replay(tmp_path):
 
 def test_schema_drift_fails_closed_after_digest_recomputed(tmp_path):
     path = tmp_path / "decision.json"
-    evaluate_model_decision(role="l2", risk="low", decision_path=path)
+    evaluate_model_decision(role="l2", risk="low", gate="G", session_id="S", task="task", decision_path=path)
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload.pop("role")
     path.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
@@ -128,12 +168,85 @@ def test_schema_drift_fails_closed_after_digest_recomputed(tmp_path):
 
 def test_extra_decision_field_fails_closed_even_with_matching_digest(tmp_path):
     path = tmp_path / "decision.json"
-    evaluate_model_decision(role="l2", risk="low", response={}, decision_path=path)
+    evaluate_model_decision(
+        role="l2", risk="low", gate="G", session_id="S", task="task", response={}, decision_path=path
+    )
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["unexpected_authority"] = "approve"
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="schema mismatch"):
         load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest())
+
+
+@pytest.mark.parametrize("role", ["l2", "l3"])
+@pytest.mark.parametrize(("member", "injected"), [
+    ("gate", '"gate":"OTHER",'),
+    ("gate", '"\\u0067ate":"G",'),
+    ("role", '"role":"l3",'),
+    ("lead_model", '"lead_model":"unapproved",'),
+    ("dimension_focus", '"dimension_focus":24,'),
+], ids=["context-shadow", "escaped-alias", "role-shadow", "model-shadow", "optional-duplicate"])
+def test_digest_valid_duplicate_decision_members_fail_before_validation(tmp_path, role, member, injected):
+    path = tmp_path / "decision.json"
+    evaluate_model_decision(
+        role=role, risk="high", gate="G", session_id="S", task="task",
+        response={"dimension_focus": 24}, decision_path=path,
+    )
+    raw = path.read_text(encoding="utf-8").replace(f'"{member}":', injected + f'"{member}":', 1)
+    path.write_text(raw, encoding="utf-8")
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    assert json.loads(raw)[member] == json.loads(raw.replace(injected, "", 1))[member]
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        load_decision(path, digest, expected_role=role, expected_gate="G", expected_session_id="S", expected_risk="high")
+
+
+def test_digest_valid_nested_duplicate_decision_member_fails_at_parser(tmp_path):
+    path = tmp_path / "decision.json"
+    evaluate_model_decision(role="l2", risk="low", gate="G", session_id="S", task="task", response={}, decision_path=path)
+    raw = path.read_text(encoding="utf-8").replace('"gate":', '"extra":{"key":1,"key":2},"gate":', 1)
+    path.write_text(raw, encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate JSON key"):
+        load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest(), expected_gate="G")
+
+
+def test_duplicate_decision_digest_mismatch_precedes_parse_and_key_is_not_logged(tmp_path):
+    path = tmp_path / "decision.json"
+    evaluate_model_decision(role="l2", risk="high", gate="G", session_id="S", task="task", response={}, decision_path=path)
+    secret_key = "https://user:password@example.test/?api_key=private"
+    raw = path.read_text(encoding="utf-8").replace('"gate":', f'{json.dumps(secret_key)}:1,{json.dumps(secret_key)}:2,"gate":', 1)
+    path.write_text(raw, encoding="utf-8")
+    with pytest.raises(ValueError, match="digest mismatch"):
+        load_decision(path, "0" * 64)
+    with pytest.raises(ValueError, match="duplicate JSON key") as caught:
+        load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest())
+    assert "password" not in str(caught.value) and "private" not in str(caught.value)
+
+
+@pytest.mark.parametrize("dispatcher", ["l2", "l3"])
+def test_duplicate_decision_fails_closed_before_dispatch(tmp_path, monkeypatch, capsys, dispatcher):
+    from scripts import dispatch_l2, dispatch_l3
+
+    path = tmp_path / "decision.json"
+    session = f"l2_role11_duplicate_{datetime.now().strftime('%Y%m%d')}"
+    evaluate_model_decision(
+        role=dispatcher, risk="high", gate="G", session_id=session, task="task",
+        response={}, decision_path=path,
+    )
+    path.write_text(path.read_text(encoding="utf-8").replace('"gate":', '"gate":"OTHER","gate":', 1), encoding="utf-8")
+    argv = ["--model-decision-path", str(path), "--model-decision-digest", hashlib.sha256(path.read_bytes()).hexdigest()]
+    if dispatcher == "l2":
+        monkeypatch.setattr(dispatch_l2, "resolve_l2_roles", lambda *_: [{"role_id": 11}])
+        monkeypatch.setattr(dispatch_l2, "acquire_session_lock", lambda *_: pytest.fail("duplicate decision reached dispatch"))
+        monkeypatch.setattr(sys, "argv", ["dispatch_l2.py", "devops-engineer", "G", "duplicate", "task", "scripts/jev_model_router.py", "--risk", "high", *argv])
+        assert dispatch_l2.main() == 2
+    else:
+        monkeypatch.setattr(dispatch_l3, "REPO_ROOT", tmp_path)
+        monkeypatch.setattr(sys, "argv", ["dispatch_l3.py", "code-reviewer", "G", session, "devops-engineer", "scripts/jev_model_router.py", "--risk", "high", *argv])
+        with pytest.raises(SystemExit) as excinfo:
+            dispatch_l3.main()
+        assert excinfo.value.code == 2
+        assert not (tmp_path / ".ly_state").exists()
+    assert "duplicate JSON key" in capsys.readouterr().err
 
 
 def test_digest_tamper_fails_closed(tmp_path):
@@ -186,19 +299,21 @@ def test_high_finding_prevents_provider_downgrade(tmp_path, role, choices):
     report = tmp_path / "audit.md"
     report.write_text("[NEEDS_FIX] F-001 HIGH", encoding="utf-8")
     envelope = evaluate_model_decision(
-        role=role, risk="high", predecessor_report=report,
+        role=role, risk="high", gate="G", session_id="S", task="task", predecessor_report=report,
         response={"lead_model": choices[1]}, decision_path=tmp_path / "decision.json",
     )
     assert envelope["escalated"] is True
     assert envelope["lead_model"] == choices[0]
-    assert load_decision(tmp_path / "decision.json", envelope["decision_digest"])["lead_model"] == choices[0]
+    assert load_decision(
+        tmp_path / "decision.json", envelope["decision_digest"], expected_gate="G", expected_session_id="S"
+    )["lead_model"] == choices[0]
 
 
 def test_l2_and_l3_decisions_are_distinct_and_context_bound(tmp_path):
     l2_path = tmp_path / "l2.json"
     l3_path = tmp_path / "l3.json"
-    l2 = evaluate_model_decision(role="l2", risk="high", gate="G", session_id="L2", decision_path=l2_path)
-    l3 = evaluate_model_decision(role="l3", risk="high", gate="G", session_id="L3", decision_path=l3_path)
+    l2 = evaluate_model_decision(role="l2", risk="high", gate="G", session_id="L2", task="task", decision_path=l2_path)
+    l3 = evaluate_model_decision(role="l3", risk="high", gate="G", session_id="L3", task="task", decision_path=l3_path)
     assert l2_path != l3_path
     assert l2["decision_digest"] != l3["decision_digest"]
     assert load_decision(l3_path, l3["decision_digest"], expected_role="l3", expected_gate="G", expected_session_id="L3", expected_risk="high")["role"] == "l3"
@@ -348,6 +463,35 @@ def _pre_audit_payload():
         "generated_at": "2026-09-23T00:00:00Z",
     }
 
+
+def _assert_pre_audit_lock_released(lock):
+    if os.name == "nt":
+        assert not lock.exists()
+        return
+    import fcntl
+
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
+def _assert_decision_lock_released(lock):
+    if os.name == "nt":
+        assert not lock.exists()
+        return
+    import fcntl
+
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    finally:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+        os.close(fd)
+
+
 def test_pre_audit_sidecar_failure_atomically_restores_both_files(tmp_path, monkeypatch):
     target = tmp_path / "pre_audit_S.json"
     sidecar = target.with_suffix(".sha256")
@@ -368,7 +512,146 @@ def test_pre_audit_sidecar_failure_atomically_restores_both_files(tmp_path, monk
         validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
     assert target.read_bytes() == b"old artifact"
     assert sidecar.read_bytes() == b"old digest"
-    assert not (tmp_path / ".pre_audit_S.lock").exists()
+    _assert_pre_audit_lock_released(tmp_path / ".pre_audit_S.lock")
+
+
+@pytest.mark.parametrize("failure", [
+    "target_snapshot", "sidecar_snapshot", "first_temp", "second_temp", "payload_write", "sidecar_write",
+    "payload_temp_close", "sidecar_temp_close", "payload_fsync", "sidecar_fsync",
+])
+def test_pre_audit_early_publication_failures_preserve_existing_artifacts(tmp_path, monkeypatch, failure):
+    target = tmp_path / "pre_audit_S.json"
+    sidecar = target.with_suffix(".sha256")
+    target.write_bytes(b"prior artifact")
+    sidecar.write_bytes(b"prior digest")
+    real_mkstemp = validate_l2_report.tempfile.mkstemp
+    allocations = 0
+    real_read_bytes = Path.read_bytes
+
+    def fail_snapshot_read(path):
+        if failure == "target_snapshot" and path == target or failure == "sidecar_snapshot" and path == sidecar:
+            raise OSError(f"injected {failure}")
+        return real_read_bytes(path)
+
+    if failure.endswith("_snapshot"):
+        monkeypatch.setattr(Path, "read_bytes", fail_snapshot_read)
+
+    def fail_mkstemp(*args, **kwargs):
+        nonlocal allocations
+        allocations += 1
+        if failure == "first_temp" and allocations == 1 or failure == "second_temp" and allocations == 2:
+            raise OSError(f"injected {failure}")
+        return real_mkstemp(*args, **kwargs)
+
+    if not failure.endswith("_snapshot"):
+        monkeypatch.setattr(validate_l2_report.tempfile, "mkstemp", fail_mkstemp)
+    if failure in {"payload_write", "sidecar_write"}:
+        real_open = Path.open
+
+        def fail_staged_write(path, *args, **kwargs):
+            expected_suffix = ".tmp" if failure == "payload_write" else ".sha256.tmp"
+            if path.name.endswith(expected_suffix):
+                raise OSError(f"injected {failure}")
+            return real_open(path, *args, **kwargs)
+
+        monkeypatch.setattr(Path, "open", fail_staged_write)
+    elif failure.endswith("_temp_close"):
+        real_close = os.close
+        close_count = 0
+
+        def fail_staged_close(fd):
+            nonlocal close_count
+            close_count += 1
+            real_close(fd)
+            expected = 1 if failure == "payload_temp_close" else 2
+            if close_count == expected:
+                raise OSError(f"injected {failure}")
+
+        monkeypatch.setattr(validate_l2_report.os, "close", fail_staged_close)
+    elif failure.endswith("_fsync"):
+        real_fsync = os.fsync
+        fsync_count = 0
+
+        def fail_staged_fsync(fd):
+            nonlocal fsync_count
+            fsync_count += 1
+            lock_fsync = int(not sys.platform.startswith("win"))
+            expected = lock_fsync + (1 if failure == "payload_fsync" else 2)
+            if fsync_count == expected:
+                raise OSError(f"injected {failure}")
+            real_fsync(fd)
+
+        monkeypatch.setattr(validate_l2_report.os, "fsync", fail_staged_fsync)
+
+    with pytest.raises(OSError, match=f"injected {failure}"):
+        validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
+    assert real_read_bytes(target) == b"prior artifact"
+    assert real_read_bytes(sidecar) == b"prior digest"
+    assert not list(tmp_path.glob("pre_audit_S.*.tmp"))
+    _assert_pre_audit_lock_released(tmp_path / ".pre_audit_S.lock")
+
+
+class _InjectedPublicationAbort(BaseException):
+    pass
+
+
+@pytest.mark.parametrize("replace_call", [1, 2], ids=["target_replace", "sidecar_replace"])
+@pytest.mark.parametrize("failure", [OSError, _InjectedPublicationAbort], ids=["oserror", "baseexception"])
+@pytest.mark.parametrize("after_replace", [False, True], ids=["before_replace", "after_replace"])
+def test_pre_audit_replace_failures_restore_existing_pair(tmp_path, monkeypatch, replace_call, failure, after_replace):
+    target = tmp_path / "pre_audit_S.json"
+    sidecar = target.with_suffix(".sha256")
+    target.write_bytes(b"prior artifact")
+    sidecar.write_bytes(b"prior digest")
+    real_replace = os.replace
+    replacements = 0
+
+    def fail_replace(source, destination):
+        nonlocal replacements
+        replacements += 1
+        if replacements == replace_call:
+            if after_replace:
+                real_replace(source, destination)
+            raise failure("injected replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(validate_l2_report.os, "replace", fail_replace)
+    with pytest.raises(failure, match="injected replace failure"):
+        validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
+    assert target.read_bytes() == b"prior artifact"
+    assert sidecar.read_bytes() == b"prior digest"
+    assert not list(tmp_path.glob("pre_audit_S.*.tmp"))
+
+
+@pytest.mark.parametrize("existing", ["target", "sidecar"])
+def test_pre_audit_sidecar_failure_restores_asymmetric_existing_artifact(tmp_path, monkeypatch, existing):
+    target = tmp_path / "pre_audit_S.json"
+    sidecar = target.with_suffix(".sha256")
+    if existing == "target":
+        target.write_bytes(b"prior artifact")
+    else:
+        sidecar.write_bytes(b"prior digest")
+    real_replace = os.replace
+    replacements = 0
+
+    def fail_sidecar_replace(source, destination):
+        nonlocal replacements
+        replacements += 1
+        if replacements == 2:
+            raise OSError("injected sidecar replace failure")
+        real_replace(source, destination)
+
+    monkeypatch.setattr(validate_l2_report.os, "replace", fail_sidecar_replace)
+    with pytest.raises(OSError, match="injected sidecar replace failure"):
+        validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
+    if existing == "target":
+        assert target.read_bytes() == b"prior artifact"
+        assert not sidecar.exists()
+    else:
+        assert not target.exists()
+        assert sidecar.read_bytes() == b"prior digest"
+    assert not list(tmp_path.glob("pre_audit_S.*.tmp"))
+
 
 def test_pre_audit_live_lock_rejects_concurrent_writer(tmp_path):
     lock = tmp_path / ".pre_audit_S.lock"
@@ -381,7 +664,95 @@ def test_pre_audit_recovers_dead_owner_lock(tmp_path):
     lock.write_text("2147483647", encoding="ascii")
     artifact, sidecar = validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
     assert artifact.is_file() and sidecar.is_file()
-    assert not lock.exists()
+    _assert_pre_audit_lock_released(lock)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows OpenProcess error injection")
+@pytest.mark.parametrize("error", [5, 0, 6, 87])
+def test_windows_pre_audit_lock_openprocess_error(tmp_path, monkeypatch, error):
+    import ctypes
+
+    lock = tmp_path / ".pre_audit_S.lock"
+    lock.write_text("2147483647", encoding="ascii")
+    artifact = tmp_path / "pre_audit_S.json"
+    artifact.write_bytes(b"original")
+    monkeypatch.setattr(ctypes.windll.kernel32, "OpenProcess", lambda *_: 0)
+    monkeypatch.setattr(ctypes, "GetLastError", lambda: error)
+
+    if error == 87:
+        validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
+        assert not lock.exists()
+    else:
+        with pytest.raises(FileExistsError):
+            validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
+        assert lock.read_bytes() == b"2147483647"
+        assert artifact.read_bytes() == b"original"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock locking")
+def test_posix_pre_audit_stale_lock_successor_cannot_be_reclaimed(tmp_path):
+    import fcntl
+
+    lock = tmp_path / ".pre_audit_S.lock"
+    lock.write_text("2147483647", encoding="ascii")
+    owner_fd = os.open(lock, os.O_RDWR)
+    fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    owner_identity = os.fstat(owner_fd)
+    owner_bytes = lock.read_bytes()
+
+    with pytest.raises(FileExistsError, match="lock busy"):
+        validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
+
+    current = lock.stat()
+    assert (current.st_dev, current.st_ino) == (owner_identity.st_dev, owner_identity.st_ino)
+    assert lock.read_bytes() == owner_bytes
+    assert not (tmp_path / "pre_audit_S.json").exists()
+    fcntl.flock(owner_fd, fcntl.LOCK_UN)
+    validate_l2_report.os.close(owner_fd)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock locking")
+@pytest.mark.parametrize("failure", ["write", "fsync"])
+def test_posix_pre_audit_lock_setup_failure_closes_and_releases_lock(tmp_path, monkeypatch, failure):
+    lock = tmp_path / ".pre_audit_S.lock"
+    real_open, real_write, real_fsync = os.open, os.write, os.fsync
+    opened = []
+
+    def record_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        if Path(path) == lock:
+            opened.append(fd)
+        return fd
+
+    monkeypatch.setattr(os, "open", record_open)
+    if failure == "write":
+        def fail_write(fd, data):
+            if fd in opened:
+                real_write(fd, data)
+                raise OSError("injected pre-audit lock write failure")
+            return real_write(fd, data)
+
+        monkeypatch.setattr(os, "write", fail_write)
+    else:
+        def fail_fsync(fd):
+            if fd in opened:
+                raise OSError("injected pre-audit lock fsync failure")
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", fail_fsync)
+
+    with pytest.raises(OSError, match=f"injected pre-audit lock {failure} failure"):
+        validate_l2_report._acquire_pre_audit_lock(lock)
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+
+    monkeypatch.setattr(os, "open", real_open)
+    monkeypatch.setattr(os, "write", real_write)
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    artifact, sidecar = validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
+    assert artifact.is_file() and sidecar.is_file()
+
 
 def test_pre_audit_does_not_remove_replaced_lock(tmp_path, monkeypatch):
     lock = tmp_path / ".pre_audit_S.lock"
@@ -401,7 +772,29 @@ def test_decision_publication_recovers_dead_owner_lock(tmp_path):
     lock.write_text("2147483647", encoding="ascii")
     path, digest = atomic_publish_decision({"schema_version": "2.0"}, tmp_path / "decision.json")
     assert hashlib.sha256(path.read_bytes()).hexdigest() == digest
-    assert not lock.exists()
+    _assert_decision_lock_released(lock)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX flock locking")
+def test_posix_stale_lock_successor_cannot_be_unlinked_by_contender(tmp_path):
+    import fcntl
+
+    lock = tmp_path / ".jev_model_decision.lock"
+    lock.write_text("2147483647", encoding="ascii")
+    owner_fd = os.open(lock, os.O_RDWR)
+    fcntl.flock(owner_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    owner_identity = os.fstat(owner_fd)
+    owner_bytes = lock.read_bytes()
+
+    with pytest.raises(FileExistsError, match="lock busy"):
+        atomic_publish_decision({"schema_version": "2.0"}, tmp_path / "decision.json")
+
+    current = lock.stat()
+    assert (current.st_dev, current.st_ino) == (owner_identity.st_dev, owner_identity.st_ino)
+    assert lock.read_bytes() == owner_bytes == b"2147483647"
+    assert not (tmp_path / "decision.json").exists()
+    fcntl.flock(owner_fd, fcntl.LOCK_UN)
+    os.close(owner_fd)
 
 
 def test_decision_publication_preserves_live_aged_lock(tmp_path):
@@ -417,23 +810,455 @@ def test_decision_publication_preserves_live_aged_lock(tmp_path):
     assert lock.read_text(encoding="ascii") == str(os.getpid())
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows stale-lock reclaim race")
+@pytest.mark.parametrize("kind", ["decision", "pre_audit"])
+def test_windows_two_reclaimers_preserve_successor(tmp_path, monkeypatch, kind):
+    import ctypes
+    import threading
+
+    lock = tmp_path / (".jev_model_decision.lock" if kind == "decision" else ".pre_audit_S.lock")
+    lock.write_text("2147483647", encoding="ascii")
+    first_reclaimed = threading.Event()
+    release_first = threading.Event()
+    owner_created = threading.Event()
+    release_owner = threading.Event()
+    results = []
+    monkeypatch.setattr(ctypes.windll.kernel32, "OpenProcess", lambda *_: 0)
+    monkeypatch.setattr(ctypes, "GetLastError", lambda: 87)
+    real_write = os.write
+
+    real_open = os.open
+
+    def pause_owner_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        if threading.current_thread().name == "first" and path == lock and flags & os.O_EXCL:
+            current, opened = lock.stat(), os.fstat(fd)
+            if (current.st_dev, current.st_ino) == (opened.st_dev, opened.st_ino):
+                owner_created.set()
+                assert release_owner.wait(5)
+        return fd
+
+    monkeypatch.setattr(os, "open", pause_owner_open)
+
+    def publish():
+        try:
+            if kind == "decision":
+                atomic_publish_decision({"schema_version": "2.0"}, tmp_path / "decision.json")
+            else:
+                validate_l2_report.write_atomic_pre_audit(_pre_audit_payload(), tmp_path, "S")
+            results.append("ok")
+        except FileExistsError:
+            results.append("busy")
+
+    real_unlink = Path.unlink
+    def observe_reclaim(path, *args, **kwargs):
+        result = real_unlink(path, *args, **kwargs)
+        if path == lock and threading.current_thread().name == "first":
+            first_reclaimed.set()
+            assert release_first.wait(5)
+        return result
+
+    monkeypatch.setattr(Path, "unlink", observe_reclaim)
+    first = threading.Thread(target=publish, name="first")
+    second = threading.Thread(target=publish, name="second")
+    first.start()
+    try:
+        assert first_reclaimed.wait(5)
+        second.start()
+        release_first.set()
+        assert owner_created.wait(5)
+        second.join(5)
+    finally:
+        release_first.set()
+        release_owner.set()
+        first.join(5)
+        if second.ident is not None:
+            second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert sorted(results) == ["busy", "ok"]
+    assert not lock.exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows OpenProcess error injection")
+@pytest.mark.parametrize("error", [5, 0, 6, 87])
+def test_windows_decision_lock_openprocess_error(tmp_path, monkeypatch, error):
+    import ctypes
+
+    target = tmp_path / "decision.json"
+    target.write_bytes(b"original")
+    lock = tmp_path / ".jev_model_decision.lock"
+    lock.write_text("2147483647", encoding="ascii")
+    monkeypatch.setattr(ctypes.windll.kernel32, "OpenProcess", lambda *_: 0)
+    monkeypatch.setattr(ctypes, "GetLastError", lambda: error)
+
+    if error == 87:
+        path, _ = atomic_publish_decision({"schema_version": "2.0"}, target)
+        assert path == target
+        assert not lock.exists()
+    else:
+        with pytest.raises(FileExistsError):
+            atomic_publish_decision({"schema_version": "2.0"}, target)
+        assert target.read_bytes() == b"original"
+        assert lock.read_bytes() == b"2147483647"
+
+
+@pytest.mark.parametrize("failure", ["write", "lock_fsync", "payload_fsync"])
+def test_decision_publication_lock_setup_failures_close_fd_and_cleanup(tmp_path, monkeypatch, failure):
+    target = tmp_path / "decision.json"
+    target.write_bytes(b"previous decision")
+    lock = tmp_path / ".jev_model_decision.lock"
+    real_open, real_write, real_fsync = os.open, os.write, os.fsync
+    opened = []
+
+    def record_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        if Path(path) == lock:
+            opened.append(fd)
+        return fd
+
+    monkeypatch.setattr(os, "open", record_open)
+    if failure == "write":
+        def fail_write(fd, data):
+            if fd in opened:
+                real_write(fd, data)
+                raise OSError("injected lock write failure")
+            return real_write(fd, data)
+        monkeypatch.setattr(os, "write", fail_write)
+        message = "injected lock write failure"
+    else:
+        fsync_calls = 0
+        def fail_fsync(fd):
+            nonlocal fsync_calls
+            fsync_calls += 1
+            if failure == "lock_fsync" and fd in opened:
+                raise OSError("injected lock fsync failure")
+            if failure == "payload_fsync" and fsync_calls == 2:
+                raise OSError("injected payload fsync failure")
+            return real_fsync(fd)
+        monkeypatch.setattr(os, "fsync", fail_fsync)
+        message = f"injected {failure.replace('_', ' ')} failure"
+
+    with pytest.raises(OSError, match=message):
+        atomic_publish_decision({"schema_version": "2.0"}, target)
+
+    assert len(opened) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened[0])
+    assert target.read_bytes() == b"previous decision"
+    _assert_decision_lock_released(lock)
+    assert not list(tmp_path.glob(".decision.json.*.tmp"))
+    monkeypatch.setattr(os, "open", real_open)
+    monkeypatch.setattr(os, "write", real_write)
+    monkeypatch.setattr(os, "fsync", real_fsync)
+    published, digest = atomic_publish_decision({"schema_version": "2.0"}, target)
+    assert hashlib.sha256(published.read_bytes()).hexdigest() == digest
+    _assert_decision_lock_released(lock)
+
+
+def test_decision_publication_close_failure_still_cleans_lock_and_temp(tmp_path, monkeypatch):
+    target = tmp_path / "decision.json"
+    lock = tmp_path / ".jev_model_decision.lock"
+    real_open, real_close = os.open, os.close
+    lock_fds = set()
+
+    def record_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        if Path(path) == lock:
+            lock_fds.add(fd)
+        return fd
+
+    def fail_lock_close(fd):
+        real_close(fd)
+        if fd in lock_fds:
+            raise OSError("injected lock close failure")
+
+    monkeypatch.setattr(os, "open", record_open)
+    monkeypatch.setattr(os, "close", fail_lock_close)
+    with pytest.raises(OSError, match="injected lock close failure"):
+        atomic_publish_decision({"schema_version": "2.0"}, target)
+
+    assert target.is_file()
+    _assert_decision_lock_released(lock)
+    assert not list(tmp_path.glob(".decision.json.*.tmp"))
+    for fd in lock_fds:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+def test_decision_publication_preserves_replaced_lock(tmp_path, monkeypatch):
+    lock = tmp_path / ".jev_model_decision.lock"
+    real_close = os.close
+
+    def replace_after_close(fd):
+        real_close(fd)
+        if lock.exists():
+            lock.write_text("replacement owner", encoding="ascii")
+
+    monkeypatch.setattr(os, "close", replace_after_close)
+    atomic_publish_decision({"schema_version": "2.0"}, tmp_path / "decision.json")
+    assert lock.read_text(encoding="ascii") == "replacement owner"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-only")
+@pytest.mark.parametrize("previous", [None, b"prior decision"], ids=["absent", "existing"])
+def test_decision_publication_directory_fsync_failure_closes_descriptors_and_cleans_lock(tmp_path, monkeypatch, previous):
+    target = tmp_path / "decision.json"
+    if previous is not None:
+        target.write_bytes(previous)
+    lock = tmp_path / ".jev_model_decision.lock"
+    real_open, real_fsync = os.open, os.fsync
+    descriptors = []
+    fsync_calls = 0
+
+    def record_open(path, flags, mode=0o777):
+        fd = real_open(path, flags, mode)
+        descriptors.append(fd)
+        return fd
+
+    def fail_directory_fsync(fd):
+        nonlocal fsync_calls
+        fsync_calls += 1
+        if fsync_calls == 3:
+            raise OSError("injected directory fsync failure")
+        return real_fsync(fd)
+
+    monkeypatch.setattr(os, "open", record_open)
+    monkeypatch.setattr(os, "fsync", fail_directory_fsync)
+    with pytest.raises(OSError, match="injected directory fsync failure"):
+        atomic_publish_decision({"schema_version": "2.0"}, target)
+
+    assert (target.read_bytes() == previous if previous is not None else not target.exists())
+    _assert_decision_lock_released(lock)
+    assert not list(tmp_path.glob(".decision.json.*.tmp"))
+    for fd in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+@pytest.mark.parametrize("previous", [None, b"prior decision"], ids=["absent", "existing"])
+def test_decision_post_replace_error_restores_previous_state(tmp_path, monkeypatch, previous):
+    target = tmp_path / "decision.json"
+    if previous is not None:
+        target.write_bytes(previous)
+    real_replace = os.replace
+    calls = 0
+
+    def fail_after_replace(src, dst):
+        nonlocal calls
+        calls += 1
+        real_replace(src, dst)
+        if calls == 1:
+            raise OSError("replace completed before error")
+
+    monkeypatch.setattr(jev_router.os, "replace", fail_after_replace)
+    with pytest.raises(OSError, match="replace completed before error"):
+        atomic_publish_decision({"schema_version": "2.0"}, target)
+    assert (target.read_bytes() == previous if previous is not None else not target.exists())
+    assert not list(tmp_path.glob(".decision.json.*.tmp"))
+    _assert_decision_lock_released(tmp_path / ".jev_model_decision.lock")
+
+
+@pytest.mark.parametrize("previous", [None, b"prior decision"], ids=["absent", "existing"])
+def test_decision_durability_error_restores_previous_state(tmp_path, monkeypatch, previous):
+    target = tmp_path / "decision.json"
+    if previous is not None:
+        target.write_bytes(previous)
+    real_sync = jev_router._fsync_decision_directory
+    calls = 0
+
+    def fail_first_sync(directory):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("injected durability failure")
+        real_sync(directory)
+
+    monkeypatch.setattr(jev_router, "_fsync_decision_directory", fail_first_sync)
+    with pytest.raises(OSError, match="injected durability failure"):
+        atomic_publish_decision({"schema_version": "2.0"}, target)
+    assert (target.read_bytes() == previous if previous is not None else not target.exists())
+    assert calls == 2
+    assert not list(tmp_path.glob(".decision.json.*.tmp"))
+    _assert_decision_lock_released(tmp_path / ".jev_model_decision.lock")
+
+
+def test_decision_predecessor_swap_during_snapshot_fails_before_publication(tmp_path, monkeypatch):
+    target = tmp_path / "decision.json"
+    target.write_bytes(b"original")
+    real_read = jev_router._read_bounded_decision
+
+    def swap_after_read(path):
+        raw = real_read(path)
+        if path == target:
+            replacement = tmp_path / "replacement"
+            replacement.write_bytes(b"concurrent decision")
+            os.replace(replacement, target)
+        return raw
+
+    monkeypatch.setattr(jev_router, "_read_bounded_decision", swap_after_read)
+    with pytest.raises(RuntimeError, match="predecessor changed during snapshot"):
+        atomic_publish_decision({"schema_version": "2.0"}, target)
+    assert target.read_bytes() == b"concurrent decision"
+    assert not list(tmp_path.glob(".decision.json.*.tmp"))
+    _assert_decision_lock_released(tmp_path / ".jev_model_decision.lock")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="directory fsync is POSIX-only")
+def test_decision_rollback_failure_is_reported_and_lock_released(tmp_path, monkeypatch):
+    target = tmp_path / "decision.json"
+    target.write_bytes(b"prior decision")
+    real_fsync = os.fsync
+    calls = 0
+
+    def fail_directory_and_rollback(fd):
+        nonlocal calls
+        calls += 1
+        if calls in (3, 4):
+            raise OSError("injected fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(jev_router.os, "fsync", fail_directory_and_rollback)
+    with pytest.raises(RuntimeError, match="publication and rollback failed"):
+        atomic_publish_decision({"schema_version": "2.0"}, target)
+    assert not list(tmp_path.glob(".decision.json.*.tmp"))
+    _assert_decision_lock_released(tmp_path / ".jev_model_decision.lock")
+
+
 @pytest.mark.parametrize("field,value", [
     ("lead_model", "unapproved"), ("subagent_model", "unapproved"),
+    ("lead_model", ""), ("lead_model", None), ("lead_model", []),
+    ("subagent_model", ""), ("subagent_model", None), ("subagent_model", 0),
     ("execution_timeout", True), ("execution_timeout", "180"),
     ("execution_timeout", 999),
 ])
 @pytest.mark.parametrize("role", ["l2", "l3"])
 def test_decision_allowlist_rejects_response_and_digest_rebound_file(tmp_path, role, field, value):
     path = tmp_path / "decision.json"
-    valid = evaluate_model_decision(role=role, risk="low", response={}, decision_path=path)
+    valid = evaluate_model_decision(
+        role=role, risk="low", gate="G", session_id="S", task="task", response={}, decision_path=path
+    )
     with pytest.raises(ValueError, match="allowlist"):
-        evaluate_model_decision(role=role, risk="low", response={field: value}, decision_path=path)
+        evaluate_model_decision(
+            role=role, risk="low", gate="G", session_id="S", task="task",
+            response={field: value}, decision_path=path,
+        )
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload[field] = value
     path.write_text(json.dumps(payload), encoding="utf-8")
     with pytest.raises(ValueError, match="allowlist"):
         load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest())
     assert valid["decision_digest"] != hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+@pytest.mark.parametrize("response", [
+    {"fallback_used": "false"}, {"fallback_used": 0}, {"fallback_used": None},
+    {"fallback_used": True}, {"fallback_used": True, "fallback_reason": []},
+    {"fallback_reason": "reason"}, {"fallback_used": False, "fallback_reason": "reason"},
+    {"fallback_used": False, "fallback_reason": None},
+])
+def test_malformed_fallback_rejected_before_decision_publication(tmp_path, response):
+    path = tmp_path / "decision.json"
+    with pytest.raises(ValueError, match="fallback fields"):
+        evaluate_model_decision(role="l2", risk="low", response=response, decision_path=path)
+    assert not path.exists()
+
+
+@pytest.mark.parametrize("risk,cycle", [("high", 1), ("low", 2)])
+def test_explicit_fallback_only_allowed_on_low_risk_initial_cycle(tmp_path, risk, cycle):
+    path = tmp_path / "decision.json"
+    with pytest.raises(ValueError, match="fallback fields"):
+        evaluate_model_decision(role="l2", risk=risk, cycle=cycle,
+                                response={"fallback_used": True, "fallback_reason": "timeout"}, decision_path=path)
+    assert not path.exists()
+
+
+def test_load_decision_uses_descriptor_bound_bounded_read(tmp_path, monkeypatch):
+    from scripts.jev_model_router import MAX_RESPONSE_BYTES
+
+    path = tmp_path / "decision.json"
+    path.write_bytes(b"{}")
+    real_fdopen = os.fdopen
+    reads = []
+
+    def observe_fdopen(fd, mode, **kwargs):
+        handle = real_fdopen(fd, mode, **kwargs)
+
+        class Reader:
+            def __enter__(self):
+                handle.__enter__()
+                return self
+            def __exit__(self, *args):
+                return handle.__exit__(*args)
+            def fileno(self):
+                return handle.fileno()
+            def read(self, amount):
+                reads.append(amount)
+                return b"x" * amount
+
+        return Reader()
+
+    monkeypatch.setattr(jev_router.os, "fdopen", observe_fdopen)
+    with pytest.raises(ValueError, match="decision payload exceeds size bound"):
+        load_decision(path, "0" * 64)
+    assert reads == [MAX_RESPONSE_BYTES + 1]
+
+
+def test_load_decision_rejects_file_replaced_between_check_and_open(tmp_path, monkeypatch):
+    target = tmp_path / "decision.json"
+    target.write_bytes(b"{}")
+    real_open = os.open
+
+    def swap_for_directory(path, flags, *args):
+        if Path(path) == target:
+            target.unlink()
+            target.mkdir()
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(jev_router.os, "open", swap_for_directory)
+    with pytest.raises((FileNotFoundError, OSError)):
+        load_decision(target, "0" * 64)
+
+
+@pytest.mark.parametrize(("updates", "case"), [
+    ({"cycle": 0}, "cycle-zero"), ({"cycle": -1}, "cycle-negative"),
+    ({"cycle": 4}, "cycle-too-high"), ({"cycle": True}, "cycle-boolean"),
+    ({"gate": ""}, "empty-gate"), ({"gate": "   "}, "blank-gate"),
+    ({"gate": None}, "non-string-gate"), ({"session_id": ""}, "empty-session"),
+    ({"session_id": "  "}, "blank-session"), ({"session_id": []}, "non-string-session"),
+    ({"task": ""}, "empty-task"), ({"task": "  "}, "blank-task"),
+    ({"task": None}, "non-string-task"),
+    ({"fallback_used": "true", "fallback_reason": "reason"}, "fallback-used-not-bool"),
+    ({"fallback_used": True}, "fallback-reason-missing"),
+    ({"fallback_used": True, "fallback_reason": []}, "fallback-reason-not-string"),
+    ({"fallback_used": True, "fallback_reason": " "}, "fallback-reason-empty"),
+    ({"fallback_reason": "reason"}, "fallback-used-missing"),
+    ({"fallback_used": False, "fallback_reason": "reason"}, "fallback-reason-without-fallback"),
+    ({"fallback_used": False, "fallback_reason": None}, "fallback-false-without-reason"),
+    ({"predecessor_findings": "F-001"}, "findings-not-list"),
+    ({"predecessor_findings": [1]}, "finding-not-string"),
+    ({"predecessor_findings": [""]}, "finding-empty"),
+    ({"predecessor_findings": ["not-a-finding"]}, "finding-malformed"),
+    ({"predecessor_findings": ["F-001", "F-001"]}, "finding-duplicate"),
+], ids=[
+    "cycle-zero", "cycle-negative", "cycle-too-high", "cycle-boolean", "empty-gate", "blank-gate",
+    "non-string-gate", "empty-session", "blank-session", "non-string-session", "empty-task", "blank-task",
+    "non-string-task", "fallback-used-not-bool", "fallback-reason-missing", "fallback-reason-not-string",
+    "fallback-reason-empty", "fallback-used-missing", "fallback-reason-without-fallback",
+    "fallback-false-without-reason", "findings-not-list",
+    "finding-not-string", "finding-empty", "finding-malformed", "finding-duplicate",
+])
+def test_digest_valid_loaded_decision_fields_fail_closed(tmp_path, updates, case):
+    path = tmp_path / f"{case}.json"
+    evaluate_model_decision(
+        role="l2", risk="low", gate="G", session_id="S", task="task",
+        response={}, decision_path=path,
+    )
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload.update(updates)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(ValueError):
+        load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest())
 
 def test_sod_pipeline_approved_report_runs_enforcer(monkeypatch, tmp_path):
     monkeypatch.setattr(sod_pipeline, "REPO_ROOT", tmp_path)
@@ -485,6 +1310,31 @@ def test_standing_regression_classes_are_all_retained():
     assert all(item in clause for item in expected)
 
 
+def test_l2_report_date_uses_task_date_for_cross_day_session_suffix(monkeypatch):
+    session_id = "l2_role11_jev_24d_routing_fix6_20260927_20260928"
+    forbidden = validate_l2_report.FORBIDDEN_PATHS
+    report = "\n".join([
+        "# L2 Implementation Report",
+        "- **Role**: 11 devops-engineer - OpenCode L2 Implementation",
+        "- **Gate**: `GATE_SOD_24D_JEV_ROUTING_20260927`",
+        f"- **Session**: `{session_id}`",
+        "- **Date**: `2026-09-27`",
+        "- **Anti-Drip Mode**: `remediation`",
+        "- **Anti-Drip Contract**: `.ly_state/session/anti_drip_contract_session.json`",
+        "- **Anti-Drip Contract SHA-256**: `" + ("a" * 64) + "`",
+        "- **Subagent Model**: `ag/gemini`",
+        "",
+        "## Summary", "done", "## Repo-Local Files Read", "- .agents/agent/devops-engineer.md",
+        "## Changes Made", "done", "## Verification", "passed",
+        "## Root-Cause Architectural Sweep", "```json", "{}", "```",
+        "## Forbidden Path Scan",
+        *(f"- `{path}`: not read; {validate_l2_report.FORBIDDEN_SUFFIX}" for path in forbidden),
+    ])
+    monkeypatch.setattr(validate_l2_report, "_validate_l2_report_content", lambda *_: (True, "OK"))
+
+    assert validate_l2_report._validate_envelope(report, session_id, 11, "devops-engineer", True) == []
+
+
 def test_jev_api_called_with_choice_questions(monkeypatch):
     recorded = {}
 
@@ -506,6 +1356,7 @@ def test_jev_api_called_with_choice_questions(monkeypatch):
                     "lead_model": types.SimpleNamespace(choice="9router/cx/gpt-6-sol"),
                     "subagent_model": types.SimpleNamespace(choice="ag/gemini"),
                     "execution_timeout": types.SimpleNamespace(choice="180"),
+                    "dimension_focus": types.SimpleNamespace(choice="24"),
                 }
             )
 
@@ -520,8 +1371,79 @@ def test_jev_api_called_with_choice_questions(monkeypatch):
     assert envelope["lead_model"] == "9router/cx/gpt-6-sol"
     assert envelope["subagent_model"] == "ag/gemini"
     assert envelope["execution_timeout"] == 180
+    assert envelope["dimension_focus"] == 24
+    assert recorded["questions"]["dimension_focus"].criteria.keys() == {str(i) for i in range(1, 25)}
+    assert len(recorded["state"]["dimension_catalog"]) == 24
     assert "lead_model" in recorded["questions"]
     assert "subagent_model" in recorded["questions"]
+
+
+def test_jev_api_redacts_credentials_before_xml_escaping(monkeypatch):
+    recorded = {}
+
+    class Client:
+        def __init__(self, **_): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): return None
+        def system_one(self, **kwargs):
+            recorded.update(kwargs)
+            return types.SimpleNamespace(choices={
+                "lead_model": types.SimpleNamespace(choice=L2_LEAD_ALLOWLIST[0]),
+                "subagent_model": types.SimpleNamespace(choice="ag/gemini"),
+                "execution_timeout": types.SimpleNamespace(choice="180"),
+                "dimension_focus": types.SimpleNamespace(choice="24"),
+            })
+
+    sdk = types.ModuleType("typesafe_sdk")
+    sdk.Choice, sdk.TypeSafeClient = lambda **kwargs: kwargs, Client
+    for name in ("TypeSafeAPIConnectionError", "TypeSafeAPITimeoutError", "TypeSafeInternalServerError"):
+        setattr(sdk, name, type(name, (Exception,), {}))
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", sdk)
+
+    jev_router._query_jev_api(
+        role="l2", risk="high", task="Bearer task-secret-token <scope>",
+        scope=["https://user:scope-password@example.test/?api_key=scope-key"],
+        predecessor_findings=["token=prior-secret F-001"],
+    )
+
+    serialized = json.dumps(recorded["state"])
+    for secret in ("task-secret-token", "scope-password", "scope-key", "prior-secret"):
+        assert secret not in serialized
+    assert "Bearer [REDACTED]" in recorded["state"]["task_context"]
+    assert "&lt;scope&gt;" in recorded["state"]["task_context"]
+
+
+@pytest.mark.parametrize("path_kind", ["directory", "symlink", "unreadable", "invalid_utf8"])
+def test_predecessor_report_invalid_paths_fail_closed(tmp_path, monkeypatch, path_kind):
+    report = tmp_path / "report_F-001_HIGH.md"
+    if path_kind == "directory":
+        report.mkdir()
+    elif path_kind == "symlink":
+        report.write_text("F-001 HIGH", encoding="utf-8")
+        real_lstat = Path.lstat
+        def injected_symlink_lstat(path):
+            if path == report:
+                return types.SimpleNamespace(st_mode=jev_router.stat.S_IFLNK)
+            return real_lstat(path)
+        monkeypatch.setattr(Path, "lstat", injected_symlink_lstat)
+    elif path_kind == "unreadable":
+        report.write_text("F-001 HIGH", encoding="utf-8")
+        real_open = os.open
+        def deny_report_open(path, flags, *args, **kwargs):
+            if Path(path) == report:
+                raise PermissionError("injected unreadable predecessor report")
+            return real_open(path, flags, *args, **kwargs)
+        monkeypatch.setattr(os, "open", deny_report_open)
+    else:
+        report.write_bytes(b"F-001 HIGH \x80\xff")
+
+    with pytest.raises(ValueError, match="predecessor report"):
+        evaluate_model_decision(
+            role="l2", risk="high", predecessor_report=report,
+            response={"lead_model": L2_LEAD_ALLOWLIST[1]},
+            decision_path=tmp_path / "decision.json",
+        )
+    assert not (tmp_path / "decision.json").exists()
 
 
 def test_fallback_active_on_low_risk_network_error(monkeypatch):
@@ -551,10 +1473,27 @@ def test_fallback_active_on_low_risk_network_error(monkeypatch):
     assert envelope["lead_model"] == L2_LEAD_ALLOWLIST[1]
 
 
+def test_fallback_active_on_l3_low_risk_network_error(monkeypatch):
+    class FailingClient:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *_): return None
+        def system_one(self, **_): raise ConnectionError("Connection refused")
+
+    sdk = types.ModuleType("typesafe_sdk")
+    sdk.Choice, sdk.TypeSafeClient = lambda **kwargs: types.SimpleNamespace(**kwargs), FailingClient
+    sdk.TypeSafeAPIConnectionError, sdk.TypeSafeAPITimeoutError = ConnectionError, TimeoutError
+    sdk.TypeSafeInternalServerError = type("TypeSafeInternalServerError", (Exception,), {})
+    monkeypatch.setitem(sys.modules, "typesafe_sdk", sdk)
+    monkeypatch.setattr("scripts.jev_model_router.time.sleep", lambda _: None)
+    decision = evaluate_model_decision(role="l3", risk="low")
+    assert decision["fallback_used"] is True and decision["dimension_focus"] is None
+
+
 def test_fallback_reason_redacted_before_durable_publication(tmp_path):
     path = tmp_path / "decision.json"
     envelope = evaluate_model_decision(
-        role="l2", risk="low", decision_path=path,
+        role="l2", risk="low", gate="G", session_id="S", task="task", decision_path=path,
         response={"fallback_used": True, "fallback_reason": "https://user:secret@example.org/?api_key=private"},
     )
     assert "secret" not in path.read_text(encoding="utf-8")

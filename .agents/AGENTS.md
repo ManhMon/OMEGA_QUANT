@@ -20,8 +20,8 @@
   - **Cross-Tier Separation**: L2 sessions MUST NOT load Tier 3 roles. L3 sessions MUST NOT load Tier 2 roles.
   - **Writer != Auditor**: The set of L2 role IDs must be strictly disjoint from the set of L3 role IDs (`set(l2_roles) & set(l3_roles) == empty`). Self-approval remains strictly forbidden.
   - **Hierarchical Tiered Model & Subagent Cost Optimization (HIERARCHICAL_SUBAGENT_OPTIMIZATION_20260913)**:
-    - **Primary Lead Role (L2/L3)**: Runs on high-reasoning models (`high`: e.g. `cx/gpt-5.6-sol`, `gpt-5-6-thinking`). Responsible for overall orchestration, architecture, root-cause trace, 16-Dimension compliance, and signing final verdicts.
-    - **Worker Subagents**: Supervised by the Lead Role, sub-workers run on `SUBAGENT_MODEL=9router/ag/gemini-3.8-flash-high` for repetitive tasks: regex call-site searches, test boilerplate generation, AST inspections, and log parsing.
+    - **Primary Lead Role (L2/L3)**: Runs on high-reasoning models (`high`: e.g. `cx/gpt-6-sol`, `gpt-5-6-thinking`). Responsible for overall orchestration, architecture, root-cause trace, dynamic 24-Dimension compliance, and signing final verdicts.
+    - **Worker Subagents**: Supervised by the Lead Role, sub-workers run on `SUBAGENT_MODEL=ag/gemini` (high-speed, low-cost) for repetitive tasks: regex call-site searches, test boilerplate generation, AST inspections, and log parsing.
     - **Zero-Token Local Gate**: Local deterministic scripts (`validate_l2_report.py`, AST verification, pytest collection, `checklist.py`) MUST execute locally before LLM tokens are consumed. No LLM tokens may be spent on formatting, markdown heading validation, or AST assertion checks.
     - **Strict Boundary Isolation**: L2 worker subagents must remain strictly within Tier 2 (Antigravity/OpenCode). L3 audit subagents must remain strictly within Tier 3 (Codex). Subagents inherit their parent role's SoD tier; cross-tier subagent delegation is strictly prohibited.
 - L2 receives: primary + co-role specs + task + scope + requirements.
@@ -118,7 +118,7 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 1. **1 Task Execution = 1 Primary Lead Role (+ Optional Co-Assigned Specialist Roles within same Tier)**.
 2. **Writer != Auditor**. Self-approval forbidden. All L2 role IDs must be strictly disjoint from all L3 role IDs.
 3. L2 must exit/save state before L3 starts.
-4. L1 never plans, implements, or audits; L1 only delegates, records evidence, enforces gates. L1 MUST delegate all master plan and implementation plan creation to Codex L3 (model "cx/gpt-6-astra(low)") using a non-audit role.
+4. L1 never plans, implements, or audits; L1 only delegates, records evidence, enforces gates. L1 MUST delegate all master plan and implementation plan creation to Codex L3 (model "cx/gpt-6-sol") using a non-audit role.
 5. All state/evidence must be file-backed in `.ly_state/session/`.
 6. Do not run OpenCode and Codex simultaneously. Platform cap: 4GB.
 7. **L3 write boundary**: L3 may ONLY write to `.ly_state/session/audit_reports/`, `.ly_state/session/` (for plans), and update `.ly_state/session/phase_gates.json`. L3 MUST NOT edit production source code, tests, or any files outside `.ly_state/`.
@@ -177,7 +177,7 @@ python scripts/sod_pipeline_au.py <l2_role> <l3_role> <gate> <slug> "<task>" "<s
 ```
 - **L2 Worker (`scripts/run_l2_agent.py`)**: Executes autonomous ReAct loops (`read_file`, `patch_file`, `write_file`, `run_command`, `list_dir`) directly with `au/gpt-5-6-thinking` (free tier, no subagent required), sliding-window context compression, head/tail output truncation (6000 chars), and anti-drip sweep generation.
 - **Pre-L3 Validation Gate (`scripts/validate_l2_report.py`)**: Enforces zero-token checks (format, headings, probe coverage, repo-local files) before invoking L3.
-- **L3 Auditor (`scripts/run_l3_audit.py`)**: Executes independent 16-Dimension evaluation, code review directly via `au/gpt-5-6-thinking`, and writes structured findings `F-001..F-xxx`.
+- **L3 Auditor (`scripts/run_l3_audit.py`)**: Executes independent dynamic 24-Dimension evaluation, code review directly via `au/gpt-5-6-thinking`, and writes structured findings `F-001..F-xxx`.
 - **Remediation Loop**: Automatically runs `scripts/extract_lessons.py` upon `[NEEDS_FIX]` and feeds deduplicated findings back to L2.
 
 ### Hierarchical Subagent Cost Optimization (HIERARCHICAL_SUBAGENT_OPTIMIZATION_20260913)
@@ -185,18 +185,18 @@ python scripts/sod_pipeline_au.py <l2_role> <l3_role> <gate> <slug> "<task>" "<s
 To prevent wasting expensive reasoning models on repetitive or low-complexity work:
 1. **Tiered Model Specialization**:
    - **Lead Role (`--model`)**: Premium high-reasoning models (`sol`/`xhigh`/`gpt-5-6-thinking`) are reserved strictly for high-level architecture, code synthesis, conflict resolution, and final audit verdicts.
-   - **Worker Subagent (`--subagent-model`)**: High-speed, low-cost Gemini 3.8 models (`ag/gemini-3.8-flash-high` / `9router/ag/gemini-3.8-flash-high`) are delegated granular tasks: massive file scanning, boilerplate test drafting, documentation summarization, and AST searches.
+   - **Worker Subagent (`--subagent-model`)**: High-speed, low-cost subagent model (`ag/gemini`) is delegated granular tasks: massive file scanning, boilerplate test drafting, documentation summarization, and AST searches. L2 subagents MUST strictly use `ag/gemini`.
 2. **Zero-Token Local Execution**:
    - Local tool runs (`pytest`, `git diff`, AST analysis, syntax validation) run with 0 LLM tokens via `run_command` or dedicated pre-validation scripts (`validate_l2_report.py`, `sod_gate_enforcer.py`).
 3. **Subagent Tooling & Explicit Phased Delegation (`task` in OpenCode, `spawn_agent` in Codex)**:
    - **L2 OpenCode Phased Workflow**:
      - *Phase 1 (Recon)*: Lead Role MUST call `task(agent='explorer', prompt=...)` for call-site regex sweeps and previous lesson retrieval before any file modification.
-     - *Phase 2 (Boilerplate)*: Lead Role MUST call `task(agent='general', prompt=...)` to draft repetitive unit tests and 16-Dimension boundary cases.
+     - *Phase 2 (Boilerplate)*: Lead Role MUST call `task(agent='general', prompt=...)` to draft repetitive unit tests and dynamic 24-Dimension boundary cases.
      - *Phase 3 (Core Synthesis)*: Lead Role directly implements domain logic, mathematical algorithms, and PIT safety. Critical reasoning must never be delegated.
      - *Phase 4 (Verify & Sweep)*: Lead Role executes scoped test suite and writes the anti-drip L2 report.
    - **L3 Codex Structured Probes**:
      - Lead Auditor delegates 3 parallel audit probes via `spawn_agent(task_name=..., task=..., model='ag/gemini-3.8-flash-high')`:
-       - *Probe 1 (`probe_16d_scan`)*: Regex AST scan for 16-Dimension invariants (timezone, lookahead, secret redaction).
+       - *Probe 1 (`probe_24d_scan`)*: Regex AST scan for dynamic 24-Dimension invariants (timezone, lookahead, secret redaction).
        - *Probe 2 (`probe_test_exec`)*: Scoped pytest slices and failure traceback collection.
        - *Probe 3 (`probe_atomicity`)*: Atomic rename (.tmp -> final) and DB rollback verification.
      - Lead Auditor retrieves results via `wait_agent` and issues the authoritative verdict.
@@ -206,7 +206,7 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 
 ### Verdict Handling
 
-- **[APPROVED]**: L1 records gate metadata, then dispatches a final deep audit to Codex CLI model `cx/gpt-6-astra(low)` after L3 approval and before the final enforcer. The audit is advisory only, read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. L3's `[APPROVED]` verdict remains the sole approval authority. L1 runs enforcer and proceeds if exit 0. **TOKEN SAVER**: L1 MAY skip the final deep audit for low-risk gates where scope is limited to test fixtures, documentation, or static config files with no production logic changes. L1 MUST record the skip decision and reason in file-backed session evidence before running the enforcer.
+- **[APPROVED]**: L1 records gate metadata, then dispatches a final deep audit to Codex CLI model `cx/gpt-6-sol` after L3 approval and before the final enforcer. The audit is advisory only, read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. L3's `[APPROVED]` verdict remains the sole approval authority. L1 runs enforcer and proceeds if exit 0. **TOKEN SAVER**: L1 MAY skip the final deep audit for low-risk gates where scope is limited to test fixtures, documentation, or static config files with no production logic changes. L1 MUST record the skip decision and reason in file-backed session evidence before running the enforcer.
 - **[NEEDS_FIX]**: L1 MUST complete the lesson extraction hard gate below before creating or dispatching any remediation L2 session; after extraction succeeds, L1 creates a new L2 session with fix scope, L3 re-audits after fix, cycle repeats until [APPROVED]
 - **No verdict or partial verdict**: Gate remains `PENDING_L3_AUDIT`, no progression
 - **Manual override**: Forbidden. All approvals require valid L3 audit + enforcer exit 0
@@ -215,15 +215,15 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 
 To prevent iterative drip/piecemeal fixes (fix1, fix2, fix3...) and achieve single-shot `[APPROVED]` verdicts, all agents MUST follow:
 
-1. **Zero-Patch Consolidated Prompting**: L1 MUST NOT dispatch piecemeal tasks. L1 must consolidate 100% of audit findings, edge cases, and 16-Dimension invariants into a single itemized prompt: `(1)..., (2)..., (3)...`.
+1. **Zero-Patch Consolidated Prompting**: L1 MUST NOT dispatch piecemeal tasks. L1 must consolidate 100% of audit findings, edge cases, and dynamic 24-Dimension invariants into a single itemized prompt: `(1)..., (2)..., (3)...`.
 2. **Root-Cause Architectural Sweeping**: L2 MUST NOT apply symptom-level single-line patches. When a defect is identified (e.g. case-sensitivity, path aliasing, exit codes), L2 must use search tools to locate and fix all matching patterns across the entire module.
 3. **Pre-Audit Self-Fuzzing**: L2 MUST write adversarial unit tests covering boundary conditions (None/empty types, Math extremes/div0, File/rollback durability, Lock timeouts) prior to publishing reports.
 4. **Scoped Regression Closure**: L2 MUST execute the scoped related test suite (e.g. `pytest tests/test_<module>*.py -v`; do NOT run the full repository-wide 4,400+ test suite) ensuring zero regression breakage before submitting.
 5. **Zero-Token Pre-Validation Gate**: L1 MUST run `python scripts/validate_l2_report.py` prior to invoking L3. Any formatting, heading, or placeholder defect MUST be rejected at zero LLM token cost.
 
-### 16-Dimension Adversarial Matrix (16D Coverage)
+### 24-Dimension Adversarial Matrix (dynamic catalog)
 
-Every L2 implementation self-fuzzing and L3 independent audit MUST explicitly verify against all 16 dimensions:
+Every L2 implementation self-fuzzing and L3 independent audit MUST explicitly verify all 24 dimensions. JEV supplies one extra focus dimension; it never excludes other dimensions:
 1. **Malformed/out-of-bounds types**: NaN, Inf, non-scalar strings, lists.
 2. **Invalid/directory I/O paths**: Strict UTF-8, BOM handling & Windows charmap/CRLF encoding invariance.
 3. **Corrupted/duplicate/partial checkpoint shards**: Integrity verification before state mutation.
@@ -240,6 +240,14 @@ Every L2 implementation self-fuzzing and L3 independent audit MUST explicitly ve
 14. **Resource exhaustion & memory bounds**: Streaming parquet/chunks, no OOM on full universe.
 15. **Network timeout & 429 retry exhaustion**: Bounded exponential backoff, circuit breaker.
 16. **Secret redaction & credential leak prevention**: Strip bearer tokens/API keys from logs/reports.
+17. **JEV routing input validation**: Role, risk, cycle, and model-focus type/range validation.
+18. **Model catalog & cross-tier allowlisting**: Preserve role-specific model allowlists.
+19. **Decision context binding & replay prevention**: Bind gate, role, risk, and session.
+20. **Decision schema & digest integrity**: Enforce exact fields and SHA-256 verification.
+21. **Decision publication durability & rollback**: Fsync temporary data and atomically replace.
+22. **Decision lock ownership & concurrency**: Preserve live locks; safely recover confirmed stale locks.
+23. **Provider retry & fallback safety**: Bound retries; permit only approved low-risk first-cycle fallback.
+24. **JEV secret-safe prompt routing**: Sanitize task context and routing evidence.
 
 ### Lesson Extraction Hard Gate (lessons_extraction_hard_gate_20260726)
 
@@ -265,11 +273,11 @@ The extraction evidence MUST include gate name `lessons_extraction_hard_gate_202
 ```powershell
 python scripts/dispatch_l2.py <role_name> <gate_name> <task_slug> "<task_description>" "<scope>" [--risk low|high] [--subagent-model <model>] [--token-saver]
 ```
-Copy lệnh từ output `---COMMAND---` rồi chạy. Script tự động: validate role, load lessons, infer model tier (`9router/cx/gpt-5.6-sol` high / `9router/cx/gpt-5.6-luna` medium/low), cấu hình subagent `9router/ag/gemini-3.8-flash-high`, tiêm chỉ thị subagent bắt buộc, tạo session ID.
+Copy lệnh từ output `---COMMAND---` rồi chạy. Script tự động: validate role, load lessons, infer model tier (`9router/cx/gpt-6-sol` high / `9router/cx/gpt-6-luna` medium/low), cấu hình subagent `ag/gemini`, tiêm chỉ thị subagent bắt buộc, tạo session ID.
 
 **Manual dispatch (fallback nếu dispatch_l2.py không dùng được):**
 ```powershell
-echo "" | opencode run -m "9router/cx/gpt-5.6-luna" --pure --dangerously-skip-permissions --dir "C:\Users\GHC\repos\OMEGA_QUANT" "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. TASK: [TASK]. GATE: [GATE_NAME]. LESSONS: [APPENDED_LESSONS_LEARNED]. MANDATORY HIERARCHICAL SUBAGENT WORKER DIRECTIVE: Lead Role operates on MODEL=9router/cx/gpt-5.6-luna. Repetitive searches, boilerplate tests, AST scans MUST be delegated to subagents via task(agent='explorer'|'general', prompt='...'). SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result. SCOPE: [FILES]. REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; write L2 report to .ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md. Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing. L2 REPORT FORMAT (MANDATORY - copy exactly): The report MUST contain these sections in order: (1) Header with Role, Gate, Session, Date fields. (2) '## Repo-Local Files Read' heading followed by bullet list of every file actually read from REPO_AGENT_ROOT and REPO_SKILL_ROOT (e.g. '- .agents/agent/{role_name}.md', '- .agents/skills/{skill}/SKILL.md'). (3) '## Changes Made' listing modified files. (4) '## Verification' with test results. (5) '## Forbidden Path Scan' with EXACTLY four lines, one per forbidden path, each line ending with the EXACT phrase: 'non-authoritative scan evidence only; no reliance.' — The four lines must mention: '.gemini\antigravity-ide\scratch\ag-kit', '.openclaw\skills', 'C:\Users\GHC\.agents', '.codex\memories'. FILENAME must be l2_role{role_id}_{task_slug}_{YYYYMMDD}.md with NO _retry suffix."
+echo "" | opencode run -m "9router/cx/gpt-6-luna" --pure --dangerously-skip-permissions --dir "C:\Users\GHC\repos\OMEGA_QUANT" "REPO_ROOT: C:\Users\GHC\repos\OMEGA_QUANT. ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. TASK: [TASK]. GATE: [GATE_NAME]. LESSONS: [APPENDED_LESSONS_LEARNED]. MANDATORY HIERARCHICAL SUBAGENT WORKER DIRECTIVE: Lead Role operates on MODEL=9router/cx/gpt-6-luna. Repetitive searches, boilerplate tests, AST scans MUST be delegated to subagents via task(agent='explorer'|'general', prompt='...'). SKILL SOURCE CONTRACT: REPO_AGENT_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\agent; REPO_SKILL_ROOT=C:\Users\GHC\repos\OMEGA_QUANT\.agents\skills. First run Set-Location 'C:\Users\GHC\repos\OMEGA_QUANT'; first read REPO_AGENT_ROOT\{role_name}.md and parse frontmatter; then read required SKILL.md only from REPO_SKILL_ROOT for declared skills. Any skill loaded from Antigravity scratch/OpenClaw/C:\Users\GHC\.agents/Codex memory is non-authoritative. Report exact repo-local role/skill files read and forbidden path scan result. SCOPE: [FILES]. REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; write L2 report to .ly_state/session/l2_role{role_id}_{task_slug}_{YYYYMMDD}.md. Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing. L2 REPORT FORMAT (MANDATORY - copy exactly): The report MUST contain these sections in order: (1) Header with Role, Gate, Session, Date fields. (2) '## Repo-Local Files Read' heading followed by bullet list of every file actually read from REPO_AGENT_ROOT and REPO_SKILL_ROOT (e.g. '- .agents/agent/{role_name}.md', '- .agents/skills/{skill}/SKILL.md'). (3) '## Changes Made' listing modified files. (4) '## Verification' with test results. (5) '## Forbidden Path Scan' with EXACTLY four lines, one per forbidden path, each line ending with the EXACT phrase: 'non-authoritative scan evidence only; no reliance.' — The four lines must mention: '.gemini\antigravity-ide\scratch\ag-kit', '.openclaw\skills', 'C:\Users\GHC\.agents', '.codex\memories'. FILENAME must be l2_role{role_id}_{task_slug}_{YYYYMMDD}.md with NO _retry suffix."
 ```-kit', '.openclaw\skills', 'C:\Users\GHC\.agents', '.codex\memories'. FILENAME must be l2_role{role_id}_{task_slug}_{YYYYMMDD}.md with NO _retry suffix."
 ```
 
@@ -401,24 +409,32 @@ Missing/invalid fields -> `PENDING_L3_AUDIT`.
    echo "<TASK_PROMPT>" | codex exec -m "cx/gpt-6-astra(low)" --dangerously-bypass-approvals-and-sandbox
    ```
 6. **Plan Creation & Approval Rule**: L1 TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ LẬP KẾ HOẠCH. Mọi tác vụ lập kế hoạch tổng thể (master plan) và kế hoạch chi tiết (implementation_plan.md) bắt buộc phải được giao cho Codex L3 (sử dụng model `"cx/gpt-6-astra(low)"`) với một role phù hợp (không phải role audit) thực hiện. Sau khi kế hoạch được lập, quy trình audit bởi Codex L3 (role audit) vẫn phải diễn ra nghiêm ngặt trước khi chuyển cho L2 triển khai thực tế. L1 chỉ đóng vai trò điều phối, không được phép viết hay chỉnh sửa kế hoạch.
-7. **16-Dimension Pre-Audit Directive Enforcement**: L1 must ensure all L2 dispatches utilize `scripts/dispatch_l2.py` with embedded 16-Dimension Master Adversarial Matrix. L1 MUST execute `python scripts/validate_l2_report.py` before dispatching any L3 audit, mechanically rejecting invalid heading orders, unreplaced placeholders, and path traversal at zero token cost.
+7. **24-Dimension Pre-Audit Directive Enforcement**: L1 must ensure all L2 dispatches utilize `scripts/dispatch_l2.py` with the dynamic 24-Dimension Master Adversarial Matrix. L1 MUST execute `python scripts/validate_l2_report.py` before dispatching any L3 audit, mechanically rejecting invalid heading orders, unreplaced placeholders, and path traversal at zero token cost.
 
-## 16-Dimension Master Adversarial Testing Matrix (STRICT_ADVERSARIAL_MATRIX_20260823)
+## 24-Dimension Master Adversarial Testing Matrix (STRICT_ADVERSARIAL_MATRIX_20260927)
 
-All L2 implementations must rigorously self-fuzz and defend against the 16 Universal Invariants prior to submitting reports:
-1. **Strict Types & Malformed Inputs**: Validate schema types, fail-closed on None/empty/corrupted structures.
-2. **File I/O & Path Aliasing**: Reject directory inputs for file params; validate existence before read/write.
-3. **Fsync, Transactional Durability & Rollback Retention**: Atomic write (`.tmp` + `replace`), preserve backups on rollback failures.
-4. **Memory Bounds & OOM Prevention**: Stream large files, chunk records, enforce platform memory cap (4GB).
-5. **Concurrency, Deadlock & FileLock Timeouts**: Guard shared states with timeouts and atomic locks.
-6. **Point-in-Time (PIT) & Temporal Clocks**: Literal UTC ISO timestamps (`YYYY-MM-DDTHH:MM:SS+00:00`), no future leakage.
-7. **Sparse Calendar & Strict Forward-Fill**: Zero `bfill`, validate trading date alignment.
-8. **Mathematical Extremes & Bounds**: Defend against division by zero, MAD=0, std=0, NaN/Inf propagation.
-9. **Financial & Business Logic Edges**: Enforce dilution checks (F7), Altman Z sector boundaries.
-10. **Case-Insensitive Deduplication & Cardinality**: Canonicalize symbols to uppercase (`VNM` vs `vnm`).
-11. **Fail-Closed & Explicit Exit Codes**: Standard exit codes (0, 2, 3, 4, 5, 6, 7), no silent exception swallowing.
-12. **Full-Suite Regression Closure**: 100% test pass rate across related modules before submitting.
-13. **Metric & Artifact Consistency**: Ensure markdown reports match disk artifacts and JSON manifests 1:1.
-14. **Exception Chaining & Cause Preservation**: Use `raise ... from err` to preserve stack traces.
-15. **Opt-in Safety For Experimental Features**: Defaults must be safe and battle-tested.
-16. **Security & Secret Leakage Prevention**: Never log credentials or tokens; defend against path traversal.
+All L2 implementations must rigorously self-fuzz the canonical `scripts/jev_model_router.py` catalog before submitting reports:
+1. **Malformed/out-of-bounds types**: NaN, Inf, strings, lists, and bounded input validation.
+2. **Invalid/directory I/O paths**: Regular-file checks, strict UTF-8, BOM, and CRLF handling.
+3. **Corrupted/duplicate/partial checkpoint shards**: Integrity checks before state mutation.
+4. **Fail-closed exit codes & error states**: Non-zero failure states; no silent continuation.
+5. **Rollback/atomicity failures**: Atomic replacement, rollback, and durability.
+6. **PIT & look-ahead safety**: `as_of <= available_at` with explicit timezone boundaries.
+7. **Trading calendar & holiday boundaries**: Vietnam exchange sessions, holidays, and closures.
+8. **Numeric precision & zero-division overflow**: Finite arithmetic, precision, and zero guards.
+9. **Concurrency & race condition resistance**: Lock ownership, worker isolation, and race safety.
+10. **VND_FULL price scale & unit invariance**: Dong-scale consistency without thousand-dong confusion.
+11. **Survivorship & delisting anomalies**: Delisted/frozen instruments without look-ahead.
+12. **CLI injection & flag smuggling sanitization**: Allowlisted identifiers and shell-safe arguments.
+13. **Schema drift & unexpected column mutation**: Strict schemas and immutable contracts.
+14. **Resource exhaustion & memory bounds**: Bounded input, response, and memory use.
+15. **Network timeout & 429 retry exhaustion**: Bounded retries and safe provider failure behavior.
+16. **Secret redaction & credential leak prevention**: Credential-safe logs, reports, and artifacts.
+17. **JEV routing input validation**: Role, risk, cycle, and model-focus type/range validation.
+18. **Model catalog & cross-tier allowlisting**: Lead/subagent choices remain role-specific and allowlisted.
+19. **Decision context binding & replay prevention**: Gate, role, risk, and session binding.
+20. **Decision schema & digest integrity**: Exact fields, canonical bytes, and SHA-256 verification.
+21. **Decision publication durability & rollback**: Temporary-file fsync, atomic replace, and cleanup.
+22. **Decision lock ownership & concurrency**: Live/stale owner checks and concurrent publisher isolation.
+23. **Provider retry & fallback safety**: Bounded 429/timeout retry and low-risk-only fallback.
+24. **JEV secret-safe prompt routing**: Sanitized task context and credential-safe routing evidence.

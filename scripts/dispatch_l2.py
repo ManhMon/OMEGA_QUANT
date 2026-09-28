@@ -20,6 +20,7 @@ import sys
 import json
 import re
 import sqlite3
+import stat
 import subprocess
 import tempfile
 import urllib.parse
@@ -31,6 +32,12 @@ from typing import Any, Literal, Mapping
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+from scripts.jev_model_router import (  # noqa: E402
+    ADVERSARIAL_DIRECTIVE_24D,
+    DIMENSION_MATRIX_HEADING_RE,
+    DIMENSION_COUNT,
+    build_dimension_focus_clause,
+)
 AGENT_ROOT = REPO_ROOT / ".agents" / "agent"
 SKILL_ROOT = REPO_ROOT / ".agents" / "skills"
 LESSONS_PATH = REPO_ROOT / ".agents" / "knowledge" / "lessons.jsonl"
@@ -45,7 +52,7 @@ GRAPH_MAX_QUERY_ENTITIES = 5
 GRAPH_IMPACT_MAX_RESULTS_LADDER: tuple[int, ...] = (100, 150, 200, 250)
 GRAPH_MAX_IMPACTED_FILES = 250
 GRAPH_MAX_OUTPUT_BYTES = 1_000_000
-GRAPH_MAX_JSON_BYTES = 500_000
+GRAPH_MAX_JSON_BYTES = 1_000_000
 GRAPH_IMPACT_PROTOCOL = "stable_recursive_bisection_v1"
 GRAPH_IMPACT_FIELDS = {
     "status", "summary", "changed_files", "changed_nodes", "impacted_nodes",
@@ -246,7 +253,7 @@ def _strict_repo_file(value, repo_root: Path, field: str) -> str:
 
 def _validated_results(payload: dict, repo_root: Path) -> list[dict]:
     results = payload.get("results")
-    if not isinstance(results, list) or len(results) > 100:
+    if not isinstance(results, list) or len(results) > GRAPH_IMPACT_MAX_RESULTS_LADDER[-1]:
         raise RuntimeError("graph query returned invalid results")
     for item in results:
         if not isinstance(item, dict):
@@ -260,7 +267,9 @@ def _validated_results(payload: dict, repo_root: Path) -> list[dict]:
                 text = _strict_text(item[field], field, 1000)
                 if not text or text.startswith("-"):
                     raise RuntimeError(f"graph query returned invalid {field}")
-    count = _strict_int(payload.get("result_count"), "result_count", maximum=100)
+    count = _strict_int(
+        payload.get("result_count"), "result_count", maximum=GRAPH_IMPACT_MAX_RESULTS_LADDER[-1]
+    )
     if count != len(results):
         raise RuntimeError("graph query result_count does not match results")
     if "results_omitted" in payload and _strict_int(
@@ -556,15 +565,62 @@ def _restore_graph_evidence(evidence_path: Path, previous: tuple[bytes | None, b
         raise RuntimeError("graph evidence rollback verification failed")
 
 
+def _acquire_graph_publish_lock(lock: Path) -> int:
+    if os.name != "nt":
+        from scripts.jev_model_router import _acquire_posix_lock
+
+        try:
+            return _acquire_posix_lock(lock, b"graph-flock-v1:", f"graph-flock-v1:{os.getpid()}".encode("ascii"), "graph")
+        except FileExistsError as exc:
+            raise RuntimeError("graph evidence locked by active publisher") from exc
+
+    import msvcrt
+
+    fd = os.open(lock, os.O_CREAT | os.O_RDWR | getattr(os, "O_BINARY", 0), 0o600)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise RuntimeError("graph evidence lock must be a regular file")
+        try:
+            os.lseek(fd, 128, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError as exc:
+            raise RuntimeError("graph evidence locked by active publisher") from exc
+        os.lseek(fd, 0, os.SEEK_SET)
+        previous = os.read(fd, 65)
+        if previous.isdigit() and _pid_alive(int(previous)):
+            raise RuntimeError("graph evidence locked by active publisher")
+        if previous.startswith(b"graph-msvcrt-v1:"):
+            owner = previous.removeprefix(b"graph-msvcrt-v1:")
+            if owner and not owner.isdigit():
+                raise RuntimeError("graph evidence lock owner unreadable")
+        elif previous and not previous.isdigit() and not b"graph-msvcrt-v1:".startswith(previous):
+            raise RuntimeError("graph evidence lock owner unreadable")
+        owner_bytes = f"graph-msvcrt-v1:{os.getpid()}".encode("ascii")
+        os.ftruncate(fd, 0)
+        os.lseek(fd, 0, os.SEEK_SET)
+        written = 0
+        while written < len(owner_bytes):
+            count = os.write(fd, owner_bytes[written:])
+            if count <= 0:
+                raise OSError("graph lock owner write made no progress")
+            written += count
+        os.fsync(fd)
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _release_graph_publish_lock(fd: int, lock: Path) -> None:
+    os.close(fd)
+
+
 def _publish_graph_evidence(evidence_path: Path, canonical: bytes, digest: str) -> tuple[tuple[bytes | None, bytes | None], int, Path]:
     """Publish a canonical pair; acquires publish lock BEFORE snapshotting previous pair,
     and returns (previous, publish_fd, publish_lock) so caller holds the lock continuously."""
     lock_path = evidence_path.with_suffix(".sha256")
     publish_lock = evidence_path.with_name(evidence_path.name + ".publish.lock")
-    try:
-        publish_fd = os.open(publish_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError as exc:
-        raise RuntimeError("graph evidence publication already active") from exc
+    publish_fd = _acquire_graph_publish_lock(publish_lock)
 
     try:
         previous = _pair_bytes(evidence_path)
@@ -592,11 +648,9 @@ def _publish_graph_evidence(evidence_path: Path, canonical: bytes, digest: str) 
         return previous, publish_fd, publish_lock
     except BaseException:
         try:
-            os.close(publish_fd)
+            _release_graph_publish_lock(publish_fd, publish_lock)
         except OSError:
             pass
-        finally:
-            publish_lock.unlink(missing_ok=True)
         raise
 
 
@@ -721,11 +775,9 @@ def run_graph_predispatch_gate(session_id: str, scope: str, repo_root: Path | No
             raise
     finally:
         try:
-            os.close(publish_fd)
+            _release_graph_publish_lock(publish_fd, publish_lock)
         except OSError:
             pass
-        finally:
-            publish_lock.unlink(missing_ok=True)
     return {
         "_repo_root": str(root),
         "path": evidence_path.relative_to(root).as_posix(),
@@ -748,10 +800,7 @@ def build_graph_prompt_evidence(evidence: dict) -> str:
         path = ensure_session_containment(root / public["path"], root)
         lock = ensure_session_containment(path.with_suffix(".sha256"), root)
         publish_lock = path.with_name(path.name + ".publish.lock")
-        try:
-            fd = os.open(publish_lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            raise RuntimeError("graph evidence locked by active publisher")
+        fd = _acquire_graph_publish_lock(publish_lock)
         try:
             try:
                 raw = path.read_bytes()
@@ -760,38 +809,14 @@ def build_graph_prompt_evidence(evidence: dict) -> str:
                 raise RuntimeError("graph evidence is unreadable") from exc
         finally:
             try:
-                os.close(fd)
+                _release_graph_publish_lock(fd, publish_lock)
             except OSError:
                 pass
-            finally:
-                publish_lock.unlink(missing_ok=True)
         actual = hashlib.sha256(raw).hexdigest()
         if declared != public.get("sha256") or actual != declared:
             raise RuntimeError("graph evidence integrity verification failed")
     compact = json.dumps(public, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
     return f"GRAPH EVIDENCE (SHA-256 bound, verify before use): {compact}."
-
-# Single source of truth for the mandatory adversarial testing directive,
-# embedded identically into every generated L2 and L3 dispatch command.
-ADVERSARIAL_DIRECTIVE_16D = (
-    "MANDATORY 16-DIMENSION ADVERSARIAL TESTING DIRECTIVE: Act adversarially by actively constructing and passing test cases across all 16 dimensions before submitting report: "
-    "(1) malformed/out-of-bounds types (NaN, Inf, strings, lists), "
-    "(2) invalid/directory I/O paths, "
-    "(3) corrupted/duplicate/partial checkpoint shards, "
-    "(4) fail-closed exit codes & error states, "
-    "(5) rollback/atomicity failures, "
-    "(6) PIT & look-ahead safety (as_of <= available_at), "
-    "(7) trading calendar & holiday boundaries, "
-    "(8) numeric precision & zero-division overflow, "
-    "(9) concurrency & race condition resistance, "
-    "(10) VND_FULL price scale & unit invariance, "
-    "(11) survivorship & delisting anomalies, "
-    "(12) CLI injection & flag smuggling sanitization, "
-    "(13) schema drift & unexpected column mutation, "
-    "(14) resource exhaustion & memory bounds, "
-    "(15) network timeout & 429 retry exhaustion, and "
-    "(16) secret redaction & credential leak prevention. "
-)
 
 # Fail-safe floor: always enforced even when lessons.jsonl is missing/corrupt/empty.
 STATIC_REGRESSION_CLASSES = [
@@ -1188,7 +1213,7 @@ VERDICT_FIELD_RE = re.compile(
 )
 VERDICT_TOKEN_RE = re.compile(r"(?i)\[(APPROVED|NEEDS_FIX)\]")
 MATRIX_ROW_RE = re.compile(
-    r"^\|\s*(?P<dimension>[1-9]|1[0-6])\s*\|\s*(?P<name>[^|\r\n]{1,120}?)\s*\|(?P<cells>.+)\|\s*$"
+    r"^\|\s*(?P<dimension>\d{1,3})\s*\|\s*(?P<name>[^|\r\n]{1,120}?)\s*\|(?P<cells>.+)\|\s*$"
 )
 FINDINGS_HEADING_RE = re.compile(r"(?im)^##[ \t]+(?P<blocking>Blocking[ \t]+)?Findings?[ \t]*$")
 FINDING_START_RE = re.compile(
@@ -1342,7 +1367,9 @@ def _extract_audit_findings(content: str, path: Path) -> tuple[AuditFinding, ...
 
 
 def _parse_dimensions(content: str, path: Path) -> tuple[tuple[tuple[int, str], ...], tuple[tuple[int, str], ...]]:
-    section = _extract_markdown_h2(content, re.compile(r"(?im)^##[ \t]+16-Dimension Adversarial Matrix[ \t]*$"))
+    section = _extract_markdown_h2(
+        content, DIMENSION_MATRIX_HEADING_RE
+    )
     if section is None:
         return (), ()
     results: dict[int, tuple[str, str]] = {}
@@ -1360,6 +1387,8 @@ def _parse_dimensions(content: str, path: Path) -> tuple[tuple[tuple[int, str], 
         if not states and any(re.search(r"\bN/?A\b", cell, re.IGNORECASE) for cell in cells.split("|")):
             states = ["PASS"]
         dimension, name = int(match.group("dimension")), match.group("name").strip()
+        if not 1 <= dimension <= DIMENSION_COUNT:
+            raise RuntimeError(f"audit dimension outside dynamic catalog: {path}")
         unique_states = sorted(set(states))
         if len(unique_states) != 1 or (dimension in results and results[dimension] != (name, unique_states[0])):
             raise RuntimeError(f"audit dimension matrix is conflicting: {path}")
@@ -1851,14 +1880,31 @@ def _parse_skills(value) -> list[str]:
     return skills
 
 
+def is_safe_repo_local_file(path: Path, local_root: Path, repo_root: Path) -> bool:
+    try:
+        repo = Path(os.path.abspath(repo_root))
+        root = Path(os.path.abspath(local_root))
+        candidate = Path(os.path.abspath(path))
+        if not root.is_relative_to(repo) or not candidate.is_relative_to(root):
+            return False
+        current = candidate
+        while current != repo:
+            if current.is_symlink():
+                return False
+            current = current.parent
+        return path.is_file() and path.resolve(strict=True).is_relative_to(root.resolve(strict=True))
+    except (OSError, RuntimeError, ValueError):
+        return False
+
+
 def resolve_l2_role(role_name: str, repo_root: Path | None = None) -> dict:
     """Resolve one exact repo-local L2 role and all declared repo-local skills."""
     validate_identifier(role_name, "role_name")
-    root = (repo_root or REPO_ROOT).resolve()
-    agent_root = (root / ".agents" / "agent").resolve() if repo_root else AGENT_ROOT.resolve()
-    skill_root = (root / ".agents" / "skills").resolve() if repo_root else SKILL_ROOT.resolve()
+    root = repo_root or REPO_ROOT
+    agent_root = root / ".agents" / "agent" if repo_root else AGENT_ROOT
+    skill_root = root / ".agents" / "skills" if repo_root else SKILL_ROOT
     role_path = agent_root / f"{role_name}.md"
-    if not role_path.is_file() or not role_path.resolve().is_relative_to(agent_root):
+    if not is_safe_repo_local_file(role_path, agent_root, root):
         raise RuntimeError(f"role spec is missing or outside REPO_AGENT_ROOT: {role_name}")
     try:
         fm = parse_frontmatter(role_path.read_text(encoding="utf-8"))
@@ -1878,7 +1924,7 @@ def resolve_l2_role(role_name: str, repo_root: Path | None = None) -> dict:
     skill_files = []
     for skill in skills:
         path = skill_root / skill / "SKILL.md"
-        if not path.is_file() or not path.resolve().is_relative_to(skill_root):
+        if not is_safe_repo_local_file(path, skill_root, root):
             raise RuntimeError(f"declared skill is missing or outside REPO_SKILL_ROOT: {skill}")
         try:
             path.read_text(encoding="utf-8")
@@ -1924,6 +1970,7 @@ def main():
         risk_reason = "token-saver flag active"
     else:
         risk, risk_reason = infer_risk(scope)
+    decision_risk = "low" if risk == "low" else "high"
 
     # Resolve identity before loading a bound decision; session binding prevents replay.
     try:
@@ -1935,6 +1982,7 @@ def main():
     session_id = f"l2_role{role_id}_{task_slug}_{today}"
     # Decision binding below rejects replay across role, gate, session, and risk.
 
+    jev_dimension_focus = None
     if model_decision_path:
         try:
             from scripts.jev_model_router import load_decision
@@ -1947,10 +1995,11 @@ def main():
                 expected_role="l2",
                 expected_gate=gate_name,
                 expected_session_id=session_id,
-                expected_risk=risk,
+                expected_risk=decision_risk,
             )
             model = decision["lead_model"]
             subagent_model = decision["subagent_model"]
+            jev_dimension_focus = decision.get("dimension_focus")
         except (OSError, ValueError, KeyError, UnicodeError) as exc:
             print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
             return 2
@@ -1975,7 +2024,7 @@ def main():
         _generate_and_print(
             roles, gate_name, task_desc, scope,
             session_id, lessons_block, risk, risk_reason, model, graph_evidence,
-            subagent_model=subagent_model,
+            subagent_model=subagent_model, jev_dimension_focus=jev_dimension_focus,
             token_saver=token_saver,
             dry_run=dry_run,
         )
@@ -1990,6 +2039,7 @@ def main():
 def _generate_and_print(roles, gate_name, task_desc, scope,
                         session_id, lessons_block, risk, risk_reason, model, graph_evidence,
                         subagent_model=DEFAULT_L2_SUBAGENT_MODEL,
+                        jev_dimension_focus: int | None = None,
                         token_saver: bool = False,
                         dry_run: bool = False):
     primary = roles[0]
@@ -2042,7 +2092,10 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
             f"required findings [{finding_summary}]."
         )
     else:
-        adversarial_clause = f"{anti_drip_clause}\n{ADVERSARIAL_DIRECTIVE_16D}"
+        adversarial_clause = f"{anti_drip_clause}\n{ADVERSARIAL_DIRECTIVE_24D}"
+    dimension_focus_clause = build_dimension_focus_clause(jev_dimension_focus)
+    if dimension_focus_clause:
+        adversarial_clause += f"\n{dimension_focus_clause}"
 
     prompt = (
         f"REPO_ROOT: {REPO_ROOT}. "

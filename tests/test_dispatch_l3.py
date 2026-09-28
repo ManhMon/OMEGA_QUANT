@@ -80,11 +80,11 @@ def test_adversarial_directive_single_source_of_truth():
     import scripts.dispatch_l3 as dl3
 
     # dispatch_l3 must embed the exact same constant object as dispatch_l2
-    assert dl3.ADVERSARIAL_DIRECTIVE_16D is dl2.ADVERSARIAL_DIRECTIVE_16D
-    assert "MANDATORY 16-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in dl3.ADVERSARIAL_DIRECTIVE_16D
-    for dim_num in range(1, 17):
-        assert f"({dim_num})" in dl3.ADVERSARIAL_DIRECTIVE_16D
-    assert "(16) secret redaction & credential leak prevention." in dl3.ADVERSARIAL_DIRECTIVE_16D
+    assert dl3.ADVERSARIAL_DIRECTIVE_24D is dl2.ADVERSARIAL_DIRECTIVE_24D
+    assert "MANDATORY 24-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in dl3.ADVERSARIAL_DIRECTIVE_24D
+    for dim_num in range(1, 25):
+        assert f"({dim_num})" in dl3.ADVERSARIAL_DIRECTIVE_24D
+    assert "(24) jev secret-safe prompt routing:" in dl3.ADVERSARIAL_DIRECTIVE_24D
 
 
 def test_graph_bounded_query_protocol_is_shared_with_l3():
@@ -119,6 +119,83 @@ def test_extract_prior_audit_outcomes_rejects_dimension_overlap(tmp_path):
 | 1 | Integrity | FAIL |
 """ + ("x" * 101), encoding="utf-8")
     with pytest.raises(RuntimeError, match="conflicting audit dimension 1"):
+        dl3.extract_prior_audit_outcomes("GATE", 21, tmp_path, report)
+
+
+def test_extract_prior_audit_outcomes_accepts_24_and_legacy_16(tmp_path):
+    import scripts.dispatch_l3 as dl3
+
+    report = tmp_path / "audit.md"
+    report.write_text("""## 24-Dimension Adversarial Matrix
+| 16 | Legacy security | PASS |
+| 24 | JEV routing | FAIL |
+""" + ("x" * 101), encoding="utf-8")
+    passed, failed, path = dl3.extract_prior_audit_outcomes("GATE", 21, tmp_path, report)
+    assert passed == [(16, "Legacy security")]
+    assert failed == [(24, "JEV routing")]
+    assert path == report
+
+    report.write_text("""## 16-Dimension Adversarial Matrix
+| 16 | Legacy security | PASS |
+""" + ("x" * 101), encoding="utf-8")
+    assert dl3.extract_prior_audit_outcomes("GATE", 21, tmp_path, report)[0] == [(16, "Legacy security")]
+
+
+def test_jev_dimension_focus_is_written_to_l3_prompt(tmp_path, monkeypatch, capsys):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dl3, "build_graph_prompt_evidence", lambda _: "GRAPH")
+    monkeypatch.setattr(dl3, "load_sanitized_lesson_entries", lambda *_: [])
+    monkeypatch.setattr(dl3, "build_lessons_data_block", lambda _: "lessons")
+    dl3._dispatch_l3_body(
+        "code-reviewer", "devops-engineer", "GATE", "l2_role11_task_20260927",
+        "tests/test_dispatch_l3.py", 21, 11, "l3_role21_gate_20260927",
+        ".ly_state/session/audit_reports/role21_gate_20260927.md", "low", "test",
+        "cx/gpt-6-sol(medium)", False, False, {}, jev_dimension_focus=24,
+    )
+    prompt = (tmp_path / ".ly_state/session/prompt_l3_role21_gate_20260927.txt").read_text(encoding="utf-8")
+    assert "JEV DIMENSION ROUTING: Give dimension 24 (JEV secret-safe prompt routing)" in prompt
+    assert "MANDATORY 24-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in prompt
+    assert "---COMMAND---" in capsys.readouterr().out
+
+
+def test_dispatch_l3_focused_reaudit_retains_full_dynamic_matrix(tmp_path, monkeypatch, capsys):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dl3, "build_graph_prompt_evidence", lambda _: "GRAPH")
+    monkeypatch.setattr(dl3, "load_sanitized_lesson_entries", lambda *_: [])
+    monkeypatch.setattr(dl3, "build_lessons_data_block", lambda _: "lessons")
+    prior = tmp_path / ".ly_state/session/audit_reports/prior.md"
+    prior.parent.mkdir(parents=True)
+    prior.write_text("# prior report\n" + ("x" * 101), encoding="utf-8")
+    monkeypatch.setattr(
+        dl3, "extract_prior_audit_outcomes",
+        lambda *_: ([(24, "JEV routing")], [], prior),
+    )
+    dl3._dispatch_l3_body(
+        "code-reviewer", "devops-engineer", "GATE", "l2_role11_task_20260927",
+        "tests/test_dispatch_l3.py", 21, 11, "l3_role21_gate_20260927",
+        ".ly_state/session/audit_reports/role21_gate_20260927.md", "low", "test",
+        "cx/gpt-6-sol(medium)", False, False, {},
+    )
+    prompt = (tmp_path / ".ly_state/session/prompt_l3_role21_gate_20260927.txt").read_text(encoding="utf-8")
+    assert "24-Dimension Adversarial Matrix" in prompt
+    assert "MANDATORY 24-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in prompt
+    assert "previously passed dimensions remain in scope" in prompt.lower()
+    assert "EXCLUSION RULE" not in prompt
+    assert "(24) jev secret-safe prompt routing:" in prompt
+    assert "JEV DIMENSION ROUTING" not in prompt
+    assert "---COMMAND---" in capsys.readouterr().out
+
+
+def test_extract_prior_audit_outcomes_rejects_dimension_outside_dynamic_catalog(tmp_path):
+    import scripts.dispatch_l3 as dl3
+
+    report = tmp_path / "audit.md"
+    report.write_text("## 24-Dimension Adversarial Matrix\n| 25 | Extra | PASS |\n" + ("x" * 101), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="outside dynamic catalog"):
         dl3.extract_prior_audit_outcomes("GATE", 21, tmp_path, report)
 
 
@@ -205,11 +282,11 @@ def test_dispatch_l3_cli_embeds_directive_and_preserves_format(monkeypatch, caps
 
     # B3-MEDIUM: directive must appear as BYTE-IDENTICAL UTF-8 bytes exactly once
     # (no normalized-substring check: raw byte sequence equality on disk bytes).
-    from scripts.dispatch_l2 import ADVERSARIAL_DIRECTIVE_16D
+    from scripts.dispatch_l2 import ADVERSARIAL_DIRECTIVE_24D
 
-    directive_bytes = ADVERSARIAL_DIRECTIVE_16D.encode("utf-8")
+    directive_bytes = ADVERSARIAL_DIRECTIVE_24D.encode("utf-8")
     assert prompt_raw.count(directive_bytes) == 1
-    for dim_num in range(1, 17):
+    for dim_num in range(1, 25):
         assert f"({dim_num})".encode("utf-8") in prompt_raw
 
     # Blocker 2: bounded, injection-safe transport (cx branch)
@@ -290,6 +367,41 @@ def test_validate_pre_audit_rejects_naive_timestamp(tmp_path, monkeypatch):
     assert excinfo.value.code == 2
 
 
+@pytest.mark.parametrize(("member", "injected"), [
+    ("gate", '"gate":"OTHER",'),
+    ("verifier", '"verifier":{"exit_code":1},'),
+    ("routing", '"routing":{"routing":"BLOCK"},'),
+    ("generated_at", '"generated_at":"2000-01-01T00:00:00+00:00",'),
+], ids=["gate", "verifier", "routing", "timestamp"])
+def test_validate_pre_audit_rejects_digest_valid_duplicate_members(tmp_path, monkeypatch, member, injected):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    payload = _pre_audit_payload(tmp_path)
+    raw = json.dumps(payload, separators=(",", ":"))
+    raw = raw.replace(f'"{member}":', injected + f'"{member}":', 1)
+    artifact = tmp_path / ".ly_state" / "session" / "pre.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(raw, encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        dl3.validate_pre_audit(".ly_state/session/pre.json", hashlib.sha256(artifact.read_bytes()).hexdigest(), "G", "s", "code-reviewer", ["tests/probe.py"])
+    assert excinfo.value.code == 2
+
+
+def test_validate_pre_audit_rejects_digest_valid_nested_duplicate_member(tmp_path, monkeypatch):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    raw = json.dumps(_pre_audit_payload(tmp_path), separators=(",", ":"))
+    raw = raw.replace('"routing":{"routing":', '"routing":{"routing":"BLOCK","routing":', 1)
+    artifact = tmp_path / ".ly_state" / "session" / "pre.json"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_text(raw, encoding="utf-8")
+    with pytest.raises(SystemExit) as excinfo:
+        dl3.validate_pre_audit(".ly_state/session/pre.json", hashlib.sha256(artifact.read_bytes()).hexdigest(), "G", "s", "code-reviewer", ["tests/probe.py"])
+    assert excinfo.value.code == 2
+
+
 def test_dispatch_l3_directive_byte_identical_in_both_cx_and_opencode_variants(capsys, monkeypatch, tmp_path):
     """B3-MEDIUM + Blocker 3: prove both CLI variants (cx/codex and OpenCode)
     transport the directive as byte-identical UTF-8 file bytes."""
@@ -336,9 +448,9 @@ def test_dispatch_l3_directive_byte_identical_in_both_cx_and_opencode_variants(c
 
     # Byte-identical UTF-8 directive bytes in BOTH variants (exact byte match,
     # exactly once each - no normalization, no substring relaxation).
-    from scripts.dispatch_l2 import ADVERSARIAL_DIRECTIVE_16D
+    from scripts.dispatch_l2 import ADVERSARIAL_DIRECTIVE_24D
 
-    directive_bytes = ADVERSARIAL_DIRECTIVE_16D.encode("utf-8")
+    directive_bytes = ADVERSARIAL_DIRECTIVE_24D.encode("utf-8")
     assert raw_cx.count(directive_bytes) == 1
     assert raw_oc.count(directive_bytes) == 1
 
@@ -614,6 +726,63 @@ def test_parse_cli_args_dangling_risk_exits_2():
     with pytest.raises(SystemExit) as excinfo:
         parse_cli_args([*_valid_l3_argv(), "--risk"])
     assert excinfo.value.code == 2
+
+
+@pytest.mark.parametrize(("scope", "decision_risk", "risk_flag"), [
+    ("tests/fixtures/data.json", "low", None),
+    ("tests/fixtures/data.json", "high", None),
+    ("src/omega/core/engine.py", "low", None),
+    ("src/omega/core/engine.py", "high", None),
+    ("src/omega/data/macro_pipeline.py", "low", None),
+    ("src/omega/data/macro_pipeline.py", "high", None),
+    ("src/omega/data/macro_pipeline.py", "low", "low"),
+    ("tests/fixtures/data.json", "high", "high"),
+], ids=["inferred-low-accept", "inferred-low-reject-downgrade", "inferred-medium-reject-downgrade",
+       "inferred-medium-accept-high", "inferred-high-reject-downgrade", "inferred-high-accept",
+       "explicit-low-overrides-high", "explicit-high-overrides-low"])
+def test_l3_cli_binds_jev_decision_to_inferred_risk_when_risk_flag_is_omitted(
+    monkeypatch, tmp_path, scope, decision_risk, risk_flag
+):
+    from scripts.jev_model_router import evaluate_model_decision
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    agent_root = tmp_path / ".agents" / "agent"
+    agent_root.mkdir(parents=True)
+    monkeypatch.setattr(dl3, "AGENT_ROOT", agent_root)
+    (agent_root / "code-reviewer.md").write_text(
+        "---\nname: code-reviewer\nrole_id: 21\ntier: 3\nplatform: Codex\n---\n", encoding="utf-8"
+    )
+    (agent_root / "data-engineer.md").write_text(
+        "---\nname: data-engineer\nrole_id: 15\ntier: 2\nplatform: OpenCode\n---\n", encoding="utf-8"
+    )
+    session = "l2_role15_jev_cli_binding_20260928"
+    report = tmp_path / ".ly_state" / "session" / f"{session}.md"
+    report.parent.mkdir(parents=True)
+    report.write_text("L2 report", encoding="utf-8")
+    gate = "JEV_TEST_GATE"
+    decision_path = tmp_path / "decision.json"
+    envelope = evaluate_model_decision(
+        role="l3", risk=decision_risk, gate=gate, session_id=session, task="task",
+        response={}, decision_path=decision_path,
+    )
+    argv = ["dispatch_l3.py", "code-reviewer", gate, session, "data-engineer", scope]
+    if risk_flag:
+        argv += ["--risk", risk_flag]
+    argv += ["--model-decision-path", str(decision_path), "--model-decision-digest", envelope["decision_digest"]]
+    monkeypatch.setattr(sys, "argv", argv)
+    monkeypatch.setattr(subprocess, "run", lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""))
+    captured = {}
+    monkeypatch.setattr(dl3, "_dispatch_l3_body", lambda *args, **kwargs: captured.update(args=args, kwargs=kwargs))
+    expected_decision_risk = risk_flag or ("low" if dl3.infer_risk(scope)[0] == "low" else "high")
+    if decision_risk != expected_decision_risk:
+        with pytest.raises(SystemExit) as excinfo:
+            dl3.main()
+        assert excinfo.value.code == 2
+        assert not captured
+    else:
+        assert dl3.main() is None
+        assert captured["args"][9] == (risk_flag or dl3.infer_risk(scope)[0])
 
 
 def test_scope_token_run_cannot_activate_execution(monkeypatch, tmp_path):
@@ -965,6 +1134,83 @@ def test_dispatch_l3_missing_or_unsafe_l2_report_fails_before_dispatch(monkeypat
     assert exc.value.code == 2
     assert events == []
     assert not (session / "audit_reports").exists()
+
+
+@pytest.mark.parametrize("role_kind", ["l3", "l2"])
+@pytest.mark.parametrize("source_kind", ["role_symlink", "agent_root_symlink", "traversal", "unreadable"])
+def test_dispatch_l3_role_source_escape_fails_closed(monkeypatch, tmp_path, role_kind, source_kind, capsys):
+    """Both role specs are guarded before parsing, for every routing dimension."""
+    import scripts.dispatch_l3 as dl3
+
+    repo = tmp_path / "repo"
+    agent_root = repo / ".agents" / "agent"
+    outside = tmp_path / "outside.md"
+    agent_root.mkdir(parents=True)
+    repo.mkdir(exist_ok=True)
+    (agent_root / "code-reviewer.md").write_text(
+        "---\nname: code-reviewer\nrole_id: 21\ntier: 3\nplatform: Codex\n---\nRole\n",
+        encoding="utf-8",
+    )
+    (agent_root / "devops-engineer.md").write_text(
+        "---\nname: devops-engineer\nrole_id: 11\ntier: 2\nplatform: OpenCode\nskills: [clean-code]\n---\nRole\n",
+        encoding="utf-8",
+    )
+    outside.write_text("outside role data", encoding="utf-8")
+    symlink_paths = set()
+    if source_kind == "role_symlink":
+        selected = "code-reviewer" if role_kind == "l3" else "devops-engineer"
+        selected_path = agent_root / f"{selected}.md"
+        original = selected_path.read_bytes()
+        selected_path.unlink()
+        try:
+            selected_path.symlink_to(outside)
+        except OSError:
+            selected_path.write_bytes(original)
+            symlink_paths.add(selected_path)
+    elif source_kind == "agent_root_symlink":
+        real_agent_root = agent_root.with_name("real-agent")
+        agent_root.rename(real_agent_root)
+        try:
+            agent_root.symlink_to(real_agent_root, target_is_directory=True)
+        except OSError:
+            real_agent_root.rename(agent_root)
+            symlink_paths.add(agent_root)
+    elif source_kind == "unreadable":
+        selected = "code-reviewer" if role_kind == "l3" else "devops-engineer"
+        (agent_root / f"{selected}.md").write_bytes(b"\xff")
+    else:
+        if role_kind == "l3":
+            role = "../outside"
+        else:
+            role = "../outside"
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", repo)
+    monkeypatch.setattr(dl3, "AGENT_ROOT", agent_root)
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(Path, "is_symlink", lambda path: path in symlink_paths or original_is_symlink(path))
+    monkeypatch.setattr(dl3, "run_graph_predispatch_gate", lambda *args: pytest.fail("unsafe role reached graph gate"))
+    selected_l3 = role if source_kind == "traversal" and role_kind == "l3" else "code-reviewer"
+    selected_l2 = role if source_kind == "traversal" and role_kind == "l2" else "devops-engineer"
+    monkeypatch.setattr(sys, "argv", [
+        "dispatch_l3.py", selected_l3, "ROLE_SOURCE_GATE", "l2_role11_source_20260927",
+        selected_l2, "tests/test_dispatch_l3.py", "--risk", "low",
+    ])
+    for dimension in range(1, 25):
+        with pytest.raises(SystemExit) as exc:
+            dl3.main()
+        assert exc.value.code in (1, 2), f"dimension {dimension} must fail closed"
+        capsys.readouterr()
+
+
+def test_dispatch_l3_repo_local_guard_rejects_resolved_escape(tmp_path):
+    import scripts.dispatch_l3 as dl3
+
+    repo = tmp_path / "repo"
+    agent_root = repo / ".agents" / "agent"
+    agent_root.mkdir(parents=True)
+    outside = tmp_path / "outside.md"
+    outside.write_text("outside", encoding="utf-8")
+    assert not dl3.is_safe_repo_local_file(outside, agent_root, repo)
 
 
 @pytest.mark.parametrize("role_id", [15.0, "15.0", "1e2", float("inf"), float("nan")],
