@@ -10,6 +10,7 @@ import numpy as np
 from typing import Dict, List, Any
 from dataclasses import dataclass
 import logging
+import time
 
 
 @dataclass
@@ -150,16 +151,18 @@ class MicrostructureRouter:
             adjusted_schedule.append(adj)
 
         # Re-normalize to ensure total quantity doesn't change
-        total_adjusted = sum(adj.get("target_quantity", 0) for adj in adjusted_schedule)
+        total_adjusted = sum(abs(adj.get("target_quantity", 0)) for adj in adjusted_schedule)
         total_original = sum(adj.get("quantity", 0) for adj in base_schedule)
 
-        if total_adjusted > 0 and total_original > 0:
-            factor = total_original / total_adjusted
-            for adj in adjusted_schedule:
-                # Maintain board-lot (100 shares) in VN market
-                new_qty = int(adj["target_quantity"] * factor)
-                new_qty = round(new_qty / 100) * 100
-                adj["quantity"] = new_qty
+        if total_adjusted and total_original:
+            factor = abs(total_original) / total_adjusted
+            sign = 1 if total_original > 0 else -1
+            remaining = abs(total_original)
+            for adj in adjusted_schedule[:-1]:
+                quantity = int(abs(adj["target_quantity"]) * factor)
+                adj["quantity"] = sign * quantity
+                remaining -= quantity
+            adjusted_schedule[-1]["quantity"] = sign * remaining
 
         return adjusted_schedule
 
@@ -173,21 +176,28 @@ class MicrostructureRouter:
         """
         Simple routing stub for compatibility with SmartRouter.
         """
+        if duration_minutes <= 0:
+            raise ValueError(f"duration_minutes must be positive, got {duration_minutes}")
+
         qty = order.get("quantity", 0)
         side = order.get("side", "BUY")
         symbol = order.get("symbol", "")
 
         # Generate slices
         n_slices = max(1, duration_minutes // 5)
-        slice_qty = qty // n_slices
-
         schedule = []
+        base_qty, remainder = divmod(abs(qty), n_slices)
+        sign = 1 if qty >= 0 else -1
+        start_time = float(kwargs.get("start_time", order.get("start_time", time.time())))
         for i in range(n_slices):
+            slice_qty = sign * (base_qty + (i < remainder))
+            offset_minutes = i * 5
             schedule.append({
                 "symbol": symbol,
                 "side": side,
                 "quantity": slice_qty,
-                "time_offset": i * 5
+                "time_offset": offset_minutes,
+                "scheduled_time": start_time + (offset_minutes * 60),
             })
         return schedule
 

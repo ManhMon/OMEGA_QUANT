@@ -53,6 +53,9 @@ class SmartRouter:
         """
         self.queue.append(order)
 
+        if duration_minutes <= 0:
+            raise ValueError(f"duration_minutes must be positive, got {duration_minutes}")
+
         micro = self.use_microstructure if use_microstructure is None else use_microstructure
         if micro:
             analyzer = orderbook_analyzer or OrderBookAnalyzer()
@@ -62,6 +65,10 @@ class SmartRouter:
                 duration_minutes=duration_minutes,
                 orderbook_analyzer=analyzer,
             )
+            now = time.time()
+            for child in child_orders:
+                if "scheduled_time" not in child and "time_offset" in child:
+                    child["scheduled_time"] = now + float(child["time_offset"]) * 60
         else:
             if algo == "TWAP":
                 child_orders = self._generate_twap_schedule(order, duration_minutes)
@@ -86,27 +93,23 @@ class SmartRouter:
             A list of child orders for TWAP execution.
         """
         quantity = int(order["quantity"])
+        if duration_minutes <= 0:
+            raise ValueError(f"duration_minutes must be positive, got {duration_minutes}")
         slices = duration_minutes // 5  # Example: 1 slice every 5 minutes
         if slices <= 0:
             slices = 1
 
-        slice_qty = int(quantity / slices)
-        # Round slice_qty to nearest 100 for valid board lots (simplified logic here, ideally OrderGenerator handles this globally)
-        slice_qty = int(round(slice_qty / 100) * 100)
-
-        if slice_qty == 0 and quantity != 0:
-            slice_qty = 100 if quantity > 0 else -100
-
         child_orders: List[Dict[str, Union[str, int, float]]] = []
-        remaining_qty = quantity
         start_time = time.time()
 
+        abs_quantity = abs(quantity)
+        sign = 1 if quantity >= 0 else -1
+        board_lots = abs_quantity // 100
+        odd_qty = abs_quantity % 100
+
+        base_lots, remainder = divmod(board_lots, slices)
         for i in range(slices):
-            if i == slices - 1:
-                # Last slice takes the remaining quantity to avoid rounding errors
-                qty = remaining_qty
-            else:
-                qty = slice_qty
+            qty = sign * (base_lots + (i < remainder)) * 100
 
             if qty == 0:
                 continue
@@ -115,7 +118,15 @@ class SmartRouter:
             child_order["quantity"] = qty
             child_order["scheduled_time"] = start_time + (i * 5 * 60) # 5 minutes interval
             child_orders.append(child_order)
-            remaining_qty -= qty
+
+        if odd_qty > 0:
+            odd_child = order.copy()
+            odd_child["quantity"] = sign * odd_qty
+            odd_child["scheduled_time"] = min(
+                start_time + duration_minutes * 60,
+                start_time + (len(child_orders) * 5 * 60),
+            )
+            child_orders.append(odd_child)
 
         return child_orders
 
@@ -135,6 +146,8 @@ class SmartRouter:
             A list of child orders for VWAP execution.
         """
         quantity = int(order["quantity"])
+        if duration_minutes <= 0:
+            raise ValueError(f"duration_minutes must be positive, got {duration_minutes}")
         slices = duration_minutes // 5  # 1 slice every 5 minutes
         if slices <= 0:
             slices = 1
@@ -151,21 +164,26 @@ class SmartRouter:
             volume_profile = [max(0.1, p) for p in profile]  # Floor at 10%
 
         # Normalize profile
+        if any(weight < 0 for weight in volume_profile):
+            raise ValueError("VWAP volume profile weights must be non-negative")
         total_profile = sum(volume_profile)
         if total_profile <= 0:
-            volume_profile = [1.0 / slices for _ in range(slices)]
-            total_profile = 1.0
+            raise ValueError("VWAP volume profile must have positive sum")
         volume_profile = [vp / total_profile for vp in volume_profile]
 
         # Allocate quantity according to profile
         child_orders: List[Dict[str, Union[str, int, float]]] = []
-        remaining_qty = quantity
         start_time = time.time()
+        remaining_qty = quantity
 
         for i in range(min(slices, len(volume_profile))):
             allocated_qty = int(quantity * volume_profile[i])
             # Round to board lot
             allocated_qty = int(round(allocated_qty / 100) * 100)
+            if quantity >= 0:
+                allocated_qty = max(0, min(allocated_qty, remaining_qty))
+            else:
+                allocated_qty = min(0, max(allocated_qty, remaining_qty))
 
             if i == min(slices, len(volume_profile)) - 1:
                 # Last slice takes remainder
@@ -192,6 +210,8 @@ class SmartRouter:
         remaining_schedule = []
 
         for child_order in self.schedule:
+            if "scheduled_time" not in child_order and "time_offset" in child_order:
+                child_order["scheduled_time"] = current_time + float(child_order["time_offset"]) * 60
             scheduled_time = float(child_order.get("scheduled_time", 0))
             if current_time >= scheduled_time:
                 executable_orders.append(child_order)

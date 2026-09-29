@@ -124,9 +124,21 @@ class EnsembleOptimizer:
         Returns:
             (optimal_weights, utility_score)
         """
-        # Stack scores
-        score_matrix = np.column_stack([scores[f"model_{i}"] for i in range(n_models)])
-        
+        if (type(n_models) is not int or n_models < 1
+                or n_models * self.config.min_weight > 1
+                or n_models * self.config.max_weight < 1
+                or not 0 <= self.config.min_weight <= self.config.max_weight <= 1):
+            raise ValueError("infeasible optimizer configuration")
+        if set(scores) != {f"model_{i}" for i in range(n_models)}:
+            raise ValueError("scores must contain exactly one array per model")
+        returns = np.asarray(returns, dtype=float)
+        score_matrix = np.column_stack([np.asarray(scores[f"model_{i}"], dtype=float) for i in range(n_models)])
+        if (returns.ndim != 1 or not len(returns) or score_matrix.shape[0] != len(returns)
+                or not np.isfinite(returns).all() or not np.isfinite(score_matrix).all()):
+            raise ValueError("scores and returns must be finite, aligned arrays")
+        if self.previous_weights is not None and (self.previous_weights.shape != (n_models,)
+                or not np.isfinite(self.previous_weights).all()):
+            raise ValueError("previous_weights must be finite and match n_models")
         # Initial weights
         x0 = np.ones(n_models) / n_models
         
@@ -148,6 +160,12 @@ class EnsembleOptimizer:
             constraints=constraints
         )
         
+        if (not result.success or result.x is None or not np.isfinite(result.x).all()
+                or abs(np.sum(result.x) - 1.0) > 1e-6
+                or (result.x < self.config.min_weight - 1e-6).any()
+                or (result.x > self.config.max_weight + 1e-6).any()
+                or not np.isfinite(result.fun)):
+            raise RuntimeError(f"SLSQP optimization failed: {result.message}")
         weights = result.x
         
         # Apply smoothing
