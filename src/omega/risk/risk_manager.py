@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable, Tuple, Optional, List, Dict, Any
-from datetime import datetime
+from datetime import datetime, timezone
 import json
 import os
+import tempfile
+import stat
+import logging
 import numpy as np
 
 from ..quant.portfolio.position_sizer import TargetPortfolio
@@ -21,9 +24,12 @@ from .validators import (
 from .covariance_estimator import CovarianceEstimator
 from .cvar import CVaRManager
 from .liquidity_stress import LiquidityStressValidator
+from .contagion_risk_validator import event_concentration_advisory
 # FIXED (v21.28.1): Unified risk modules - consolidated to single directory
 from .volatility_targeter import VolatilityTargeter
 from .circuit_breaker import DrawdownCircuitBreaker
+
+logger = logging.getLogger(__name__)
 
 
 from enum import Enum
@@ -55,6 +61,7 @@ class RiskManagerConfig:
     var_limit_pct: float = CAPITAL_SETTING.daily_var_limit_pct
     var_confidence: float = 0.95
     risk_log_path: str = "state/risk_events.jsonl"
+    event_advisory_ledger_path: str = "state/event_advisories"
     enable_covariance_check: bool = True
     enable_cvar_check: bool = True
     enable_liquidity_stress: bool = True
@@ -123,12 +130,85 @@ class RiskManager:
             "approved": approved,
             "details": details
         }
+        with open(self.config.risk_log_path, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event) + "\n")
+
+    def evaluate_event_advisory(self, event: dict, target_portfolio: TargetPortfolio,
+                                cutoff: datetime) -> dict:
+        """Publish a PIT-bound, advisory-only decision; publication failure is an error."""
+        advisory = event_concentration_advisory(event, target_portfolio.get_symbol_weights(), cutoff)
+        ledger = self.config.event_advisory_ledger_path
+        if not isinstance(ledger, str) or not ledger:
+            raise ValueError("event advisory ledger path required")
+        if os.name == "nt":
+            # ponytail: POSIX local filesystem required for durable, exclusive links; use a transactional store on Windows.
+            raise OSError("durable advisory publication is unsupported on Windows; requires POSIX local filesystem")
+        os.makedirs(ledger, exist_ok=True)
+        if not stat.S_ISDIR(os.lstat(ledger).st_mode):
+            raise OSError("event advisory ledger must be a directory")
+        path = os.path.join(ledger, advisory["decision_id"] + ".json")
+        canonical_event = {**event, "event_versions": sorted(event["event_versions"]),
+                           "entities": sorted(event["entities"]),
+                           "available_at": event["available_at"].astimezone(timezone.utc).isoformat(),
+                           "expires_at": event["expires_at"].astimezone(timezone.utc).isoformat()}
+        payload = json.dumps({"event": canonical_event, "advisory": advisory,
+                              "cutoff": cutoff.astimezone(timezone.utc).isoformat()}, sort_keys=True, default=str).encode("utf-8")
+        def acknowledge_existing() -> dict:
+            info = os.lstat(path)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > len(payload):
+                raise OSError("existing event advisory is not a bounded regular file")
+            flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+            existing_fd = os.open(path, flags)
+            try:
+                opened = os.fstat(existing_fd)
+                if not stat.S_ISREG(opened.st_mode) or opened.st_size > len(payload):
+                    raise OSError("existing event advisory is not a bounded regular file")
+                with os.fdopen(existing_fd, "rb") as existing:
+                    existing_fd = -1
+                    if existing.read(len(payload) + 1) != payload:
+                        raise FileExistsError("event advisory conflicts with existing ledger payload")
+            finally:
+                if existing_fd >= 0:
+                    os.close(existing_fd)
+            directory_fd = os.open(ledger, os.O_RDONLY)
+            try:
+                os.fsync(directory_fd)
+            finally:
+                os.close(directory_fd)
+            return advisory
+
+        if os.path.lexists(path):
+            return acknowledge_existing()
+        fd, temporary = tempfile.mkstemp(prefix=".advisory-", suffix=".tmp", dir=ledger)
+        published = False
         try:
-            with open(self.config.risk_log_path, "a", encoding="utf-8") as f:
-                f.write(json.dumps(event) + "\n")
-        except Exception:
-            # Fail-safe: if logging fails, continue without breaking risk management
-            pass
+            with os.fdopen(fd, "wb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            # ponytail: hard-link publication requires a local filesystem; use a transactional store for network mounts.
+            try:
+                os.link(temporary, path)
+                published = True
+            except FileExistsError:
+                return acknowledge_existing()
+            try:
+                directory_fd = os.open(ledger, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+            except OSError:
+                # Publication is visible. Recover by checking bytes and retrying the directory sync.
+                return acknowledge_existing()
+        finally:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                if not published:
+                    raise
+                logger.warning("published advisory staging cleanup failed")
+        return advisory
 
     def _validate_portfolio_with_tiers(self, target_portfolio: TargetPortfolio, market_regime: str = None) -> RiskReport:
         """

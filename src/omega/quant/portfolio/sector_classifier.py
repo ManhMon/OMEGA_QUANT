@@ -15,10 +15,15 @@ COMPLIANCE:
 
 import logging
 import json
+import os
+import tempfile
+import stat
 from typing import Dict, List, Any, Optional
 from dataclasses import dataclass
 from pathlib import Path
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from datetime import datetime as _datetime_type
+from zoneinfo import ZoneInfo
 import pandas as pd
 import numpy as np
 # Direct vnstock import retained here for Vnstock().stock().company.profile() chain;
@@ -32,42 +37,109 @@ logger = logging.getLogger(__name__)
 CACHE_DIR = Path(__file__).parent.parent.parent.parent / 'data' / 'cache'
 METADATA_CACHE_FILE = CACHE_DIR / 'structure_metadata_cache_v21.json'
 CACHE_EXPIRY_DAYS = 7
+MAX_METADATA_CACHE_BYTES = 8 * 1024 * 1024
+MAX_METADATA_CACHE_WRITE_BYTES = MAX_METADATA_CACHE_BYTES // 2
+MAX_METADATA_CACHE_ENTRIES = 10000
+
+
+def _sync_cache_directory() -> None:
+    if os.name == 'nt':
+        # ponytail: Windows replace is atomic, not power-loss durable here; deploy persistent cache on POSIX.
+        return
+    fd = os.open(CACHE_DIR, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _load_metadata_cache() -> Dict[str, Dict[str, Dict[str, str]]]:
     """Load metadata cache with [symbol][date] structure.
     
-    Historical data is immutable - no expiry check for past dates.
+    Historical entries require trusted availability provenance.
     """
     try:
         if not METADATA_CACHE_FILE.exists():
             return {}
-        with open(METADATA_CACHE_FILE, 'r', encoding='utf-8') as f:
-            cache_data = json.load(f)
+        info = METADATA_CACHE_FILE.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_METADATA_CACHE_BYTES:
+            raise ValueError("invalid metadata cache file")
+        with open(METADATA_CACHE_FILE, 'rb') as f:
+            if not stat.S_ISREG(os.fstat(f.fileno()).st_mode):
+                raise ValueError("invalid metadata cache file")
+            raw = f.read(MAX_METADATA_CACHE_BYTES + 1)
+        if len(raw) > MAX_METADATA_CACHE_BYTES:
+            raise ValueError("metadata cache too large")
+        cache_data = json.loads(raw.decode('utf-8'))
         
-        # Historical data is immutable - return cache as-is
-        return cache_data.get('metadata', {})
-    except Exception as e:
-        logger.error(f"Failed to load cache: {e}")
-        return {}
+        metadata = cache_data['metadata']
+        if not isinstance(metadata, dict) or any(not isinstance(dates, dict) for dates in metadata.values()):
+            raise ValueError("invalid metadata cache schema")
+        return metadata
+    except (OSError, ValueError, TypeError) as e:
+        raise ValueError("Failed to load metadata cache") from e
 
 def _save_metadata_cache(metadata: Dict[str, Dict[str, Dict[str, str]]]) -> None:
     """Save metadata cache to disk."""
+    now = datetime.now(timezone.utc)
+    cutoff = now - timedelta(days=CACHE_EXPIRY_DAYS)
+    entries = []
+    for symbol, dates in metadata.items():
+        for key, value in dates.items():
+            key = key.isoformat() if isinstance(key, _datetime_type) else str(key)
+            try:
+                observed = _datetime_type.fromisoformat(key)
+            except ValueError:
+                continue
+            if observed.tzinfo is None:
+                observed = observed.replace(tzinfo=timezone.utc)
+            observed = observed.astimezone(timezone.utc)
+            if observed >= cutoff:
+                entries.append((observed, symbol, key, value))
+    entries.sort(key=lambda entry: entry[0], reverse=True)
+    normalized = {}
+    # ponytail: retain newest entries within half the reader ceiling; add streaming storage if the active universe grows beyond this budget.
+    budget = MAX_METADATA_CACHE_WRITE_BYTES - 256
+    for index, (_, symbol, key, value) in enumerate(entries):
+        if index >= MAX_METADATA_CACHE_ENTRIES:
+            break
+        entry_bytes = len(json.dumps({symbol: {key: value}}, ensure_ascii=False).encode('utf-8')) + 8
+        if entry_bytes > MAX_METADATA_CACHE_WRITE_BYTES - 256:
+            raise ValueError("metadata cache entry exceeds write limit")
+        if entry_bytes > budget:
+            continue
+        normalized.setdefault(symbol, {})[key] = value
+        budget -= entry_bytes
+    payload = json.dumps({'timestamp': now.isoformat(), 'metadata': normalized},
+                         indent=2, ensure_ascii=False)
+    if len(payload.encode('utf-8')) > MAX_METADATA_CACHE_WRITE_BYTES:
+        raise ValueError("metadata cache exceeds write limit")
+    CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    fd, temporary = tempfile.mkstemp(dir=CACHE_DIR, prefix=METADATA_CACHE_FILE.name, suffix='.tmp')
     try:
-        CACHE_DIR.mkdir(parents=True, exist_ok=True)
-        cache_data = {
-            'timestamp': datetime.now().isoformat(),
-            'metadata': metadata
-        }
-        with open(METADATA_CACHE_FILE, 'w', encoding='utf-8') as f:
-            json.dump(cache_data, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        logger.error(f"Failed to save cache: {e}")
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, METADATA_CACHE_FILE)
+        try:
+            _sync_cache_directory()
+        except OSError:
+            # The new cache is already visible; retry durability before reporting failure.
+            _sync_cache_directory()
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
 
 def get_structure_metadata(
     symbols: List[str], 
-    as_of_date: str,
-    use_cache: bool = True
+    as_of_date: str | datetime,
+    use_cache: bool = True,
+    *,
+    available_at: datetime | None = None,
 ) -> Dict[str, Dict[str, str]]:
     """
     Fetch structural metadata as of a specific date.
@@ -77,22 +149,55 @@ def get_structure_metadata(
     
     Returns: {symbol: {sector_code, exchange_code}}
     """
+    # Validate before cache access or network I/O.
+    vn_tz = ZoneInfo("Asia/Ho_Chi_Minh")
+    if isinstance(as_of_date, _datetime_type):
+        if as_of_date.tzinfo is None or as_of_date.utcoffset() is None:
+            raise ValueError("as_of_date datetime must be timezone-aware")
+        as_of_ts = as_of_date.astimezone(timezone.utc)
+        as_of_dt = as_of_ts.astimezone(vn_tz).date()
+    elif type(as_of_date) is str and len(as_of_date) == 10:
+        try:
+            as_of_dt = _datetime_type.strptime(as_of_date, '%Y-%m-%d').date()
+        except ValueError as exc:
+            raise ValueError("invalid as_of_date") from exc
+        if as_of_dt.isoformat() != as_of_date:
+            raise ValueError("invalid as_of_date")
+        as_of_ts = _datetime_type.combine(as_of_dt, _datetime_type.max.time(), tzinfo=vn_tz).astimezone(timezone.utc)
+    else:
+        raise ValueError("as_of_date must be YYYY-MM-DD or timezone-aware datetime")
+    today = _datetime_type.now(vn_tz).date()
+    is_historical = as_of_dt < today
+    if not is_historical:
+        if as_of_ts is None or not isinstance(available_at, _datetime_type) or available_at.tzinfo is None or available_at.utcoffset() is None:
+            raise ValueError("same-day metadata requires timezone-aware as_of_date and available_at")
+        if available_at.astimezone(timezone.utc) > as_of_ts:
+            raise ValueError("metadata available_at is later than as_of_date")
+
     cache = _load_metadata_cache() if use_cache else {}
     metadata_snapshot = {}
     symbols_to_fetch = []
-    
-    # Parse as_of_date to check if it's historical
-    try:
-        as_of_dt = datetime.strptime(as_of_date, '%Y-%m-%d').date()
-        today = datetime.now().date()
-        is_historical = as_of_dt < today
-    except Exception:
-        logger.warning(f"Invalid date format: {as_of_date}, treating as current")
-        is_historical = False
 
+    cache_date = as_of_date.isoformat() if isinstance(as_of_date, _datetime_type) else as_of_date
     for symbol in symbols:
-        if symbol in cache and as_of_date in cache[symbol]:
-            metadata_snapshot[symbol] = cache[symbol][as_of_date]
+        cached = cache.get(symbol, {}).get(cache_date)
+        if cached is not None:
+            if (not isinstance(cached, dict) or
+                    cached.get("availability_source") not in
+                    (("historical_snapshot",) if is_historical else ("historical_snapshot", "observed"))):
+                metadata_snapshot[symbol] = {'sector_code': 'UNKNOWN', 'exchange_code': 'UNKNOWN'}
+                continue
+            try:
+                cached_available_at = _datetime_type.fromisoformat(cached.get("available_at"))
+                if cached_available_at.tzinfo is None or cached_available_at.utcoffset() is None:
+                    raise ValueError
+            except (TypeError, ValueError):
+                metadata_snapshot[symbol] = {'sector_code': 'UNKNOWN', 'exchange_code': 'UNKNOWN'}
+                continue
+            if cached_available_at.astimezone(timezone.utc) > as_of_ts or cached.get('sector_code') is None or cached.get('exchange_code') is None:
+                metadata_snapshot[symbol] = {'sector_code': 'UNKNOWN', 'exchange_code': 'UNKNOWN'}
+                continue
+            metadata_snapshot[symbol] = {key: cached[key] for key in ('sector_code', 'exchange_code')}
         else:
             # PIT VIOLATION CHECK: Don't fetch live data for historical dates
             if is_historical:
@@ -106,6 +211,8 @@ def get_structure_metadata(
 
     # Only fetch if as_of_date >= today
     logger.info(f"Fetching live metadata for {len(symbols_to_fetch)} symbols as of {as_of_date}")
+    if as_of_ts < _datetime_type.now(timezone.utc):
+        raise ValueError("intraday replay unsupported: profile observed after as_of_date")
     stock = Vnstock()
     
     for symbol in symbols_to_fetch:
@@ -114,6 +221,9 @@ def get_structure_metadata(
             if symbol and symbol != 'UNKNOWN' and not pd.isna(symbol):
                 profile = stock.stock(symbol=symbol, source='VCI').company.profile()
                 if profile is not None and not profile.empty:
+                    observed_at = _datetime_type.now(timezone.utc)
+                    if as_of_ts < observed_at:
+                        raise ValueError("intraday replay unsupported: profile observed after as_of_date")
                     sector = profile.get('industryName', 'UNKNOWN')
                     exchange = profile.get('exchange', 'UNKNOWN')
                     if isinstance(sector, pd.Series): sector = sector.iloc[0] if not sector.empty else 'UNKNOWN'
@@ -121,13 +231,20 @@ def get_structure_metadata(
                     
                     symbol_data = {
                         'sector_code': str(sector) if pd.notna(sector) else 'UNKNOWN',
-                        'exchange_code': str(exchange) if pd.notna(exchange) else 'UNKNOWN'
+                        'exchange_code': str(exchange) if pd.notna(exchange) else 'UNKNOWN',
+                        'available_at': observed_at.isoformat(),
+                        'availability_source': 'observed'
                     }
             
             metadata_snapshot[symbol] = symbol_data
             if symbol not in cache: cache[symbol] = {}
-            cache[symbol][as_of_date] = symbol_data
+            cache[symbol][cache_date] = symbol_data
             
+        except ValueError as e:
+            if str(e).startswith("intraday replay unsupported"):
+                raise
+            logger.error("Error fetching metadata for %s: %s", symbol, e)
+            metadata_snapshot[symbol] = symbol_data
         except Exception as e:
             logger.error(f"Error fetching {symbol}: {e}")
             metadata_snapshot[symbol] = symbol_data
@@ -163,24 +280,24 @@ class SectorClassifier:
         Returns:
             {symbol: sector_code} (e.g., "HPG": "C0612" for Steel)
         """
-        if self._sector_cache:
-            return self._sector_cache
+        requested = set(symbols)
+        missing = requested.difference(self._sector_cache)
+        if not missing:
+            return {symbol: self._sector_cache[symbol] for symbol in symbols}
         
         # Try to fetch from vnstock (VCI source) — vnstock 4.x exposes Listing at top level
         try:
             from vnstock import Listing
             lst = Listing(source='VCI')
-            df_industries = lst.industries_icb()
-            
             # Lấy mapping symbols -> industries
             df_symbols = lst.symbols_by_industries()
             if df_symbols is not None:
                 # Map symbol -> sector
                 for _, row in df_symbols.iterrows():
                     symbol = row.get('symbol')
-                    if symbol in symbols:
+                    if symbol in missing:
                         # Get ICB code based on depth
-                        if self.config.icb_depth >= 1:
+                        if self.config.icb_depth == 1:
                             sector = row.get('industry_code_sector', row.get('industry_code', ''))
                         elif self.config.icb_depth == 2:
                             sector = row.get('industry_code_group', row.get('industry_code', ''))
@@ -191,7 +308,7 @@ class SectorClassifier:
         except Exception as e:
             print(f"Could not fetch sector data from vnstock: {e}")
         
-        return self._sector_cache
+        return {symbol: self._sector_cache.get(symbol, 'UNKNOWN') for symbol in symbols}
 
     def get_sector_mapping_pit(
         self,
@@ -203,10 +320,10 @@ class SectorClassifier:
     ) -> Dict[str, str]:
         """Return symbol->sector snapshot as of date using latest effective record <= as_of.
 
-        If no history provided, falls back to in-memory cache.
+        Without history, no current cache classification is safe for a historical snapshot.
         """
         if sector_history is None:
-            return dict(self._sector_cache)
+            return {}
 
         if sector_history.empty:
             return {}
@@ -221,7 +338,6 @@ class SectorClassifier:
         history = history.sort_values([symbol_col, effective_col])
         latest = history.groupby(symbol_col, sort=False).tail(1)
         mapping = dict(zip(latest[symbol_col].astype(str), latest[sector_col].astype(str)))
-        self._sector_cache.update(mapping)
         return mapping
 
     def compute_rs_ex_top3(
@@ -459,6 +575,11 @@ class SectorClassifier:
         # 1. PIT Price Bucket (Using T-1 Lagged Close)
         if 'date' in df_out.columns:
             df_out = df_out.sort_values(['date', symbol_col])
+            if as_of_date is not None:
+                cutoff = pd.Timestamp(as_of_date)
+                cutoff = cutoff.tz_localize('UTC') if cutoff.tzinfo is None else cutoff.tz_convert('UTC')
+                if (pd.to_datetime(df_out['date'], utc=True) > cutoff).any():
+                    raise ValueError('feature date exceeds as_of_date')
             df_out['close_lag1'] = df_out.groupby(symbol_col)[price_col].shift(1)
         else:
             # No date column - cannot compute lag safely, must fail
@@ -477,11 +598,38 @@ class SectorClassifier:
         df_out.loc[df_out['close_lag1'].isna(), 'price_bucket'] = 'UNKNOWN'
         df_out.drop(columns=['close_lag1'], inplace=True)
 
-        # 2. Vectorized Metadata Mapping (pd.merge) - Handle empty metadata_map
+        # 2. Only independently sourced historical snapshots may classify dated rows.
         if metadata_map:
-            meta_df = pd.DataFrame.from_dict(metadata_map, orient='index').reset_index()
-            meta_df.columns = [symbol_col, 'sector_code', 'exchange_code']
-            df_out = pd.merge(df_out, meta_df, on=symbol_col, how='left')
+            snapshots = []
+            for symbol, entries in metadata_map.items():
+                if not isinstance(entries, dict):
+                    raise ValueError('historical metadata snapshot required')
+                for observed, entry in entries.items():
+                    if not isinstance(entry, dict) or entry.get('availability_source') != 'historical_snapshot':
+                        continue
+                    effective = pd.Timestamp(observed)
+                    try:
+                        available = pd.Timestamp(entry['available_at'])
+                    except (KeyError, TypeError, ValueError) as exc:
+                        raise ValueError('metadata available_at required') from exc
+                    if available.tzinfo is None:
+                        raise ValueError('metadata available_at must be timezone-aware')
+                    if effective.tzinfo is None:
+                        effective = effective.tz_localize('UTC')
+                    # Both the effective date and the source availability bound the first usable row.
+                    usable_at = max(effective.tz_convert('UTC'), available.tz_convert('UTC'))
+                    snapshots.append({symbol_col: symbol, 'available_at': usable_at.tz_localize(None),
+                                       'sector_code': entry['sector_code'], 'exchange_code': entry['exchange_code']})
+            if snapshots:
+                meta_df = pd.DataFrame(snapshots).sort_values('available_at')
+                dates = pd.to_datetime(df_out['date'], utc=True).dt.tz_localize(None)
+                df_out['_row_time'] = dates
+                df_out = pd.merge_asof(df_out.sort_values('_row_time'), meta_df,
+                                       left_on='_row_time', right_on='available_at', by=symbol_col,
+                                       direction='backward').drop(columns=['_row_time', 'available_at'])
+            else:
+                df_out['sector_code'] = 'UNKNOWN'
+                df_out['exchange_code'] = 'UNKNOWN'
         else:
             # Empty metadata_map - create columns with UNKNOWN
             logger.warning("Empty metadata_map provided, filling with UNKNOWN")

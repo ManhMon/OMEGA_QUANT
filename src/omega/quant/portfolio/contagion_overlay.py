@@ -40,11 +40,28 @@ def compute_correlation_spike_exposure(
     Returns:
         T-length array of exposure multipliers.
     """
+    if not isinstance(returns_matrix, np.ndarray) or returns_matrix.ndim != 2 or not np.issubdtype(returns_matrix.dtype, np.number):
+        raise ValueError("returns_matrix must be a numeric 2D ndarray")
+    if not np.isfinite(returns_matrix).all():
+        raise ValueError("returns_matrix must contain only finite values")
+    if type(lookback) is not int or lookback < 2:
+        raise ValueError("lookback must be an integer >= 2")
+    if not np.isfinite(spike_threshold_std) or spike_threshold_std < 0:
+        raise ValueError("spike_threshold_std must be finite and non-negative")
+    if not np.isfinite(spike_exposure) or not 0 <= spike_exposure <= 1:
+        raise ValueError("spike_exposure must be finite and within [0, 1]")
+    if not np.isfinite(normal_exposure) or not 0 <= normal_exposure <= 1:
+        raise ValueError("normal_exposure must be finite and within [0, 1]")
     T, N = returns_matrix.shape
+    if T < 1 or N < 1:
+        raise ValueError("returns_matrix dimensions must be non-empty")
     exposures = np.full(T, normal_exposure)
 
     if T < lookback + 60 or N < 5:
         return exposures
+
+    if np.any(np.ptp(returns_matrix, axis=0) == 0):
+        raise ValueError("returns_matrix contains zero-variance asset returns")
 
     # Compute rolling average pairwise correlation (vectorized)
     avg_corrs = np.full(T, np.nan)
@@ -53,9 +70,15 @@ def compute_correlation_spike_exposure(
         window = returns_matrix[t - lookback:t]
         # Fast average correlation: use corrcoef
         corr_matrix = np.corrcoef(window.T)
+        if not np.isfinite(corr_matrix).all():
+            logger.error("Non-finite correlation at bar %d; zeroing exposure", t)
+            return np.zeros(T, dtype=float)
         # Average off-diagonal
         mask = ~np.eye(N, dtype=bool)
         avg_corr = corr_matrix[mask].mean()
+        if not np.isfinite(avg_corr):
+            logger.error("Non-finite average correlation at bar %d; zeroing exposure", t)
+            return np.zeros(T, dtype=float)
         avg_corrs[t] = avg_corr
 
     # Compute rolling mean and std of avg_corr (expanding, PIT-safe)

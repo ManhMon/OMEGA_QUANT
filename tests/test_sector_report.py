@@ -4,6 +4,7 @@ import json
 from datetime import datetime, timedelta, timezone
 
 import pandas as pd
+import pytest
 
 from scripts.generate_sector_report import generate_sector_report, OUTPUT_DIR
 
@@ -67,6 +68,40 @@ def test_degrades_without_macro_or_news(monkeypatch, tmp_path):
     monkeypatch.setattr("scripts.generate_sector_report.DataLoader.load_market_data", lambda *args, **kwargs: _market_panel())
     payload = generate_sector_report(datetime(2026, 6, 30).date())
     assert isinstance(payload["macro_backdrop"], list)
+
+
+def test_f001_sector_report_assert_pit_rejects_future_available_at(monkeypatch, tmp_path):
+    """F-001: assert_pit fails closed on market data available_at exceeding cutoff."""
+    monkeypatch.setattr("scripts.generate_sector_report.OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr("scripts.generate_sector_report.Database", lambda: _DB())
+    cutoff = datetime(2026, 6, 30, 8, 30, tzinfo=timezone.utc)
+    def _future_market_panel():
+        panel = _market_panel()
+        panel["available_at"] = cutoff + timedelta(days=1)
+        return panel
+    monkeypatch.setattr("scripts.generate_sector_report.DataLoader.load_market_data", lambda *args, **kwargs: _future_market_panel())
+    with pytest.raises(AssertionError):
+        generate_sector_report(datetime(2026, 6, 30).date(), assert_pit=True)
+
+
+def test_f001_sector_mapping_future_effective_date_rejected_for_pit(monkeypatch, tmp_path):
+    """F-001: sector records with future effective dates cannot satisfy PIT mapping."""
+    monkeypatch.setattr("scripts.generate_sector_report.OUTPUT_DIR", tmp_path)
+    sectors = [{"ticker": "HPG", "sector": "Steel", "effective_date": "2026-07-01"}]
+    monkeypatch.setattr("scripts.generate_sector_report.Database", lambda: _DB(sectors=sectors))
+    monkeypatch.setattr("scripts.generate_sector_report.DataLoader.load_market_data", lambda *args, **kwargs: _market_panel())
+    payload = generate_sector_report(datetime(2026, 6, 30).date())
+    assert "sector_mapping_not_pit" in payload["quality_flags"]
+
+
+def test_f005_sector_report_partial_symbol_mapping_audit_flag(monkeypatch, tmp_path):
+    """F-005: partial symbol mapping falls back and flags non-pit when records invalid."""
+    monkeypatch.setattr("scripts.generate_sector_report.OUTPUT_DIR", tmp_path)
+    sectors = [{"ticker": "HPG", "sector": "Steel", "effective_date": None}]
+    monkeypatch.setattr("scripts.generate_sector_report.Database", lambda: _DB(sectors=sectors))
+    monkeypatch.setattr("scripts.generate_sector_report.DataLoader.load_market_data", lambda *args, **kwargs: _market_panel())
+    payload = generate_sector_report(datetime(2026, 6, 30).date())
+    assert payload["audit"]["sector_mapping_not_pit"] is True
 
 
 def _market_panel():
