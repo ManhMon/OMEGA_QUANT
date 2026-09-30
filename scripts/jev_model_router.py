@@ -19,9 +19,14 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-L2_LEAD_ALLOWLIST = ("9router/cx/gpt-6-sol", "9router/cx/gpt-6-luna")
-L2_SUBAGENT_ALLOWLIST = ("ag/gemini",)
-L3_LEAD_ALLOWLIST = ("cx/gpt-6-sol", "cx/gpt-6-sol(medium)")
+L2_LEAD_ALLOWLIST = ("9router/cx/gpt-6.1-sol", "9router/cx/gpt-6-luna")
+L2_SUBAGENT_ALLOWLIST = ("ag/gemini", "9router/cx/gpt-6-luna", "cx/gpt-6-luna")
+L3_LEAD_ALLOWLIST = (
+    "cx/gpt-6.1-sol",
+    "cx/gpt-6.1-sol(medium)",
+    "cx/gpt-6.1-sol(high)",
+    "cx/gpt-6.1-sol(xhigh)",
+)
 L3_SUBAGENT_ALLOWLIST = ("cx/gpt-6-luna",)
 TIMEOUT_ALLOWLIST = (120, 180, 300)
 MAX_CYCLES = 3
@@ -464,15 +469,15 @@ def _query_jev_api(
     if role == "l2":
         lead_inst = (
             "Select the lead model for L2 implementation work based on task complexity, blast radius, and findings. "
-            "Use 9router/cx/gpt-6-sol for high complexity, large blast radius, or critical findings; "
+            "Use 9router/cx/gpt-6.1-sol for high complexity, large blast radius, or critical findings; "
             "use 9router/cx/gpt-6-luna for standard, routine, or low-risk tasks."
         )
         subagent_inst = "Select worker subagent model for L2 exploration and boilerplate."
     else:
         lead_inst = (
             "Select the lead auditor model for L3 independent audit. "
-            "Use cx/gpt-6-sol for high-risk or complex audits; "
-            "use cx/gpt-6-sol(medium) for routine or low-risk audits."
+            "Use cx/gpt-6.1-sol for high-risk or complex audits; "
+            "use cx/gpt-6.1-sol(medium) for routine or low-risk audits."
         )
         subagent_inst = "Select subagent model for L3 audit probes."
 

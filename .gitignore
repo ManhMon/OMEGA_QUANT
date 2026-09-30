@@ -34,3 +34,45 @@ data/stable/genetic_alpha_v3_models/
 data/stable/genetic_alpha_v3_results.*
 data/stable/best_evolved_alpha_v3.json
 data/phase35_results/
+models/
+.ly_state/session/hybrid_alpha_registry/
+.ly_state/.pytest_cache/
+*.log
+*.tmp
+*.bak
+*.lock
+.ly_state/session/prompt_*.txt
+.ly_state/session/test_*.py
+.ly_state/session/test_*.json
+.ly_state/session/test_*.js
+.ly_state/session/tmp_*
+.ly_state/session/graph_evidence_*
+.ly_state/session/anti_drip_contract_*
+.ly_state/session/task-ingest-*
+.ly_state/session/update_market_data_*
+.ly_state/session/*.ps1
+.ly_state/session/_audit_target*/
+.ly_state/quarantine/
+
+# Frontend & Node
+node_modules/
+omega-ui/node_modules/
+omega-ui/dist/
+*.tsbuildinfo
+
+# Test & coverage artifacts
+.coverage
+$null
+*.bak_*
+
+# Session runtime caches & artifacts
+.ly_state/session/control_artifacts/
+.ly_state/session/chatcode_extracted/
+.ly_state/session/market_data_receipts/
+.ly_state/session/omega_ui_real_wiring_e2e/
+
+# Scratch & ad-hoc test scripts
+scratch/
+
+# Runtime order logs
+logs/virtual_orders.jsonl

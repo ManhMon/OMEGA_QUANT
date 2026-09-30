@@ -85,8 +85,8 @@ python scripts/sod_gate_enforcer.py
 **Dispatch:** `python scripts/dispatch_l3.py <l3_role> <gate> <l2_session_id> <l2_role> "<scope>" [--risk low|high]`
 
 **Model tiering:**
-- `--risk low`: test fixtures, docs, config → `cx/gpt-5.6-sol` (~50% cheaper)
-- `--risk high` (default): production logic, security → `cx/gpt-5.6-sol(max)`
+- `--risk low`: test fixtures, docs, config → `cx/gpt-6.1-sol(medium)`
+- `--risk high` (default): production logic, security → `cx/gpt-6.1-sol(high)`
 
 **L3 gate update:** L3 MUST use `python scripts/update_gate.py <gate> <field>=<value> ...` instead of editing phase_gates.json manually.
 

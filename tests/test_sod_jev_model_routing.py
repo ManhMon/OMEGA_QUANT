@@ -1353,7 +1353,7 @@ def test_jev_api_called_with_choice_questions(monkeypatch):
             recorded["questions"] = questions
             return types.SimpleNamespace(
                 choices={
-                    "lead_model": types.SimpleNamespace(choice="9router/cx/gpt-6-sol"),
+                    "lead_model": types.SimpleNamespace(choice="9router/cx/gpt-6.1-sol"),
                     "subagent_model": types.SimpleNamespace(choice="ag/gemini"),
                     "execution_timeout": types.SimpleNamespace(choice="180"),
                     "dimension_focus": types.SimpleNamespace(choice="24"),
@@ -1368,7 +1368,7 @@ def test_jev_api_called_with_choice_questions(monkeypatch):
     monkeypatch.setitem(sys.modules, "typesafe_sdk", sdk)
 
     envelope = evaluate_model_decision(role="l2", risk="low", task="fix something", cycle=1)
-    assert envelope["lead_model"] == "9router/cx/gpt-6-sol"
+    assert envelope["lead_model"] == "9router/cx/gpt-6.1-sol"
     assert envelope["subagent_model"] == "ag/gemini"
     assert envelope["execution_timeout"] == 180
     assert envelope["dimension_focus"] == 24

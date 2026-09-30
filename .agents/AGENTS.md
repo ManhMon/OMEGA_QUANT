@@ -20,7 +20,7 @@
   - **Cross-Tier Separation**: L2 sessions MUST NOT load Tier 3 roles. L3 sessions MUST NOT load Tier 2 roles.
   - **Writer != Auditor**: The set of L2 role IDs must be strictly disjoint from the set of L3 role IDs (`set(l2_roles) & set(l3_roles) == empty`). Self-approval remains strictly forbidden.
   - **Hierarchical Tiered Model & Subagent Cost Optimization (HIERARCHICAL_SUBAGENT_OPTIMIZATION_20260913)**:
-    - **Primary Lead Role (L2/L3)**: Runs on high-reasoning models (`high`: e.g. `cx/gpt-6-sol`, `gpt-5-6-thinking`). Responsible for overall orchestration, architecture, root-cause trace, dynamic 24-Dimension compliance, and signing final verdicts.
+    - **Primary Lead Role (L2/L3)**: Runs on high-reasoning models (`high`: e.g. `cx/gpt-6.1-sol`, `gpt-5-6-thinking`). Responsible for overall orchestration, architecture, root-cause trace, dynamic 24-Dimension compliance, and signing final verdicts.
     - **Worker Subagents**: Supervised by the Lead Role, sub-workers run on `SUBAGENT_MODEL=ag/gemini` (high-speed, low-cost) for repetitive tasks: regex call-site searches, test boilerplate generation, AST inspections, and log parsing.
     - **Zero-Token Local Gate**: Local deterministic scripts (`validate_l2_report.py`, AST verification, pytest collection, `checklist.py`) MUST execute locally before LLM tokens are consumed. No LLM tokens may be spent on formatting, markdown heading validation, or AST assertion checks.
     - **Strict Boundary Isolation**: L2 worker subagents must remain strictly within Tier 2 (Antigravity/OpenCode). L3 audit subagents must remain strictly within Tier 3 (Codex). Subagents inherit their parent role's SoD tier; cross-tier subagent delegation is strictly prohibited.
@@ -118,7 +118,7 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 1. **1 Task Execution = 1 Primary Lead Role (+ Optional Co-Assigned Specialist Roles within same Tier)**.
 2. **Writer != Auditor**. Self-approval forbidden. All L2 role IDs must be strictly disjoint from all L3 role IDs.
 3. L2 must exit/save state before L3 starts.
-4. L1 never plans, implements, or audits; L1 only delegates, records evidence, enforces gates. L1 MUST delegate all master plan and implementation plan creation to Codex L3 (model "cx/gpt-6-sol") using a non-audit role.
+4. L1 never plans, implements, or audits; L1 only delegates, records evidence, enforces gates. L1 MUST delegate all master plan and implementation plan creation to Codex L3 (model "cx/gpt-6.1-sol") using a non-audit role.
 5. All state/evidence must be file-backed in `.ly_state/session/`.
 6. Do not run OpenCode and Codex simultaneously. Platform cap: 4GB.
 7. **L3 write boundary**: L3 may ONLY write to `.ly_state/session/audit_reports/`, `.ly_state/session/` (for plans), and update `.ly_state/session/phase_gates.json`. L3 MUST NOT edit production source code, tests, or any files outside `.ly_state/`.
@@ -206,7 +206,7 @@ A task is not complete until `python scripts/sod_gate_enforcer.py` exits `0`.
 
 ### Verdict Handling
 
-- **[APPROVED]**: L1 records gate metadata, then dispatches a final deep audit to Codex CLI model `cx/gpt-6-sol` after L3 approval and before the final enforcer. The audit is advisory only, read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. L3's `[APPROVED]` verdict remains the sole approval authority. L1 runs enforcer and proceeds if exit 0. **TOKEN SAVER**: L1 MAY skip the final deep audit for low-risk gates where scope is limited to test fixtures, documentation, or static config files with no production logic changes. L1 MUST record the skip decision and reason in file-backed session evidence before running the enforcer.
+- **[APPROVED]**: L1 records gate metadata, then dispatches a final deep audit to Codex CLI model `cx/gpt-6.1-sol` after L3 approval and before the final enforcer. The audit is advisory only, read-only, must not edit source, tests, phase gates, or audit reports, and may run in the background when appropriate. L3's `[APPROVED]` verdict remains the sole approval authority. L1 runs enforcer and proceeds if exit 0. **TOKEN SAVER**: L1 MAY skip the final deep audit for low-risk gates where scope is limited to test fixtures, documentation, or static config files with no production logic changes. L1 MUST record the skip decision and reason in file-backed session evidence before running the enforcer.
 - **[NEEDS_FIX]**: L1 MUST complete the lesson extraction hard gate below before creating or dispatching any remediation L2 session; after extraction succeeds, L1 creates a new L2 session with fix scope, L3 re-audits after fix, cycle repeats until [APPROVED]
 - **No verdict or partial verdict**: Gate remains `PENDING_L3_AUDIT`, no progression
 - **Manual override**: Forbidden. All approvals require valid L3 audit + enforcer exit 0
@@ -273,7 +273,7 @@ The extraction evidence MUST include gate name `lessons_extraction_hard_gate_202
 ```powershell
 python scripts/dispatch_l2.py <role_name> <gate_name> <task_slug> "<task_description>" "<scope>" [--risk low|high] [--subagent-model <model>] [--token-saver]
 ```
-Copy lệnh từ output `---COMMAND---` rồi chạy. Script tự động: validate role, load lessons, infer model tier (`9router/cx/gpt-6-sol` high / `9router/cx/gpt-6-luna` medium/low), cấu hình subagent `ag/gemini`, tiêm chỉ thị subagent bắt buộc, tạo session ID.
+Copy lệnh từ output `---COMMAND---` rồi chạy. Script tự động: validate role, load lessons, infer model tier (`9router/cx/gpt-6.1-sol` high / `9router/cx/gpt-6-luna` medium/low), cấu hình subagent `ag/gemini`, tiêm chỉ thị subagent bắt buộc, tạo session ID.
 
 **Manual dispatch (fallback nếu dispatch_l2.py không dùng được):**
 ```powershell

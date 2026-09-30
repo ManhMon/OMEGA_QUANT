@@ -1691,8 +1691,8 @@ def build_l2_report_scaffold(
     return "\n".join(lines)
 
 
-L2_LEAD_MODELS = ("9router/cx/gpt-6-sol", "9router/cx/gpt-6-luna")
-L2_SUBAGENT_MODELS = ("ag/gemini",)
+L2_LEAD_MODELS = ("9router/cx/gpt-6.1-sol", "9router/cx/gpt-6-luna")
+L2_SUBAGENT_MODELS = ("ag/gemini", "9router/cx/gpt-6-luna", "cx/gpt-6-luna")
 MODELS = {"high": L2_LEAD_MODELS[0], "medium": L2_LEAD_MODELS[1], "low": L2_LEAD_MODELS[1]}
 DEFAULT_L2_SUBAGENT_MODEL = L2_SUBAGENT_MODELS[0]
 VALID_RISK_LEVELS = ("low", "medium", "high")
@@ -1831,7 +1831,7 @@ def _parse_cli_args(args: list[str]):
                 model_decision_digest = args[i + 1]
             i += 2
             continue
-        elif arg in ("--l2-model", "--l2-subagent-model"):
+        elif arg in ("--l2-model", "--l2-subagent-model", "--subagent-model"):
             target = "explicit_l2_model" if arg == "--l2-model" else "explicit_l2_subagent_model"
             if locals()[target] is not None or i + 1 >= len(args):
                 print(f"[ERROR] Flag {arg} requires exactly one value.", file=sys.stderr)

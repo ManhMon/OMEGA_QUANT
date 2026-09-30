@@ -315,7 +315,7 @@ def test_model_mapping():
     for level in ("high", "medium", "low"):
         assert isinstance(MODELS[level], str)
         assert len(MODELS[level]) > 0
-    assert MODELS["high"] == "9router/cx/gpt-6-sol"
+    assert MODELS["high"] == "9router/cx/gpt-6.1-sol"
     assert MODELS["medium"] == "9router/cx/gpt-6-luna"
     assert MODELS["low"] == "9router/cx/gpt-6-luna"
 

@@ -10,8 +10,8 @@ Example:
     python scripts/dispatch_l3.py code-reviewer MY_GATE l2_role9_fix_20260814 backend-engineer "src/omega/" --risk high --run
 
 Risk levels:
-    low  = test fixtures, docs, config-only (uses cx/gpt-6-sol(medium) for ~50% token savings)
-    high = production logic, security, data pipeline (uses cx/gpt-6-sol, default)
+    low  = test fixtures, docs, config-only (uses cx/gpt-6.1-sol(medium) for ~50% token savings)
+    high = production logic, security, data pipeline (uses cx/gpt-6.1-sol(high), default)
 
 Output: Ready-to-execute powershell command + pre-created audit report file.
 """
@@ -72,22 +72,27 @@ if str(REPO_ROOT) not in sys.path:
 AGENT_ROOT = REPO_ROOT / ".agents" / "agent"
 
 L3_LEAD_MODELS = {
-    "low": "cx/gpt-6-sol(medium)",
-    "medium": "cx/gpt-6-sol(medium)",
-    "high": "cx/gpt-6-sol(high)",
+    "low": "cx/gpt-6.1-sol(medium)",
+    "medium": "cx/gpt-6.1-sol(medium)",
+    "high": "cx/gpt-6.1-sol(high)",
 }
 L3_APPROVED_LEAD_MODELS = set(L3_LEAD_MODELS.values()) | {
-    "cx/gpt-6-sol",
-    "cx/gpt-6-sol(low)",
-    "cx/gpt-6-sol(medium)",
-    "cx/gpt-6-sol(xhigh)",
+    "cx/gpt-6.1-sol",
+    "cx/gpt-6.1-sol(low)",
+    "cx/gpt-6.1-sol(medium)",
+    "cx/gpt-6.1-sol(xhigh)",
+    "cx/gpt-6.1-sol",
+    "cx/gpt-6.1-sol(low)",
+    "cx/gpt-6.1-sol(medium)",
+    "cx/gpt-6.1-sol(high)",
+    "cx/gpt-6.1-sol(xhigh)",
 }
 L3_SUBAGENT_MODELS = ("cx/gpt-6-luna",)
 MODELS = L3_LEAD_MODELS
 VALID_RISK_LEVELS = ("low", "high")
 
 # Deep audit (final advisory, L1 dispatch trực tiếp qua codex exec)
-DEEPAUDIT_MODEL = "cx/gpt-6-sol"
+DEEPAUDIT_MODEL = "cx/gpt-6.1-sol"
 
 
 def parse_frontmatter(content: str) -> dict:
@@ -425,16 +430,22 @@ def main():
         pass
     elif explicit_model:
         model_aliases = {
-            "sol": "cx/gpt-6-sol",
-            "sol(low)": "cx/gpt-6-sol(low)",
-            "sol(medium)": "cx/gpt-6-sol(medium)",
-            "sol(xhigh)": "cx/gpt-6-sol(xhigh)",
+            "sol": "cx/gpt-6.1-sol",
+            "sol(low)": "cx/gpt-6.1-sol(low)",
+            "sol(medium)": "cx/gpt-6.1-sol(medium)",
+            "sol(xhigh)": "cx/gpt-6.1-sol(xhigh)",
             "luna": "cx/gpt-6-luna",
             "terra": "cx/gpt-6-luna",
             "terra(xhigh)": "cx/gpt-6-luna",
             "terra-xhigh": "cx/gpt-6-luna",
-            "astra": "cx/gpt-6-sol",
-            "astra(low)": "cx/gpt-6-sol(low)",
+            "astra": "cx/gpt-6.1-sol",
+            "astra(low)": "cx/gpt-6.1-sol(low)",
+            "sol-6.1": "cx/gpt-6.1-sol",
+            "sol-6.1(low)": "cx/gpt-6.1-sol(low)",
+            "sol-6.1(medium)": "cx/gpt-6.1-sol(medium)",
+            "sol-6.1(high)": "cx/gpt-6.1-sol(high)",
+            "sol-6.1(xhigh)": "cx/gpt-6.1-sol(xhigh)",
+            "sol61": "cx/gpt-6.1-sol",
         }
         model = model_aliases.get(explicit_model.lower())
         if model is None and explicit_model in L3_APPROVED_LEAD_MODELS:

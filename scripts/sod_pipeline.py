@@ -38,7 +38,7 @@ DISPATCH_L3_KEYS = {"L3_SESSION_ID", "L3_ROLE_ID", "L3_ROLE_NAME", "L2_ROLE_ID",
 PLAN_MAX_BYTES = 1_048_576
 PLANNER_STREAM_MAX_BYTES = 64 * 1024
 SECRET_PATTERN = re.compile(r"(?i)(bearer\s+[^\s,;]+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]+|sk-[A-Za-z0-9_-]+)")
-PLANNER_MODEL = "cx/gpt-6-sol"
+PLANNER_MODEL = "cx/gpt-6.1-sol"
 PLAN_HEADINGS = (
     ("Planning Run ID",),
     ("Gate",),

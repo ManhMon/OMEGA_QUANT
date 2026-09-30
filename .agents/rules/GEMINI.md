@@ -112,6 +112,18 @@ When user's prompt is NOT in English:
 - **TUYỆT ĐỐI CẤM Loop Polling / Thăm dò trạng thái**: Cấm lặp lại các tool call kiểm tra trạng thái (`git status`, `git status -s`, `sod_gate_enforcer.py`, `manage_task status`, vòng lặp kiểm tra tiến trình) để chờ đợi tác vụ hoàn thành.
 - **Dừng gọi tool khi chạy tác vụ nền**: Khi một lệnh được đưa vào background hoặc đang chạy dài, agent BẮT BUỘC DỪNG GỌI TOOL NGAY LẬP TỨC để nhả lượt (end turn) cho người dùng/hệ thống. Tuyệt đối không tự ý gọi thêm tool kiểm tra.
 
+### 🛡️ An Toàn Chạy Pytest & Chống Sập IPC Server (Global Mandatory)
+
+**TUYỆT ĐỐI CẤM stream trực tiếp stdout pytest dài có escape sequences/colorama qua `run_command` trên Windows gây crash IDE host / context canceled.**
+- Bắt buộc dùng cờ an toàn khi collect/chạy test: `pytest -q -o addopts="" --capture=sys -p no:terminal`
+- Nếu cần chạy test suite đầy đủ: Redirect output ra file log tạm (`pytest ... > .ly_state/pytest.log 2>&1`) hoặc yêu cầu thực thi trên terminal độc lập ngoài IDE.
+
+### 🎯 Tuân Thủ 100% Lệnh Dispatch L2/L3 (STRICT_DISPATCH_COMMAND_INTEGRITY, Global Mandatory)
+
+**TUYỆT ĐỐI BẮT BUỘC chỉ copy và thực thi chính xác 100% câu lệnh nằm trong khối `---COMMAND---` do `dispatch_l2.py` hoặc `dispatch_l3.py` kết xuất.**
+- **Cấm đổi script / model**: Cấm tự ý đổi sang các script ReAct phụ hoặc model webchat fallback (như `scripts/run_l2_agent.py`, `scripts/run_l3_audit.py`, `scripts/sod_pipeline_au.py`, model `au/gpt-*`) trừ khi có chỉ thị rõ ràng từ user.
+- **Dùng đúng CLI và Model cấu hình**: Thực thi đúng CLI (`opencode run` hoặc `codex exec`) và model (`9router/cx/gpt-6-luna`, `9router/cx/gpt-6.1-sol`, `cx/gpt-6.1-sol`) được dispatch chỉ định.
+
 ### 🧹 Clean Code (Global Mandatory)
 
 **ALL code MUST follow `@[skills/clean-code]` rules. No exceptions.**

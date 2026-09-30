@@ -152,7 +152,7 @@ def test_jev_dimension_focus_is_written_to_l3_prompt(tmp_path, monkeypatch, caps
         "code-reviewer", "devops-engineer", "GATE", "l2_role11_task_20260927",
         "tests/test_dispatch_l3.py", 21, 11, "l3_role21_gate_20260927",
         ".ly_state/session/audit_reports/role21_gate_20260927.md", "low", "test",
-        "cx/gpt-6-sol(medium)", False, False, {}, jev_dimension_focus=24,
+        "cx/gpt-6.1-sol(medium)", False, False, {}, jev_dimension_focus=24,
     )
     prompt = (tmp_path / ".ly_state/session/prompt_l3_role21_gate_20260927.txt").read_text(encoding="utf-8")
     assert "JEV DIMENSION ROUTING: Give dimension 24 (JEV secret-safe prompt routing)" in prompt
@@ -178,7 +178,7 @@ def test_dispatch_l3_focused_reaudit_retains_full_dynamic_matrix(tmp_path, monke
         "code-reviewer", "devops-engineer", "GATE", "l2_role11_task_20260927",
         "tests/test_dispatch_l3.py", 21, 11, "l3_role21_gate_20260927",
         ".ly_state/session/audit_reports/role21_gate_20260927.md", "low", "test",
-        "cx/gpt-6-sol(medium)", False, False, {},
+        "cx/gpt-6.1-sol(medium)", False, False, {},
     )
     prompt = (tmp_path / ".ly_state/session/prompt_l3_role21_gate_20260927.txt").read_text(encoding="utf-8")
     assert "24-Dimension Adversarial Matrix" in prompt
@@ -300,7 +300,7 @@ def test_dispatch_l3_cli_embeds_directive_and_preserves_format(monkeypatch, caps
         "L3_ROLE_NAME=code-reviewer",
         "L2_ROLE_ID=15",
         "L2_ROLE_NAME=data-engineer",
-        "MODEL=cx/gpt-6-sol(medium)",
+        "MODEL=cx/gpt-6.1-sol(medium)",
         "RISK=low",
         "REPORT=.ly_state/session/audit_reports/role21_test_gate_l3dir_20260101.md",
         "GATE=TEST_GATE_L3DIR_20260101",
@@ -430,16 +430,16 @@ def test_dispatch_l3_directive_byte_identical_in_both_cx_and_opencode_variants(c
         dl3,
         "MODELS",
         {
-            "low": "cx/gpt-6-sol(medium)",
-            "medium": "cx/gpt-6-sol(xhigh)",
-             "high": "cx/gpt-6-sol",
+            "low": "cx/gpt-6.1-sol(medium)",
+            "medium": "cx/gpt-6.1-sol(xhigh)",
+             "high": "cx/gpt-6.1-sol",
         },
     )
     monkeypatch.setattr(sys, "argv", argv[:-2] + ["--risk", "high"])
     dl3.main()
     captured = capsys.readouterr()
     out_oc = captured.out
-    assert "MODEL=cx/gpt-6-sol" in out_oc
+    assert "MODEL=cx/gpt-6.1-sol" in out_oc
     cmd_oc, raw_oc = _parse_command_and_prompt_bytes(out_oc)
     assert "codex exec" in cmd_oc
     assert "--dangerously-bypass-approvals-and-sandbox" in cmd_oc
@@ -893,7 +893,7 @@ def test_generated_model_argument_is_powershell_single_quoted(monkeypatch, tmp_p
     monkeypatch.setattr(sys, "argv", ["dispatch_l3.py", "code-reviewer", "GATE_QUOTED_20260922", "l2_role15_session_20260922", "data-engineer", "tests/", "--model", "astra(low)"])
     dl3.main()
     command = capsys.readouterr().out.split("---COMMAND---", 1)[1]
-    assert "-m 'cx/gpt-6-sol(low)'" in command
+    assert "-m 'cx/gpt-6.1-sol(low)'" in command
 
 # ---------------------------------------------------------------------------
 # C3: lessons travel only as sanitized DATA; malformed schema -> empty block.
@@ -938,7 +938,7 @@ def test_lesson_directives_remain_data_in_all_variants(monkeypatch, tmp_path, ca
     monkeypatch.setattr(
         dl3,
         "MODELS",
-        {"low": "cx/gpt-6-sol(medium)", "medium": "cx/gpt-6-sol(xhigh)", "high": "cx/gpt-6-sol"},
+        {"low": "cx/gpt-6.1-sol(medium)", "medium": "cx/gpt-6.1-sol(xhigh)", "high": "cx/gpt-6.1-sol"},
     )
     monkeypatch.setattr(sys, "argv", argv_cx[:-2] + ["--risk", "high"])
     dl3.main()
