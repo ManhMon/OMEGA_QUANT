@@ -34,7 +34,7 @@ updated: 2026-07-28
 - Alpha runtime resolves through `OMEGA_ALPHA_LLM_CONFIG_PATH` first.
 - External config files live outside `REPO_ROOT` under `C:\Users\GHC\llm_configs\`.
 - Current lesson runtime file is `lesson_llm.json` with Gemini OpenAI-compatible endpoint and model `gemini/gemini-3.5-flash`.
-- Current alpha runtime file is `alpha_llm.json` with local OpenAI-compatible endpoint and model `cx/gpt-5.6-terra`.
+- Current alpha runtime file is `alpha_llm.json` with local OpenAI-compatible endpoint and model `cx/gpt-6-luna`.
 - `.env` keeps the shared fallback `OMEGA_LLM_*` values for backward compatibility only; valid external config file values override them at runtime.
 - External config paths must be canonical absolute paths outside `REPO_ROOT`; relative paths, repo-contained paths, `..` escapes, and symlink/junction/case-variation paths resolving into the repo are rejected.
 - Invalid, missing, malformed, or incomplete external config falls back to existing env-based behavior.
