@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -72,6 +73,30 @@ def _validate_universe_before_import(path: Path, as_of: datetime) -> bytes:
             raise ValueError("invalid or duplicate vnstock universe member")
         seen.add(member["ticker"])
     return raw
+
+
+def _llm_final_exit_state(metrics: dict) -> str | None:
+    if not isinstance(metrics, dict) or any(
+        type(metrics.get(key)) is not int or metrics[key] < 0
+        for key in ("extraction_successes", "extraction_failures")
+    ):
+        raise ValueError("invalid extraction metrics")
+    return "llm_failed" if metrics["extraction_failures"] else None
+
+
+def _write_manifest(path: Path, manifest: dict) -> None:
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as handle:
+            temporary = Path(handle.name)
+            json.dump(manifest, handle, indent=2)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def main() -> int:
@@ -144,11 +169,15 @@ def main() -> int:
             batch = pd.DataFrame(selected, columns=SCHEMA)
             manifest["retrospective_extraction"] = bool(not batch.empty and (pd.to_datetime(batch["ingested_at"], utc=True) > pd.to_datetime(batch["published_at"], utc=True)).any())
             extractor = MacroNewsLLMExtractor(REPO_ROOT); extractor.extract(batch, REPO_ROOT / args.llm_output, REPO_ROOT / args.llm_links_output, as_of=args.as_of)
-            manifest.update(extractor.metrics); manifest["effective_llm_runtime"] = sanitize_llm_config(resolve_alpha_llm_config(REPO_ROOT))
+            llm_state = _llm_final_exit_state(extractor.metrics)
+            manifest.update({key: extractor.metrics[key] for key in ("extraction_successes", "extraction_failures")})
+            if llm_state is not None:
+                manifest["final_exit_state"] = llm_state
+            manifest["effective_llm_runtime"] = sanitize_llm_config(resolve_alpha_llm_config(REPO_ROOT))
         except Exception as exc: manifest["llm_error_type"] = type(exc).__name__; manifest["final_exit_state"] = "llm_failed"
     manifest_dir = REPO_ROOT / args.session_dir / "macro_news_runs"
     manifest_dir.mkdir(parents=True, exist_ok=True)
-    (manifest_dir / f"{manifest['run_id']}.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    _write_manifest(manifest_dir / f"{manifest['run_id']}.json", manifest)
     return 1 if manifest["final_exit_state"] != "success" else 0
 
 
