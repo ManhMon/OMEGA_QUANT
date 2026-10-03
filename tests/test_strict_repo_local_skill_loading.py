@@ -20,6 +20,7 @@ in-memory mocking.  This avoids WinError 5 ACL issues under Codex.
 import json
 import os
 import sys
+import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch, mock_open, MagicMock
@@ -32,6 +33,7 @@ sys.path.insert(0, str(SCRIPTS_DIR))
 
 from sod_gate_enforcer import (
     AUDIT_L2_SESSION_IDENTITY_CUTOFF,
+    AGKIT_UPGRADE_CUTOFF,
     CUTOFF_TIMESTAMP,
     FORBIDDEN_SKILL_PATHS,
     SKILL_LOADING_CUTOFF,
@@ -47,6 +49,7 @@ from sod_gate_enforcer import (
     derive_strict_approval_timestamp,
     get_superseded_gates,
     check_sod_compliance,
+    load_historical_role_specs,
     load_gates,
     load_canonical_gate_map,
     detect_duplicate_gates,
@@ -103,7 +106,7 @@ class TestValidateForbiddenPathUsage:
     def test_forbidden_path_authoritative_use(self):
         """Forbidden path used as authoritative source is a violation."""
         text = (
-            "Skills loaded from C:\\Users\\GHC\\.agents\\skills\\clean-code\\SKILL.md "
+            "Skills loaded from C:\\Users\\GHC\\.agents\\skills\\clean-code\\skill.md "
             "as the source: for coding standards."
         )
         has_violation, violations = validate_forbidden_path_usage(text)
@@ -184,11 +187,13 @@ class TestCheckL2ReportSkillSources:
             "- REPO_SKILL_ROOT: .agents/skills\n"
             "## Repo-Local Files Read\n"
             "- .agents/agent/devops-engineer.md\n"
-            "- .agents/skills/deployment-procedures/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
-            "- .agents/skills/testing-patterns/SKILL.md\n"
-            "- .agents/skills/server-management/SKILL.md\n"
-            "- .agents/skills/systematic-debugging/SKILL.md\n"
+            "- .agents/skills/deployment-procedures/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
+            "- .agents/skills/testing-patterns/skill.md\n"
+            "- .agents/skills/server-management/skill.md\n"
+            "- .agents/skills/powershell-windows/skill.md\n"
+            "- .agents/skills/bash-linux/skill.md\n"
+            "- .agents/skills/systematic-debugging/skill.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is True
@@ -213,7 +218,7 @@ class TestCheckL2ReportSkillSources:
             "REPO_SKILL_ROOT: .agents/skills\n"
             "## Repo-Local Files Read\n"
             "- .agents/agent/devops-engineer.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n\n"
+            "- .agents/skills/clean-code/skill.md\n\n"
             "Skills loaded from C:\\Users\\GHC\\.agents\\skills as the source: for coding.\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
@@ -253,11 +258,13 @@ class TestCheckAuditReportSkillSources:
             "## Verdict: [APPROVED]\n"
             "L2 report lists repo-local skill source evidence from .agents/agent and .agents/skills.\n"
             "## Repo-Local Files Read\n"
-            "- .agents/skills/code-review-checklist/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
-            "- .agents/skills/testing-patterns/SKILL.md\n"
-            "- .agents/skills/audit-cycle/SKILL.md\n"
-            "- .agents/skills/omega-sod/SKILL.md\n"
+            "- .agents/skills/code-review-checklist/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
+            "- .agents/skills/testing-patterns/skill.md\n"
+            "- .agents/skills/code-review-graph/skill.md\n"
+            "- .agents/skills/lint-and-validate/skill.md\n"
+            "- .agents/skills/audit-cycle/skill.md\n"
+            "- .agents/skills/omega-sod/skill.md\n"
             "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
         )
         valid, msg = _validate_audit_report_skill_content(content, "role21_test_20260612.md", 21, "code-reviewer")
@@ -660,8 +667,8 @@ class TestL2ReportTightenedValidation:
             "# L2 Report\n\n"
             "## Skill Source Evidence\n"
             "Files read:\n"
-            "- .agents/skills/deployment-procedures/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/deployment-procedures/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is False
@@ -676,11 +683,13 @@ class TestL2ReportTightenedValidation:
             "REPO_SKILL_ROOT=C:\\Users\\GHC\\repos\\OMEGA_QUANT\\.agents\\skills\n\n"
             "## Repo-Local Files Read\n"
             "- .agents/agent/devops-engineer.md\n"
-            "- .agents/skills/deployment-procedures/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
-            "- .agents/skills/testing-patterns/SKILL.md\n"
-            "- .agents/skills/server-management/SKILL.md\n"
-            "- .agents/skills/systematic-debugging/SKILL.md\n"
+            "- .agents/skills/deployment-procedures/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
+            "- .agents/skills/testing-patterns/skill.md\n"
+            "- .agents/skills/server-management/skill.md\n"
+            "- .agents/skills/powershell-windows/skill.md\n"
+            "- .agents/skills/bash-linux/skill.md\n"
+            "- .agents/skills/systematic-debugging/skill.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is True
@@ -693,7 +702,7 @@ class TestL2ReportTightenedValidation:
             "REPO_AGENT_ROOT: .agents/agent\n"
             "REPO_SKILL_ROOT: .agents/skills\n\n"
             "## Repo-Local Files Read\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is False
@@ -708,10 +717,10 @@ class TestL2ReportTightenedValidation:
             "REPO_SKILL_ROOT: .agents/skills\n\n"
             "## Repo-Local Files Read\n"
             "- .agents/agent/devops-engineer.md\n"
-            "- .agents/skills/deployment-procedures/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
-            "- .agents/skills/testing-patterns/SKILL.md\n"
-            "- .agents/skills/server-management/SKILL.md\n"
+            "- .agents/skills/deployment-procedures/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
+            "- .agents/skills/testing-patterns/skill.md\n"
+            "- .agents/skills/server-management/skill.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is False
@@ -726,12 +735,14 @@ class TestL2ReportTightenedValidation:
             "REPO_SKILL_ROOT: .agents/skills\n\n"
             "## Repo-Local Files Read\n"
             "- .agents/agent/devops-engineer.md\n"
-            "- .agents/skills/deployment-procedures/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
-            "- .agents/skills/testing-patterns/SKILL.md\n"
-            "- .agents/skills/server-management/SKILL.md\n"
-            "- .agents/skills/systematic-debugging/SKILL.md\n"
-            "- .agents/skills/undeclared-skill/SKILL.md\n"
+            "- .agents/skills/deployment-procedures/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
+            "- .agents/skills/testing-patterns/skill.md\n"
+            "- .agents/skills/server-management/skill.md\n"
+            "- .agents/skills/systematic-debugging/skill.md\n"
+            "- .agents/skills/powershell-windows/skill.md\n"
+            "- .agents/skills/bash-linux/skill.md\n"
+            "- .agents/skills/undeclared-skill/skill.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is False
@@ -747,11 +758,13 @@ class TestL2ReportTightenedValidation:
             "## Repo-Local Files Read\n"
             "- .agents/AGENTS.md\n"
             "- .agents/agent/devops-engineer.md\n"
-            "- .agents/skills/deployment-procedures/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
-            "- .agents/skills/testing-patterns/SKILL.md\n"
-            "- .agents/skills/server-management/SKILL.md\n"
-            "- .agents/skills/systematic-debugging/SKILL.md\n"
+            "- .agents/skills/deployment-procedures/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
+            "- .agents/skills/testing-patterns/skill.md\n"
+            "- .agents/skills/powershell-windows/skill.md\n"
+            "- .agents/skills/bash-linux/skill.md\n"
+            "- .agents/skills/server-management/skill.md\n"
+            "- .agents/skills/systematic-debugging/skill.md\n"
         )
         valid, msg = _validate_l2_report_content(content, 11, "devops-engineer")
         assert valid is True
@@ -798,11 +811,13 @@ class TestAuditReportTightenedValidation:
             "L2 report lists exact repo-local files read from .agents/agent and .agents/skills.\n"
             "## Repo-Local Files Read\n"
             "- .agents/AGENTS.md\n"
-            "- .agents/skills/code-review-checklist/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
-            "- .agents/skills/testing-patterns/SKILL.md\n"
-            "- .agents/skills/audit-cycle/SKILL.md\n"
-            "- .agents/skills/omega-sod/SKILL.md\n"
+            "- .agents/skills/code-review-checklist/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
+            "- .agents/skills/testing-patterns/skill.md\n"
+            "- .agents/skills/code-review-graph/skill.md\n"
+            "- .agents/skills/lint-and-validate/skill.md\n"
+            "- .agents/skills/audit-cycle/skill.md\n"
+            "- .agents/skills/omega-sod/skill.md\n"
             "All skill source evidence is repo-local.\n\n"
             "## Forbidden Path Scan Result\n"
             "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
@@ -819,10 +834,12 @@ class TestAuditReportTightenedValidation:
             "## Repo-Local Skill Source Verification\n"
             "L2 report lists exact repo-local files read from .agents/agent and .agents/skills.\n"
             "## Repo-Local Files Read\n"
-            "- .agents/skills/code-review-checklist/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
-            "- .agents/skills/testing-patterns/SKILL.md\n"
-            "- .agents/skills/audit-cycle/SKILL.md\n"
+            "- .agents/skills/code-review-checklist/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
+            "- .agents/skills/testing-patterns/skill.md\n"
+            "- .agents/skills/code-review-graph/skill.md\n"
+            "- .agents/skills/lint-and-validate/skill.md\n"
+            "- .agents/skills/audit-cycle/skill.md\n"
             "## Forbidden Path Scan Result\n"
             "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
         )
@@ -856,12 +873,14 @@ class TestAuditReportTightenedValidation:
             "## Repo-Local Skill Source Verification\n"
             "L2 report lists exact repo-local files read from .agents/agent and .agents/skills.\n"
             "## Repo-Local Files Read\n"
-            "- .agents/skills/code-review-checklist/SKILL.md\n"
-            "- .agents/skills/clean-code/SKILL.md\n"
-            "- .agents/skills/testing-patterns/SKILL.md\n"
-            "- .agents/skills/audit-cycle/SKILL.md\n"
-            "- .agents/skills/omega-sod/SKILL.md\n"
-            "- .agents/skills/undeclared-skill/SKILL.md\n"
+            "- .agents/skills/code-review-checklist/skill.md\n"
+            "- .agents/skills/clean-code/skill.md\n"
+            "- .agents/skills/testing-patterns/skill.md\n"
+            "- .agents/skills/code-review-graph/skill.md\n"
+            "- .agents/skills/lint-and-validate/skill.md\n"
+            "- .agents/skills/audit-cycle/skill.md\n"
+            "- .agents/skills/omega-sod/skill.md\n"
+            "- .agents/skills/undeclared-skill/skill.md\n"
             "## Forbidden Path Scan Result\n"
             "Forbidden path scan: no authoritative reliance on forbidden paths.\n"
         )
@@ -963,9 +982,9 @@ class TestGateFieldsAndHardBlocking:
     def test_audit_cycle_skill_exists(self):
         """Regression test: audit-cycle skill must exist (declared by code-reviewer)."""
         repo_root = Path(__file__).parent.parent
-        audit_cycle_skill = repo_root / ".agents" / "skills" / "audit-cycle" / "SKILL.md"
+        audit_cycle_skill = repo_root / ".agents" / "skills" / "audit-cycle" / "skill.md"
         assert audit_cycle_skill.exists(), (
-            "audit-cycle/SKILL.md must exist (declared by code-reviewer)"
+            "audit-cycle/skill.md must exist (declared by code-reviewer)"
         )
         content = audit_cycle_skill.read_text(encoding="utf-8")
         assert "audit-cycle" in content.lower()
@@ -1216,7 +1235,7 @@ class TestThreeTierEnforcement:
             "writer_auditor_separated": True,
             "repo_local_skill_sources": [
                 ".agents/agent/it-systems-auditor.md",
-                ".agents/skills/audit-cycle/SKILL.md",
+                ".agents/skills/audit-cycle/skill.md",
             ],
             "forbidden_path_scan": "no authoritative reliance",
             "timestamp": timestamp,
@@ -1450,6 +1469,36 @@ class TestL3PanelAuditing:
         assert valid is False
         assert "separation" in msg.lower() or "writer/auditor" in msg.lower()
 
+    def test_historical_panel_skips_current_skill_alignment_only(self):
+        panel = [self._panel_entry(21, "code-reviewer", "panel_historical")]
+
+        with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+            with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as skill_check:
+                    valid, message = validate_l3_panel(
+                        panel, 11, self._role_specs(), strict_skill_alignment=False
+                    )
+
+        assert valid
+        assert message == ""
+        assert skill_check.call_args.args == (panel[0]["audit_report_path"], None, None)
+
+    def test_current_panel_keeps_current_skill_alignment(self):
+        panel = [self._panel_entry(21, "code-reviewer", "panel_current")]
+
+        with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+            with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as skill_check:
+                    valid, message = validate_l3_panel(
+                        panel, 11, self._role_specs(), strict_skill_alignment=True
+                    )
+
+        assert valid
+        assert message == ""
+        assert skill_check.call_args.args == (
+            panel[0]["audit_report_path"], 21, "code-reviewer"
+        )
+
 
 class TestStrictSkillAlignmentRouting:
     def _base_gate(self, phase_name, timestamp):
@@ -1497,7 +1546,7 @@ class TestStrictSkillAlignmentRouting:
         assert mock_l2.call_args.args == ("l2_role11_gate_20260628", None, None)
         assert mock_audit.call_args.args == (".ly_state/session/audit_reports/role21_gate_20260628.md", None, None)
 
-    def test_named_strict_gate_uses_strict_skill_checks_before_cutoff(self):
+    def test_named_strict_gate_uses_historical_role_skill_specs(self):
         gate = self._base_gate(STRICT_SKILL_ALIGNMENT_GATE, "2026-06-27T12:00:00+00:00")
         gates_json = json.dumps([gate])
         mock_gates_file = MagicMock()
@@ -1506,20 +1555,40 @@ class TestStrictSkillAlignmentRouting:
         with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
             with patch("builtins.open", mock_open(read_data=gates_json)):
                 with patch("sod_gate_enforcer.load_role_specs", return_value=self._role_specs()):
-                    with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
-                        with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
-                            with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as mock_l2:
-                                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as mock_audit:
-                                    result = check_sod_compliance()
+                    with patch("sod_gate_enforcer.load_historical_role_specs", return_value=self._role_specs()) as mock_historical:
+                        with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                            with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                                with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as mock_l2:
+                                    with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as mock_audit:
+                                        result = check_sod_compliance()
 
         assert result is True
+        historical_specs = self._role_specs()
+        mock_historical.assert_called_once_with()
         assert mock_l2.call_args.args == ("l2_role11_gate_20260628", 11, "devops-engineer")
-        assert mock_audit.call_args.args == (".ly_state/session/audit_reports/role21_gate_20260628.md", 21, "code-reviewer")
+        assert mock_l2.call_args.kwargs["skill_role_specs"] == historical_specs
+        assert mock_audit.call_args.args == (
+            ".ly_state/session/audit_reports/role21_gate_20260628.md", 21, "code-reviewer",
+        )
+        assert mock_audit.call_args.kwargs["skill_role_specs"] == historical_specs
 
-    def test_timestamp_strict_gate_uses_strict_skill_checks(self):
-        assert STRICT_SKILL_ALIGNMENT_CUTOFF == 1782636960.0
+    @pytest.mark.parametrize(
+        ("timestamp", "expected_historical_specs"),
+        [
+            ("2026-10-02T13:17:19+00:00", True),
+            ("2026-10-02T20:17:19+07:00", True),
+            ("2026-10-02T13:17:20+00:00", False),
+            ("2026-10-02T20:17:20+07:00", False),
+            ("2026-10-02T13:17:21+00:00", False),
+        ],
+        ids=["before-utc", "before-ict", "exact-utc", "exact-ict", "after-utc"],
+    )
+    def test_timestamp_strict_gate_uses_upgrade_cutoff(
+        self, timestamp, expected_historical_specs,
+    ):
+        assert AGKIT_UPGRADE_CUTOFF == datetime(2026, 10, 2, 13, 17, 20, tzinfo=timezone.utc).timestamp()
 
-        gate = self._base_gate("FUTURE_GATE", "2026-06-28T08:56:00+00:00")
+        gate = self._base_gate("FUTURE_GATE", timestamp)
         gates_json = json.dumps([gate])
         mock_gates_file = MagicMock()
         mock_gates_file.exists.return_value = True
@@ -1528,15 +1597,416 @@ class TestStrictSkillAlignmentRouting:
         with patch("sod_gate_enforcer.GATES_FILE", mock_gates_file):
             with patch("builtins.open", mock_open(read_data=gates_json)):
                 with patch("sod_gate_enforcer.load_role_specs", return_value=self._role_specs()):
-                    with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
-                        with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
-                            with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as mock_l2:
-                                with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as mock_audit:
-                                    result = check_sod_compliance()
+                    historical_specs = self._role_specs()
+                    with patch("sod_gate_enforcer.load_historical_role_specs", return_value=historical_specs) as historical_loader:
+                        with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                            with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                                with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as mock_l2:
+                                    with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as mock_audit:
+                                        result = check_sod_compliance()
 
         assert result is True
-        assert mock_l2.call_args.args == ("l2_role11_gate_20260628", 11, "devops-engineer")
-        assert mock_audit.call_args.args == (".ly_state/session/audit_reports/role21_gate_20260628.md", 21, "code-reviewer")
+        assert mock_l2.call_args.args == (
+            "l2_role11_gate_20260628", 11, "devops-engineer",
+        )
+        assert mock_audit.call_args.args == (
+            ".ly_state/session/audit_reports/role21_gate_20260628.md",
+            21, "code-reviewer",
+        )
+        if expected_historical_specs:
+            assert mock_l2.call_args.kwargs["skill_role_specs"] == historical_specs
+            assert mock_audit.call_args.kwargs["skill_role_specs"] == historical_specs
+            historical_loader.assert_called_once_with()
+        else:
+            historical_loader.assert_not_called()
+            assert mock_l2.call_args.kwargs.get("skill_role_specs") is None
+            assert mock_audit.call_args.kwargs.get("skill_role_specs") is None
+
+    @pytest.mark.parametrize("gate_name", ["AGKIT_UPGRADE_P01", "AGKIT_UPGRADE_P06"])
+    def test_agkit_upgrade_gate_skips_historical_fallback(self, gate_name):
+        gate = self._base_gate(gate_name, "2026-10-02T13:17:19+00:00")
+        gates_file = MagicMock()
+        gates_file.exists.return_value = True
+        with patch("sod_gate_enforcer.GATES_FILE", gates_file):
+            with patch("builtins.open", mock_open(read_data=json.dumps([gate]))):
+                with patch("sod_gate_enforcer.validate_task_graph", return_value=(True, "ok")):
+                    with patch("sod_gate_enforcer.load_role_specs", return_value=self._role_specs()):
+                        with patch("sod_gate_enforcer.load_historical_role_specs") as historical_loader:
+                            with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                                with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                                    with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as l2_check:
+                                        with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as audit_check:
+                                            assert check_sod_compliance() is True
+
+        historical_loader.assert_not_called()
+        assert "skill_role_specs" not in l2_check.call_args.kwargs
+        assert "skill_role_specs" not in audit_check.call_args.kwargs
+
+    def test_invalid_upgrade_timestamp_fails_closed(self, capsys):
+        gate = {"phase_name": "AGKIT_UPGRADE_P06", "timestamp": "invalid", "final_verdict": "[APPROVED]"}
+        gates_file = MagicMock()
+        gates_file.exists.return_value = True
+        with patch("sod_gate_enforcer.GATES_FILE", gates_file):
+            with patch("builtins.open", mock_open(read_data=json.dumps([gate]))):
+                with patch("sod_gate_enforcer.validate_task_graph", return_value=(True, "ok")):
+                    assert check_sod_compliance() is False
+        assert "timestamp is invalid or non-finite" in capsys.readouterr().out
+
+
+class TestHistoricalSkillAlignment:
+    @staticmethod
+    def _p06_binding_is_current(gates):
+        reference = json.loads(
+            (Path(__file__).resolve().parents[1] / ".ly_state/session/phase_gates.json")
+            .read_text(encoding="utf-8")
+        )
+        authorized_session = reference["AGKIT_UPGRADE_P06"]["l2_session_id"]
+        return bool(authorized_session) and gates.get("AGKIT_UPGRADE_P06", {}).get("l2_session_id") == authorized_session
+
+    @pytest.mark.parametrize(
+        "authorized_session", [None, "l2_role11_agkit_integration_gate_rem6_20261003"],
+        ids=["phase-gates", "rem6"],
+    )
+    def test_p06_gate_binding_accepts_authorized_session(self, authorized_session):
+        gates = json.loads(
+            (Path(__file__).resolve().parents[1] / ".ly_state/session/phase_gates.json")
+            .read_text(encoding="utf-8")
+        )
+        if authorized_session is None:
+            authorized_session = gates["AGKIT_UPGRADE_P06"]["l2_session_id"]
+            assert authorized_session.startswith("l2_role11_agkit_integration_gate_")
+        else:
+            gates["AGKIT_UPGRADE_P06"] = {"l2_session_id": authorized_session}
+            with patch.object(Path, "read_text", return_value=json.dumps(gates)):
+                assert self._p06_binding_is_current(gates)
+            return
+        assert self._p06_binding_is_current(gates)
+
+    def test_pinned_baseline_contains_pre_upgrade_skill_sets(self):
+        historical = load_historical_role_specs()
+        assert historical[11]["skills"] == [
+            "deployment-procedures", "server-management", "clean-code",
+            "testing-patterns", "systematic-debugging",
+        ]
+        assert historical[21]["skills"] == [
+            "code-review-checklist", "clean-code", "testing-patterns",
+            "audit-cycle", "omega-sod",
+        ]
+        from hashlib import sha256
+        root = Path(__file__).resolve().parents[1]
+        graph = json.loads(
+            (root / ".ly_state/session/graph_evidence_l3_role18_agkit_upgrade_p06_20261003.json")
+            .read_text(encoding="utf-8")
+        )
+        digest = sha256((root / "scripts/sod_gate_enforcer.py").read_bytes()).hexdigest()
+        recorded = graph["scope_content_hashes"]["scripts/sod_gate_enforcer.py"]
+        assert recorded == digest
+
+    @pytest.mark.parametrize(
+        "mutated_session",
+        [
+            "l2_role11_agkit_integration_gate_rem1_20261002",
+            "l2_role11_agkit_integration_gate_rem4_20261003",
+            "l2_role11_agkit_integration_gate_rem5_20261003",
+            "", None, 6,
+        ],
+        ids=["rem1-rebind", "rem4-rebind", "rem5-rebind", "empty-binding", "null-binding", "wrong-type"],
+    )
+    def test_p06_gate_binding_faults_reject_superseded_and_invalid_sessions(self, mutated_session):
+        reference = {"AGKIT_UPGRADE_P06": {"l2_session_id": "l2_role11_agkit_integration_gate_rem6_20261003"}}
+        with patch.object(Path, "read_text", return_value=json.dumps(reference)):
+            assert not self._p06_binding_is_current({
+                "AGKIT_UPGRADE_P06": {"l2_session_id": mutated_session}
+            })
+
+    @pytest.mark.parametrize("gates", [{}, {"AGKIT_UPGRADE_P06": {}}], ids=["missing-gate", "missing-session"])
+    def test_p06_gate_binding_faults_reject_missing_fields(self, gates):
+        reference = {"AGKIT_UPGRADE_P06": {"l2_session_id": "l2_role11_agkit_integration_gate_rem6_20261003"}}
+        with patch.object(Path, "read_text", return_value=json.dumps(reference)):
+            assert not self._p06_binding_is_current(gates)
+
+    @pytest.mark.parametrize("mutated_digest", ["0" * 64, "", None], ids=["stale", "empty", "null"])
+    def test_graph_source_binding_detects_stale_digest_fault(self, mutated_digest):
+        from hashlib import sha256
+
+        root = Path(__file__).resolve().parents[1]
+        graph = json.loads(
+            (root / ".ly_state/session/graph_evidence_l3_role18_agkit_upgrade_p06_20261003.json")
+            .read_text(encoding="utf-8")
+        )
+        current = sha256((root / "scripts/sod_gate_enforcer.py").read_bytes()).hexdigest()
+        assert graph["scope_content_hashes"]["scripts/sod_gate_enforcer.py"] == current
+        graph["scope_content_hashes"]["scripts/sod_gate_enforcer.py"] = mutated_digest
+        graph_path = root / ".ly_state/session/graph_evidence_l3_role18_agkit_upgrade_p06_20261003.json"
+        original_read_text = Path.read_text
+
+        def read_text(path, *args, **kwargs):
+            if path == graph_path:
+                return json.dumps(graph)
+            return original_read_text(path, *args, **kwargs)
+
+        with patch.object(Path, "read_text", autospec=True, side_effect=read_text):
+            with pytest.raises(AssertionError):
+                self.test_pinned_baseline_contains_pre_upgrade_skill_sets()
+
+    @pytest.mark.parametrize(
+        ("validator", "role_id", "role_name", "report"),
+        [
+            (
+                _validate_l2_report_content, 11, "devops-engineer",
+                "# L2\nREPO_AGENT_ROOT=.agents/agent\nREPO_SKILL_ROOT=.agents/skills\n"
+                "## Repo-Local Files Read\n- .agents/agent/devops-engineer.md\n"
+                "- .agents/skills/deployment-procedures/skill.md\n"
+                "- .agents/skills/server-management/skill.md\n"
+                "- .agents/skills/clean-code/skill.md\n"
+                "- .agents/skills/testing-patterns/skill.md\n"
+                "- .agents/skills/systematic-debugging/skill.md\n",
+            ),
+            (
+                _validate_audit_report_skill_content, 21, "code-reviewer",
+                "# Audit\nRepo-local skill evidence .agents/skills\n"
+                "## Repo-Local Files Read\n- .agents/agent/code-reviewer.md\n"
+                "- .agents/skills/code-review-checklist/skill.md\n"
+                "- .agents/skills/clean-code/skill.md\n"
+                "- .agents/skills/testing-patterns/skill.md\n"
+                "- .agents/skills/audit-cycle/skill.md\n"
+                "- .agents/skills/omega-sod/skill.md\n"
+                "## Forbidden Path Scan\nNo violations.\n",
+            ),
+        ],
+        ids=["l2", "l3"],
+    )
+    def test_historical_reports_validate_against_pinned_skill_sets(
+        self, validator, role_id, role_name, report,
+    ):
+        historical = load_historical_role_specs()
+        current = {
+            **historical,
+            11: {**historical[11], "skills": historical[11]["skills"] + ["powershell-windows", "bash-linux"]},
+            21: {**historical[21], "skills": historical[21]["skills"] + ["code-review-graph", "lint-and-validate"]},
+        }
+        args = (report, "role21_historical.md", role_id, role_name) if validator is _validate_audit_report_skill_content else (report, role_id, role_name)
+        assert validator(*args, skill_role_specs=historical)[0] is True
+        assert validator(*args, skill_role_specs=current)[0] is False
+
+    @pytest.mark.parametrize(
+        ("validator", "role_id", "role_name", "other_role_id", "report_name"),
+        [
+            (_validate_l2_report_content, 11, "devops-engineer", 21, "l2"),
+            (_validate_audit_report_skill_content, 21, "code-reviewer", 11, "l3"),
+        ],
+        ids=["l2-wrong-role-skills", "l3-wrong-role-skills"],
+    )
+    def test_historical_role_alignment_rejects_missing_and_wrong_role_skills(
+        self, validator, role_id, role_name, other_role_id, report_name,
+    ):
+        historical = load_historical_role_specs()
+        role_path = f".agents/agent/{role_name}.md"
+        prefix = "REPO_AGENT_ROOT=.agents/agent\nREPO_SKILL_ROOT=.agents/skills\n"
+        if report_name == "l3":
+            prefix += "Repo-local .agents/skills\n## Forbidden Path Scan\nNo violations\n"
+        prefix += f"## Repo-Local Files Read\n- {role_path}\n"
+        wrong_skills = prefix + "".join(
+            f"- .agents/skills/{skill}/skill.md\n"
+            for skill in historical[other_role_id]["skills"]
+        )
+        args = (prefix, "role21_missing.md", role_id, role_name) if report_name == "l3" else (prefix, role_id, role_name)
+        valid, message = validator(*args, skill_role_specs=historical)
+        assert valid is False
+        assert "missing skill file evidence" in message
+
+        args = (wrong_skills, "role21_wrong_role.md", role_id, role_name) if report_name == "l3" else (wrong_skills, role_id, role_name)
+        valid, message = validator(*args, skill_role_specs=historical)
+        assert valid is False
+        assert "missing declared skill files" in message
+
+    @pytest.mark.parametrize(
+        ("validator", "role_id", "role_name", "report"),
+        [
+            (_validate_l2_report_content, 11, "devops-engineer", "REPO_AGENT_ROOT=.agents/agent\nREPO_SKILL_ROOT=.agents/skills\n## Repo-Local Files Read\n- .agents/agent/devops-engineer.md\n"),
+            (_validate_audit_report_skill_content, 21, "code-reviewer", "Repo-local .agents/skills\n## Repo-Local Files Read\n- .agents/agent/code-reviewer.md\n## Forbidden Path Scan\nNo violations\n"),
+        ],
+        ids=["l2-empty", "l3-empty"],
+    )
+    def test_empty_block_list_skill_declaration_fails_closed(
+        self, validator, role_id, role_name, report,
+    ):
+        empty_specs = {role_id: {"name": role_name, "tier": 2 if role_id == 11 else 3, "skills": []}}
+        args = (report, "role21_empty.md", role_id, role_name) if validator is _validate_audit_report_skill_content else (report, role_id, role_name)
+        valid, message = validator(*args, skill_role_specs=empty_specs)
+        assert valid is False
+        assert "invalid skills list" in message
+
+    @pytest.mark.parametrize(
+        ("phase_name", "timestamp", "panel"),
+        [
+            (STRICT_SKILL_ALIGNMENT_GATE, "2026-06-27T12:00:00+00:00", False),
+            (STRICT_SKILL_ALIGNMENT_GATE, None, False),
+            ("PRE_UPGRADE_GATE", "2026-10-02T13:17:19+00:00", False),
+            (STRICT_SKILL_ALIGNMENT_GATE, "2026-06-27T12:00:00+00:00", True),
+            ("PRE_UPGRADE_GATE", "2026-10-02T13:17:19+00:00", True),
+        ],
+    )
+    def test_pre_upgrade_strict_route_uses_historical_specs_for_l2_and_l3(
+        self, phase_name, timestamp, panel,
+    ):
+        gate = TestStrictSkillAlignmentRouting()._base_gate(phase_name, timestamp)
+        if panel:
+            gate["l3_panel"] = [{
+                "l3_role_id": 21,
+                "l3_role_name": "code-reviewer",
+                "audit_report_path": gate["audit_report_path"],
+            }]
+        gates_json = json.dumps([gate])
+        gates_file = MagicMock()
+        gates_file.exists.return_value = True
+        historical_specs = load_historical_role_specs()
+        with patch("sod_gate_enforcer.GATES_FILE", gates_file):
+            with patch("builtins.open", mock_open(read_data=gates_json)):
+                with patch("sod_gate_enforcer.validate_task_graph", return_value=(True, "ok")):
+                    with patch("sod_gate_enforcer.load_role_specs", return_value=TestStrictSkillAlignmentRouting()._role_specs()):
+                        with patch("sod_gate_enforcer.load_historical_role_specs", return_value=historical_specs) as historical_loader:
+                            with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                                with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                                    with patch("sod_gate_enforcer.validate_l3_panel", wraps=validate_l3_panel) as panel_check:
+                                        with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as l2_check:
+                                            with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as audit_check:
+                                                with patch("sod_gate_enforcer.check_report_evidence_wording", return_value=(True, "canonical")):
+                                                    assert check_sod_compliance() is True
+        historical_loader.assert_called_once_with()
+        if panel:
+            assert panel_check.call_args.args[4] == historical_specs
+            assert audit_check.call_args.kwargs["skill_role_specs"] == historical_specs
+        else:
+            assert audit_check.call_args.kwargs["skill_role_specs"] == historical_specs
+        assert l2_check.call_args.kwargs["skill_role_specs"] == historical_specs
+
+    @pytest.mark.parametrize(
+        ("phase_name", "timestamp"),
+        [
+            (STRICT_SKILL_ALIGNMENT_GATE, "2026-06-27T12:00:00+00:00"),
+            (STRICT_GATE_NAME, None),
+        ],
+        ids=["timestamped-strict-alignment", "missing-timestamp-strict-repo-local"],
+    )
+    def test_missing_historical_baseline_blocks_strict_gate(self, phase_name, timestamp):
+        gate = TestStrictSkillAlignmentRouting()._base_gate(phase_name, timestamp)
+        gates_file = MagicMock()
+        gates_file.exists.return_value = True
+        with patch("sod_gate_enforcer.GATES_FILE", gates_file):
+            with patch("builtins.open", mock_open(read_data=json.dumps([gate]))):
+                with patch("sod_gate_enforcer.validate_task_graph", return_value=(True, "ok")):
+                    with patch("sod_gate_enforcer.load_role_specs", return_value=TestStrictSkillAlignmentRouting()._role_specs()):
+                        with patch("sod_gate_enforcer.load_historical_role_specs", return_value={}):
+                            assert check_sod_compliance() is False
+
+    def test_named_strict_gate_without_timestamp_remains_strict(self):
+        gate = TestStrictSkillAlignmentRouting()._base_gate(STRICT_SKILL_ALIGNMENT_GATE, None)
+        gate.pop("timestamp")
+        gates_file = MagicMock()
+        gates_file.exists.return_value = True
+        historical = load_historical_role_specs()
+        with patch("sod_gate_enforcer.GATES_FILE", gates_file):
+            with patch("builtins.open", mock_open(read_data=json.dumps([gate]))):
+                with patch("sod_gate_enforcer.validate_task_graph", return_value=(True, "ok")):
+                    with patch("sod_gate_enforcer.load_role_specs", return_value=TestStrictSkillAlignmentRouting()._role_specs()):
+                        with patch("sod_gate_enforcer.load_historical_role_specs", return_value=historical):
+                            with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                                with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                                    with patch("sod_gate_enforcer.check_l2_report_skill_sources", return_value=(True, "")) as l2_check:
+                                        with patch("sod_gate_enforcer.check_audit_report_skill_sources", return_value=(True, "")) as audit_check:
+                                            assert check_sod_compliance() is True
+        assert l2_check.call_args.kwargs["skill_role_specs"] == historical
+        assert audit_check.call_args.kwargs["skill_role_specs"] == historical
+        assert l2_check.call_args.args[1:] == (11, "devops-engineer")
+        assert audit_check.call_args.args[1:] == (21, "code-reviewer")
+
+    @pytest.mark.parametrize(
+        "phase_name", [STRICT_GATE_NAME, STRICT_SKILL_ALIGNMENT_GATE],
+        ids=["strict-repo-local", "strict-skill-alignment"],
+    )
+    def test_named_strict_gates_without_timestamp_fail_closed(self, phase_name, capsys):
+        gate = TestStrictSkillAlignmentRouting()._base_gate(phase_name, None)
+        gate.pop("timestamp")
+        gate.pop("forbidden_path_scan")
+        gates_file = MagicMock()
+        gates_file.exists.return_value = True
+        with patch("sod_gate_enforcer.GATES_FILE", gates_file):
+            with patch("builtins.open", mock_open(read_data=json.dumps([gate]))):
+                with patch("sod_gate_enforcer.validate_task_graph", return_value=(True, "ok")):
+                    with patch("sod_gate_enforcer.load_role_specs", return_value=TestStrictSkillAlignmentRouting()._role_specs()):
+                        with patch("sod_gate_enforcer.load_historical_role_specs", return_value=load_historical_role_specs()):
+                            with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                                with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                                    assert check_sod_compliance() is False
+        assert f"Gate {phase_name} (STRICT) missing strict fields" in capsys.readouterr().out
+
+    def test_historical_baseline_git_lookup_oserror_fails_closed(self, monkeypatch):
+        import sod_gate_enforcer
+
+        monkeypatch.setattr(sod_gate_enforcer, "_HISTORICAL_ROLE_SPECS_CACHE", None)
+        with patch("sod_gate_enforcer._git", side_effect=OSError("git unavailable")):
+            with patch("sod_gate_enforcer.os.replace", side_effect=OSError("paired JSON crash")) as replace:
+                with patch.object(Path, "write_bytes", side_effect=OSError("checksum crash")) as write_bytes:
+                    assert load_historical_role_specs() == {}
+        replace.assert_not_called()
+        write_bytes.assert_not_called()
+
+    def test_missing_historical_role_blob_fails_closed(self, monkeypatch):
+        import sod_gate_enforcer
+
+        monkeypatch.setattr(sod_gate_enforcer, "_HISTORICAL_ROLE_SPECS_CACHE", None)
+        completed = subprocess.CompletedProcess([], 0, b".agents/agent/devops-engineer.md\n", b"")
+        with patch("sod_gate_enforcer._git", return_value=completed):
+            with patch("sod_gate_enforcer._pinned_file_bytes", return_value=None):
+                assert load_historical_role_specs() == {}
+
+    @pytest.mark.parametrize(
+        ("phase_name", "timestamp", "panel"),
+        [
+            (STRICT_SKILL_ALIGNMENT_GATE, "2026-06-27T12:00:00+00:00", False),
+            ("PRE_UPGRADE_GATE", "2026-10-02T13:17:19+00:00", False),
+            (STRICT_SKILL_ALIGNMENT_GATE, "2026-06-27T12:00:00+00:00", True),
+            ("PRE_UPGRADE_GATE", "2026-10-02T13:17:19+00:00", True),
+        ],
+        ids=["named-l2", "timestamp-l2", "named-l3-panel", "timestamp-l3-panel"],
+    )
+    def test_pre_upgrade_missing_role_skill_evidence_blocks_l2_and_l3(
+        self, phase_name, timestamp, panel,
+    ):
+        routing = TestStrictSkillAlignmentRouting()
+        gate = routing._base_gate(phase_name, timestamp)
+        if panel:
+            gate["l3_panel"] = [{
+                "l3_role_id": 21,
+                "l3_role_name": "code-reviewer",
+                "audit_report_path": gate["audit_report_path"],
+            }]
+        gates_file = MagicMock()
+        gates_file.exists.return_value = True
+        historical = load_historical_role_specs()
+
+        def accept_l2(*args, **kwargs):
+            return True, "historical role skills match"
+
+        def fail_l3(path, role_id=None, role_name=None, **kwargs):
+            return False, "missing declared skill files"
+
+        with patch("sod_gate_enforcer.GATES_FILE", gates_file):
+            with patch("builtins.open", mock_open(read_data=json.dumps([gate]))):
+                with patch("sod_gate_enforcer.validate_task_graph", return_value=(True, "ok")):
+                    with patch("sod_gate_enforcer.load_role_specs", return_value=routing._role_specs()):
+                        with patch("sod_gate_enforcer.load_historical_role_specs", return_value=historical):
+                            with patch("sod_gate_enforcer.check_audit_report_exists", return_value=(True, "")):
+                                with patch("sod_gate_enforcer.check_audit_report_content", return_value=(True, "")):
+                                    with patch("sod_gate_enforcer.check_l2_report_skill_sources", side_effect=accept_l2) as l2_check:
+                                        with patch("sod_gate_enforcer.check_audit_report_skill_sources", side_effect=fail_l3) as audit_check:
+                                            assert check_sod_compliance() is False
+        if panel:
+            assert audit_check.call_args.kwargs["skill_role_specs"] == historical
+        else:
+            assert l2_check.call_args.kwargs["skill_role_specs"] == historical
+            assert audit_check.call_args.kwargs["skill_role_specs"] == historical
 
 
 # =========================================================================
@@ -1705,7 +2175,7 @@ class TestSupersessionIntegration:
             "writer_auditor_separated": True,
             "repo_local_skill_sources": [
                 f".agents/agent/{l3_role_name}.md",
-                ".agents/skills/audit-cycle/SKILL.md",
+                ".agents/skills/audit-cycle/skill.md",
             ],
             "forbidden_path_scan": "no authoritative reliance",
             "timestamp": ts,

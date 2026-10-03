@@ -1361,6 +1361,10 @@ def validate_legacy_reconciliation(gates: dict | None = None) -> tuple[bool, str
 # Cutoff for strict declared-skill alignment (2026-06-28 08:56:00 UTC)
 STRICT_SKILL_ALIGNMENT_CUTOFF = datetime(2026, 6, 28, 8, 56, 0, tzinfo=timezone.utc).timestamp()
 
+# P05 approved the upgraded role specs at this exact UTC instant.
+AGKIT_UPGRADE_CUTOFF = datetime(2026, 10, 2, 13, 17, 20, tzinfo=timezone.utc).timestamp()
+AGKIT_UPGRADE_BASELINE_COMMIT = "e915ab43899339fa883532a27e0b5fb842143767"
+
 
 # Gate name for strict declared-skill alignment enforcement
 STRICT_SKILL_ALIGNMENT_GATE = "SOD_STRICT_SKILL_ALIGNMENT_20260628"
@@ -1414,6 +1418,7 @@ _CHAIN_BASE_RE = re.compile(r'^(.+)_(\d{8})$')
 
 # Cache for loaded role specs
 _ROLE_SPECS_CACHE = None
+_HISTORICAL_ROLE_SPECS_CACHE = None
 
 ALLOWED_GLOBAL_REPO_LOCAL_FILES = {
     ".agents/agents.md",
@@ -1522,87 +1527,111 @@ def validate_task_graph() -> tuple[bool, str]:
     return True, "task_graph.json valid DAG"
 
 
+def _parse_role_spec(md_file: Path, content: str) -> dict | None:
+    content = content.removeprefix('\ufeff')
+    frontmatter_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
+    if not frontmatter_match:
+        return None
+
+    spec = {}
+    pending_list_key = None
+    pending_list_indent = -1
+    for raw_line in frontmatter_match.group(1).split('\n'):
+        indent = len(raw_line) - len(raw_line.lstrip())
+        line = raw_line.strip()
+        if not line or line.startswith('#'):
+            continue
+        if pending_list_key and indent >= pending_list_indent and (line == '-' or line.startswith('- ')):
+            item = line[1:].strip().strip('"\'')
+            if item:
+                if not isinstance(spec[pending_list_key], list):
+                    spec[pending_list_key] = []
+                spec[pending_list_key].append(item)
+            continue
+        if ':' not in line:
+            pending_list_key = None
+            continue
+
+        key, value = (part.strip() for part in line.split(':', 1))
+        pending_list_key = key if not value else None
+        pending_list_indent = indent if pending_list_key else -1
+        if key == 'skills' and not value:
+            value = []
+        elif isinstance(value, str) and value.startswith('[') and value.endswith(']'):
+            value = [item.strip().strip('"\'') for item in value[1:-1].split(',') if item.strip()]
+        elif isinstance(value, str) and value.startswith(('"', "'")) and value[-1] == value[0]:
+            value = value[1:-1]
+        if key in ('role_id', 'tier'):
+            try:
+                value = int(value)
+            except ValueError:
+                pass
+        spec[key] = value
+
+    if 'role_id' not in spec:
+        return None
+    if spec.get('name') != md_file.stem:
+        raise ValueError(f"role filename stem mismatch: {md_file.name}")
+    return spec
+
+
 def load_role_specs() -> dict:
-    """Load all agent role specs from .agents/agent/*.md frontmatter.
-    
-    Returns:
-        dict: {role_id: {name, description, tier, platform, sod_boundary, ...}}
-    """
+    """Load all agent role specs from .agents/agent/*.md frontmatter."""
     global _ROLE_SPECS_CACHE
     if _ROLE_SPECS_CACHE is not None:
         return _ROLE_SPECS_CACHE
-    
     if not AGENTS_DIR.exists():
         print(f"WARNING: Agents directory not found: {AGENTS_DIR}")
         return {}
-    
+
     role_specs = {}
-    
     for md_file in AGENTS_DIR.glob("*.md"):
         try:
-            content = md_file.read_text(encoding='utf-8')
-            
-            # Extract YAML frontmatter between --- markers
-            frontmatter_match = re.match(r'^---\s*\n(.*?)\n---\s*\n', content, re.DOTALL)
-            if not frontmatter_match:
-                continue
-            
-            frontmatter = frontmatter_match.group(1)
-            
-            # Parse YAML frontmatter (simple key: value parser)
-            spec = {}
-            for line in frontmatter.split('\n'):
-                line = line.strip()
-                if not line or line.startswith('#'):
-                    continue
-                
-                # Handle key: value pairs
-                if ':' in line:
-                    key, value = line.split(':', 1)
-                    key = key.strip()
-                    value = value.strip()
-                    
-                    # Parse simple inline YAML lists like [a, b, c]
-                    if value.startswith('[') and value.endswith(']'):
-                        items = []
-                        inner = value[1:-1].strip()
-                        if inner:
-                            for item in inner.split(','):
-                                item = item.strip()
-                                if item.startswith('"') and item.endswith('"'):
-                                    item = item[1:-1]
-                                elif item.startswith("'") and item.endswith("'"):
-                                    item = item[1:-1]
-                                if item:
-                                    items.append(item)
-                        value = items
-                    # Remove quotes
-                    elif value.startswith('"') and value.endswith('"'):
-                        value = value[1:-1]
-                    elif value.startswith("'") and value.endswith("'"):
-                        value = value[1:-1]
-                    
-                    # Convert role_id and tier to int
-                    if key in ('role_id', 'tier'):
-                        try:
-                            value = int(value)
-                        except ValueError:
-                            pass
-                    
-                    spec[key] = value
-            
-            # Store by role_id if present
-            if 'role_id' in spec:
-                if spec.get('name') != md_file.stem:
-                    print(f"WARNING: role filename stem mismatch: {md_file.name}")
-                    continue
+            spec = _parse_role_spec(md_file, md_file.read_text(encoding='utf-8'))
+            if spec is not None:
                 role_specs[spec['role_id']] = spec
-        
         except Exception as e:
             print(f"WARNING: Failed to parse {md_file.name}: {e}")
-            continue
-    
     _ROLE_SPECS_CACHE = role_specs
+    return role_specs
+
+
+def load_historical_role_specs() -> dict:
+    """Load the immutable pre-P05 role-spec snapshot; return empty on any failure."""
+    global _HISTORICAL_ROLE_SPECS_CACHE
+    if _HISTORICAL_ROLE_SPECS_CACHE is not None:
+        return _HISTORICAL_ROLE_SPECS_CACHE
+
+    try:
+        result = _git("ls-tree", "-r", "--name-only", AGKIT_UPGRADE_BASELINE_COMMIT, "--", ".agents/agent")
+    except OSError:
+        return {}
+    if result.returncode:
+        return {}
+    try:
+        paths = result.stdout.decode('utf-8').splitlines()
+        if len(paths) != 26 or any(
+            re.fullmatch(r"\.agents/agent/[^/]+\.md", path) is None for path in paths
+        ):
+            return {}
+        role_specs = {}
+        for path in paths:
+            raw = _pinned_file_bytes(AGKIT_UPGRADE_BASELINE_COMMIT, path)
+            if raw is None:
+                return {}
+            spec = _parse_role_spec(Path(path), raw.decode('utf-8'))
+            if (
+                spec is None or isinstance(spec['role_id'], bool) or
+                not isinstance(spec['role_id'], int) or spec['role_id'] in role_specs or
+                not isinstance(spec.get('skills'), list) or not spec['skills']
+            ):
+                return {}
+            role_specs[spec['role_id']] = spec
+    except (OSError, UnicodeError, ValueError):
+        return {}
+    if set(role_specs) != set(range(1, 27)) or len({spec.get('name') for spec in role_specs.values()}) != 26:
+        return {}
+    _HISTORICAL_ROLE_SPECS_CACHE = role_specs
     return role_specs
 
 
@@ -2194,7 +2223,7 @@ def validate_forbidden_path_usage(text) -> tuple:
     return len(violations) > 0, violations
 
 
-def _validate_l2_report_content(content, role_id=None, role_name=None) -> tuple:
+def _validate_l2_report_content(content, role_id=None, role_name=None, skill_role_specs=None) -> tuple:
     """Validate L2 report contains repo-local skill source evidence.
     
     Requires:
@@ -2288,13 +2317,13 @@ def _validate_l2_report_content(content, role_id=None, role_name=None) -> tuple:
             "repo-local agent or skill file in Repo-Local Files Read"
         )
 
-    role_specs = load_role_specs()
+    role_specs = skill_role_specs if skill_role_specs is not None else load_role_specs()
     spec = role_specs.get(int(role_id)) if role_id is not None else None
     if not spec:
         return False, f"Role spec not found for l2_role_id {role_id}"
 
-    declared_skills = spec.get('skills') or []
-    if not isinstance(declared_skills, list):
+    declared_skills = spec.get('skills')
+    if not isinstance(declared_skills, list) or not declared_skills:
         return False, f"Role spec for {role_name} has invalid skills list"
 
     # Check exact role file read
@@ -2322,7 +2351,7 @@ def _validate_l2_report_content(content, role_id=None, role_name=None) -> tuple:
             f"in files read list"
         )
     expected_skill_files = {
-        f".agents/skills/{skill}/SKILL.md".lower()
+        f".agents/skills/{skill}/skill.md"
         for skill in declared_skills
     }
 
@@ -2334,14 +2363,14 @@ def _validate_l2_report_content(content, role_id=None, role_name=None) -> tuple:
         for r_id, r_spec in role_specs.items():
             if r_spec.get('name') == stem and r_spec.get('tier') == 2:
                 for s in (r_spec.get('skills') or []):
-                    tier2_co_skills.add(f".agents/skills/{s}/SKILL.md".lower())
+                    tier2_co_skills.add(f".agents/skills/{s}/skill.md")
 
     allowed_skill_files = expected_skill_files.union(tier2_co_skills)
 
     if not reported_skill_files:
         return False, (
             "L2 report missing skill file evidence: "
-            "must list declared .agents/skills/<name>/SKILL.md files in Repo-Local Files Read"
+            "must list declared .agents/skills/<name>/skill.md files in Repo-Local Files Read"
         )
 
     missing_skill_files = sorted(expected_skill_files - reported_skill_files)
@@ -2359,7 +2388,9 @@ def _validate_l2_report_content(content, role_id=None, role_name=None) -> tuple:
     return True, "L2 report has valid strict repo-local skill source evidence"
 
 
-def _validate_audit_report_skill_content(content, report_filename, role_id=None, role_name=None) -> tuple:
+def _validate_audit_report_skill_content(
+    content, report_filename, role_id=None, role_name=None, skill_role_specs=None
+) -> tuple:
     """Validate audit report content for repo-local skill source verification.
     
     Requires:
@@ -2430,17 +2461,17 @@ def _validate_audit_report_skill_content(content, report_filename, role_id=None,
         )
 
     if role_name:
-        role_specs = load_role_specs()
+        role_specs = skill_role_specs if skill_role_specs is not None else load_role_specs()
         spec = role_specs.get(int(role_id))
         if not spec:
             return False, f"Role spec not found for l3_role_id {role_id}"
 
-        declared_skills = spec.get('skills') or []
-        if not isinstance(declared_skills, list):
+        declared_skills = spec.get('skills')
+        if not isinstance(declared_skills, list) or not declared_skills:
             return False, f"Role spec for {role_name} has invalid skills list"
 
         expected_skill_files = {
-            f".agents/skills/{skill}/SKILL.md".lower()
+            f".agents/skills/{skill}/skill.md"
             for skill in declared_skills
         }
 
@@ -2452,14 +2483,14 @@ def _validate_audit_report_skill_content(content, report_filename, role_id=None,
             for r_id, r_spec in role_specs.items():
                 if r_spec.get('name') == stem and r_spec.get('tier') == 3:
                     for s in (r_spec.get('skills') or []):
-                        tier3_co_skills.add(f".agents/skills/{s}/SKILL.md".lower())
+                        tier3_co_skills.add(f".agents/skills/{s}/skill.md")
 
         allowed_skill_files = expected_skill_files.union(tier3_co_skills)
 
         if expected_skill_files and not reported_skill_files:
             return False, (
                 "Audit report missing skill file evidence: "
-                "must list declared .agents/skills/<name>/SKILL.md files in Repo-Local Files Read"
+                "must list declared .agents/skills/<name>/skill.md files in Repo-Local Files Read"
             )
 
         missing_skill_files = sorted(expected_skill_files - reported_skill_files)
@@ -2481,7 +2512,7 @@ def _validate_audit_report_skill_content(content, report_filename, role_id=None,
     return True, "Audit report has valid strict repo-local skill source verification"
 
 
-def check_l2_report_skill_sources(session_id, role_id=None, role_name=None) -> tuple:
+def check_l2_report_skill_sources(session_id, role_id=None, role_name=None, skill_role_specs=None) -> tuple:
     """Check L2 report for repo-local skill source evidence.
     
     Args:
@@ -2507,10 +2538,14 @@ def check_l2_report_skill_sources(session_id, role_id=None, role_name=None) -> t
     except Exception as e:
         return False, f"L2 report read error: {e}"
     
-    return _validate_l2_report_content(content, role_id, role_name)
+    if skill_role_specs is None:
+        return _validate_l2_report_content(content, role_id, role_name)
+    return _validate_l2_report_content(content, role_id, role_name, skill_role_specs)
 
 
-def check_audit_report_skill_sources(report_path, role_id=None, role_name=None) -> tuple:
+def check_audit_report_skill_sources(
+    report_path, role_id=None, role_name=None, skill_role_specs=None
+) -> tuple:
     """Check audit report for repo-local skill source verification.
     
     Args:
@@ -2537,7 +2572,11 @@ def check_audit_report_skill_sources(report_path, role_id=None, role_name=None) 
         return True, f"Audit report read error (checked separately): {e}"
     
     report_filename = full_path.name
-    return _validate_audit_report_skill_content(content, report_filename, role_id, role_name)
+    if skill_role_specs is None:
+        return _validate_audit_report_skill_content(content, report_filename, role_id, role_name)
+    return _validate_audit_report_skill_content(
+        content, report_filename, role_id, role_name, skill_role_specs
+    )
 
 
 def _gate_key_date(gate_name: str) -> tuple[date | None, str | None]:
@@ -2661,7 +2700,10 @@ def _extract_reported_skill_files(reported_files: list[str]) -> set[str]:
     return skill_files
 
 
-def _validate_panel_audit(audit: dict, l2_role_id, role_specs: dict) -> tuple[bool, str]:
+def _validate_panel_audit(
+    audit: dict, l2_role_id, role_specs: dict, strict_skill_alignment: bool = True,
+    skill_role_specs: dict | None = None,
+) -> tuple[bool, str]:
     """Validate one L3 panel audit entry."""
     if not isinstance(audit, dict):
         return False, "l3_panel entry must be object"
@@ -2693,16 +2735,24 @@ def _validate_panel_audit(audit: dict, l2_role_id, role_specs: dict) -> tuple[bo
         if not partial_valid:
             return False, approved_msg or partial_msg
 
-    skill_valid, skill_msg = check_audit_report_skill_sources(
-        audit_path, l3_role_id, l3_role_name
-    )
+    skill_args = (audit_path, l3_role_id if strict_skill_alignment else None,
+                  l3_role_name if strict_skill_alignment else None)
+    if skill_role_specs is None:
+        skill_valid, skill_msg = check_audit_report_skill_sources(*skill_args)
+    else:
+        skill_valid, skill_msg = check_audit_report_skill_sources(
+            *skill_args, skill_role_specs=skill_role_specs
+        )
     if not skill_valid:
         return False, skill_msg
 
     return True, ""
 
 
-def validate_l3_panel(l3_panel, l2_role_id, role_specs: dict) -> tuple[bool, str]:
+def validate_l3_panel(
+    l3_panel, l2_role_id, role_specs: dict, strict_skill_alignment: bool = True,
+    skill_role_specs: dict | None = None,
+) -> tuple[bool, str]:
     """Validate panel of independent L3 audits."""
     if not isinstance(l3_panel, list) or not l3_panel:
         return False, "l3_panel must be non-empty list"
@@ -2726,7 +2776,9 @@ def validate_l3_panel(l3_panel, l2_role_id, role_specs: dict) -> tuple[bool, str
         seen_role_ids.add(l3_role_id_int)
 
     for audit in l3_panel:
-        audit_valid, audit_msg = _validate_panel_audit(audit, l2_role_id, role_specs)
+        audit_valid, audit_msg = _validate_panel_audit(
+            audit, l2_role_id, role_specs, strict_skill_alignment, skill_role_specs
+        )
         if not audit_valid:
             return False, audit_msg
 
@@ -2986,6 +3038,19 @@ def check_sod_compliance() -> bool:
             print(f"FAIL: Gate {gate_name} has non-approved verdict: {verdict}")
             all_pass = False
             continue
+
+        is_strict_skill_alignment_gate = (
+            phase_name in (STRICT_SKILL_ALIGNMENT_GATE, STRICT_GATE_NAME) or
+            (ts is not None and ts >= STRICT_SKILL_ALIGNMENT_CUTOFF)
+        )
+        skill_role_specs = None
+        if (is_strict_skill_alignment_gate and (ts is None or ts < AGKIT_UPGRADE_CUTOFF)
+                and not phase_name.startswith("AGKIT_UPGRADE_")):
+            skill_role_specs = load_historical_role_specs()
+            if not skill_role_specs:
+                print(f"FAIL: Gate {gate_name} historical role-skill baseline unavailable")
+                all_pass = False
+                continue
         
         # Validate L2 role
         l2_role_id = gate.get("l2_role_id")
@@ -3003,7 +3068,10 @@ def check_sod_compliance() -> bool:
         l3_role_id = gate.get("l3_role_id")
         l3_role_name = gate.get("l3_role_name")
         if l3_panel is not None:
-            panel_valid, panel_msg = validate_l3_panel(l3_panel, l2_role_id, role_specs)
+            panel_valid, panel_msg = validate_l3_panel(
+                l3_panel, l2_role_id, role_specs, is_strict_skill_alignment_gate,
+                skill_role_specs,
+            )
             if not panel_valid:
                 print(f"FAIL: Gate {gate_name} L3 panel invalid: {panel_msg}")
                 all_pass = False
@@ -3090,15 +3158,10 @@ def check_sod_compliance() -> bool:
                         all_pass = False
                         continue
         
-        is_strict_skill_alignment_gate = (
-            phase_name == STRICT_SKILL_ALIGNMENT_GATE or
-            (ts is not None and ts >= STRICT_SKILL_ALIGNMENT_CUTOFF)
-        )
-
         # --- STRICT_REPO_LOCAL_SKILL_LOADING_20260612 checks ---
-        if gate_name not in LEGACY_RESIDUAL_KEYS and ts is not None and ts >= SKILL_LOADING_CUTOFF:
-            # Check if this is the STRICT gate itself (Tier C: always hard-blocking)
-            is_strict_gate = (phase_name == STRICT_GATE_NAME)
+        is_strict_gate = phase_name in (STRICT_GATE_NAME, STRICT_SKILL_ALIGNMENT_GATE)
+        if gate_name not in LEGACY_RESIDUAL_KEYS and (
+                is_strict_gate or (ts is not None and ts >= SKILL_LOADING_CUTOFF)):
             
             # Check for strict fields
             has_repo_local = "repo_local_skill_sources" in gate
@@ -3118,6 +3181,7 @@ def check_sod_compliance() -> bool:
                     l2_session_id,
                     l2_role_id if is_strict_skill_alignment_gate else None,
                     l2_role_name if is_strict_skill_alignment_gate else None,
+                    **({"skill_role_specs": skill_role_specs} if skill_role_specs is not None else {}),
                 )
                 if not l2_valid:
                     print(f"FAIL: Gate {gate_name} (STRICT) L2 skill sources invalid: {l2_msg}")
@@ -3130,6 +3194,7 @@ def check_sod_compliance() -> bool:
                         audit_path,
                         l3_role_id if is_strict_skill_alignment_gate else None,
                         l3_role_name if is_strict_skill_alignment_gate else None,
+                        **({"skill_role_specs": skill_role_specs} if skill_role_specs is not None else {}),
                     )
                     if not audit_valid:
                         print(f"FAIL: Gate {gate_name} (STRICT) L3 audit skill sources invalid: {audit_msg}")
@@ -3143,6 +3208,7 @@ def check_sod_compliance() -> bool:
                     l2_session_id,
                     l2_role_id if is_strict_skill_alignment_gate else None,
                     l2_role_name if is_strict_skill_alignment_gate else None,
+                    **({"skill_role_specs": skill_role_specs} if skill_role_specs is not None else {}),
                 )
                 if not l2_valid:
                     print(f"FAIL: Gate {gate_name} L2 skill sources invalid: {l2_msg}")
@@ -3154,13 +3220,14 @@ def check_sod_compliance() -> bool:
                         audit_path,
                         l3_role_id if is_strict_skill_alignment_gate else None,
                         l3_role_name if is_strict_skill_alignment_gate else None,
+                        **({"skill_role_specs": skill_role_specs} if skill_role_specs is not None else {}),
                     )
                     if not audit_valid:
                         print(f"FAIL: Gate {gate_name} L3 audit skill sources invalid: {audit_msg}")
                         all_pass = False
                         continue
             
-            elif strict_approval_ts is not None and ts >= strict_approval_ts:
+            elif strict_approval_ts is not None and ts is not None and ts >= strict_approval_ts:
                 # Tier B: Post-strict-approval, missing strict fields -> hard-blocking
                 print(f"FAIL: Gate {gate_name} missing strict fields")
                 all_pass = False
