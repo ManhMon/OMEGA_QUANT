@@ -4,8 +4,17 @@ description: UI/UX implementation
 role_id: 8
 tier: 2
 platform: OpenCode
-skills: [nextjs-react-expert, frontend-design, tailwind-patterns, clean-code, testing-patterns, verify-changes]
-sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
+skills:
+- nextjs-react-expert
+- frontend-design
+- web-design-guidelines
+- tailwind-patterns
+- lint-and-validate
+- clean-code
+- testing-patterns
+- verify-changes
+- i18n-localization
+sod_boundary: implementation-only, test required, no self-approval, submit to Tier3
 ---
 
 # Frontend Engineer

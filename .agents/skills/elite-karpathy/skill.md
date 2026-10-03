@@ -68,6 +68,7 @@ This skill defines the core software quality standards for the OMEGA_QUANT syste
 
 **Requirements:**
 - **T-1 Lag Rule**: Features for time T must use ONLY data available at T-1 or earlier
+- **Availability Ordering**: Enforce `as_of <= available_at <= decision_time` with explicit UTC/ICT timezone boundaries
 - **No Future Data**: Never access data from future timestamps in backtests
 - **Explicit Date Filtering**: Always use `.loc[df.index <= current_date]` patterns
 - **Audit Trail**: Document PIT compliance in function docstrings
@@ -116,6 +117,14 @@ for i in range(len(prices)):
         ret = (prices[i] / prices[i-1] - 1) * 100
         returns.append(ret)
 ```
+
+### Adversarial Testing and Anti-Polling
+
+- Apply this 24-dimension map to relevant OMEGA changes; detailed probes live in `.agents/skills/testing-patterns/skill.md`:
+  1. Malformed types/bounds; 2. I/O paths/encoding; 3. Checkpoint integrity; 4. Fail-closed errors; 5. Rollback/atomicity; 6. PIT/timezones; 7. Vietnam calendar; 8. Numeric precision; 9. Concurrency/races; 10. `VND_FULL` units; 11. Survivorship/delisting; 12. CLI injection; 13. Schema drift; 14. Resource bounds; 15. Timeout/429 exhaustion; 16. Secret redaction; 17. JEV input validation; 18. Model allowlists; 19. Context/replay binding; 20. Schema/digest integrity; 21. Publication durability; 22. Lock ownership; 23. Retry/fallback safety; 24. Secret-safe prompt routing.
+- Keep verification scoped to changed behavior and related tests; do not run the full repository suite for a scoped change.
+- Never loop or poll status, task status, or `sod_gate_enforcer.py` while waiting. Use a single completion signal, then stop and yield if work remains pending.
+- Application retries must be finite and bounded by attempts or deadline, use backoff, and fail explicitly on exhaustion. Tests must use deterministic time controls, not polling loops.
 
 ### Audit Trail Integration
 *Every code change must be traceable to L3 audit verdict.*
@@ -187,8 +196,8 @@ This skill supports the OMEGA segregation of duties framework:
 - Reference specific violations in audit report
 
 **L1 (Ly) Usage:**
-- Verify both L2 and L3 followed these principles
-- Make final approval decision
+- Orchestrate L2 implementation and L3 independent audit
+- Record the L3 verdict and enforce the gate without overriding approval authority
 - Escalate pattern violations
 
 ---

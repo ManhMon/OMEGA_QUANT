@@ -4,8 +4,14 @@ description: User acceptance validation
 role_id: 24
 tier: 3
 platform: Codex
-skills: [webapp-testing, verify-changes, audit-cycle]
-sod_boundary: "READ-ONLY audit, no code/file modifications, markdown audit report required, final verdict [APPROVED] or [NEEDS_FIX]"
+skills:
+- webapp-testing
+- verify-changes
+- audit-cycle
+- testing-patterns
+- systematic-debugging
+sod_boundary: READ-ONLY audit, no code/file modifications, markdown audit report required,
+  final verdict [APPROVED] or [NEEDS_FIX]
 ---
 
 # UAT Validator

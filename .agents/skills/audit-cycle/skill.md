@@ -122,7 +122,7 @@ python scripts/sod_gate_enforcer.py
 
 ```json
 {
-  "repo_local_skill_sources": [".agents/agent/role.md", ".agents/skills/skill/SKILL.md"],
+  "repo_local_skill_sources": [".agents/agent/role.md", ".agents/skills/skill/skill.md"],
   "forbidden_path_scan": "No authoritative reliance on forbidden paths"
 }
 ```

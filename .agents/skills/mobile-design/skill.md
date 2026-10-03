@@ -57,6 +57,16 @@ allowed-tools: Read, Glob, Grep, Bash
 
 ---
 
+## Accessibility, Responsive Layout, Performance, and Versions
+
+- Target WCAG 2.2 AA with VoiceOver/TalkBack semantics, accessible names and state, predictable focus, Dynamic Type/font scaling, contrast, reduced motion, and alternatives to gesture-only actions.
+- Use platform-sized touch targets (at least 44pt on iOS and 48dp on Android), respect safe areas and system insets, and verify small phones, tablets, landscape, split-screen, and enlarged text without clipping.
+- Profile on representative low-end devices before optimizing. Bound list rendering, image dimensions, memory, startup work, network requests, and animation cost; avoid blanket memoization or tuning without evidence.
+- Confirm OS deployment targets, SDK, framework, and dependency versions from project manifests/lockfiles. Check platform/API availability and version-matched official guidance before relying on a feature.
+- Before handoff, review all 24 OMEGA adversarial dimensions in [testing-patterns](../testing-patterns/skill.md). Record a focused test for each applicable dimension; mark unrelated dimensions not applicable with a reason. Do not fabricate mobile cases for unrelated trading or provider behavior.
+
+---
+
 ## ⚠️ CRITICAL: ASK BEFORE ASSUMING (MANDATORY)
 
 > **STOP! If the user's request is open-ended, DO NOT default to your favorites.**
@@ -80,14 +90,14 @@ allowed-tools: Read, Glob, Grep, Bash
 
 | ❌ NEVER DO | Why It's Wrong | ✅ ALWAYS DO |
 |-------------|----------------|--------------|
-| **ScrollView for long lists** | Renders ALL items, memory explodes | Use `FlatList` / `FlashList` / `ListView.builder` |
-| **Inline renderItem function** | New function every render, all items re-render | `useCallback` + `React.memo` |
+| **Unbounded ScrollView for long lists** | Can render too many items and use excess memory | Use a virtualized list when measurements or data size warrant it |
+| **Unmeasured renderItem/memoization** | Adds complexity without guaranteed benefit | Profile first; memoize only when it prevents measured work |
 | **Missing keyExtractor** | Index-based keys cause bugs on reorder | Unique, stable ID from data |
 | **Skip getItemLayout** | Async layout = janky scroll | Provide when items have fixed height |
 | **setState() everywhere** | Unnecessary widget rebuilds | Targeted state, `const` constructors |
 | **Native driver: false** | Animations blocked by JS thread | `useNativeDriver: true` always |
 | **console.log in production** | Blocks JS thread severely | Remove before release build |
-| **Skip React.memo/const** | Every item re-renders on any change | Memoize list items ALWAYS |
+| **Memoize every item by default** | Adds comparison and maintenance cost | Profile list rendering and apply targeted optimizations |
 
 #### Touch/UX Sins
 

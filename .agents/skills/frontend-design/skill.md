@@ -381,6 +381,17 @@ For EVERY design task:
 
 ---
 
+## 11. Accessibility, Responsive Design, and Performance
+
+- Target WCAG 2.2 AA: semantic HTML, accessible names, keyboard operation, visible focus, sufficient contrast, logical focus order, and screen-reader feedback.
+- Support zoom/reflow, text resizing, reduced motion, and touch input; never communicate state by color alone. Verify manually as well as with automated checks.
+- Start with narrow viewports; test 320px through wide desktop, orientation changes, long/localized content, and 200% zoom. Prevent accidental horizontal scrolling and preserve usable targets.
+- Measure real user impact before optimizing. Protect LCP, INP, and CLS with appropriately sized images, reserved media space, limited client JavaScript, and transform/opacity motion where suitable.
+- Validate the framework, browser support, and design-library versions from the repository manifest and lockfile before using APIs or patterns; follow documentation for those exact versions, not assumed-latest guidance.
+- Before handoff, review all 24 OMEGA adversarial dimensions in [testing-patterns](../testing-patterns/skill.md). Record a focused test for each applicable dimension; mark unrelated dimensions not applicable with a reason. Do not invent UI tests for unrelated trading, persistence, routing, or provider behavior.
+
+---
+
 ## Reference Files
 
 For deeper guidance on specific areas:
@@ -400,7 +411,7 @@ For deeper guidance on specific areas:
 | Skill | When to Use |
 |-------|-------------|
 | **frontend-design** (this) | Before coding - Learn design principles (color, typography, UX psychology) |
-| **[web-design-guidelines](../web-design-guidelines/SKILL.md)** | After coding - Audit for accessibility, performance, and best practices |
+| **[web-design-guidelines](../web-design-guidelines/skill.md)** | After coding - Audit for accessibility, performance, and best practices |
 
 ## Post-Design Workflow
 

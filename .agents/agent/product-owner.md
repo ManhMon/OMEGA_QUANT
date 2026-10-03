@@ -4,7 +4,7 @@ description: Feature prioritization/stakeholder alignment
 role_id: 2
 tier: 1
 platform: Ly
-skills: [brainstorming, office-hours, architecture, api-patterns, frontend-design]
+skills: [brainstorming, coordinator-mode, architecture, api-patterns, frontend-design]
 sod_boundary: "orchestration/gate-only, no implementation/audit"
 ---
 

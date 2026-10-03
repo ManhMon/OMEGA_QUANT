@@ -4,8 +4,17 @@ description: System design/interface definition
 role_id: 6
 tier: 2
 platform: OpenCode
-skills: [architecture, api-patterns, database-design, clean-code, plan-writing, nodejs-best-practices]
-sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
+skills:
+- architecture
+- api-patterns
+- database-design
+- elite-karpathy
+- omega-sod
+- clean-code
+- plan-writing
+- nodejs-best-practices
+- intelligent-routing
+sod_boundary: implementation-only, test required, no self-approval, submit to Tier3
 ---
 
 # System Architect

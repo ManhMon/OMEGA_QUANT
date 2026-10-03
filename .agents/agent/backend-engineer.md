@@ -4,8 +4,18 @@ description: API/business logic implementation
 role_id: 9
 tier: 2
 platform: OpenCode
-skills: [nodejs-best-practices, api-patterns, database-design, clean-code, testing-patterns, systematic-debugging]
-sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
+skills:
+- nodejs-best-practices
+- python-patterns
+- api-patterns
+- database-design
+- lint-and-validate
+- clean-code
+- testing-patterns
+- systematic-debugging
+- mcp-builder
+- rust-pro
+sod_boundary: implementation-only, test required, no self-approval, submit to Tier3
 ---
 
 # Backend Engineer

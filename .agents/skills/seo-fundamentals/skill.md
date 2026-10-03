@@ -51,6 +51,12 @@ allowed-tools: Read, Glob, Grep
 | Mobile-friendly | Ranking factor |
 | Clean URLs | Crawlability |
 
+### Accessibility and Responsive Experience
+
+- Use semantic landmarks, descriptive link text, correctly nested headings, accessible form labels, and useful image alternatives; accessibility improves usability and helps make content understandable, but does not guarantee ranking.
+- Ensure mobile-first layouts remain readable and operable at narrow widths, enlarged text, keyboard navigation, and zoom. Avoid content hidden only on small screens.
+- Monitor LCP, INP, and CLS on representative devices and routes. Treat Core Web Vitals as page-experience signals, not a substitute for useful content or an SEO guarantee.
+
 ---
 
 ## 4. Content SEO Principles
@@ -59,8 +65,8 @@ allowed-tools: Read, Glob, Grep
 
 | Element | Best Practice |
 |---------|---------------|
-| Title tag | 50-60 chars, keyword front |
-| Meta description | 150-160 chars, compelling |
+| Title tag | Unique, concise, accurate; lead with the page topic where natural |
+| Meta description | Accurate, useful summary; search engines may generate a different snippet |
 | H1 | One per page, main keyword |
 | H2-H6 | Logical hierarchy |
 | Alt text | Descriptive, not stuffed |
@@ -127,4 +133,12 @@ allowed-tools: Read, Glob, Grep
 
 ---
 
-> **Remember:** SEO is a long-term game. Quality content + technical excellence + patience = results.
+## 9. Version Validation and 24D Review
+
+- Validate framework, SEO plugin, schema generator, and runtime versions from manifests and lockfiles. Check version-matched official documentation and current search-engine guidance before relying on metadata APIs, rendering behavior, or structured-data features.
+- Validate structured data against the current supported vocabulary and search-feature policies; never assume a schema type guarantees a rich result.
+- Before handoff, review all 24 OMEGA adversarial dimensions in [testing-patterns](../testing-patterns/skill.md). Record a focused test for each applicable dimension; mark unrelated dimensions not applicable with a reason. Include input/schema, output integrity, secrets, and resource cases where SEO generation consumes untrusted or large content; do not misrepresent unrelated market-data dimensions as tested.
+
+---
+
+> **Remember:** SEO is a long-term game. Useful content, accessible responsive pages, and sound technical implementation create durable foundations, not ranking guarantees.

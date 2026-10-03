@@ -4,7 +4,7 @@ description: CI/CD automation
 role_id: 11
 tier: 2
 platform: OpenCode
-skills: [deployment-procedures, server-management, clean-code, testing-patterns, systematic-debugging]
+skills: [deployment-procedures, server-management, powershell-windows, bash-linux, clean-code, testing-patterns, systematic-debugging]
 sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
 ---
 

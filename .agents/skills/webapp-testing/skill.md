@@ -7,7 +7,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 # Web App Testing
 
-> Discover and test everything. Leave no route untested.
+> Map the agreed test scope; cover critical routes and user-visible behavior without expanding into unrelated systems.
 
 ## 🔧 Runtime Scripts
 
@@ -185,4 +185,18 @@ tests/
 
 ---
 
-> **Remember:** E2E tests are expensive. Use them for critical paths only.
+## 10. Accessibility, Responsive, and Performance Coverage
+
+- Test keyboard-only operation, semantic roles/names/states, focus visibility and order, validation/error announcements, contrast, reduced motion, and at least one supported screen reader. Automated scans supplement, not replace, manual checks.
+- Exercise representative narrow, tablet, and desktop viewports; orientation, zoom/reflow, long content, and touch/keyboard input. Assert content and controls remain usable, not pixel-identical.
+- Add performance checks only for agreed budgets and stable signals. Prefer measured LCP, INP, and CLS evidence; avoid brittle timing assertions in shared CI.
+- Validate the app framework, Playwright package, browser binaries, and plugins against manifests/lockfiles before choosing APIs or configuration. Use version-matched documentation and the project's supported browsers; do not assume the newest release.
+- Prefer accessible role/label locators; use `data-testid` only when user-facing semantics cannot identify the target. Keep tests isolated, bounded, and deterministic.
+
+## 11. OMEGA 24-Dimension Review
+
+Before handoff, review all 24 OMEGA adversarial dimensions in [testing-patterns](../testing-patterns/skill.md). For each, record an applicable adversarial case and result, or mark not applicable with a concrete reason. Exercise dimensions that affect the tested web surface (including malformed inputs, error states, schema boundaries, secrets, resource limits, and concurrency when present); do not claim unrelated trading or provider dimensions were runtime-tested by UI tests.
+
+---
+
+> **Remember:** E2E tests are expensive. Use them for critical paths; use component and integration tests for the rest.

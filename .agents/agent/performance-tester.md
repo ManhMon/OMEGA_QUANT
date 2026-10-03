@@ -4,8 +4,14 @@ description: Load/stress testing
 role_id: 23
 tier: 3
 platform: Codex
-skills: [performance-profiling, webapp-testing, audit-cycle, systematic-debugging]
-sod_boundary: "READ-ONLY audit, no code/file modifications, markdown audit report required, final verdict [APPROVED] or [NEEDS_FIX]"
+skills:
+- performance-profiling
+- webapp-testing
+- audit-cycle
+- systematic-debugging
+- testing-patterns
+sod_boundary: READ-ONLY audit, no code/file modifications, markdown audit report required,
+  final verdict [APPROVED] or [NEEDS_FIX]
 ---
 
 # Performance Tester

@@ -4,8 +4,14 @@ description: Security testing/exploits
 role_id: 22
 tier: 3
 platform: Codex
-skills: [red-team-tactics, vulnerability-scanner, cso, audit-cycle]
-sod_boundary: "READ-ONLY audit, no code/file modifications, markdown audit report required, final verdict [APPROVED] or [NEEDS_FIX]"
+skills:
+- red-team-tactics
+- vulnerability-scanner
+- cso
+- audit-cycle
+- code-review-checklist
+sod_boundary: READ-ONLY audit, no code/file modifications, markdown audit report required,
+  final verdict [APPROVED] or [NEEDS_FIX]
 ---
 
 # Penetration Tester

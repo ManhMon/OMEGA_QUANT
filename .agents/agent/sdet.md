@@ -4,7 +4,7 @@ description: Test automation/frameworks
 role_id: 18
 tier: 3
 platform: Codex
-skills: [testing-patterns, webapp-testing, code-review-checklist, verify-changes, audit-cycle]
+skills: [testing-patterns, webapp-testing, tdd-workflow, code-review-checklist, verify-changes, audit-cycle]
 sod_boundary: "READ-ONLY audit, no code/file modifications, markdown audit report required, final verdict [APPROVED] or [NEEDS_FIX]"
 ---
 

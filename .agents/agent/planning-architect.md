@@ -4,8 +4,16 @@ description: Master Planner / Architecture Documenter
 role_id: 26
 tier: 3
 platform: Codex
-skills: [plan-writing, architecture, database-design, api-patterns]
-sod_boundary: "planning-only, non-audit, no production code"
+skills:
+- plan-writing
+- architecture
+- database-design
+- api-patterns
+- omega-sod
+- clean-code
+- testing-patterns
+- skillify
+sod_boundary: planning-only, non-audit, no production code
 ---
 
 # Planning Architect

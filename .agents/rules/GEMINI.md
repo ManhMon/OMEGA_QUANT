@@ -14,15 +14,15 @@ trigger: always_on
 
 ### 1. Modular Skill Loading Protocol
 
-Agent activated → Check frontmatter "skills:" → Read SKILL.md (INDEX) → Read specific sections.
+Agent activated → Check frontmatter "skills:" → Read skill.md (INDEX) → Read specific sections.
 
-- **Selective Reading:** DO NOT read ALL files in a skill folder. Read `SKILL.md` first, then only read sections matching the user's request.
-- **Rule Priority:** P0 (GEMINI.md) > P1 (Agent .md) > P2 (SKILL.md). All rules are binding.
+- **Selective Reading:** DO NOT read ALL files in a skill folder. Read `skill.md` first, then only read sections matching the user's request.
+- **Rule Priority:** P0 (GEMINI.md) > P1 (Agent .md) > P2 (skill.md). All rules are binding.
 
 ### 2. Enforcement Protocol
 
 1. **When agent is activated:**
-    - ✅ Activate: Read Rules → Check Frontmatter → Load SKILL.md → Apply All.
+    - ✅ Activate: Read Rules → Check Frontmatter → Load skill.md → Apply All.
 2. **Forbidden:** Never skip reading agent rules or skill instructions. "Read → Understand → Apply" is mandatory.
 
 ---

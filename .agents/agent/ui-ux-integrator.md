@@ -4,8 +4,18 @@ description: UI integration/styling
 role_id: 13
 tier: 2
 platform: OpenCode
-skills: [frontend-design, mobile-design, tailwind-patterns, nextjs-react-expert, clean-code, testing-patterns]
-sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
+skills:
+- frontend-design
+- mobile-design
+- tailwind-patterns
+- nextjs-react-expert
+- web-design-guidelines
+- clean-code
+- testing-patterns
+- app-builder
+- seo-fundamentals
+- webapp-testing
+sod_boundary: implementation-only, test required, no self-approval, submit to Tier3
 ---
 
 # UI/UX Integrator

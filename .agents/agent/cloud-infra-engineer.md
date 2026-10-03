@@ -4,7 +4,7 @@ description: IaC
 role_id: 12
 tier: 2
 platform: OpenCode
-skills: [server-management, deployment-procedures, architecture, clean-code, performance-profiling]
+skills: [server-management, deployment-procedures, powershell-windows, bash-linux, architecture, clean-code, performance-profiling]
 sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
 ---
 

@@ -4,7 +4,7 @@ description: Functional testing
 role_id: 17
 tier: 3
 platform: Codex
-skills: [webapp-testing, testing-patterns, verify-changes, systematic-debugging, audit-cycle]
+skills: [webapp-testing, testing-patterns, tdd-workflow, verify-changes, systematic-debugging, audit-cycle]
 sod_boundary: "READ-ONLY audit, no code/file modifications, markdown audit report required, final verdict [APPROVED] or [NEEDS_FIX]"
 ---
 

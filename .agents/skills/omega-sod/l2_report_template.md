@@ -22,7 +22,7 @@ Choose exactly one variant from `ANTI_DRIP_MODE`. Replace every placeholder. Nev
 ## Repo-Local Files Read
 
 - `.agents/agent/<ROLE_NAME>.md`
-- `.agents/skills/<SKILL_NAME>/SKILL.md`
+- `.agents/skills/<SKILL_NAME>/skill.md`
 
 ## Changes Made
 
@@ -60,7 +60,7 @@ Choose exactly one variant from `ANTI_DRIP_MODE`. Replace every placeholder. Nev
 ## Repo-Local Files Read
 
 - `.agents/agent/<ROLE_NAME>.md`
-- `.agents/skills/<SKILL_NAME>/SKILL.md`
+- `.agents/skills/<SKILL_NAME>/skill.md`
 
 ## Changes Made
 

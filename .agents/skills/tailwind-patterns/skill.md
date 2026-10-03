@@ -11,6 +11,14 @@ allowed-tools: Read, Write, Edit, Glob, Grep
 
 ---
 
+## 0. Validate the Installed Version
+
+- Check `package.json` and the package-manager lockfile for the installed Tailwind CSS major version and integrations before using syntax from this guide.
+- This guide covers v4. Do not apply `@theme`, v4 imports, or v4 variants to a v3 project; consult version-matched official documentation and existing project configuration instead.
+- Verify browser support and any plugin/API compatibility against the project's declared browser targets and exact dependency versions.
+
+---
+
 ## 1. Tailwind v4 Architecture
 
 ### What Changed from v3
@@ -155,7 +163,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep
 | Asymmetric (Bento) | `grid grid-cols-3 grid-rows-2` with spans |
 | Sidebar layout | `grid grid-cols-[auto_1fr]` |
 
-> **Note:** Prefer asymmetric/Bento layouts over symmetric 3-column grids.
+> Choose grid structure from content and breakpoints; neither Bento nor a symmetric grid is a default requirement.
 
 ---
 
@@ -267,4 +275,13 @@ allowed-tools: Read, Write, Edit, Glob, Grep
 
 ---
 
-> **Remember:** Tailwind v4 is CSS-first. Embrace CSS variables, container queries, and native features. The config file is now optional.
+## 13. Accessibility, Responsiveness, Performance, and 24D
+
+- Preserve semantic HTML and visible `focus-visible` states; provide adequate contrast, accessible names, error/status announcements, reduced-motion variants, and non-color cues. Utilities do not make a component accessible by themselves.
+- Use mobile-first styles, container queries for component context, and viewport breakpoints for page layout. Test narrow widths, zoom/reflow, long content, orientation, and target sizes; avoid fixed widths that cause overflow.
+- Prefer stable layout and low-cost CSS. Avoid animating layout properties, large blur/filter effects, and unnecessary client-side state; profile before adding complexity.
+- Before handoff, review all 24 OMEGA adversarial dimensions in [testing-patterns](../testing-patterns/skill.md). Record a focused test for each applicable dimension; mark unrelated dimensions not applicable with a reason. Do not fabricate CSS checks for unrelated trading/data-provider behavior.
+
+---
+
+> **Remember:** For Tailwind v4 projects, use CSS-first tokens and native features where they fit; validate the actual installed version before applying this guide.

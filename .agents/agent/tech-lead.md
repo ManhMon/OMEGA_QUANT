@@ -4,8 +4,16 @@ description: Technical leadership/code standards
 role_id: 7
 tier: 2
 platform: OpenCode
-skills: [clean-code, code-review-checklist, plan-writing, testing-patterns, verify-changes, systematic-debugging]
-sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
+skills:
+- clean-code
+- code-review-checklist
+- plan-writing
+- testing-patterns
+- verify-changes
+- systematic-debugging
+- improve
+- simplify-code
+sod_boundary: implementation-only, test required, no self-approval, submit to Tier3
 ---
 
 # Tech Lead

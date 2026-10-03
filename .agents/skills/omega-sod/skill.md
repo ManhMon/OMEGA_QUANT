@@ -17,34 +17,35 @@ priority: CRITICAL
 
 | Level | Platform | Role | Allowed Actions |
 |-------|----------|------|-----------------|
-| **L1** | Ly | Orchestration | Direct work, coordinate L2/L3, make decisions, approve verdicts |
-| **L2** | OpenCode (this platform) | Developer | Write code, implement features, create PRs, respond to L3 feedback |
-| **L3** | Codex | Auditor | Review code, challenge implementations, issue verdicts, NO direct coding |
+| **L1** | Ly / Antigravity | Orchestrator | Plan and delegate, record evidence, enforce gates; no implementation or audit |
+| **L2** | OpenCode (this platform) | Implementer | Implement, refactor, run scoped tests, write L2 report |
+| **L3** | Codex | Planner / independent auditor | Create delegated plans, audit independently, issue verdicts and gate metadata; no production-code or test edits |
 
-> **Iron Law:** L3 auditors SHALL NOT write production code. They review, challenge, and verdict only.
+> **Iron Law:** L3 auditors SHALL NOT write production code or tests. They review, challenge, and issue the independent verdict only. A delegated L3 non-audit role may create plans.
 
 ---
 
 ## Segregation Boundaries
 
-### L1: Ly (Orchestration Layer)
+### L1: Ly / Antigravity (Orchestration Layer)
 
 **Capabilities:**
 - Coordinate multi-platform workflows
-- Direct L2 to implement code changes
-- Direct L3 to audit and review
-- Make final approval decisions
-- Override verdicts with justification
+- Delegate planning to an appropriate L3 non-audit role
+- Direct L2 to implement scoped changes
+- Direct L3 to perform independent audits
+- Record evidence and enforce gate requirements
 
 **Restrictions:**
 - Does NOT write production code directly
 - Does NOT perform audits directly (delegates to L3)
+- Does NOT override an L3 verdict or manually approve a gate
 
 **Example Workflow:**
 ```
-Ly → "OpenCode, implement feature X following SOP_AC"
-Ly → "Codex, audit the implementation for PIT compliance"
-Ly → [Reviews verdict] → "Approved" or "OpenCode, address issues"
+Ly → delegates implementation to OpenCode (L2)
+Ly → dispatches an independent audit to Codex (L3) after L2 saves state and exits
+Ly → records the L3 verdict and enforces the gate; [NEEDS_FIX] returns to L2
 ```
 
 ---
@@ -55,7 +56,7 @@ Ly → [Reviews verdict] → "Approved" or "OpenCode, address issues"
 - Write production code
 - Implement features and bug fixes
 - Run tests and validation scripts
-- Create pull requests
+- Write the L2 implementation report
 - Respond to audit findings
 - Self-review before submitting to L3
 
@@ -63,6 +64,8 @@ Ly → [Reviews verdict] → "Approved" or "OpenCode, address issues"
 - CANNOT approve own code for production
 - MUST submit all changes to L3 audit
 - CANNOT override L3 verdicts
+- MUST finish and save state before L3 starts
+- MUST keep tests scoped to changed behavior and related test suites
 
 **Example Workflow:**
 ```
@@ -70,7 +73,7 @@ OpenCode → Implement feature
 OpenCode → Run local tests
 OpenCode → Submit to Codex for audit
 OpenCode → [Receives verdict] → Fix issues if needed
-OpenCode → Resubmit until PASS verdict
+OpenCode → Resubmit until [APPROVED] verdict
 ```
 
 ---
@@ -80,14 +83,16 @@ OpenCode → Resubmit until PASS verdict
 **Capabilities:**
 - Review code for correctness, compliance, and quality
 - Challenge design decisions
-- Issue structured verdicts (PASS/FAIL/CONDITIONAL)
+- Issue the authoritative structured verdict: `[APPROVED]` or `[NEEDS_FIX]`
+- Create delegated plans and maintain gate metadata within the L3 write boundary
 - Request clarifications
 - Verify compliance with SOPs
 
 **Restrictions:**
 - ❌ **ABSOLUTE PROHIBITION:** L3 SHALL NOT write production code
+- ❌ **ABSOLUTE PROHIBITION:** L3 SHALL NOT edit tests or files outside `.ly_state/`
 - ❌ **ABSOLUTE PROHIBITION:** L3 SHALL NOT commit changes to the codebase
-- ❌ **ABSOLUTE PROHIBITION:** L3 SHALL NOT fix bugs they find (must report to L2)
+- ❌ **ABSOLUTE PROHIBITION:** L3 SHALL NOT implement fixes (must report findings to L2)
 
 **Example Workflow:**
 ```
@@ -149,40 +154,10 @@ Every L3 audit MUST produce a structured verdict:
 
 ## Workflow Enforcement Rules
 
-### Rule 1: No L3 Code Commits
-
-**Enforcement:**
-```
-IF platform == Codex (L3):
-    IF action == "write code" OR action == "commit changes":
-        REJECT with message: "L3 auditors cannot write production code. Report findings to L2 (OpenCode) for implementation."
-```
-
-### Rule 2: Mandatory L3 Review
-
-**Enforcement:**
-```
-IF code_destination == production:
-    IF NOT audited_by_L3:
-        BLOCK with message: "All production code requires L3 (Codex) audit verdict before merge."
-```
-
-### Rule 3: Verdict Required
-
-**Enforcement:**
-```
-IF L3_audit_complete:
-    IF NOT verdict_issued:
-        BLOCK with message: "L3 audit incomplete. Structured verdict required."
-```
-
-### Rule 4: L2 Cannot Self-Approve
-
-**Enforcement:**
-```
-IF approver == implementer:
-    BLOCK with message: "L2 developers cannot approve their own code. L3 audit required."
-```
+1. **L3 write boundary:** L3 may write audit reports, plans, and gate metadata only within `.ly_state/session/`; production source and tests remain read-only.
+2. **Audit gate:** L2 work is not approved until an independent L3 audit issues `[APPROVED]` and repository gate enforcement succeeds.
+3. **Verdict required:** Missing or partial verdict means the gate remains pending.
+4. **No self-approval or override:** L2 cannot approve its own implementation; L1 cannot replace or override the L3 verdict.
 
 ---
 
@@ -192,9 +167,9 @@ IF approver == implementer:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ L1: Ly (Orchestration)                              │
-│ - Define task                                        │
-│ - Route to L2                                        │
+│ L1: Ly / Antigravity (Orchestration)                │
+│ - Delegate planning to L3 non-audit role             │
+│ - Route implementation to L2                         │
 └─────────────────────┬───────────────────────────────┘
                       │
                       ▼
@@ -231,26 +206,9 @@ IF approver == implementer:
 
 ---
 
-## Emergency Override Protocol
+## Urgent Change Handling
 
-**When:** Critical production issues requiring immediate fix
-
-**Process:**
-1. Ly (L1) declares emergency
-2. OpenCode (L2) implements fix
-3. Fix deployed with "EMERGENCY OVERRIDE" tag
-4. Codex (L3) performs post-deployment audit within 24 hours
-5. If L3 finds issues, immediate remediation required
-
-**Documentation:**
-```markdown
-## Emergency Override Record
-- **Timestamp:** [ISO 8601]
-- **Issue:** [Description]
-- **Fix:** [What was changed]
-- **Approver:** Ly (L1)
-- **Post-Audit Status:** [Pending/Complete]
-```
+Urgency does not bypass segregation or gate requirements. L1 records and routes the urgent request; L2 implements and tests; L3 independently audits. No emergency override, post-deployment approval, or manual verdict substitution is permitted.
 
 ---
 
@@ -290,7 +248,7 @@ IF approver == implementer:
 
 ### Escalation Path:
 ```
-Violation Detected → Alert Ly (L1) → Ly investigates → Ly decides action
+Violation Detected → Notify Ly (L1) → record evidence → enforce the applicable gate
 ```
 
 ---
@@ -308,25 +266,25 @@ Violation Detected → Alert Ly (L1) → Ly investigates → Ly decides action
 
 ## Summary: Who Does What
 
-| Task | L1 (Ly) | L2 (OpenCode) | L3 (Codex) |
-|------|---------|---------------|------------|
-| **Write Code** | ❌ | ✅ | ❌ |
-| **Review Code** | ✅ (final approval) | ✅ (self-review) | ✅ (audit) |
-| **Issue Verdict** | ✅ (override) | ❌ | ✅ |
-| **Deploy** | ✅ (authorize) | ✅ (execute) | ❌ |
+| Task | L1 (Ly / Antigravity) | L2 (OpenCode) | L3 (Codex) |
+|------|-----------------------|---------------|------------|
+| **Plan** | Delegate to L3 non-audit role | Implement from authorized scope | Create delegated plans |
+| **Write production code/tests** | ❌ | ✅ | ❌ |
+| **Review code** | ❌ | Self-review only | ✅ (independent audit) |
+| **Issue authoritative verdict** | ❌ | ❌ | ✅ |
+| **Record/enforce gate** | ✅ (no override) | Write L2 report | Update gate metadata within L3 boundary |
 | **Orchestrate** | ✅ | ❌ | ❌ |
 
-> **Remember:** Independence is the foundation of trust. L3 audits, L2 codes, L1 orchestrates. Never cross the streams.
+> **Remember:** L3 audits, L2 implements, L1 orchestrates and enforces gates. Never cross the streams.
 
 ---
 
 ## Quick Reference Card
 
 **I am Ly (L1):**
-- I coordinate and decide
-- I tell OpenCode what to build
-- I tell Codex what to audit
-- I approve final verdicts
+- I orchestrate, delegate, record evidence, and enforce gates
+- I delegate planning to L3 and implementation to L2
+- I never implement, audit, approve, or override a verdict
 
 **I am OpenCode (L2):**
 - I write code
@@ -344,6 +302,7 @@ Violation Detected → Alert Ly (L1) → Ly investigates → Ly decides action
 
 ## Version History
 
+- v1.3 (2026-10-02): Removed L1 override/approval claims; aligned role boundaries, urgent changes, and verdict handling with repository AGENTS.md.
 - v1.2 (2026-06-12): Fixed .agents junction (was symlink to forbidden scratch, replaced with real repo-local directory). Added audit-cycle skill. Hardened enforcer: sentence-level forbidden path detection, tightened L2/audit report validation, required gate fields, hard-blocking post-cutoff enforcement.
 - v1.1 (2026-06-12): Added Repo-Local Skill Source Contract (STRICT_REPO_LOCAL_SKILL_LOADING_20260612)
 - v1.0 (2026-06-10): Initial OMEGA_QUANT SOD framework
@@ -364,7 +323,7 @@ Violation Detected → Alert Ly (L1) → Ly investigates → Ly decides action
 ### Mandatory Loading Order
 
 1. Read `REPO_AGENT_ROOT/<role_name>.md` - parse frontmatter for `role_id`, `tier`, `platform`, `skills`, `sod_boundary`
-2. For each declared skill: read `REPO_SKILL_ROOT/<skill_name>/SKILL.md`
+2. For each declared skill: read `REPO_SKILL_ROOT/<skill_name>/skill.md`
 3. Report exact files read in L2/L3 output
 4. If required source missing: stop and report `NEEDS_FIX`
 

@@ -91,7 +91,46 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 ---
 
-## 6. Mocking Principles
+## 6. OMEGA 24-Dimension Adversarial Matrix
+
+For relevant OMEGA changes, select adversarial cases across all applicable dimensions; do not silently omit a dimension touched by the change. Test boundary behavior and failure states, not implementation details.
+
+| # | Dimension | Adversarial test focus |
+|---|-----------|-----------------------|
+| 1 | Malformed/out-of-bounds types | NaN, Inf, strings, lists, and bounded-input validation |
+| 2 | Invalid/directory I/O paths | Regular-file checks; strict UTF-8, BOM, and CRLF handling |
+| 3 | Corrupted/duplicate/partial checkpoint shards | Verify integrity before mutating state |
+| 4 | Fail-closed exit codes and errors | Fail non-zero; never continue silently |
+| 5 | Rollback and atomicity | Atomic replacement, rollback, and durability failures |
+| 6 | PIT and look-ahead safety | Enforce `as_of <= available_at <= decision_time`; reject future-available observations and test the inclusive equality boundaries in a consistent UTC/ICT timezone |
+| 7 | Trading calendar and holidays | Vietnam exchange sessions, holidays, and closures |
+| 8 | Numeric precision and zero division | Finite arithmetic, overflow, precision, and zero guards |
+| 9 | Concurrency and races | Lock ownership, worker isolation, and race safety |
+| 10 | `VND_FULL` scale and unit invariance | Dong-scale consistency; reject thousand-dong confusion |
+| 11 | Survivorship and delisting | Delisted/frozen instruments without look-ahead |
+| 12 | CLI injection and flag smuggling | Allowlisted identifiers and shell-safe arguments |
+| 13 | Schema drift and column mutation | Strict schemas and immutable contracts |
+| 14 | Resource exhaustion and memory bounds | Bound input, response, and memory use |
+| 15 | Network timeout and 429 exhaustion | Bounded retries; safe provider failure |
+| 16 | Secret redaction | Prevent credential leakage in logs, reports, and artifacts |
+| 17 | JEV routing input validation | Validate role, risk, cycle, and model-focus types/ranges |
+| 18 | Model catalog and cross-tier allowlisting | Enforce role-specific lead/subagent choices |
+| 19 | Decision context binding and replay | Bind gate, role, risk, and session |
+| 20 | Decision schema and digest integrity | Exact fields, canonical bytes, SHA-256 verification |
+| 21 | Decision publication durability and rollback | Temporary-file fsync, atomic replace, and cleanup |
+| 22 | Decision lock ownership and concurrency | Live/stale owner checks; concurrent publisher isolation |
+| 23 | Provider retry and fallback safety | Bound timeout/429 retries; allow fallback only for approved low-risk cases |
+| 24 | JEV secret-safe prompt routing | Sanitize task context; keep routing evidence credential-safe |
+
+### Anti-Polling and Retry Tests
+
+- Never poll or repeatedly invoke status, task-status, or gate-enforcer commands while waiting for background completion. Use one completion signal; otherwise stop and yield.
+- For application-level provider retry behavior, use finite attempt/deadline bounds and backoff; verify exhaustion returns an explicit failure. This is not permission for orchestration/status polling.
+- Test timing with a fake clock or injected sleeper; tests must terminate deterministically without real-time polling loops.
+
+---
+
+## 7. Mocking Principles
 
 ### When to Mock
 
@@ -113,7 +152,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 ---
 
-## 7. Test Organization
+## 8. Test Organization
 
 ### Naming
 
@@ -133,7 +172,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 ---
 
-## 8. Test Data
+## 9. Test Data
 
 ### Strategies
 
@@ -152,7 +191,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 ---
 
-## 9. Best Practices
+## 10. Best Practices
 
 | Practice | Why |
 |----------|-----|
@@ -164,7 +203,7 @@ allowed-tools: Read, Write, Edit, Glob, Grep, Bash
 
 ---
 
-## 10. Anti-Patterns
+## 11. Anti-Patterns
 
 | ❌ Don't | ✅ Do |
 |----------|-------|

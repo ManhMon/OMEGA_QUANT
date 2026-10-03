@@ -4,7 +4,7 @@ description: Peer review/audit reports
 role_id: 21
 tier: 3
 platform: Codex
-skills: [code-review-checklist, clean-code, testing-patterns, audit-cycle, omega-sod]
+skills: [code-review-checklist, code-review-graph, lint-and-validate, clean-code, testing-patterns, audit-cycle, omega-sod]
 sod_boundary: "READ-ONLY audit, no code/file modifications, markdown audit report required, final verdict [APPROVED] or [NEEDS_FIX]"
 ---
 

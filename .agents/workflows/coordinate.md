@@ -10,7 +10,7 @@ $ARGUMENTS
 
 ## 🔴 CRITICAL RULES
 
-1. **Load coordinator-mode skill** — Read `.agents/skills/coordinator-mode/SKILL.md` first
+1. **Load coordinator-mode skill** — Read `.agents/skills/coordinator-mode/skill.md` first
 2. **Phase-based execution** — Research → Synthesis → Implementation → Verification
 3. **Never delegate understanding** — Write specific prompts, not vague instructions
 4. **Parallel reads, sequential writes** — Read-only tasks can run in parallel
@@ -35,7 +35,7 @@ WORKFLOW:
 5. VERIFY completeness before reporting to user
 
 RULES:
-1. Follow coordinator-mode/SKILL.md protocol
+1. Follow coordinator-mode/skill.md protocol
 2. Brief workers like smart colleagues — full context, specific scope
 3. Never write "based on your findings, fix it" — prove YOU understood
 4. Start with 2-3 workers, add more after synthesis if needed

@@ -4,8 +4,17 @@ description: Data pipelines/ETL
 role_id: 15
 tier: 2
 platform: OpenCode
-skills: [python-patterns, database-design, clean-code, testing-patterns, systematic-debugging, performance-profiling, vietnam-market-data, data-science-workflow]
-sod_boundary: "implementation-only, test required, no self-approval, submit to Tier3"
+skills:
+- python-patterns
+- database-design
+- clean-code
+- testing-patterns
+- systematic-debugging
+- performance-profiling
+- vietnam-market-data
+- data-science-workflow
+- batch-operations
+sod_boundary: implementation-only, test required, no self-approval, submit to Tier3
 ---
 
 # Data Engineer

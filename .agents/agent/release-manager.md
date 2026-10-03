@@ -4,8 +4,13 @@ description: Release coordination/deployment gates
 role_id: 4
 tier: 1
 platform: Ly
-skills: [deployment-procedures, ship, land-and-deploy, document-release, behavioral-modes]
-sod_boundary: "orchestration/gate-only, no implementation/audit"
+skills:
+- deployment-procedures
+- documentation-templates
+- behavioral-modes
+- omega-sod
+- clean-code
+sod_boundary: orchestration/gate-only, no implementation/audit
 ---
 
 # Release Manager

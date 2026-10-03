@@ -132,7 +132,7 @@ Modular knowledge domains that agents can load on-demand based on task context.
 | `seo-fundamentals` | `seo-fundamentals` | SEO fundamentals, E-E-A-T, Core Web Vitals, and Google algorithm principles. |
 | `server-management` | `server-management` | Server management principles and decision-making. Process management, monitoring strategy, and scaling decisions. Teaches thinking, not commands. |
 | `simplify-code` | `simplify-code` | Reduce complexity of over-engineered code. Identify unnecessary abstractions, remove dead code, flatten deep nesting, and simplify logic while preserving behavior. |
-| `skillify` | `skillify` | Auto-create new skills from repetitive workflows. When you notice yourself doing the same multi-step process repeatedly, extract it into a reusable SKILL.md that any agent can use. |
+| `skillify` | `skillify` | Auto-create new skills from repetitive workflows. When you notice yourself doing the same multi-step process repeatedly, extract it into a reusable skill.md that any agent can use. |
 | `sops` | `sops` | Standard Operating Procedures (SOPs) index for OMEGA_QUANT (SOP_AC, SOP_BACKTEST, SOP_PIT_SAFETY, SOP_FIX_0_RETURN, SOP_APSE_INTEGRATION). |
 | `systematic-debugging` | `systematic-debugging` | 4-phase systematic debugging methodology with root cause analysis and evidence-based verification. Use when debugging complex issues. |
 | `tailwind-patterns` | `tailwind-patterns` | Tailwind CSS v4 principles. CSS-first configuration, container queries, modern patterns, design token architecture. |
