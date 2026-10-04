@@ -18,7 +18,8 @@ priority: CRITICAL
 | Level | Platform | Role | Allowed Actions |
 |-------|----------|------|-----------------|
 | **L1** | Ly / Antigravity | Orchestrator | Plan and delegate, record evidence, enforce gates; no implementation or audit |
-| **L2** | OpenCode (this platform) | Implementer | Implement, refactor, run scoped tests, write L2 report |
+| **L2** | OpenCode | Implementer | Implement, refactor, run scoped tests, write L2 report |
+| **L4** | Claude Code | Super-Implementer | Implement complex architecture, refactor, run scoped tests, native advisor, write L4/L2 report |
 | **L3** | Codex | Planner / independent auditor | Create delegated plans, audit independently, issue verdicts and gate metadata; no production-code or test edits |
 
 > **Iron Law:** L3 auditors SHALL NOT write production code or tests. They review, challenge, and issue the independent verdict only. A delegated L3 non-audit role may create plans.
@@ -74,6 +75,34 @@ OpenCode → Run local tests
 OpenCode → Submit to Codex for audit
 OpenCode → [Receives verdict] → Fix issues if needed
 OpenCode → Resubmit until [APPROVED] verdict
+```
+
+---
+
+### L4: Claude Code (Super-Implementer Layer)
+
+**Capabilities:**
+- Handle complex technical implementations, multi-file refactoring, and difficult remediation loops
+- Leverage native advisor (`--advisor opus` / `cx/gpt-6.1-sol[1m]`) for architectural trade-offs, PIT safety, and 24D compliance
+- Fan-out repetitive searches and AST parsing to subagents
+- Run tests and safe Windows pytest suites
+- Write L4/L2 implementation report (`.ly_state/session/l4_role{role_id}_{task_slug}_{YYYYMMDD}.md`)
+
+**Restrictions:**
+- CANNOT approve own code for production (Writer != Auditor)
+- STRICT FORBIDDEN BOUNDARY: Must NOT edit `.ly_state/session/audit_reports/` or `phase_gates.json`
+- MUST submit all changes to L3 audit (Codex, Role IDs 17-30)
+- MUST finish and save state before L3 starts
+- MUST keep tests scoped to changed behavior and related test suites
+
+**Example Workflow:**
+```
+Ly → dispatches L4 via dispatch_l4.py
+Claude Code → Implement feature / refactor with Lead + Advisor
+Claude Code → Run scoped tests
+Claude Code → Write L4 report (.ly_state/session/l4_role*.md)
+Ly → validates report via validate_l2_report.py
+Ly → dispatches Codex (L3) for audit
 ```
 
 ---

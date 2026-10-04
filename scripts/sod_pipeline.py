@@ -7,19 +7,26 @@ import argparse
 from datetime import datetime
 import hashlib
 import json
+import math
 import re
 import subprocess
 import sys
 import tempfile
 import os
 import secrets
+import threading
+import time
 from datetime import timezone
 from pathlib import Path
 from typing import NamedTuple
 
+_ORIGINAL_SUBPROCESS_RUN = subprocess.run
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+from scripts.dispatch_l4 import MAX_TASK_CHARS, MAX_SCOPE_CHARS, redact_credentials, validate_identifier
 
 try:
     from scripts.jev_model_router import evaluate_model_decision, validate_standalone_verdict
@@ -37,7 +44,7 @@ DISPATCH_L2_KEYS = {"SESSION_ID", "ROLE_ID", "ROLE_NAME", "CO_ROLE_IDS", "CO_ROL
 DISPATCH_L3_KEYS = {"L3_SESSION_ID", "L3_ROLE_ID", "L3_ROLE_NAME", "L2_ROLE_ID", "L2_ROLE_NAME", "MODEL", "SUBAGENT_MODEL", "RISK", "REPORT", "GATE", "PRE_AUDIT_PATH", "PRE_AUDIT_SHA256", "MODEL_DECISION_PATH", "MODEL_DECISION_DIGEST"}
 PLAN_MAX_BYTES = 1_048_576
 PLANNER_STREAM_MAX_BYTES = 64 * 1024
-SECRET_PATTERN = re.compile(r"(?i)(bearer\s+[^\s,;]+|(?:api[_-]?key|token|secret|password)\s*[=:]\s*[^\s,;]+|sk-[A-Za-z0-9_-]+)")
+CAPTURE_MAX_BYTES = PLAN_MAX_BYTES
 PLANNER_MODEL = "cx/gpt-6.1-sol"
 PLAN_HEADINGS = (
     ("Planning Run ID",),
@@ -173,6 +180,7 @@ def _read_graph_evidence_sha256(evidence_path: str) -> str:
 
 
 def _current_graph_binding(slug: str, evidence_path: str | None = None) -> tuple[str, str]:
+    validate_identifier(slug, "task_slug")
     if evidence_path is None:
         candidates = sorted((REPO_ROOT / ".ly_state" / "session").glob(f"graph_evidence_*_{slug}_*.json"))
         if len(candidates) != 1:
@@ -226,11 +234,96 @@ def _run_powershell(command: str) -> subprocess.CompletedProcess:
                 pass
 
 
+def _bounded_process(cmd: list[str], *, input: bytes | None = None,
+                     timeout: int = 900, limit: int = CAPTURE_MAX_BYTES) -> subprocess.CompletedProcess:
+    try:
+        if type(limit) is not int or limit < 0:
+            raise ValueError("capture limit must be a nonnegative integer")
+        if type(timeout) not in (int, float) or not math.isfinite(timeout) or timeout <= 0:
+            raise ValueError("process timeout must be finite and positive")
+        if input is not None and not isinstance(input, bytes):
+            raise ValueError("process input must be bytes")
+        # ponytail: patched runners are checked on return; real children retain streaming quotas.
+        if subprocess.run is not _ORIGINAL_SUBPROCESS_RUN:
+            result = subprocess.run(cmd, input=input, capture_output=True, timeout=timeout)
+            for output in (result.stdout, result.stderr):
+                if not isinstance(output, bytes):
+                    raise ValueError("process output must be bytes")
+                if len(output) > limit:
+                    raise RuntimeError("process output exceeds capture limit")
+            return result
+        deadline = time.monotonic() + timeout
+        process = subprocess.Popen(cmd, cwd=REPO_ROOT, stdin=subprocess.PIPE if input is not None else None,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, bufsize=0, shell=False)
+        out, err, errors = bytearray(), bytearray(), []
+        threads = []
+
+        def read_stream(stream, output):
+            try:
+                with stream:
+                    while chunk := stream.read(min(64 * 1024, limit - len(output) + 1)):
+                        if len(output) + len(chunk) > limit:
+                            raise RuntimeError("process output exceeds capture limit")
+                        output.extend(chunk)
+            except Exception as exc:
+                errors.append(exc)
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+        def write_input():
+            try:
+                with process.stdin as stream:
+                    remaining = memoryview(input)
+                    while remaining:
+                        written = stream.write(remaining)
+                        if not written:
+                            raise OSError("process input write made no progress")
+                        remaining = remaining[written:]
+            except BrokenPipeError:
+                pass
+            except Exception as exc:
+                errors.append(exc)
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+
+        try:
+            threads = [threading.Thread(target=read_stream, args=(stream, output), daemon=True)
+                       for stream, output in ((process.stdout, out), (process.stderr, err))]
+            if input is not None:
+                threads.append(threading.Thread(target=write_input, daemon=True))
+            for thread in threads:
+                thread.start()
+            process.wait(timeout=max(0, deadline - time.monotonic()))
+            for thread in threads:
+                thread.join(timeout=max(0, deadline - time.monotonic()))
+            if errors:
+                raise errors[0]
+            if any(thread.is_alive() for thread in threads):
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            return subprocess.CompletedProcess(cmd, process.returncode, bytes(out), bytes(err))
+        finally:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=5)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+            for thread in threads:
+                if thread.ident is not None:
+                    thread.join(timeout=1)
+    except Exception as exc:
+        raise RuntimeError(_redact(str(exc))) from None
+
+
 def capture(cmd: list[str]) -> tuple[int, str]:
-    result = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
-    out = (result.stdout or "").strip()
+    result = _bounded_process(cmd)
+    out = _redact(result.stdout, limit=CAPTURE_MAX_BYTES).strip()
     if result.returncode != 0 and result.stderr:
-        err = result.stderr.strip()
+        err = _redact(result.stderr, limit=CAPTURE_MAX_BYTES).strip()
         out = f"{out}\n{err}".strip() if out else err
     return result.returncode, out
 
@@ -268,7 +361,7 @@ def extract_findings(report_path: str) -> str:
         return "Address all L3 audit findings and regressions."
     findings = [re.sub(r"[\r\n\t]+", " ", line.lstrip("# -*").strip())
                 for line in text.splitlines() if re.match(r"^\s*[-*#]*\s*F-\d{3}\b", line)]
-    return "; ".join(dict.fromkeys(findings))[:4000] or "Address all L3 audit findings and regressions."
+    return redact_credentials("; ".join(dict.fromkeys(findings)))[:4000] or "Address all L3 audit findings and regressions."
 
 
 def _read_fresh_report(report_path: str, previous_snapshot: ReportSnapshot) -> str | None:
@@ -303,7 +396,12 @@ def _read_report_snapshot(report_path: str) -> ReportSnapshot:
 
 
 def _dispatch_l2(args: argparse.Namespace, task: str) -> tuple[dict[str, str], str]:
-    command = [sys.executable, "scripts/dispatch_l2.py", args.l2_role, args.gate, args.slug, task, args.scope]
+    validate_identifier(args.gate, "gate_name")
+    validate_identifier(args.slug, "task_slug")
+    _sanitize_context(args, task)
+    task = _bounded_context(task, "task", MAX_TASK_CHARS)
+    dispatch_script = "scripts/dispatch_l4.py" if getattr(args, "tier", "l2") == "l4" else "scripts/dispatch_l2.py"
+    command = [sys.executable, dispatch_script, args.l2_role, args.gate, args.slug, task, args.scope]
     if args.risk:
         command += ["--risk", args.risk]
     if args.model:
@@ -315,8 +413,9 @@ def _dispatch_l2(args: argparse.Namespace, task: str) -> tuple[dict[str, str], s
     if args.graph_evidence:
         command += ["--graph-evidence", args.graph_evidence]
     rc, output = capture(command)
+    output = redact_credentials(output)
     if rc:
-        raise SystemExit(f"[FAIL] dispatch_l2.py failed: {output}")
+        raise SystemExit(f"[FAIL] {dispatch_script} failed: {output}")
     meta = parse_dispatch_output(output, required={"SESSION_ID", "ROLE_ID", "ROLE_NAME", "GATE", "MODEL", "RISK", "ANTI_DRIP_MODE", "ANTI_DRIP_CONTRACT", "ANTI_DRIP_CONTRACT_SHA256"})
     marker = "---COMMAND---\n"
     if marker not in output:
@@ -325,6 +424,9 @@ def _dispatch_l2(args: argparse.Namespace, task: str) -> tuple[dict[str, str], s
 
 
 def _dispatch_l3(args: argparse.Namespace, session_id: str) -> tuple[dict[str, str], str]:
+    validate_identifier(args.gate, "gate_name")
+    validate_identifier(session_id, "session_id")
+    _sanitize_context(args)
     command = [sys.executable, "scripts/dispatch_l3.py", args.l3_role, args.gate, session_id, args.l2_role, args.scope]
     if args.risk:
         command += ["--risk", args.risk]
@@ -337,6 +439,7 @@ def _dispatch_l3(args: argparse.Namespace, session_id: str) -> tuple[dict[str, s
     if getattr(args, "pre_audit_path", None):
         command += ["--pre-audit-path", args.pre_audit_path, "--pre-audit-sha256", args.pre_audit_sha256]
     rc, output = capture(command)
+    output = redact_credentials(output)
     if rc:
         raise SystemExit(f"[FAIL] dispatch_l3.py failed: {output}")
     marker = "---COMMAND---\n"
@@ -345,8 +448,28 @@ def _dispatch_l3(args: argparse.Namespace, session_id: str) -> tuple[dict[str, s
     return parse_dispatch_output(output, required={"L3_SESSION_ID", "L3_ROLE_ID", "L3_ROLE_NAME", "L2_ROLE_ID", "L2_ROLE_NAME", "MODEL", "SUBAGENT_MODEL", "RISK", "REPORT", "GATE"}), output.split(marker, 1)[1].strip()
 
 
+def _bounded_context(value: str, field: str, limit: int) -> str:
+    if not isinstance(value, str) or len(value) > limit or not value.strip():
+        raise ValueError(f"{field} must be a nonempty string of at most {limit} characters")
+    sanitized = redact_credentials(value)
+    if len(sanitized) > limit:
+        raise ValueError(f"sanitized {field} exceeds {limit} characters")
+    return sanitized
+
+
+def _sanitize_context(args: argparse.Namespace, task: str = "dispatch") -> None:
+    task = _bounded_context(getattr(args, "task", task), "task", MAX_TASK_CHARS)
+    scope = _bounded_context(args.scope, "scope", MAX_SCOPE_CHARS)
+    args.task, args.scope = task, scope
+
+
+class _SafeArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        super().error(redact_credentials(message))
+
+
 def parse_args(argv: list[str]) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
+    parser = _SafeArgumentParser()
     parser.add_argument("l2_role")
     parser.add_argument("l3_role")
     parser.add_argument("gate")
@@ -364,9 +487,20 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--model-decision-digest")
     parser.add_argument("--with-plan", "--plan", action="store_true", dest="with_plan")
     parser.add_argument("--close", action="store_true")
+    parser.add_argument("--tier", choices=("l2", "l4"), default="l2", help="Execution tier: l2 (OpenCode) or l4 (Claude Code)")
     parsed = parser.parse_args(argv)
+    validate_identifier(parsed.gate, "gate_name")
+    validate_identifier(parsed.slug, "task_slug")
+    try:
+        _sanitize_context(parsed)
+    except ValueError as exc:
+        parser.error(str(exc))
     if (parsed.model or parsed.subagent_model) and parsed.jev:
         parser.error("--model and --subagent-model cannot be used with Jev routing")
+    if (parsed.model_decision_path is None) != (parsed.model_decision_digest is None):
+        parser.error("--model-decision-path and --model-decision-digest must be supplied together")
+    if parsed.jev and parsed.model_decision_path:
+        parser.error("explicit model decision flags cannot be combined with --jev")
     return parsed
 
 
@@ -393,8 +527,9 @@ def _fsync_directory(path: Path) -> None:
         pass
 
 
-def _redact(text: bytes) -> str:
-    return SECRET_PATTERN.sub("[REDACTED]", text.decode("utf-8", errors="replace")[:PLANNER_STREAM_MAX_BYTES])
+def _redact(text: bytes | str, *, limit: int = PLANNER_STREAM_MAX_BYTES) -> str:
+    value = text.decode("utf-8", errors="replace") if isinstance(text, bytes) else text
+    return redact_credentials(value)[:limit]
 
 
 def _plan_sections(raw: str) -> dict[str, list[str]]:
@@ -446,9 +581,63 @@ def _validate_plan(raw: str, run_id: str, gate: str, scope: str) -> str:
 
 
 def _run_planning_phase(args: argparse.Namespace) -> None:
+    validate_identifier(args.gate, "gate_name")
+    validate_identifier(args.slug, "task_slug")
+    _sanitize_context(args)
+    try:
+        _planning_transaction(args)
+    except Exception as exc:
+        raise RuntimeError(_redact(str(exc))) from None
+
+
+def _restore_planning_lock(trash: Path, lock_path: Path) -> None:
+    # Atomic no-clobber creation; retain evidence if the pathname is occupied.
+    os.link(trash, lock_path)
+    trash.unlink()
+
+
+def _release_planning_lock(lock_path: Path, identity: os.stat_result | None, owner: bytes) -> None:
+    if identity is None:
+        return
+    expected = (identity.st_dev, identity.st_ino)
+    try:
+        current = lock_path.lstat()
+        if (current.st_dev, current.st_ino) != expected:
+            return
+        with lock_path.open("rb") as handle:
+            opened = os.fstat(handle.fileno())
+            if (opened.st_dev, opened.st_ino) != expected or handle.read(len(owner) + 1) != owner:
+                return
+        current = lock_path.lstat()
+    except FileNotFoundError:
+        return
+    if (current.st_dev, current.st_ino) == expected:
+        trash = lock_path.with_name(f"{lock_path.name}.{secrets.token_hex(16)}.trash")
+        try:
+            os.replace(lock_path, trash)
+        except FileNotFoundError:
+            return
+        # Verify the captured entry; never unlink the reusable lock pathname.
+        owned = False
+        try:
+            moved = trash.lstat()
+            if (moved.st_dev, moved.st_ino) == expected:
+                with trash.open("rb") as handle:
+                    opened = os.fstat(handle.fileno())
+                    owned = (opened.st_dev, opened.st_ino) == expected and handle.read(len(owner) + 1) == owner
+            if owned:
+                trash.unlink()
+        except OSError:
+            _restore_planning_lock(trash, lock_path)
+            raise
+        if not owned:
+            _restore_planning_lock(trash, lock_path)
+
+
+def _planning_transaction(args: argparse.Namespace) -> None:
     run_id = f"planning_{args.slug}_{datetime.now(timezone.utc):%Y%m%dT%H%M%S}_{secrets.token_hex(8)}"
     plan_path = _plan_path()
-    prompt = (
+    prompt = redact_credentials(
         f"REPO_ROOT: {REPO_ROOT}\nROLE: 26 planning-architect\nGATE: {args.gate}\n"
         f"PLANNING_RUN_ID: {run_id}\nAUTHORIZED_SCOPE: {args.scope}\nTASK: {args.task}\n"
         "Write only the exact markdown plan to stdout. Use the required six sections, put the exact run ID and gate in scalar sections, and list one authorized repo-relative file per line."
@@ -456,11 +645,25 @@ def _run_planning_phase(args: argparse.Namespace) -> None:
     session_dir = plan_path.parent
     session_dir.mkdir(parents=True, exist_ok=True)
     lock_path = session_dir / f".{plan_path.name}.lock"
+    tmp = None
+    completed = False
+    lock_ready = False
+    identity = None
+    owner = f"{os.getpid()}:{run_id}".encode("ascii")
+    written = 0
     try:
         fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
     except FileExistsError as exc:
         raise RuntimeError("planning transaction lock contention") from exc
     try:
+        identity = os.fstat(fd)
+        while written < len(owner):
+            count = os.write(fd, owner[written:])
+            if count <= 0:
+                raise OSError("planning lock owner write made no progress")
+            written += count
+        os.fsync(fd)
+        lock_ready = True
         if plan_path.exists() and not plan_path.is_file():
             raise RuntimeError("plan path is not a regular file")
         if plan_path.exists():
@@ -468,39 +671,54 @@ def _run_planning_phase(args: argparse.Namespace) -> None:
             _fsync_directory(session_dir)
         if args.dry_run:
             print(f"PLAN_RUN_ID={run_id}\nPLAN_MODEL={PLANNER_MODEL}\nPLAN_SHA256={hashlib.sha256(prompt.encode()).hexdigest()}")
+            completed = True
             return
         prompt_bytes = prompt.encode("utf-8")
         print(f"[*] Starting Phase 0 Planning ({PLANNER_MODEL})...")
         sys.stdout.flush()
-        result = subprocess.run(
+        result = _bounded_process(
             ["codex", "exec", "-m", PLANNER_MODEL, "--enable", "multi_agent", "-s", "danger-full-access", "--dangerously-bypass-approvals-and-sandbox"],
-            cwd=REPO_ROOT, input=prompt_bytes, capture_output=True, timeout=900, shell=False,
+            input=prompt_bytes, timeout=900, limit=PLANNER_STREAM_MAX_BYTES,
         )
         if result.returncode != 0:
             raise RuntimeError(f"planning process failed: {_redact(result.stderr or b'')}")
-        raw_bytes = (result.stdout or b"")[:PLANNER_STREAM_MAX_BYTES]
+        raw_bytes = result.stdout or b""
         try:
             raw = raw_bytes.decode("utf-8")
-        except UnicodeDecodeError as exc:
-            raise RuntimeError("planning output is not valid UTF-8") from exc
+        except UnicodeDecodeError:
+            raise RuntimeError("planning output is not valid UTF-8") from None
+        raw = redact_credentials(raw)
+        sanitized_bytes = raw.encode("utf-8")
         _validate_plan(raw, run_id, args.gate, args.scope)
         tmp = plan_path.with_name(f".{plan_path.name}.{run_id}.tmp")
         with open(tmp, "wb") as handle:
-            handle.write(raw.encode("utf-8"))
+            handle.write(sanitized_bytes)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, plan_path)
         _fsync_directory(session_dir)
-        published = plan_path.read_bytes()
-        if hashlib.sha256(published).hexdigest() != hashlib.sha256(raw.encode("utf-8")).hexdigest():
+        with open(plan_path, "rb") as handle:
+            published = handle.read(PLAN_MAX_BYTES + 1)
+        if hashlib.sha256(published).hexdigest() != hashlib.sha256(sanitized_bytes).hexdigest():
             raise RuntimeError("published plan digest mismatch")
         _validate_plan(published.decode("utf-8"), run_id, args.gate, args.scope)
+        completed = True
     finally:
-        os.close(fd)
-        lock_path.unlink(missing_ok=True)
+        try:
+            try:
+                if tmp:
+                    tmp.unlink(missing_ok=True)
+            finally:
+                if lock_ready and not completed:
+                    plan_path.unlink(missing_ok=True)
+        finally:
+            try:
+                os.close(fd)
+            finally:
+                _release_planning_lock(lock_path, identity, owner[:written])
 
 
-def main(argv: list[str] | None = None) -> int:
+def _main(argv: list[str] | None = None) -> int:
     args = parse_args(argv or sys.argv[1:])
     baseline_binding = None
     if args.graph_evidence:
@@ -514,7 +732,7 @@ def main(argv: list[str] | None = None) -> int:
         try:
             _run_planning_phase(args)
         except (OSError, RuntimeError, subprocess.SubprocessError, TimeoutError) as exc:
-            print(f"[FAIL] Phase 0 planning: {exc}", file=sys.stderr)
+            print(f"[FAIL] Phase 0 planning: {_redact(str(exc))}", file=sys.stderr)
             return 2
         if args.dry_run:
             return 0
@@ -524,7 +742,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.jev:
             from scripts.dispatch_l2 import resolve_l2_role
             role_id = resolve_l2_role(args.l2_role)["role_id"]
-            session_id = f"l2_role{role_id}_{args.slug}_{datetime.now().strftime('%Y%m%d')}"
+            prefix = "l4_role" if getattr(args, "tier", "l2") == "l4" else "l2_role"
+            session_id = f"{prefix}{role_id}_{args.slug}_{datetime.now().strftime('%Y%m%d')}"
             l2_decision_path = REPO_ROOT / ".ly_state" / "session" / f"jev_model_decision_l2_{args.slug}_{cycle + 1}.json"
             l2_decision = evaluate_model_decision(
                 role="l2", risk=args.risk, cycle=cycle + 1, gate=args.gate,
@@ -534,9 +753,10 @@ def main(argv: list[str] | None = None) -> int:
             args.model_decision_digest = l2_decision["decision_digest"]
         l2_meta, l2_command = _dispatch_l2(args, task)
         if args.dry_run:
-            print(l2_command)
+            print(redact_credentials(l2_command))
             return 0
-        if run(l2_command, f"L2 OpenCode: {args.l2_role}"):
+        tier_label = "L4 Claude Code" if getattr(args, "tier", "l2") == "l4" else "L2 OpenCode"
+        if run(l2_command, f"{tier_label}: {args.l2_role}"):
             return 1
         if baseline_binding:
             candidate_binding = _current_graph_binding(args.slug, args.graph_evidence)
@@ -550,7 +770,7 @@ def main(argv: list[str] | None = None) -> int:
         format_cmd = [sys.executable, "scripts/format_l2_report.py", session_id, role_id, args.l2_role]
         format_rc, format_out = capture(format_cmd)
         if format_rc != 0:
-            print(f"[WARN] format_l2_report: {format_out}", file=sys.stderr)
+            print(f"[WARN] format_l2_report: {_redact(format_out)}", file=sys.stderr)
         validation_command = [sys.executable, "scripts/validate_l2_report.py", session_id, role_id, args.l2_role,
                               "--pre-audit", "--gate", args.gate, "--scope", args.scope]
         validation_rc, validation_output = capture(validation_command)
@@ -599,8 +819,23 @@ def main(argv: list[str] | None = None) -> int:
             return 2
         if cycle == args.max_remediations:
             return 2
-        task = f"{args.task}. REMEDIATION FIX FOR L3 AUDIT FINDINGS (Cycle {cycle + 2}): {extract_findings(report_path)}"
+        task = _bounded_context(
+            f"{args.task}. REMEDIATION FIX FOR L3 AUDIT FINDINGS (Cycle {cycle + 2}): {extract_findings(report_path)}",
+            "task", MAX_TASK_CHARS,
+        )
     return 2
+
+
+def main(argv: list[str] | None = None) -> int:
+    try:
+        return _main(argv)
+    except SystemExit as exc:
+        if isinstance(exc.code, str):
+            raise SystemExit(_redact(exc.code)) from None
+        raise
+    except Exception as exc:
+        print(f"[FAIL] Pipeline: {_redact(str(exc))}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

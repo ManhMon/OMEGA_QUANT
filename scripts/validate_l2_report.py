@@ -87,6 +87,9 @@ PLACEHOLDERS = tuple(re.compile(value, re.I) for value in (
     r"\[(?:role_id|role_name|gate_name|l2_session_id|yyyymmdd)\]",
     r"\[(?:brief description|list every file|file path|what changed|test command|skill_name)[^\]]*\]",
     r"<(?:ROLE_ID|ROLE_NAME|GATE_NAME|L2_SESSION_ID|YYYY-MM-DD|CONTRACT_PATH|CONTRACT_SHA256|SOURCE_AUDIT_PATH|SOURCE_AUDIT_SHA256|FINDING_ID|ROOT_CAUSE|PROBE_STRING|SEARCH_REGEX|REPO_RELATIVE_PATH|TOTAL_MATCHES|CHANGED_MATCHES|NON_ACTIONABLE_MATCHES|NON_ACTIONABLE_JUSTIFICATIONS|PYTEST_NODE_ID|STATUS)>",
+    r"(?im)^\s*(?:[-*]\s*)?(?:initial implementation pending(?: l2 worker updates)?|pending l2 worker implementation|pending test verification|test verification pending)\.?\s*$",
+    r"\b(?:tbd|todo|to be completed|fill in later)\b",
+    r"\[(?:insert|describe|list|provide|fill in|replace|add here)[^\]]*\]",
 ))
 
 EXPECTED_ANTI_DRIP_DIRECTIVE_POINTS = (
@@ -264,6 +267,18 @@ def _check_unreplaced_placeholders(content: str) -> tuple[bool, list[str]]:
     errors = [f"Line {number}: placeholder in {line[:160]!r}" for number, line in enumerate(content.splitlines(), 1)
               if any(pattern.search(line) for pattern in PLACEHOLDERS)]
     return not errors, errors
+
+
+def _check_report_evidence_sections(content: str) -> list[str]:
+    lines = content.splitlines()
+    errors = []
+    for heading, label in (("## Summary", "Summary"), ("## Changes Made", "Changes Made"), ("## Verification", "Verification")):
+        index = lines.index(heading)
+        end = next((i for i in range(index + 1, len(lines)) if lines[i].startswith("## ")), len(lines))
+        body = [line.strip() for line in lines[index + 1:end] if line.strip()]
+        if not body:
+            errors.append(f"ANTI_DRIP[E201] {label} section is empty")
+    return errors
 
 
 def _check_report_filename(session_id: str) -> tuple[bool, str]:
@@ -523,7 +538,7 @@ def _collect_pytest_node_ids(
 
 def _validate_envelope(content: str, session_id: str, role_id: int, role_name: str, remediation: bool) -> list[str]:
     lines = content.splitlines()
-    if len(lines) < 11 or lines[0] != "# L2 Implementation Report" or lines.count("# L2 Implementation Report") != 1:
+    if len(lines) < 11 or lines[0] not in ("# L2 Implementation Report", "# L4 Implementation Report") or (lines.count("# L2 Implementation Report") + lines.count("# L4 Implementation Report") != 1):
         return ["ANTI_DRIP[E201] invalid L2 report H1"]
     ok, errors = _check_required_headings(content, remediation_required=remediation)
     if not ok:
@@ -531,6 +546,9 @@ def _validate_envelope(content: str, session_id: str, role_id: int, role_name: s
     placeholder_ok, placeholder_errors = _check_unreplaced_placeholders(content)
     if not placeholder_ok:
         return [f"ANTI_DRIP[E201] {error}" for error in placeholder_errors]
+    section_errors = _check_report_evidence_sections(content)
+    if section_errors:
+        return section_errors
     forbidden_index = lines.index("## Forbidden Path Scan")
     body = [line for line in lines[forbidden_index + 1:] if line]
     expected = [f"- `{path}`: not read; {FORBIDDEN_SUFFIX}" for path in FORBIDDEN_PATHS]
@@ -541,7 +559,8 @@ def _validate_envelope(content: str, session_id: str, role_id: int, role_name: s
     if violations:
         return [f"ANTI_DRIP[E704] authoritative forbidden path reliance detected: {found[0]}"]
     role_line = f"- **Role**: {role_id} {role_name} - OpenCode L2 Implementation"
-    if role_line not in lines[:10]:
+    role_line_l4 = f"- **Role**: {role_id} {role_name} - Claude Code L4 Implementation"
+    if role_line not in lines[:10] and role_line_l4 not in lines[:10]:
         return ["ANTI_DRIP[E303] report role metadata mismatch"]
     suffix = re.search(r"_(20\d{6})$", session_id)
     date_line = next((line for line in lines[:10] if line.startswith("- **Date**: ")), "")
@@ -584,6 +603,9 @@ def _verify_l2_model_metadata(session_id: str, report_content: str, repo_root: P
 def validate_anti_drip_report(
     session_id: str, report_content: str, repo_root: Path, *, collect_timeout_seconds: int = 60
 ) -> tuple[str | None, list[str]]:
+    placeholder_ok, placeholder_errors = _check_unreplaced_placeholders(report_content)
+    if not placeholder_ok:
+        return None, [f"ANTI_DRIP[E201] {error}" for error in placeholder_errors]
     root = repo_root.resolve()
     contract, digest, errors = _load_and_verify_anti_drip_contract(session_id, root)
     if errors:
@@ -625,7 +647,7 @@ def validate_anti_drip_report(
         collected, errors = _collect_pytest_node_ids(sweep["pytest_node_ids"], root, collect_timeout_seconds)
         if not collected:
             return None, errors
-    role_match = re.search(r"(?m)^- \*\*Role\*\*: (?P<id>\d{1,2}) (?P<name>[a-z][a-z0-9-]*) - OpenCode L2 Implementation$", report_content)
+    role_match = re.search(r"(?m)^- \*\*Role\*\*: (?P<id>\d{1,2}) (?P<name>[a-z][a-z0-9-]*) - (?:OpenCode L2|Claude Code L4) Implementation$", report_content)
     if not role_match:
         return None, ["ANTI_DRIP[E303] missing canonical report role metadata"]
     errors = _validate_envelope(report_content, session_id, int(role_match.group("id")), role_match.group("name"), mode == "remediation")
@@ -985,7 +1007,10 @@ def write_atomic_pre_audit(payload: Mapping[str, Any], session_dir: Path, sessio
         else:
             os.close(lock_fd)
             try:
-                from scripts.jev_model_router import _windows_lock_guard
+                try:
+                    from scripts.jev_model_router import _windows_lock_guard
+                except ImportError:
+                    from jev_model_router import _windows_lock_guard
                 with _windows_lock_guard(lock):
                     current = lock.stat()
                     if (current.st_dev, current.st_ino) == (lock_identity.st_dev, lock_identity.st_ino) and lock.read_text(encoding="ascii") == str(os.getpid()):
@@ -1006,7 +1031,7 @@ def run_pre_audit(session_id: str, role_name: str, gate: str, scope: Sequence[st
     before_paths = snapshot_fingerprints(paths)
     before = {value: before_paths[path.as_posix()] for value, path in zip(scope, paths, strict=True)}
     test_scope = [value for value in scope if value.startswith("tests/")]
-    command = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *test_scope]
+    command = [sys.executable, "-m", "pytest", "-v", "--tb=no", "-p", "no:cacheprovider", *test_scope]
     try:
         if not test_scope:
             result = None
@@ -1148,7 +1173,7 @@ def main(argv: Sequence[str] | None = None, repo_root: Path | None = None) -> in
     if errors:
         _emit_failures(errors)
         return 1
-    role_match = re.search(r"(?m)^- \*\*Role\*\*: (\d{1,2}) ([a-z][a-z0-9-]*) - OpenCode L2 Implementation$", content)
+    role_match = re.search(r"(?m)^- \*\*Role\*\*: (\d{1,2}) ([a-z][a-z0-9-]*) - (?:OpenCode L2|Claude Code L4) Implementation$", content)
     if role_match is None or (int(role_match.group(1)), role_match.group(2)) != (role_id, role_name):
         _emit_failures(["ANTI_DRIP[E303] report Role metadata does not match CLI role"])
         return 1

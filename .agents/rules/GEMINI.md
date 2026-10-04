@@ -183,9 +183,10 @@ When user's prompt is NOT in English:
 
 ### 🎭 Tier-Specific Execution Platforms (Strict SOD)
 
-- **L2 (OpenCode)**: Any code implementation, modification, or bug fixes (Tier 2 tasks) MUST run within the OpenCode isolated environment.
+- **L2 (OpenCode)**: Any standard code implementation, modification, or bug fixes (Tier 2 tasks) MUST run within the OpenCode isolated environment.
+- **L4 (Claude Code)**: Escalated implementations, large-scale refactoring, or remediation tasks requiring native advisor (`--advisor opus`) and high reasoning MUST run within the Claude Code isolated environment (`claude.exe`).
 - **L3 (Codex)**: Any audit, review, compliance checking, or verification (Tier 3 tasks) MUST run within the Codex isolated environment.
-- **L1 (Ly/Orchestrator)**: The L1 orchestrator is strictly prohibited from writing code or self-approving audits directly. It must spawn and delegate to L2 and L3 platforms, maintaining complete separation.
+- **L1 (Ly/Orchestrator)**: The L1 orchestrator is strictly prohibited from writing code or self-approving audits directly. It must spawn and delegate to L2, L4, and L3 platforms, maintaining complete separation.
 
 
 ### 🛑 Socratic Gate
@@ -261,7 +262,7 @@ When user's prompt is NOT in English:
 3. SOLUTIONING → Architecture, design (NO CODE!)
 4. IMPLEMENTATION → Code + tests
 
-> 🔴 **Edit mode:** If multi-file or structural change → Offer to create `{task-slug}.md`. For single-file fixes → Proceed directly (EXCEPTION: If the project enforces strict Segregation of Duties (SoD) per AGENTS.md, L1 orchestrator is still strictly prohibited from writing code directly and must delegate to L2 OpenCode).
+> 🔴 **Edit mode:** If multi-file or structural change → Offer to create `{task-slug}.md`. For single-file fixes → Proceed directly (EXCEPTION: If the project enforces strict Segregation of Duties (SoD) per AGENTS.md, L1 orchestrator is still strictly prohibited from writing code directly and must delegate to L2 OpenCode or L4 Claude Code).
 
 
 ---

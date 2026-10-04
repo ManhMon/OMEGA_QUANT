@@ -8,6 +8,7 @@
 | L1 | Ly / Antigravity | 1-5 | Orchestrate, plan, delegate, enforce gates |
 | L2 | OpenCode | 6-16 | Implement, refactor, run tests, write L2 report |
 | L3 | Codex | 17-30 | Plan, independent audit, verdict, gate metadata |
+| L4 | Claude Code | 6-16 | Super-Implementer, escalated refactoring, native advisor, write L4/L2 report |
 
 ## AG Kit Loading & Composite Role Protocol (COMPOSITE_ROLE_EXECUTION_20260824)
 
@@ -97,6 +98,17 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 - role_name MUST be extracted from `.agents/agent/*.md` frontmatter (exact match)
 - Violation blocks dispatch
 
+### L4 (Claude Code) Routing Constraints
+
+- role_id MUST be in range 6-16
+- tier MUST be 2 (or escalated Tier 4)
+- platform authorized as "Claude Code" (maps from Tier 2 role spec)
+- role_name MUST be extracted from `.agents/agent/*.md` frontmatter (exact match)
+- Lead model: `sonnet` (low/medium risk) or `opus` (high risk)
+- Native advisor: `--advisor opus` enabled by default
+- Session ID format: `l4_role{role_id}_{task_slug}_{YYYYMMDD}`
+- Violation blocks dispatch
+
 ### L3 (Codex) Routing Constraints
 
 - role_id MUST be in range 17-30
@@ -108,25 +120,26 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 
 ### Writer != Auditor Constraint
 
-- l2_role_id MUST NOT equal l3_role_id
+- l2_role_id or l4_role_id MUST NOT equal l3_role_id
 - Self-approval is forbidden
+- All L2 and L4 role IDs must be strictly disjoint from all L3 role IDs (`(set(l2_roles) | set(l4_roles)) & set(l3_roles) == empty`)
 - Violation blocks gate approval
 - L1 MUST verify this constraint before L3 dispatch and before gate approval
 
 ## SOD Rules
 
 1. **1 Task Execution = 1 Primary Lead Role (+ Optional Co-Assigned Specialist Roles within same Tier)**.
-2. **Writer != Auditor**. Self-approval forbidden. All L2 role IDs must be strictly disjoint from all L3 role IDs.
-3. L2 must exit/save state before L3 starts.
+2. **Writer != Auditor**. Self-approval forbidden. All L2 and L4 role IDs must be strictly disjoint from all L3 role IDs.
+3. L2/L4 must exit/save state before L3 starts.
 4. L1 never plans, implements, or audits; L1 only delegates, records evidence, enforces gates. L1 MUST delegate all master plan and implementation plan creation to Codex L3 (model "cx/gpt-6.1-sol") using a non-audit role.
 5. All state/evidence must be file-backed in `.ly_state/session/`.
-6. Do not run OpenCode and Codex simultaneously. Platform cap: 4GB.
+6. Do not run OpenCode/Claude Code and Codex simultaneously. Platform cap: 4GB.
 7. **L3 write boundary**: L3 may ONLY write to `.ly_state/session/audit_reports/`, `.ly_state/session/` (for plans), and update `.ly_state/session/phase_gates.json`. L3 MUST NOT edit production source code, tests, or any files outside `.ly_state/`.
-8. **Scratch path prohibition**: L2 and L3 MUST NOT read or write Antigravity scratch paths. All operations use `REPO_ROOT` with repo-relative paths only.
+8. **Scratch path prohibition**: L2, L4, and L3 MUST NOT read or write Antigravity scratch paths. All operations use `REPO_ROOT` with repo-relative paths only.
 9. **No manual override**: Manual approval overrides are forbidden. All gates require valid L3 audit with [APPROVED] verdict and `python scripts/sod_gate_enforcer.py` exit 0.
-10. **L2 session ID format**: L2 session IDs MUST follow format `l2_role{role_id}_{task_slug}_{YYYYMMDD}` (e.g., `l2_role11_agents_md_strict_sod_hardening_20260611`).
-11. **GEMINI.md Conflict Resolution**: In case of any conflict between the Tier 0 Edit Mode instructions in GEMINI.md (which may allow direct editing of single-file fixes by the L1 orchestrator) and the SoD platform isolation constraints in AGENTS.md, the SoD platform isolation constraints in AGENTS.md take absolute precedence. Under no circumstances is L1 allowed to bypass SoD or modify code directly. All code edits must go through L2 OpenCode.
-12. **Anti-Polling & Zero-Idle Directive (ANTI_POLLING_ZERO_IDLE_20260918)**: L1, L2, and L3 MUST NOT loop, poll, or repeatedly invoke status/inspection tools (`git status`, `git status -s`, `sod_gate_enforcer.py`, `manage_task status`, process polling) to wait for task or background completion. When launching a long-running or background command, the agent MUST immediately stop calling tools and yield the turn. Unbounded polling loops and repeated status probes without user interaction or state mutations are strictly forbidden.
+10. **L2/L4 session ID format**: L2 session IDs MUST follow format `l2_role{role_id}_{task_slug}_{YYYYMMDD}`. L4 session IDs MUST follow format `l4_role{role_id}_{task_slug}_{YYYYMMDD}`.
+11. **GEMINI.md Conflict Resolution**: In case of any conflict between the Tier 0 Edit Mode instructions in GEMINI.md (which may allow direct editing of single-file fixes by the L1 orchestrator) and the SoD platform isolation constraints in AGENTS.md, the SoD platform isolation constraints in AGENTS.md take absolute precedence. Under no circumstances is L1 allowed to bypass SoD or modify code directly. All code edits must go through L2 OpenCode or L4 Claude Code.
+12. **Anti-Polling & Zero-Idle Directive (ANTI_POLLING_ZERO_IDLE_20260918)**: L1, L2, L4, and L3 MUST NOT loop, poll, or repeatedly invoke status/inspection tools (`git status`, `git status -s`, `sod_gate_enforcer.py`, `manage_task status`, process polling) to wait for task or background completion. When launching a long-running or background command, the agent MUST immediately stop calling tools and yield the turn. Unbounded polling loops and repeated status probes without user interaction or state mutations are strictly forbidden.
 
 ### L1 Audit Report Mechanical Correction Exception
 
@@ -290,6 +303,19 @@ echo "" | opencode run -m "9router/cx/gpt-6-luna" --pure --dangerously-skip-perm
 **Windows requirements:** always use `echo "" |`, `--pure`, `--dangerously-skip-permissions`, and `--dir "C:\Users\GHC\repos\OMEGA_QUANT"`. Prompts must define `REPO_ROOT`; workers must not resolve `.agents` through Antigravity scratch paths.
 
 **Repo-local skill source contract:** L2 prompts MUST include `REPO_AGENT_ROOT`, `REPO_SKILL_ROOT`, instruction to read repo-local role spec first, parse skills, read only repo-local skill.md files, and report exact files read. Global/scratch/OpenClaw/Codex memory sources are non-authoritative.
+
+## Call L4 Claude Code Implementation Work
+
+**Pre-dispatch requirements:**
+1. Read `.agents/agent/<role_name>.md` and extract frontmatter: `role_id`, `tier`, `platform`, `name`
+2. Validate: role_id 6-16, tier=2
+3. Run `python scripts/get_relevant_lessons.py <role_id>` and append the output to the implementation task requirements.
+
+**Automated dispatch (RECOMMENDED):**
+```powershell
+python scripts/dispatch_l4.py <role_name> <gate_name> <task_slug> "<task_description>" "<scope>" [--risk low|high]
+```
+Copy lệnh từ output `---COMMAND---` rồi chạy. Script tự động: validate role, load lessons, inject 24-Dimension matrix, cấu hình native `--advisor opus`, và tạo session ID `l4_role{role_id}_{task_slug}_{YYYYMMDD}`.
 
 ### Pre-L3 Validation Gate (TOKEN SAVER — MANDATORY)
 

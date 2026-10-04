@@ -1,6 +1,6 @@
 # L2 Report Template
 
-Choose exactly one variant from `ANTI_DRIP_MODE`. Replace every placeholder. Never edit contract, sidecar, or prompt artifacts.
+Choose exactly one variant from `ANTI_DRIP_MODE`. Replace every placeholder. Never edit contract, sidecar, or prompt artifacts. For L4 Claude Code sessions, use `- **Role**: <ROLE_ID> <ROLE_NAME> - Claude Code L4 Implementation` and `<L4_SESSION_ID>`.
 
 ## Baseline Variant
 
