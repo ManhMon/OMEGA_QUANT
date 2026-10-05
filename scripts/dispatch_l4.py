@@ -15,6 +15,8 @@ Exit codes:
 from __future__ import annotations
 
 import hashlib
+import hmac
+import json
 import os
 import re
 import stat
@@ -30,7 +32,6 @@ if str(REPO_ROOT) not in sys.path:
 from scripts.dispatch_l2 import (
     ADVERSARIAL_DIRECTIVE_24D,
     _existing_graph_evidence,
-    acquire_session_lock,
     build_anti_drip_contract,
     build_anti_drip_prompt_clause,
     build_dimension_focus_clause,
@@ -45,7 +46,6 @@ from scripts.dispatch_l2 import (
     build_lessons_data_block,
     ps_quote,
     redact_credentials as _redact_context_credentials,
-    release_session_lock,
     resolve_l2_roles,
     run_graph_predispatch_gate,
 )
@@ -56,7 +56,8 @@ DEFAULT_L4_MODELS = {
     "high": "opus",
 }
 DEFAULT_L4_ADVISOR = "opus"
-L4_MODEL_ALLOWLIST = frozenset(DEFAULT_L4_MODELS.values())
+L4_MODEL_ALLOWLIST = frozenset({"sonnet", "opus"})
+L4_ADVISOR_ALLOWLIST = frozenset({"sonnet", "opus", "fable", "haiku"})
 MAX_TASK_CHARS = 16_384
 MAX_SCOPE_CHARS = 16_384
 MAX_MODEL_CHARS = 64
@@ -103,7 +104,9 @@ def _parse_l4_cli_args(args: list[str]):
     graph_evidence_path = None
     model_decision_path = None
     model_decision_digest = None
-    enable_advisor = True
+    advisor_mode = None
+    no_advisor = False
+    explicit_advisor = None
 
     index = 0
     while index < len(args):
@@ -143,8 +146,29 @@ def _parse_l4_cli_args(args: list[str]):
                 print("[ERROR] Invalid or unapproved L4 model.", file=sys.stderr)
                 sys.exit(2)
             index += 2
+        elif arg == "--advisor-mode":
+            if advisor_mode is not None or index + 1 >= len(args):
+                print("[ERROR] --advisor-mode requires exactly one mode.", file=sys.stderr)
+                sys.exit(2)
+            advisor_mode = args[index + 1].strip().lower()
+            if advisor_mode not in ("native", "mcp", "none"):
+                print("[ERROR] Invalid advisor mode. Must be native, mcp, or none.", file=sys.stderr)
+                sys.exit(2)
+            index += 2
+        elif arg == "--advisor":
+            if explicit_advisor is not None or index + 1 >= len(args):
+                print("[ERROR] Flag --advisor requires a model name.", file=sys.stderr)
+                sys.exit(2)
+            explicit_advisor = args[index + 1].strip()
+            if len(explicit_advisor) > MAX_MODEL_CHARS or explicit_advisor not in L4_ADVISOR_ALLOWLIST:
+                print("[ERROR] Invalid or unapproved L4 advisor model.", file=sys.stderr)
+                sys.exit(2)
+            index += 2
         elif arg == "--no-advisor":
-            enable_advisor = False
+            if no_advisor:
+                print("[ERROR] Duplicate --no-advisor flag provided.", file=sys.stderr)
+                sys.exit(2)
+            no_advisor = True
             index += 1
         elif arg == "--dry-run":
             dry_run = True
@@ -170,6 +194,21 @@ def _parse_l4_cli_args(args: list[str]):
                     sys.exit(2)
                 model_decision_digest = args[index + 1].strip()
             index += 2
+        elif arg in ("--help", "-h"):
+            print("Usage:\n    python scripts/dispatch_l4.py <role_name> <gate_name> <task_slug> \"<task_description>\" \"<scope>\" [options]\n")
+            print(
+                "Options:\n"
+                "  --risk {low,medium,high}   Execution risk profile\n"
+                 "  --model MODEL              Lead model (sonnet, opus)\n"
+                 "  --advisor-mode MODE        native (default), mcp, or none\n"
+                "  --advisor MODEL            Advisor model (sonnet, opus, fable, haiku)\n"
+                "  --co-role ROLE             Additional specialist co-role\n"
+                 "  --no-advisor               Legacy alias for advisor mode none\n"
+                "  --token-saver              Enable token saver mode\n"
+                "  --dry-run                  Generate artifacts without executing\n"
+                "  -h, --help                 Show this help message and exit"
+            )
+            sys.exit(0)
         elif arg.startswith("-"):
             print("[ERROR] Unknown CLI flag.", file=sys.stderr)
             sys.exit(2)
@@ -209,11 +248,88 @@ def _parse_l4_cli_args(args: list[str]):
     if model_decision_path and explicit_model:
         print("[ERROR] --model cannot be combined with a model decision.", file=sys.stderr)
         sys.exit(2)
+    if no_advisor and advisor_mode is not None:
+        print("[ERROR] --no-advisor cannot be combined with --advisor-mode.", file=sys.stderr)
+        sys.exit(2)
+    advisor_mode = "none" if no_advisor else advisor_mode or "native"
+    if explicit_advisor and advisor_mode != "native":
+        print("[ERROR] --advisor requires native advisor mode.", file=sys.stderr)
+        sys.exit(2)
 
     return (
         role_name, gate_name, task_slug, task_desc, scope,
         explicit_risk, co_roles, token_saver, explicit_model,
-        enable_advisor, dry_run, graph_evidence_path, model_decision_path, model_decision_digest,
+        advisor_mode, explicit_advisor, dry_run, graph_evidence_path, model_decision_path, model_decision_digest,
+    )
+
+
+def _run_private_mcp_stdio() -> int:
+    """Local caller adapter: inject the private token before bridge validation."""
+    try:
+        from scripts import l4_mcp_advisor as advisor
+
+        token = os.environ.pop("OMEGA_DISPATCH_TOKEN", None)
+        authority = advisor.LaunchAuthority.from_environment()
+        if (not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token)
+                or not hmac.compare_digest(hashlib.sha256(token.encode("ascii")).hexdigest(), authority.token_sha256)):
+            raise ValueError("invalid private launch channel")
+
+        class PrivateCaller(advisor.AdvisorBridge):
+            async def consult(self, request):
+                if type(request) is not dict or "dispatch_token" in request:
+                    raise advisor.ToolError("ERR_UNAUTHORIZED_IDENTITY")
+                return await super().consult({**request, "dispatch_token": token})
+
+        async def run():
+            advisor.logging.disable(advisor.logging.CRITICAL)
+            bridge = PrivateCaller(authority, advisor.router_provider_from_environment())
+            server = advisor.create_server(bridge)
+            # ponytail: One local caller; add a separate authenticated adapter only for remote clients.
+            schema = {**advisor.REQUEST_SCHEMA,
+                      "properties": {key: value for key, value in advisor.REQUEST_SCHEMA["properties"].items()
+                                     if key != "dispatch_token"},
+                      "required": [key for key in advisor.REQUEST_SCHEMA["required"] if key != "dispatch_token"]}
+
+            @server.list_tools()
+            async def list_tools():
+                return [advisor.types.Tool(name="consult_advisor", description="Private launch-bound advisory consultation; never approval.",
+                                           inputSchema=schema, outputSchema=advisor.RESPONSE_SCHEMA)]
+
+            async with advisor.stdio_server(stdin=advisor.StrictStdin(sys.stdin.buffer)) as (read, write):
+                await server.run(read, write, server.create_initialization_options())
+            return bridge.failed
+
+        return 1 if advisor.anyio.run(run) else 0
+    except Exception:
+        print("ERR_ADVISOR_STARTUP_OR_TRANSPORT", file=sys.stderr)
+        return 1
+
+
+def _private_mcp_launch_command(command: str, gate: str, session: str, role: int, risk: str) -> str:
+    values = {"OMEGA_DISPATCH_GATE": gate, "OMEGA_DISPATCH_SESSION_ID": session,
+              "OMEGA_DISPATCH_ROLE_ID": str(role), "OMEGA_DISPATCH_RISK": "low" if risk == "low" else "high"}
+    names = [*values, "OMEGA_DISPATCH_TOKEN_SHA256", "OMEGA_DISPATCH_TOKEN"]
+    bindings = "; ".join(f"[Environment]::SetEnvironmentVariable({ps_quote(key)}, {ps_quote(value)}, 'Process')"
+                         for key, value in values.items())
+    return (
+        "& { $ErrorActionPreference = 'Stop'; $__OMEGA_OLD_ENV = @{}; "
+        f"$__OMEGA_ENV_NAMES = @({', '.join(ps_quote(name) for name in names)}); "
+        "foreach ($name in $__OMEGA_ENV_NAMES) { $__OMEGA_OLD_ENV[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; "
+        "$__OMEGA_RNG = $null; $__OMEGA_SHA = $null; $__OMEGA_RANDOM = New-Object byte[] 32; "
+        "try { $__OMEGA_RNG = [System.Security.Cryptography.RandomNumberGenerator]::Create(); "
+        "$__OMEGA_RNG.GetBytes($__OMEGA_RANDOM); "
+        "$__OMEGA_TOKEN = -join ($__OMEGA_RANDOM | ForEach-Object { $_.ToString('x2') }); "
+        "$__OMEGA_SHA = [System.Security.Cryptography.SHA256]::Create(); "
+        "$__OMEGA_TOKEN_HASH = -join ($__OMEGA_SHA.ComputeHash([Text.Encoding]::UTF8.GetBytes($__OMEGA_TOKEN)) | ForEach-Object { $_.ToString('x2') }); "
+        f"{bindings}; "
+        "[Environment]::SetEnvironmentVariable('OMEGA_DISPATCH_TOKEN', $__OMEGA_TOKEN, 'Process'); "
+        "[Environment]::SetEnvironmentVariable('OMEGA_DISPATCH_TOKEN_SHA256', $__OMEGA_TOKEN_HASH, 'Process'); "
+        f"{command}; $__OMEGA_EXIT = $LASTEXITCODE "
+        "} catch { [Console]::Error.WriteLine('[ERROR] private MCP launch failed'); exit 2 } "
+        "finally { foreach ($name in $__OMEGA_ENV_NAMES) { [Environment]::SetEnvironmentVariable($name, $__OMEGA_OLD_ENV[$name], 'Process') }; "
+        "if ($null -ne $__OMEGA_RNG) { $__OMEGA_RNG.Dispose() }; if ($null -ne $__OMEGA_SHA) { $__OMEGA_SHA.Dispose() }; "
+        "[Array]::Clear($__OMEGA_RANDOM, 0, $__OMEGA_RANDOM.Length); $__OMEGA_TOKEN = $null; $__OMEGA_TOKEN_HASH = $null }; "
+        "if ($__OMEGA_EXIT -ne 0) { exit $__OMEGA_EXIT } }"
     )
 
 
@@ -314,12 +430,72 @@ def _publish_dispatch_artifacts(artifacts: list[tuple[Path, bytes]]) -> None:
 
 def _fsync_directory(directory: Path) -> None:
     if os.name == "nt":
+        from scripts.l4_mcp_advisor import ToolError, sync_windows_directory
+        try:
+            sync_windows_directory(directory)
+        except ToolError:
+            raise OSError("dispatch directory durability failed") from None
         return
     fd = os.open(directory, os.O_RDONLY)
     try:
         os.fsync(fd)
     finally:
         os.close(fd)
+
+
+def _remove_owned_lock(path: Path, identity: tuple[int, int], owner: bytes, *, partial: bool = False) -> None:
+    try:
+        current = path.lstat()
+        if not stat.S_ISREG(current.st_mode) or (current.st_dev, current.st_ino) != identity:
+            return
+        if current.st_size > len(owner) or (not partial and current.st_size != len(owner)):
+            return
+        contents = _read_artifact_bytes(path, len(owner))
+        if contents != owner and not (partial and owner.startswith(contents)):
+            return
+        current = path.lstat()
+        # ponytail: Cooperative exclusive-create publishers; use handle-based deletion for hostile path replacement races.
+        if stat.S_ISREG(current.st_mode) and (current.st_dev, current.st_ino) == identity:
+            path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def acquire_session_lock(session_id: str, root: Path | None = None) -> tuple[Path, tuple[int, int], bytes]:
+    root = root or REPO_ROOT
+    validate_identifier(session_id, "session_id")
+    directory = root / ".ly_state/session"
+    directory.mkdir(parents=True, exist_ok=True)
+    path = ensure_session_containment(directory / f"dispatch_{session_id}.lock", root)
+    owner = f"{os.getpid()}:{os.urandom(16).hex()}".encode("ascii")
+    try:
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        print("[ERROR] Dispatch already running; refusing duplicate dispatch.", file=sys.stderr)
+        raise SystemExit(2)
+    identity = None
+    try:
+        opened = os.fstat(fd)
+        identity = (opened.st_dev, opened.st_ino)
+        written = 0
+        while written < len(owner):
+            count = os.write(fd, owner[written:])
+            if count <= 0:
+                raise OSError("dispatch lock owner write made no progress")
+            written += count
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        if identity is not None:
+            _remove_owned_lock(path, identity, owner, partial=True)
+        raise
+    os.close(fd)
+    return path, identity, owner
+
+
+def release_session_lock(lock: tuple[Path, tuple[int, int], bytes] | None) -> None:
+    if lock is not None:
+        _remove_owned_lock(*lock)
 
 
 def _generate_l4_dispatch(
@@ -337,11 +513,20 @@ def _generate_l4_dispatch(
     jev_dimension_focus: int | None = None,
     token_saver: bool = False,
     dry_run: bool = False,
+    advisor_mode: str = "native",
 ):
     validate_identifier(gate_name, "gate_name")
     validate_identifier(session_id, "session_id")
     if model not in L4_MODEL_ALLOWLIST:
         raise ValueError("invalid or unapproved L4 model")
+    if not isinstance(advisor_mode, str) or advisor_mode not in ("native", "mcp", "none"):
+        raise ValueError("invalid advisor mode")
+    if advisor_model is not None and (advisor_mode != "native" or advisor_model not in L4_ADVISOR_ALLOWLIST):
+        raise ValueError("invalid or conflicting advisor model")
+    if risk not in ("low", "medium", "high") or type(roles[0]["role_id"]) is not int or not 6 <= roles[0]["role_id"] <= 16:
+        raise ValueError("invalid launch authority")
+    if risk == "high" and model != DEFAULT_L4_MODELS["high"]:
+        raise ValueError("high-risk L4 dispatch requires opus")
     task_desc = redact_credentials(task_desc)
     scope = redact_credentials(scope)
     primary = roles[0]
@@ -400,9 +585,16 @@ def _generate_l4_dispatch(
 
     advisor_clause = (
         f"NATIVE ADVISOR: Actively consult native advisor tool (--advisor {advisor_model} / cx/gpt-6.1-sol[1m]) "
-        "for complex architectural trade-offs, PIT safety boundaries, 24D invariants, and algorithm edge cases. "
+        "for complex architectural trade-offs, PIT safety boundaries, 24D invariants, and algorithm edge cases.\n"
         if advisor_model else ""
     )
+    if advisor_mode == "mcp":
+        advisor_clause = (
+            "MCP ADVISOR: Consult consult_advisor for architecture and correctness; standard model cx/gpt-6.1-sol, "
+            "difficult consultations cx/gpt-6-astra. The local caller supplies private authorization; never request or print its token. "
+            f"Use gate={gate_name}, session_id={session_id}, role_id={role_id}, risk={'low' if risk == 'low' else 'high'}. "
+            "Required advisor errors block completion; advice is never independent L3 approval.\n"
+        )
 
     prompt = (
         f"REPO_ROOT: {REPO_ROOT}. "
@@ -424,7 +616,7 @@ def _generate_l4_dispatch(
         f"SCOPE: {scope}. "
         f"REQUIREMENTS: repo-relative paths under REPO_ROOT only; implement/refactor/test only; "
         f"write L4 implementation report at .ly_state/session/{session_id}.md. "
-        f"Do not audit or approve. Stop/NEEDS_FIX if repo-local source missing. "
+        f"Do not audit or approve. Stop/NEEDS_FIX if repo-local source missing.\n"
         f"{advisor_clause}"
         f"{adversarial_clause}\n"
         f"L4 REPORT FORMAT (MANDATORY): "
@@ -460,6 +652,26 @@ def _generate_l4_dispatch(
     prompt_path = ensure_session_containment(prompt_dir / f"prompt_{session_id}.txt", REPO_ROOT)
     expected_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
 
+    read_stmt = build_verified_prompt_read_statement(prompt_path, expected_digest)
+    cmd = (
+        f"{read_stmt}; "
+        f"$__OMEGA_PROMPT | claude -p --dangerously-skip-permissions --model {ps_quote(model)}"
+        f"{f' --advisor {ps_quote(advisor_model)}' if advisor_model else ''}"
+    )
+    if advisor_mode == "mcp":
+        config = json.dumps({"mcpServers": {"omega-l4-advisor": {
+            "type": "stdio", "command": sys.executable,
+            "args": [str(REPO_ROOT / "scripts" / "dispatch_l4.py"), "--private-mcp-stdio"],
+        }}}, separators=(",", ":"))
+        # Windows PowerShell 5.1 strips JSON quotes when constructing native argv.
+        config_setup = (
+            f"$__OMEGA_MCP_CONFIG = {ps_quote(config)}; "
+            "if ($PSVersionTable.PSVersion -lt [version]'7.3' -or $PSNativeCommandArgumentPassing -eq 'Legacy') "
+            "{ $__OMEGA_MCP_CONFIG = $__OMEGA_MCP_CONFIG.Replace('\"', '\\\"') }; "
+        )
+        cmd = config_setup + cmd + " --strict-mcp-config --mcp-config $__OMEGA_MCP_CONFIG"
+        cmd = _private_mcp_launch_command(cmd, gate_name, session_id, role_id, risk)
+
     if not dry_run:
         report_path = ensure_session_containment(prompt_dir / f"{session_id}.md", REPO_ROOT)
         report_header = (
@@ -479,14 +691,6 @@ def _generate_l4_dispatch(
             (report_path, report_header.encode("utf-8")),
         ])
 
-    read_stmt = build_verified_prompt_read_statement(prompt_path, expected_digest)
-    advisor_flag = f" --advisor {advisor_model}" if advisor_model else ""
-    cmd = (
-        f"{read_stmt}; "
-        f"$__OMEGA_PROMPT | claude -p --dangerously-skip-permissions --model {ps_quote(model)}"
-        f"{f' --advisor {ps_quote(advisor_model)}' if advisor_model else ''}"
-    )
-
     print(f"SESSION_ID={session_id}")
     print(f"ROLE_ID={role_id}")
     print(f"ROLE_NAME={role_name}")
@@ -494,6 +698,7 @@ def _generate_l4_dispatch(
     print(f"CO_ROLE_NAMES={','.join(role['name'] for role in co_roles)}")
     print(f"GATE={gate_name}")
     print(f"MODEL={model}")
+    print(f"ADVISOR_MODE={advisor_mode}")
     print(f"ADVISOR_MODEL={advisor_model or 'none'}")
     print(f"RISK={risk} ({risk_reason})")
     print(f"ANTI_DRIP_MODE={contract['mode']}")
@@ -509,10 +714,13 @@ def main() -> int:
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
 
+    if sys.argv[1:] == ["--private-mcp-stdio"]:
+        return _run_private_mcp_stdio()
+
     (
         role_name, gate_name, task_slug, task_desc, scope,
         explicit_risk, co_role_names, token_saver, explicit_model,
-        enable_advisor, dry_run, graph_evidence_path, model_decision_path, model_decision_digest,
+        advisor_mode, explicit_advisor, dry_run, graph_evidence_path, model_decision_path, model_decision_digest,
     ) = _parse_l4_cli_args(sys.argv[1:])
 
     validate_identifier(role_name, "role_name")
@@ -573,15 +781,21 @@ def main() -> int:
             )
             if decision["task"] != escape_xml_data(task_desc):
                 raise ValueError("model decision task context mismatch")
-            model = DEFAULT_L4_MODELS["high" if decision["lead_model"] == L2_LEAD_ALLOWLIST[0] else "low"]
+            model = DEFAULT_L4_MODELS["high" if risk == "high" or decision["lead_model"] == L2_LEAD_ALLOWLIST[0] else "low"]
             jev_dimension_focus = decision.get("dimension_focus")
         except (OSError, ValueError, KeyError, UnicodeError) as exc:
             print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
             return 2
-    advisor_model = DEFAULT_L4_ADVISOR if enable_advisor else None
+    advisor_model = (explicit_advisor or DEFAULT_L4_ADVISOR) if advisor_mode == "native" else None
 
-    lock_path = None if dry_run else acquire_session_lock(session_id, REPO_ROOT)
+    if risk == "high" and model != DEFAULT_L4_MODELS["high"]:
+        print("[ERROR] High-risk L4 dispatch requires opus.", file=sys.stderr)
+        return 2
+
+    lock_path = None
+    exit_code = 0
     try:
+        lock_path = None if dry_run else acquire_session_lock(session_id, REPO_ROOT)
         entries = load_sanitized_lesson_entries(role_id, task_desc)
         lessons_block = build_lessons_data_block(entries)
         graph_evidence = (
@@ -603,14 +817,19 @@ def main() -> int:
             jev_dimension_focus=jev_dimension_focus,
             token_saver=token_saver,
             dry_run=dry_run,
+            advisor_mode=advisor_mode,
         )
     except (RuntimeError, OSError, UnicodeError, ValueError) as exc:
         print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
-        return 2
+        exit_code = 2
     finally:
-        release_session_lock(lock_path)
+        try:
+            release_session_lock(lock_path)
+        except OSError as exc:
+            print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
+            exit_code = 2
 
-    return 0
+    return exit_code
 
 
 if __name__ == "__main__":

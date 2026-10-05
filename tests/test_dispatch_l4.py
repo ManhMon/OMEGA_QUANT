@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from datetime import datetime
 from pathlib import Path
 import pytest
@@ -16,15 +17,495 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from scripts.dispatch_l4 import (
-    DEFAULT_L4_ADVISOR,
     DEFAULT_L4_MODELS,
     L4_MODEL_ALLOWLIST,
+    L4_ADVISOR_ALLOWLIST,
     _generate_l4_dispatch,
     _publish_dispatch_artifacts,
     _parse_l4_cli_args,
-    main,
     redact_credentials,
 )
+
+
+@pytest.mark.parametrize("mode", ["native", "mcp", "none", " MCP "], ids=["native", "mcp", "none", "normalized"])
+def test_stage3_advisor_modes_parse(mode):
+    parsed = _parse_l4_cli_args(["backend-engineer", "GATE", "slug", "task", "scope", "--advisor-mode", mode])
+    assert parsed[9] == mode.strip().lower()
+    assert parsed[10] is None
+
+
+@pytest.mark.parametrize("model", sorted(L4_ADVISOR_ALLOWLIST))
+def test_stage3_explicit_native_model_allowlist(model):
+    for flags in (["--advisor-mode", "native", "--advisor", model], ["--advisor", model, "--advisor-mode", "native"]):
+        parsed = _parse_l4_cli_args(["backend-engineer", "GATE", "slug", "task", "scope", *flags])
+        assert parsed[9:11] == ("native", model)
+
+
+@pytest.mark.parametrize("flags", [
+    ["--advisor-mode"], ["--advisor-mode", "token=PRIVATE_CANARY"],
+    ["--advisor-mode", "--no-advisor"], ["--advisor-mode", "mcp", "--advisor-mode", "native"],
+    ["--advisor-mode", "native", "--advisor-mode", "native"], ["--no-advisor", "--no-advisor"],
+    *(["--advisor-mode", mode, "--advisor", "opus"] for mode in ("mcp", "none")),
+    *(["--advisor", "opus", "--advisor-mode", mode] for mode in ("mcp", "none")),
+    *(["--advisor-mode", mode, "--no-advisor"] for mode in ("native", "mcp", "none")),
+    *(["--no-advisor", "--advisor-mode", mode] for mode in ("native", "mcp", "none")),
+], ids=["missing", "invalid", "flag-value", "duplicate-conflict", "duplicate-same", "duplicate-disable",
+        "mcp-model", "none-model", "model-mcp", "model-none", "native-disable", "mcp-disable", "none-disable",
+        "disable-native", "disable-mcp", "disable-none"])
+def test_stage3_conflicts_fail_before_effects(flags, tmp_path, monkeypatch, capsys):
+    import scripts.dispatch_l4 as dispatch
+
+    monkeypatch.setattr(dispatch, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dispatch, "resolve_l2_roles", lambda *_: pytest.fail("invalid mode reached role lookup"))
+    baseline = set(tmp_path.iterdir())
+    monkeypatch.setattr(sys, "argv", ["dispatch_l4.py", "backend-engineer", "GATE", "slug", "task", "scope", *flags])
+    with pytest.raises(SystemExit) as error:
+        dispatch.main()
+    assert error.value.code == 2
+    output = capsys.readouterr()
+    assert "PRIVATE_CANARY" not in output.err and not output.out
+    assert set(tmp_path.iterdir()) == baseline
+
+
+@pytest.fixture
+def stage3_dispatch(tmp_path, monkeypatch, capsys):
+    import scripts.dispatch_l4 as dispatch
+
+    monkeypatch.setattr(dispatch, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dispatch, "extract_prior_audit_outcomes", lambda *_: None)
+    monkeypatch.setattr(dispatch, "load_sanitized_lesson_entries", lambda *_: [])
+    monkeypatch.setattr(dispatch, "run_graph_predispatch_gate", lambda *_: {})
+    monkeypatch.setattr(dispatch, "_existing_graph_evidence", lambda *_: {})
+
+    def generate(mode="mcp", risk="low", dry_run=False, extra=()):
+        args = ["dispatch_l4.py", "backend-engineer", "STAGE3_GATE", "stage3", "Review architecture",
+                "scripts/dispatch_l4.py tests/test_dispatch_l4.py", "--risk", risk]
+        if mode is not None:
+            args += ["--advisor-mode", mode]
+        if dry_run:
+            args += ["--dry-run"]
+        args += list(extra)
+        monkeypatch.setattr(sys, "argv", args)
+        code = dispatch.main()
+        output = capsys.readouterr()
+        command = output.out.split("---COMMAND---\n", 1)[1].strip() if code == 0 else ""
+        return code, command, output
+
+    return dispatch, tmp_path, generate
+
+
+@pytest.mark.parametrize("mode", [None, "native", "none", "legacy"], ids=["default", "native", "none", "no-advisor"])
+@pytest.mark.parametrize("risk", ["low", "high"])
+def test_stage5_disable_mcp_restores_dispatch_without_side_effects(mode, risk, stage3_dispatch, monkeypatch):
+    import socket
+    from datetime import timezone
+    import anyio
+    from scripts import l4_mcp_advisor as advisor
+
+    dispatch, root, generate = stage3_dispatch
+    config = root / ".mcp.json"
+    original_config = b'{"mcpServers":{"unrelated":{"command":"unchanged"}},"extra":true}\r\n'
+    config.write_bytes(original_config)
+    config_digest = hashlib.sha256(original_config).hexdigest()
+    code, mcp_command, output = generate("mcp", risk)
+    assert code == 0 and not output.err
+    session = root / ".ly_state/session"
+    receipt_directory = session / "receipts"
+    receipt_directory.mkdir()
+    session_id = next(session.glob("l4_*.md")).stem
+    token = "stage5-private-dispatch-" + "0" * 32
+    bound = advisor.LaunchAuthority("STAGE3_GATE", session_id, 9, risk,
+                                    hashlib.sha256(token.encode()).hexdigest(), datetime.now(timezone.utc))
+
+    async def provider(payload):
+        return advisor.json_bytes({"model": payload["model"], "id": "stage5-provider", "choices": [{
+            "finish_reason": "stop", "message": {"role": "assistant", "content": "Consistent evidence."},
+        }]})
+
+    bridge = advisor.AdvisorBridge(bound, provider, receipt_directory=receipt_directory)
+    context = {"instructions": "Check supplied evidence.", "observations": []}
+    value = dict(schema_version="mcp-advisor-request/v1", gate=bound.gate, session_id=session_id,
+                 request_id="prior", role_id=9, risk=risk, purpose="correctness", model=advisor.MODELS[0],
+                 context=context, context_sha256=hashlib.sha256(advisor.context_text(context, token).encode()).hexdigest(),
+                 as_of_time="2026-01-01T00:00:00Z", dispatch_token=token)
+    assert anyio.run(bridge.consult, value)["status"] == "advice" and bridge._active == 0
+    original_receipts = {path.name: path.read_bytes() for path in receipt_directory.iterdir()}
+    assert all(token.encode() not in raw for raw in original_receipts.values())
+    original_env = dict(os.environ)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("disabled dispatch attempted MCP/provider/network activity")
+
+    with monkeypatch.context() as patches:
+        patches.setattr(dispatch, "_private_mcp_launch_command", forbidden)
+        patches.setattr(dispatch, "_run_private_mcp_stdio", forbidden)
+        patches.setattr(advisor.AdvisorBridge, "consult", forbidden)
+        patches.setattr(socket, "getaddrinfo", forbidden)
+        patches.setattr(socket, "create_connection", forbidden)
+        disabled_mode = None if mode == "legacy" else mode
+        code, command, output = generate(disabled_mode, risk, extra=("--no-advisor",) if mode == "legacy" else ())
+    assert code == 0 and not output.err
+    native = mode in (None, "native")
+    assert ("--advisor 'opus'" in command) == native
+    assert "--mcp-config" not in command and "OMEGA_DISPATCH_" not in command
+    prompt = next(session.glob("prompt_*.txt")).read_text(encoding="utf-8")
+    assert ("NATIVE ADVISOR:" in prompt) == native and "MCP ADVISOR:" not in prompt
+    assert dict(os.environ) == original_env
+    assert config.read_bytes() == original_config and hashlib.sha256(config.read_bytes()).hexdigest() == config_digest
+    assert {path.name: path.read_bytes() for path in receipt_directory.iterdir()} == original_receipts
+    assert not list(root.rglob("*.tmp")) and not list(root.rglob("*.rollback"))
+    assert not list(session.glob("*.lock"))
+    # Both launch commands execute against a stub; no live model or persistent registration.
+    # The old MCP command's prompt binding must fail after replacement, before Claude is called.
+    retired = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                              f"function claude {{ 'UNAUTHORIZED_CALL' }}; {mcp_command}"],
+                             capture_output=True, text=True, timeout=30)
+    assert retired.returncode == 2 and not retired.stdout
+    script = ("$before = [Environment]::GetEnvironmentVariable('OMEGA_DISPATCH_TOKEN', 'Process'); "
+              "function claude { $null = $input | Out-String; "
+              f"if (($args -contains '--advisor') -ne ${str(native).lower()} "
+              "-or $args -contains '--mcp-config') { throw 'mode' }; $global:LASTEXITCODE = 0 }; "
+              f"{command}; "
+              "if ([Environment]::GetEnvironmentVariable('OMEGA_DISPATCH_TOKEN', 'Process') -cne $before) { throw 'environment' }; 'ROLLBACK_OK'")
+    restored = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                              capture_output=True, text=True, timeout=30)
+    assert restored.returncode == 0 and restored.stdout.strip() == "ROLLBACK_OK" and not restored.stderr
+    assert config.read_bytes() == original_config
+    assert {path.name: path.read_bytes() for path in receipt_directory.iterdir()} == original_receipts
+
+
+@pytest.mark.parametrize("mode", [None, "native", "mcp", "none"], ids=["default", "native", "mcp", "none"])
+@pytest.mark.parametrize("risk", ["low", "medium", "high"])
+@pytest.mark.parametrize("dry_run", [False, True], ids=["published", "dry-run"])
+def test_stage3_generated_mode_is_exclusive(mode, risk, dry_run, stage3_dispatch, monkeypatch):
+    dispatch, root, generate = stage3_dispatch
+    for name in ("GATE", "SESSION_ID", "ROLE_ID", "RISK", "TOKEN", "TOKEN_SHA256"):
+        monkeypatch.setenv("OMEGA_DISPATCH_" + name, "AMBIENT_PRIVATE_CANARY")
+    (root / ".mcp.json").write_bytes(b'{"mcpServers":{"unrelated":{}}}')
+    original_env = dict(os.environ)
+    code, command, output = generate(mode, risk, dry_run)
+    assert code == 0 and not output.err
+    assert dict(os.environ) == original_env
+    assert "AMBIENT_PRIVATE_CANARY" not in output.out
+    assert f"ADVISOR_MODE={mode or 'native'}" in output.out
+    model = "opus" if risk == "high" else "sonnet"
+    assert f"MODEL={model}\n" in output.out
+    assert f"--model '{model}'" in command
+    assert ("--advisor 'opus'" in command) == (mode in (None, "native"))
+    assert ("--mcp-config" in command) == (mode == "mcp")
+    assert ("OMEGA_DISPATCH_TOKEN" in command) == (mode == "mcp")
+    assert (root / ".mcp.json").read_bytes() == b'{"mcpServers":{"unrelated":{}}}'
+    if mode == "mcp":
+        assert "--strict-mcp-config" in command
+        assert "RandomNumberGenerator" in command and "finally" in command
+        assert "'OMEGA_DISPATCH_ROLE_ID', '9', 'Process'" in command
+        assert f"'OMEGA_DISPATCH_RISK', '{'low' if risk == 'low' else 'high'}', 'Process'" in command
+        assert "--advisor" not in command and "AMBIENT" not in command
+        config_text = command.split("$__OMEGA_MCP_CONFIG = '", 1)[1].split("'; if ($PSVersionTable", 1)[0].replace("''", "'")
+        config = json.loads(config_text)["mcpServers"]["omega-l4-advisor"]
+        assert config["command"] == sys.executable
+        assert config["args"] == [str(root / "scripts/dispatch_l4.py"), "--private-mcp-stdio"]
+        assert "env" not in config
+    artifacts = list((root / ".ly_state/session").glob("*"))
+    assert not any(path.suffix in (".tmp", ".lock") for path in artifacts)
+    if dry_run:
+        assert not artifacts
+    else:
+        assert len(artifacts) == 4
+        prompt = next(path for path in artifacts if path.suffix == ".txt").read_text(encoding="utf-8")
+        assert ("NATIVE ADVISOR:" in prompt) == (mode in (None, "native"))
+        assert ("MCP ADVISOR:" in prompt) == (mode == "mcp")
+        assert "OMEGA_DISPATCH_TOKEN" not in prompt
+
+
+@pytest.mark.parametrize("mode,model", [("mcp", "opus"), ("none", "opus"), ("bad", None), ("native", "bad")])
+def test_stage3_direct_generation_rejects_conflicts_before_publication(mode, model, stage3_dispatch):
+    _dispatch, root, _generate = stage3_dispatch
+    baseline = set(root.iterdir())
+    with pytest.raises(ValueError, match="advisor"):
+        _generate_l4_dispatch(
+            roles=[{"name": "backend-engineer", "role_id": 9, "role_file": ".agents/agent/backend-engineer.md", "skill_files": []}],
+            gate_name="GATE", task_desc="task", scope="scope", session_id="l4_role9_stage3_20261005",
+            lessons_block="lessons", risk="low", risk_reason="test", model="sonnet", advisor_model=model,
+            graph_evidence={}, advisor_mode=mode,
+        )
+    assert set(root.iterdir()) == baseline
+
+
+@pytest.mark.parametrize("fault", ["publication", "replace", "fsync", "readback", "rollback", "command"],
+                         ids=["publication", "rename-failure", "fsync", "readback", "rollback", "command"])
+@pytest.mark.parametrize("risk", ["low", "high"])
+def test_stage3_mcp_faults_fail_closed_preserve_prior_state(fault, risk, stage3_dispatch, monkeypatch):
+    dispatch, root, generate = stage3_dispatch
+    code, _command, _output = generate(risk=risk)
+    assert code == 0
+    session = root / ".ly_state/session"
+    baseline = {path.name: path.read_bytes() for path in session.iterdir()}
+    original_env = dict(os.environ)
+
+    def fail(*_a, **_kw):
+        raise OSError("injected token=PRIVATE_FAULT_CANARY")
+
+    if fault == "publication":
+        monkeypatch.setattr(dispatch, "_publish_dispatch_artifacts", fail)
+    elif fault == "command":
+        monkeypatch.setattr(dispatch, "_private_mcp_launch_command", fail)
+    elif fault == "fsync":
+        monkeypatch.setattr(dispatch, "acquire_session_lock", lambda *_: None)
+        monkeypatch.setattr(dispatch.os, "fsync", fail)
+    elif fault in ("replace", "rollback"):
+        real_replace, calls = os.replace, []
+
+        def replace(source, target):
+            calls.append(target)
+            if len(calls) == 2 or fault == "rollback":
+                fail()
+            return real_replace(source, target)
+
+        monkeypatch.setattr(dispatch.os, "replace", replace)
+    else:
+        real_read, calls = dispatch._read_artifact_bytes, []
+
+        def read(path, limit):
+            calls.append(path)
+            if len(calls) == 5:
+                fail()
+            return real_read(path, limit)
+
+        monkeypatch.setattr(dispatch, "_read_artifact_bytes", read)
+    code, command, output = generate(risk=risk)
+    assert code == 2 and not command and not output.out
+    assert "PRIVATE_FAULT_CANARY" not in output.err
+    assert {path.name: path.read_bytes() for path in session.iterdir()} == baseline
+    assert dict(os.environ) == original_env
+
+
+def test_stage3_mcp_lock_contention_preserves_owner(stage3_dispatch):
+    dispatch, root, generate = stage3_dispatch
+    session_id = f"l4_role9_stage3_{datetime.now().strftime('%Y%m%d')}"
+    owned = dispatch.acquire_session_lock(session_id, root)
+    lock = owned[0]
+    owner = lock.read_bytes()
+    try:
+        with pytest.raises(SystemExit) as error:
+            generate()
+        assert error.value.code == 2
+        assert lock.read_bytes() == owner
+        assert list(lock.parent.iterdir()) == [lock]
+    finally:
+        dispatch.release_session_lock(owned)
+
+
+def test_stage3_powershell_channel_fresh_private_bound_and_restored(stage3_dispatch):
+    _dispatch, _root, generate = stage3_dispatch
+    code, command, _output = generate()
+    assert code == 0
+    # Mock only Claude; execute the generated PowerShell launch boundary itself.
+    script = (
+        "$script:tokens = @(); function claude { "
+        "$null = $input | Out-String; "
+        "if ($env:OMEGA_DISPATCH_GATE -cne 'STAGE3_GATE' -or $env:OMEGA_DISPATCH_ROLE_ID -cne '9' "
+        "-or $env:OMEGA_DISPATCH_RISK -cne 'low' -or $env:OMEGA_DISPATCH_SESSION_ID -notmatch '^l4_role9_stage3_[0-9]{8}$') { throw 'authority' }; "
+        "if ($env:OMEGA_DISPATCH_TOKEN -notmatch '^[0-9a-f]{64}$') { throw 'token' }; "
+        "$digest = -join ([Security.Cryptography.SHA256]::Create().ComputeHash([Text.Encoding]::UTF8.GetBytes($env:OMEGA_DISPATCH_TOKEN)) | ForEach-Object { $_.ToString('x2') }); "
+        "if ($digest -cne $env:OMEGA_DISPATCH_TOKEN_SHA256 -or $args -contains $env:OMEGA_DISPATCH_TOKEN) { throw 'private-channel' }; "
+        "if ($script:tokens -contains $env:OMEGA_DISPATCH_TOKEN) { throw 'reused-token' }; "
+        "$script:tokens += $env:OMEGA_DISPATCH_TOKEN; $global:LASTEXITCODE = 0 }; "
+        f"{command}; {command}; "
+        "if ($env:OMEGA_DISPATCH_TOKEN -cne 'AMBIENT_PRIVATE_CANARY' -or $env:OMEGA_DISPATCH_GATE -cne 'AMBIENT_GATE') { throw 'restore' }; "
+        "if (Test-Path Env:OMEGA_DISPATCH_TOKEN_SHA256) { throw 'missing-env-restore' }; 'CHANNEL_OK'"
+    )
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("OMEGA_DISPATCH_")}
+    environment.update(OMEGA_DISPATCH_TOKEN="AMBIENT_PRIVATE_CANARY", OMEGA_DISPATCH_GATE="AMBIENT_GATE")
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+                            env=environment, capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "CHANNEL_OK" and not result.stderr
+
+
+def test_stage3_mcp_config_reaches_native_argv(stage3_dispatch):
+    _dispatch, root, generate = stage3_dispatch
+    code, command, _output = generate()
+    assert code == 0
+    child = root / "native_check.py"
+    child.write_text(
+        "import json, os, sys\n"
+        "sys.stdin.read()\n"
+        "config = json.loads(sys.argv[sys.argv.index('--mcp-config') + 1])\n"
+        "assert config['mcpServers']['omega-l4-advisor']['args'][-1] == '--private-mcp-stdio'\n"
+        "assert os.environ['OMEGA_DISPATCH_TOKEN'] not in str(sys.argv)\n"
+        "print('NATIVE_CONFIG_OK')\n", encoding="utf-8",
+    )
+    command = command.replace("claude -p", f"& '{sys.executable}' '{child}' -p")
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", command],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "NATIVE_CONFIG_OK" and not result.stderr
+
+
+@pytest.mark.parametrize("fault", ["claude-exit", "claude-throw", "prompt-tamper", "prompt-missing", "random", "hash", "environment"])
+def test_stage3_powershell_launch_errors_nonzero_without_secret(fault, stage3_dispatch):
+    _dispatch, root, generate = stage3_dispatch
+    code, command, _output = generate()
+    assert code == 0
+    prompt = next((root / ".ly_state/session").glob("prompt_*.txt"))
+    if fault == "prompt-tamper":
+        prompt.write_bytes(b"tampered")
+    elif fault == "prompt-missing":
+        prompt.unlink()
+    body = "$null = $input | Out-String; $global:LASTEXITCODE = 7"
+    if fault == "claude-throw":
+        body = "throw $env:OMEGA_DISPATCH_TOKEN"
+    if fault.startswith("prompt-"):
+        body = "'UNAUTHORIZED_CLAUDE_CALL'; $global:LASTEXITCODE = 0"
+    if fault in ("random", "hash", "environment"):
+        statement = {"random": "$__OMEGA_RNG.GetBytes($__OMEGA_RANDOM)",
+                     "hash": "$__OMEGA_SHA = [System.Security.Cryptography.SHA256]::Create()",
+                     "environment": "[Environment]::SetEnvironmentVariable('OMEGA_DISPATCH_TOKEN_SHA256', $__OMEGA_TOKEN_HASH, 'Process')"}[fault]
+        command = command.replace(statement, "throw 'PRIVATE_ERROR_CANARY'")
+        body = "'UNAUTHORIZED_CLAUDE_CALL'; $global:LASTEXITCODE = 0"
+    result = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command",
+                             f"function claude {{ {body} }}; {command}"],
+                            capture_output=True, text=True, timeout=30)
+    assert result.returncode == (7 if fault == "claude-exit" else 2)
+    assert not result.stdout and not __import__("re").search(r"\b[0-9a-f]{64}\b", result.stderr)
+    assert "PRIVATE_ERROR_CANARY" not in result.stderr
+
+
+@pytest.mark.parametrize("fault", ["missing", "token", "digest", "role", "risk", "gate", "session"])
+def test_stage3_private_adapter_invalid_authority_exits_without_leaks(fault):
+    token = "a" * 64
+    env = {**os.environ, "OMEGA_DISPATCH_GATE": "GATE_TEST", "OMEGA_DISPATCH_SESSION_ID": "l4_role9_private_20261005",
+           "OMEGA_DISPATCH_ROLE_ID": "9", "OMEGA_DISPATCH_RISK": "low", "OMEGA_DISPATCH_TOKEN": token,
+           "OMEGA_DISPATCH_TOKEN_SHA256": hashlib.sha256(token.encode()).hexdigest()}
+    if fault == "missing":
+        env.pop("OMEGA_DISPATCH_TOKEN")
+    else:
+        key = "OMEGA_DISPATCH_" + {"token": "TOKEN", "digest": "TOKEN_SHA256", "role": "ROLE_ID", "risk": "RISK",
+                                    "gate": "GATE", "session": "SESSION_ID"}[fault]
+        env[key] = "PRIVATE_STARTUP_CANARY!"
+    result = subprocess.run([sys.executable, "scripts/dispatch_l4.py", "--private-mcp-stdio"], env=env,
+                            input="", capture_output=True, text=True, timeout=30, cwd=REPO_ROOT)
+    assert result.returncode == 1 and not result.stdout
+    assert result.stderr == "ERR_ADVISOR_STARTUP_OR_TRANSPORT\n"
+
+
+@pytest.mark.parametrize("model", ["cx/gpt-6.1-sol", "cx/gpt-6-astra"], ids=["sol", "astra"])
+@pytest.mark.parametrize("risk", ["low", "high"])
+def test_stage3_private_adapter_mcp_lifecycle_token_never_enters_model_arguments(model, risk, monkeypatch):
+    import io
+    import anyio
+    from mcp import ClientSession, StdioServerParameters
+    from mcp.client.stdio import stdio_client
+    from scripts import l4_mcp_advisor as advisor
+
+    token = "b" * 64
+    env = {"OMEGA_DISPATCH_GATE": "GATE_TEST", "OMEGA_DISPATCH_SESSION_ID": "l4_role9_private_20261005",
+           "OMEGA_DISPATCH_ROLE_ID": "9", "OMEGA_DISPATCH_RISK": risk, "OMEGA_DISPATCH_TOKEN": token,
+           "OMEGA_DISPATCH_TOKEN_SHA256": hashlib.sha256(token.encode()).hexdigest(),
+           "NINE_ROUTER_API_KEY": "PRIVATE_ROUTER_CANARY"}
+    # Fault: CaptureIO/StringIO has no OS descriptor. Only the HTTP transport is mocked.
+    monkeypatch.setattr(sys, "stderr", io.StringIO())
+    child = (
+        "import httpx, json, sys; from scripts import dispatch_l4; "
+        "original = httpx.AsyncClient; "
+        "handler = lambda request: httpx.Response(200, json={'model': json.loads(request.content)['model'].removeprefix('cx/'), "
+        "'id': 'private-provider', 'choices': [{'finish_reason': 'stop', 'message': {'role': 'assistant', 'content': 'Bound advice.'}}]}); "
+        "httpx.AsyncClient = lambda **kwargs: original(transport=httpx.MockTransport(handler), **kwargs); "
+        "sys.argv = ['scripts/dispatch_l4.py', '--private-mcp-stdio']; raise SystemExit(dispatch_l4.main())"
+    )
+
+    async def scenario(errors):
+        params = StdioServerParameters(command=sys.executable, args=["-c", child], env=env, cwd=str(REPO_ROOT))
+        async with stdio_client(params, errlog=errors) as (read, write):
+            async with ClientSession(read, write) as client:
+                await client.initialize()
+                tool = (await client.list_tools()).tools[0]
+                assert "dispatch_token" not in json.dumps(tool.inputSchema)
+                request = dict(schema_version="mcp-advisor-request/v1", gate="GATE_TEST", session_id=env["OMEGA_DISPATCH_SESSION_ID"],
+                               request_id="first", role_id=9, risk=risk, purpose="architecture", model=model,
+                               context={"instructions": "Review architecture", "observations": []}, as_of_time="2026-01-01T00:00:00Z")
+                request["context_sha256"] = hashlib.sha256(advisor.context_text(request["context"], token).encode()).hexdigest()
+                result = await client.call_tool("consult_advisor", request)
+                assert not result.isError and result.structuredContent["status"] == "advice"
+                assert result.structuredContent["advice"] == "Bound advice."
+                assert result.structuredContent["attempts"] == 1 and result.structuredContent["model"] == model
+                advisor.validate_response(result.structuredContent, {**request, "dispatch_token": token})
+                assert token not in result.model_dump_json()
+                for spoof in ({"dispatch_token": token}, {"gate": "OTHER_GATE"}, {"role_id": 7},
+                              {"risk": "high" if risk == "low" else "low"}, {"session_id": "other"}):
+                    denied = await client.call_tool("consult_advisor", {**request, **spoof, "request_id": "spoof"})
+                    assert denied.isError and denied.structuredContent is None
+                    assert denied.content[0].text == "ERR_UNAUTHORIZED_IDENTITY"
+                    assert token not in denied.model_dump_json()
+                replay = await client.call_tool("consult_advisor", request)
+                assert replay.isError and replay.content[0].text == "ERR_REPLAYED_REQUEST"
+    with tempfile.TemporaryFile(mode="w+b") as errors:
+        anyio.run(scenario, errors)
+        errors.seek(0)
+        assert errors.read() == b""
+
+
+@pytest.mark.parametrize("fault,code", [("success", None), ("auth", "AUTH_FAILED"),
+    ("schema", "PROVIDER_SCHEMA_INVALID"), ("oversize", "RESPONSE_TOO_LARGE"), ("missing-key", None)])
+def test_stage5_private_launch_provider_outcome_controls_process_exit(fault, code):
+    import asyncio
+    from scripts import l4_mcp_advisor as advisor
+
+    token = "c" * 64
+    env = {key: os.environ[key] for key in ("PATH", "SystemRoot", "WINDIR", "TEMP", "TMP") if key in os.environ}
+    env.update(OMEGA_DISPATCH_GATE="GATE_TEST", OMEGA_DISPATCH_SESSION_ID="l4_role9_private_20261005",
+               OMEGA_DISPATCH_ROLE_ID="9", OMEGA_DISPATCH_RISK="high", OMEGA_DISPATCH_TOKEN=token,
+               OMEGA_DISPATCH_TOKEN_SHA256=hashlib.sha256(token.encode()).hexdigest())
+    if fault != "missing-key":
+        env["NINE_ROUTER_API_KEY"] = "PRIVATE_ROUTER_CANARY"
+    body = {"model": "gpt-6.1-sol", "choices": [{"finish_reason": "stop",
+            "message": {"role": "assistant", "content": "Bound advice."}}]}
+    if fault == "schema":
+        body["choices"] = []
+    response = ("httpx.Response(401)" if fault == "auth" else
+                f"httpx.Response(200, content=b'x' * {advisor.MAX_RESPONSE_BYTES + 1})" if fault == "oversize" else
+                f"httpx.Response(200, json={body!r})")
+    child = ("import httpx, sys; from scripts import dispatch_l4; original = httpx.AsyncClient; "
+             f"httpx.AsyncClient = lambda **kwargs: original(transport=httpx.MockTransport(lambda _: {response}), **kwargs); "
+             "sys.argv = ['scripts/dispatch_l4.py', '--private-mcp-stdio']; raise SystemExit(dispatch_l4.main())")
+
+    async def scenario():
+        process = await asyncio.create_subprocess_exec(sys.executable, "-c", child, cwd=REPO_ROOT, env=env,
+            stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        try:
+            if fault != "missing-key":
+                async def exchange(frame):
+                    process.stdin.write(advisor.json_bytes(frame) + b"\n")
+                    await process.stdin.drain()
+                    return advisor.strict_json(await asyncio.wait_for(process.stdout.readline(), 10), advisor.MAX_RESPONSE_BYTES)
+
+                await exchange({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+                    "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "stage5", "version": "1"}}})
+                process.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
+                context = {"instructions": "Review architecture.", "observations": []}
+                value = dict(schema_version="mcp-advisor-request/v1", gate="GATE_TEST", session_id=env["OMEGA_DISPATCH_SESSION_ID"],
+                    role_id=9, risk="high", purpose="architecture", model=advisor.MODELS[0], request_id="first",
+                    context=context, context_sha256=hashlib.sha256(advisor.context_text(context, token).encode()).hexdigest(),
+                    as_of_time="2026-01-01T00:00:00Z")
+                result = (await exchange({"jsonrpc": "2.0", "id": 2, "method": "tools/call", "params": {
+                    "name": "consult_advisor", "arguments": value}}))["result"]
+                bound = result["structuredContent"]
+                advisor.validate_response(bound, {**value, "dispatch_token": token})
+                assert bound["attempts"] == 1 and result["isError"] == (fault != "success")
+                assert (bound["error"]["code"] if bound["error"] else None) == code
+                assert token not in json.dumps(result) and "PRIVATE_ROUTER_CANARY" not in json.dumps(result)
+            process.stdin.close()
+            await asyncio.wait_for(process.wait(), 10)
+            extra, errors = await process.communicate()
+            assert process.returncode == (0 if fault == "success" else 1) and extra == b""
+            assert errors.strip() == (b"ERR_ADVISOR_STARTUP_OR_TRANSPORT" if fault == "missing-key" else b"")
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await process.wait()
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("case", [
@@ -380,7 +861,7 @@ def test_parse_l4_cli_args_valid_positional():
     (
         role_name, gate_name, task_slug, task_desc, scope,
         explicit_risk, co_roles, token_saver, explicit_model,
-        enable_advisor, dry_run, graph_evidence_path,
+        advisor_mode, explicit_advisor, dry_run, graph_evidence_path,
         model_decision_path, model_decision_digest,
     ) = _parse_l4_cli_args(args)
 
@@ -393,7 +874,8 @@ def test_parse_l4_cli_args_valid_positional():
     assert co_roles == []
     assert token_saver is False
     assert explicit_model is None
-    assert enable_advisor is True
+    assert advisor_mode == "native"
+    assert explicit_advisor is None
     assert dry_run is False
     assert graph_evidence_path is None
     assert model_decision_path is None
@@ -416,7 +898,7 @@ def test_parse_l4_cli_args_with_flags():
     (
         role_name, gate_name, task_slug, task_desc, scope,
         explicit_risk, co_roles, token_saver, explicit_model,
-        enable_advisor, dry_run, graph_evidence_path,
+        advisor_mode, explicit_advisor, dry_run, graph_evidence_path,
         model_decision_path, model_decision_digest,
     ) = _parse_l4_cli_args(args)
 
@@ -424,7 +906,8 @@ def test_parse_l4_cli_args_with_flags():
     assert co_roles == ["tech-lead"]
     assert token_saver is True
     assert explicit_model == "opus"
-    assert enable_advisor is False
+    assert advisor_mode == "none"
+    assert explicit_advisor is None
 
 
 def test_parse_l4_cli_args_rejects_extra_positionals():
@@ -594,6 +1077,79 @@ def test_dispatch_artifact_directory_fsync_failure_rolls_back(tmp_path, monkeypa
     assert not list(tmp_path.glob(".*.tmp"))
 
 
+@pytest.mark.parametrize("fault", ["success", "open", "flush", "close", "rollback-restore", "rollback-final", "persistent"])
+@pytest.mark.parametrize("prior", [False, True], ids=["new", "existing"])
+def test_stage5_windows_dispatch_directory_barriers_and_rollback(tmp_path, monkeypatch, fault, prior):
+    from types import SimpleNamespace
+    from scripts import dispatch_l4 as dispatch, l4_mcp_advisor as advisor
+
+    target = tmp_path / "prompt.txt"
+    if prior:
+        target.write_bytes(b"previous")
+    events, flushes = [], []
+    handle = (1 << (advisor.ctypes.sizeof(advisor.ctypes.c_void_p) * 8 - 2)) + 17
+
+    class Function:
+        def __init__(self, callback):
+            self.callback = callback
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    def opened(*args):
+        events.append(("open", args))
+        return advisor.wintypes.HANDLE(-1).value if fault == "open" and len(events) == 1 else handle
+
+    def flushed(value):
+        events.append(("flush", value))
+        flushes.append(target.read_bytes() if target.exists() else None)
+        index = len(flushes)
+        return not (fault == "persistent" or fault == "flush" and index == 1
+                    or fault == "rollback-restore" and index == 2
+                    or fault == "rollback-final" and index == (3 if prior else 2))
+
+    def closed(value):
+        events.append(("close", value))
+        return not (fault == "close" and len(flushes) == 1)
+
+    kernel = SimpleNamespace(CreateFileW=Function(opened), FlushFileBuffers=Function(flushed), CloseHandle=Function(closed))
+    monkeypatch.setattr(advisor.ctypes, "WinDLL", lambda *_args, **_kwargs: kernel, raising=False)
+    monkeypatch.setattr(dispatch, "os", SimpleNamespace(**{**vars(os), "name": "nt"}))
+    if fault.startswith("rollback"):
+        original = dispatch._read_artifact_bytes
+        monkeypatch.setattr(dispatch, "_read_artifact_bytes", lambda path, limit:
+            (_ for _ in ()).throw(OSError("injected readback failure"))
+            if path.read_bytes() == b"replacement" else original(path, limit))
+    if fault == "success":
+        _publish_dispatch_artifacts([(target, b"replacement")])
+        assert flushes == [b"replacement"]
+    else:
+        error = RuntimeError if fault.startswith("rollback") or fault == "persistent" else OSError
+        with pytest.raises(error, match="rollback failed|durability failed"):
+            _publish_dispatch_artifacts([(target, b"replacement")])
+        assert (target.read_bytes() if target.exists() else None) == (b"previous" if prior else None)
+        assert len([event for event in events if event[0] == "open"]) >= 2
+    assert kernel.CreateFileW.restype == advisor.wintypes.HANDLE
+    assert events[0] == ("open", (str(tmp_path), 0xC0000000, 7, None, 3, 0x02000000, None))
+    assert sum(event[0] == "close" for event in events) == len(flushes)
+    assert not list(tmp_path.glob(".*.tmp"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="requires native Windows directory handles")
+def test_stage5_native_windows_dispatch_flush_before_success(tmp_path, monkeypatch):
+    from scripts import l4_mcp_advisor as advisor
+
+    native, calls = advisor.sync_windows_directory, []
+
+    def observed(directory):
+        calls.append(directory)
+        native(directory)
+
+    monkeypatch.setattr(advisor, "sync_windows_directory", observed)
+    target = tmp_path / "prompt.txt"
+    _publish_dispatch_artifacts([(target, b"durable")])
+    assert target.read_bytes() == b"durable" and calls == [tmp_path]
+
+
 @pytest.mark.parametrize("write_call", [1, 2])
 def test_dispatch_artifact_write_failure_cleans_temp_and_preserves_target(tmp_path, monkeypatch, write_call):
     import scripts.dispatch_l4 as dispatch
@@ -709,7 +1265,7 @@ def test_dry_run_rejects_digest_valid_foreign_contract_context(tmp_path, monkeyp
         contract_path = root / ".ly_state/session" / f"anti_drip_contract_{session_id}.json"
         contract_path.parent.mkdir(parents=True)
         contract = build_anti_drip_contract(
-            f"l4_role6_other_20261003" if binding == "session" else session_id,
+            "l4_role6_other_20261003" if binding == "session" else session_id,
             "OTHER_GATE" if binding == "gate" else gate,
             root,
             None,
@@ -730,11 +1286,9 @@ def test_dry_run_rejects_digest_valid_foreign_contract_context(tmp_path, monkeyp
             )
 
 
-@pytest.mark.parametrize(("lead_model", "expected_cli_model"), [
-    ("9router/cx/gpt-6.1-sol", "opus"),
-    ("9router/cx/gpt-6-luna", "sonnet"),
-])
-def test_l4_dispatch_accepts_context_bound_jev_decision(tmp_path, monkeypatch, capsys, lead_model, expected_cli_model):
+@pytest.mark.parametrize("risk", ["low", "medium", "high"])
+@pytest.mark.parametrize("lead_model", ["9router/cx/gpt-6.1-sol", "9router/cx/gpt-6-luna"])
+def test_l4_dispatch_accepts_context_bound_jev_decision(tmp_path, monkeypatch, capsys, lead_model, risk):
     import scripts.dispatch_l4 as dispatch
     from scripts.jev_model_router import evaluate_model_decision
 
@@ -746,17 +1300,21 @@ def test_l4_dispatch_accepts_context_bound_jev_decision(tmp_path, monkeypatch, c
     session_id = f"l4_role6_jev_decision_{datetime.now().strftime('%Y%m%d')}"
     decision_path = tmp_path / ".ly_state/session/decision.json"
     decision = evaluate_model_decision(
-        role="l2", risk="high", gate="JEV_GATE", session_id=session_id,
+        role="l2", risk="low" if risk == "low" else "high", gate="JEV_GATE", session_id=session_id,
         task="task", response={"lead_model": lead_model}, decision_path=decision_path,
     )
     monkeypatch.setattr(sys, "argv", [
         "dispatch_l4.py", "system-architect", "JEV_GATE", "jev_decision", "task", "tests/test_dispatch_l4.py",
-        "--risk", "high",
+        "--risk", risk,
         "--model-decision-path", ".ly_state/session/decision.json",
         "--model-decision-digest", decision["decision_digest"], "--dry-run",
     ])
     assert dispatch.main() == 0
-    assert f"MODEL={expected_cli_model}" in capsys.readouterr().out
+    expected_cli_model = "opus" if risk == "high" or lead_model == "9router/cx/gpt-6.1-sol" else "sonnet"
+    output = capsys.readouterr()
+    assert not output.err
+    assert f"MODEL={expected_cli_model}\n" in output.out
+    assert f"--model '{expected_cli_model}'" in output.out
 
 
 def test_l4_dispatch_rejects_replayed_jev_decision_before_artifacts(tmp_path, monkeypatch, capsys):
@@ -781,7 +1339,8 @@ def test_l4_dispatch_rejects_replayed_jev_decision_before_artifacts(tmp_path, mo
     assert not list((tmp_path / ".ly_state/session").glob("prompt_*.txt"))
 
 
-def test_l4_dispatch_rejects_jev_risk_mismatch_before_artifacts(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("risk", ["low", "high"])
+def test_l4_dispatch_rejects_jev_risk_mismatch_before_artifacts(tmp_path, monkeypatch, capsys, risk):
     import scripts.dispatch_l4 as dispatch
     from scripts.jev_model_router import evaluate_model_decision
 
@@ -790,12 +1349,12 @@ def test_l4_dispatch_rejects_jev_risk_mismatch_before_artifacts(tmp_path, monkey
     path = tmp_path / ".ly_state/session/decision.json"
     path.parent.mkdir(parents=True)
     decision = evaluate_model_decision(
-        role="l2", risk="high", gate="JEV_GATE", session_id=f"l4_role6_jev_risk_{today}",
+        role="l2", risk="high" if risk == "low" else "low", gate="JEV_GATE", session_id=f"l4_role6_jev_risk_{today}",
         task="task", response={}, decision_path=path,
     )
     monkeypatch.setattr(sys, "argv", [
         "dispatch_l4.py", "system-architect", "JEV_GATE", "jev_risk", "task", "tests/",
-        "--risk", "low", "--model-decision-path", ".ly_state/session/decision.json",
+        "--risk", risk, "--model-decision-path", ".ly_state/session/decision.json",
         "--model-decision-digest", decision["decision_digest"],
     ])
     assert dispatch.main() == 2
@@ -803,7 +1362,8 @@ def test_l4_dispatch_rejects_jev_risk_mismatch_before_artifacts(tmp_path, monkey
     assert not list((tmp_path / ".ly_state/session").glob("prompt_*.txt"))
 
 
-def test_l4_dispatch_rejects_jev_digest_mismatch_before_artifacts(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("risk", ["low", "high"])
+def test_l4_dispatch_rejects_jev_digest_mismatch_before_artifacts(tmp_path, monkeypatch, capsys, risk):
     import scripts.dispatch_l4 as dispatch
     from scripts.jev_model_router import evaluate_model_decision
 
@@ -812,12 +1372,12 @@ def test_l4_dispatch_rejects_jev_digest_mismatch_before_artifacts(tmp_path, monk
     decision_path = tmp_path / ".ly_state/session/decision.json"
     decision_path.parent.mkdir(parents=True)
     evaluate_model_decision(
-        role="l2", risk="low", gate="JEV_GATE", session_id=f"l4_role6_jev_decision_{today}",
+        role="l2", risk=risk, gate="JEV_GATE", session_id=f"l4_role6_jev_decision_{today}",
         task="task", response={}, decision_path=decision_path,
     )
     monkeypatch.setattr(sys, "argv", [
         "dispatch_l4.py", "system-architect", "JEV_GATE", "jev_decision", "task", "tests/",
-        "--risk", "low", "--model-decision-path", ".ly_state/session/decision.json",
+        "--risk", risk, "--model-decision-path", ".ly_state/session/decision.json",
         "--model-decision-digest", "0" * 64,
     ])
     assert dispatch.main() == 2
@@ -983,6 +1543,194 @@ def test_dispatch_session_lock_rejects_concurrent_owner(tmp_path, monkeypatch):
         dispatch.release_session_lock(first)
 
 
+@pytest.mark.parametrize("risk", ["high", " HIGH ", None], ids=["explicit", "normalized", "inferred"])
+def test_l4_high_risk_default_is_opus(risk, stage3_dispatch, monkeypatch, capsys):
+    dispatch, _root, _generate = stage3_dispatch
+    assert DEFAULT_L4_MODELS == {"low": "sonnet", "medium": "sonnet", "high": "opus"}
+    monkeypatch.setattr(dispatch, "infer_risk", lambda _: ("high", "injected inference"))
+    args = ["dispatch_l4.py", "backend-engineer", "GATE", "high_default", "task", "scripts/dispatch_l4.py"]
+    if risk is not None:
+        args += ["--risk", risk]
+    monkeypatch.setattr(sys, "argv", args)
+    assert dispatch.main() == 0
+    output = capsys.readouterr()
+    assert not output.err and "MODEL=opus\n" in output.out
+    assert "--model 'opus'" in output.out
+
+
+@pytest.mark.parametrize("entry", ["cli", "direct"])
+def test_l4_high_risk_explicit_downgrade_rejected_before_effects(entry, stage3_dispatch, monkeypatch, capsys):
+    dispatch, root, _generate = stage3_dispatch
+
+    def forbidden(*_args, **_kwargs):
+        pytest.fail("high-risk downgrade reached a side effect")
+
+    for name in ("acquire_session_lock", "load_sanitized_lesson_entries", "run_graph_predispatch_gate", "extract_prior_audit_outcomes"):
+        monkeypatch.setattr(dispatch, name, forbidden)
+    baseline = set(root.iterdir())
+    if entry == "cli":
+        monkeypatch.setattr(sys, "argv", [
+            "dispatch_l4.py", "backend-engineer", "GATE", "downgrade", "task", "scope",
+            "--risk", "high", "--model", "sonnet",
+        ])
+        assert dispatch.main() == 2
+        output = capsys.readouterr()
+        assert "requires opus" in output.err and not output.out
+    else:
+        with pytest.raises(ValueError, match="requires opus"):
+            _generate_l4_dispatch(
+                roles=[{"name": "backend-engineer", "role_id": 9, "role_file": ".agents/agent/backend-engineer.md", "skill_files": []}],
+                gate_name="GATE", task_desc="task", scope="scope", session_id="l4_role9_downgrade_20261005",
+                lessons_block="lessons", risk="high", risk_reason="test", model="sonnet", advisor_model=None,
+                graph_evidence={},
+            )
+    assert set(root.iterdir()) == baseline
+
+
+@pytest.mark.parametrize("fault", ["write", "zero-write", "fsync"], ids=str)
+@pytest.mark.parametrize("replacement", [False, True], ids=["owned", "foreign"])
+def test_l4_lock_initialization_faults_cleanup_only_owner(fault, replacement, stage3_dispatch, monkeypatch):
+    dispatch, root, generate = stage3_dispatch
+    session = root / ".ly_state/session"
+    session.mkdir(parents=True)
+    lock = session / f"dispatch_l4_role9_stage3_{datetime.now().strftime('%Y%m%d')}.lock"
+    real_write, real_close, writes, descriptors = os.write, os.close, [], []
+    replacement_bytes = b"replacement-owner"
+
+    def fail(fd, *_args):
+        descriptors.append(fd)
+        if fault == "zero-write":
+            return 0
+        raise OSError("lock failure token=PRIVATE_LOCK_CANARY")
+
+    def close(fd):
+        real_close(fd)
+        if replacement and fd in descriptors:
+            other = session / "replacement.tmp"
+            other.write_bytes(replacement_bytes)
+            os.replace(other, lock)
+
+    monkeypatch.setattr(dispatch.os, "close", close)
+    if fault == "fsync":
+        monkeypatch.setattr(dispatch.os, "fsync", fail)
+    else:
+        def write(fd, data):
+            writes.append(data)
+            if len(writes) == 1:
+                return real_write(fd, data[:1])
+            return fail(fd)
+        monkeypatch.setattr(dispatch.os, "write", write)
+    code, command, output = generate(risk="high")
+    assert code == 2 and not command and not output.out
+    assert "PRIVATE_LOCK_CANARY" not in output.err
+    assert {path.name: path.read_bytes() for path in session.iterdir()} == ({lock.name: replacement_bytes} if replacement else {})
+    for fd in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(fd)
+
+
+def test_l4_lock_short_writes_complete_owner_and_release(tmp_path, monkeypatch):
+    import scripts.dispatch_l4 as dispatch
+
+    real_write = os.write
+    monkeypatch.setattr(dispatch.os, "write", lambda fd, data: real_write(fd, data[:1]))
+    owned = dispatch.acquire_session_lock("l4_role9_short_20261005", tmp_path)
+    path, _identity, owner = owned
+    assert path.read_bytes() == owner
+    dispatch.release_session_lock(owned)
+    assert not path.exists()
+    dispatch.release_session_lock(owned)
+    dispatch.release_session_lock(None)
+
+
+def test_l4_lock_replacement_during_owner_read_is_preserved(tmp_path, monkeypatch):
+    import scripts.dispatch_l4 as dispatch
+
+    owned = dispatch.acquire_session_lock("l4_role9_race_20261005", tmp_path)
+    path, _identity, owner = owned
+    real_read = dispatch._read_artifact_bytes
+
+    def read(lock, limit):
+        contents = real_read(lock, limit)
+        replacement = path.with_suffix(".tmp")
+        replacement.write_bytes(owner)
+        os.replace(replacement, path)
+        return contents
+
+    monkeypatch.setattr(dispatch, "_read_artifact_bytes", read)
+    dispatch.release_session_lock(owned)
+    assert path.read_bytes() == owner
+
+
+@pytest.mark.parametrize("fault", ["replacement", "same-pid", "modified", "long-owner", "missing"])
+@pytest.mark.parametrize("generation_error", [False, True], ids=["success", "error"])
+def test_l4_lock_cleanup_preserves_replacement_owner(fault, generation_error, stage3_dispatch, monkeypatch):
+    dispatch, root, generate = stage3_dispatch
+    session = root / ".ly_state/session"
+    lock = session / f"dispatch_l4_role9_stage3_{datetime.now().strftime('%Y%m%d')}.lock"
+    replacement_bytes = str(os.getpid()).encode() if fault == "same-pid" else b"replacement-owner"
+    if fault == "long-owner":
+        replacement_bytes *= 10
+
+    def injected_generation(**_kwargs):
+        if fault in ("replacement", "same-pid"):
+            replacement = session / "replacement.tmp"
+            replacement.write_bytes(replacement_bytes)
+            os.replace(replacement, lock)
+        elif fault in ("modified", "long-owner"):
+            lock.write_bytes(b"x" * len(lock.read_bytes()) if fault == "modified" else replacement_bytes)
+        else:
+            lock.unlink()
+        if generation_error:
+            raise RuntimeError("generation failed token=PRIVATE_GENERATION_CANARY")
+        print("---COMMAND---\nmock")
+
+    monkeypatch.setattr(dispatch, "_generate_l4_dispatch", injected_generation)
+    code, _command, output = generate(risk="high")
+    assert code == (2 if generation_error else 0)
+    assert "PRIVATE_GENERATION_CANARY" not in output.err
+    expected = b"x" * len(lock.read_bytes()) if fault == "modified" else replacement_bytes
+    assert {path.name: path.read_bytes() for path in session.iterdir()} == ({} if fault == "missing" else {lock.name: expected})
+
+
+def test_l4_lock_cleanup_preserves_nonregular_replacement(tmp_path):
+    import scripts.dispatch_l4 as dispatch
+
+    owned = dispatch.acquire_session_lock("l4_role9_directory_20261005", tmp_path)
+    path = owned[0]
+    path.unlink()
+    path.mkdir()
+    dispatch.release_session_lock(owned)
+    assert path.is_dir()
+
+
+@pytest.mark.parametrize("fault", ["metadata", "read", "unlink"])
+def test_l4_lock_cleanup_io_failure_is_nonzero_and_redacted(fault, stage3_dispatch, monkeypatch):
+    dispatch, root, generate = stage3_dispatch
+    real_unlink = Path.unlink
+
+    def unlink(path, *args, **kwargs):
+        if path.suffix == ".lock":
+            raise PermissionError("cleanup failed token=PRIVATE_CLEANUP_CANARY")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(dispatch, "_generate_l4_dispatch", lambda **_kwargs: None)
+    if fault == "unlink":
+        monkeypatch.setattr(Path, "unlink", unlink)
+    else:
+        def fail(*_args, **_kwargs):
+            raise PermissionError("cleanup failed token=PRIVATE_CLEANUP_CANARY")
+
+        if fault == "read":
+            monkeypatch.setattr(dispatch, "_read_artifact_bytes", fail)
+        else:
+            monkeypatch.setattr(dispatch, "release_session_lock", lambda lock: fail())
+    code, command, output = generate(risk="high")
+    assert code == 2 and not command and not output.out
+    assert "PRIVATE_CLEANUP_CANARY" not in output.err and "[REDACTED]" in output.err
+    assert len(list((root / ".ly_state/session").iterdir())) == 1
+
+
 def test_report_validator_rejects_placeholder_completion_evidence():
     from scripts.validate_l2_report import _validate_envelope, validate_anti_drip_report
 
@@ -1081,6 +1829,103 @@ def test_dispatch_l4_cli_execution_valid():
     contract_file.unlink(missing_ok=True)
     contract_sidecar = contract_file.with_suffix(".sha256")
     contract_sidecar.unlink(missing_ok=True)
+
+
+def test_parse_l4_cli_args_accepts_valid_advisor():
+    for advisor in L4_ADVISOR_ALLOWLIST:
+        parsed = _parse_l4_cli_args(["system-architect", "GATE", "slug", "task", "scope", "--advisor", advisor])
+        assert parsed[10] == advisor
+
+
+def test_parse_l4_cli_args_rejects_unapproved_advisor():
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_l4_cli_args(["system-architect", "GATE", "slug", "task", "scope", "--advisor", "unknown-model"])
+    assert exc_info.value.code == 2
+
+
+def test_parse_l4_cli_args_rejects_advisor_without_value():
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_l4_cli_args(["system-architect", "GATE", "slug", "task", "scope", "--advisor"])
+    assert exc_info.value.code == 2
+
+
+def test_parse_l4_cli_args_rejects_advisor_conflict_with_no_advisor():
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_l4_cli_args(["system-architect", "GATE", "slug", "task", "scope", "--advisor", "opus", "--no-advisor"])
+    assert exc_info.value.code == 2
+
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_l4_cli_args(["system-architect", "GATE", "slug", "task", "scope", "--no-advisor", "--advisor", "opus"])
+    assert exc_info.value.code == 2
+
+
+def test_parse_l4_cli_args_accepts_no_advisor():
+    parsed = _parse_l4_cli_args(["system-architect", "GATE", "slug", "task", "scope", "--no-advisor"])
+    assert parsed[9] == "none"
+    assert parsed[10] is None
+
+
+def test_dispatch_l4_cli_execution_with_no_advisor():
+    cmd = [
+        sys.executable,
+        "scripts/dispatch_l4.py",
+        "system-architect",
+        "TEST_L4_GATE_NO_ADV",
+        "test_l4_no_adv_slug",
+        "Test task description no advisor",
+        ".agents/AGENTS.md",
+        "--risk",
+        "low",
+        "--no-advisor",
+    ]
+    res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, check=False)
+    assert res.returncode == 0
+    assert "ADVISOR_MODEL=none" in res.stdout
+    assert "--advisor" not in res.stdout
+
+    today = datetime.now().strftime("%Y%m%d")
+    expected_session = f"l4_role6_test_l4_no_adv_slug_{today}"
+    (REPO_ROOT / ".ly_state" / "session" / f"prompt_{expected_session}.txt").unlink(missing_ok=True)
+    (REPO_ROOT / ".ly_state" / "session" / f"{expected_session}.md").unlink(missing_ok=True)
+    contract = REPO_ROOT / ".ly_state" / "session" / f"anti_drip_contract_{expected_session}.json"
+    contract.unlink(missing_ok=True)
+    contract.with_suffix(".sha256").unlink(missing_ok=True)
+
+
+
+def test_dispatch_l4_cli_execution_with_explicit_advisor():
+    cmd = [
+        sys.executable,
+        "scripts/dispatch_l4.py",
+        "system-architect",
+        "TEST_L4_GATE_ADV",
+        "test_l4_adv_slug",
+        "Test task description with advisor",
+        ".agents/AGENTS.md",
+        "--risk",
+        "low",
+        "--advisor",
+        "opus",
+    ]
+    res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, check=False)
+    assert res.returncode == 0
+    assert "ADVISOR_MODEL=opus" in res.stdout
+    assert "--advisor 'opus'" in res.stdout
+
+    today = datetime.now().strftime("%Y%m%d")
+    expected_session = f"l4_role6_test_l4_adv_slug_{today}"
+    (REPO_ROOT / ".ly_state" / "session" / f"prompt_{expected_session}.txt").unlink(missing_ok=True)
+    (REPO_ROOT / ".ly_state" / "session" / f"{expected_session}.md").unlink(missing_ok=True)
+    contract = REPO_ROOT / ".ly_state" / "session" / f"anti_drip_contract_{expected_session}.json"
+    contract.unlink(missing_ok=True)
+    contract.with_suffix(".sha256").unlink(missing_ok=True)
+
+
+def test_dispatch_l4_help_includes_advisor():
+    cmd = [sys.executable, "scripts/dispatch_l4.py", "--help"]
+    res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, check=False)
+    assert res.returncode == 0
+    assert "--advisor MODEL" in res.stdout
 
 
 def test_dispatch_l4_invalid_role():
