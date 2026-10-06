@@ -85,6 +85,9 @@ export interface UiState {
   setSelectedPortfolioId: (id: string | null) => void;
   setSelectedOrderId: (id: string | null) => void;
 
+  isCopilotDrawerOpen: boolean;
+  setIsCopilotDrawerOpen: (open: boolean) => void;
+
   // Global Actionable Toast Notifications
   toasts: ToastMessage[];
   addToast: (toast: Omit<ToastMessage, 'id' | 'timestamp'>) => void;
@@ -306,6 +309,9 @@ export const useUiStore = create<UiState>((set) => ({
   setSelectedModelId: (selectedModelId) => set({ selectedModelId }),
   setSelectedPortfolioId: (selectedPortfolioId) => set({ selectedPortfolioId }),
   setSelectedOrderId: (selectedOrderId) => set({ selectedOrderId }),
+
+  isCopilotDrawerOpen: false,
+  setIsCopilotDrawerOpen: (open) => set({ isCopilotDrawerOpen: open }),
 
   // Global Actionable Toast Notifications
   toasts: [],

@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Database,
   RefreshCw,
@@ -7,7 +7,9 @@ import {
   ShieldCheck,
   ArrowRight,
   Search,
-  FileCheck
+  FileCheck,
+  TrendingUp,
+  Bot
 } from 'lucide-react';
 import { useUiStore } from '../../store/uiStore';
 import { ModuleType } from '../../layout/SideDock';
@@ -213,7 +215,7 @@ export const ADVANCED_28_FEATURES: AdvancedFeature[] = [
     description: 'Combinatorial Purged Cross-Validation with strict embargoing against leakage',
     descriptionVi: 'Phương pháp kiểm định chống rò rỉ dữ liệu (Leakage) hàng đầu của Marcos López de Prado',
     tag: 'CPCV 15-FOLDS',
-    color: 'purple'
+    color: 'cyan'
   },
   {
     id: 'F16',
@@ -225,7 +227,7 @@ export const ADVANCED_28_FEATURES: AdvancedFeature[] = [
     description: 'Finite-sample non-parametric prediction intervals at 90% confidence horizon',
     descriptionVi: 'Dải băng dự báo xác suất không tham số với độ tin cậy toán học 90%',
     tag: 'CONFORMAL BANDS',
-    color: 'purple'
+    color: 'cyan'
   },
   {
     id: 'F17',
@@ -379,11 +381,22 @@ export const ADVANCED_28_FEATURES: AdvancedFeature[] = [
 
 export const LandingDatabaseHub: React.FC = () => {
   const navigateToFeature = useUiStore((state) => state.navigateToFeature);
+  const activeModule = useUiStore((state) => state.activeModule);
   const { locale } = useTranslation();
   const isVi = locale === 'vi';
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [isTriggering, setIsTriggering] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (activeModule === 'macro_news_hub') {
+      setSelectedCategory('SYSTEM_SUPPLY');
+    } else if (activeModule === 'alpha_portfolio') {
+      setSelectedCategory('RISK_TCA');
+    } else if (activeModule === 'macro_cockpit') {
+      setSelectedCategory('ALL');
+    }
+  }, [activeModule]);
 
   const {
     tasks,
@@ -450,20 +463,53 @@ export const LandingDatabaseHub: React.FC = () => {
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-xs font-bold text-zinc-100 tracking-wide uppercase">
-                    {isVi ? 'Cơ sở Dữ liệu Định lượng Master' : 'Master Quant Parquet Lakehouse'}
+                    {activeModule === 'macro_news_hub'
+                      ? (isVi ? 'Phân hệ Phân tích Vĩ mô & Tin tức LLM' : 'Macro & News Sentiment Intelligence Hub')
+                      : activeModule === 'alpha_portfolio'
+                      ? (isVi ? 'Phân hệ Danh mục Alpha & Tối ưu hóa Rủi ro' : 'Alpha Portfolio & Risk Allocation Hub')
+                      : (isVi ? 'Cơ sở Dữ liệu Định lượng Master' : 'Master Quant Parquet Lakehouse')}
                   </h2>
                   <span className="text-[10px] px-2 py-0.5 rounded font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
-                    PIT VALIDATED
+                    {activeModule === 'macro_news_hub'
+                      ? 'LLM SENTIMENT'
+                      : activeModule === 'alpha_portfolio'
+                      ? 'BARRA HRP'
+                      : 'PIT VALIDATED'}
                   </span>
                 </div>
                 <p className="text-[11px] text-zinc-400">
-                  {isVi ? 'Tên CSDL: ' : 'Database Name: '}
-                  <span className="text-emerald-400 font-semibold">OMEGA_QUANT_LAKEHOUSE_VN703</span>
+                  {activeModule === 'macro_news_hub'
+                    ? (isVi ? 'Theo dõi tin tức tài chính, phân loại tâm lý thị trường thời gian thực' : 'Real-time financial news, social sentiment scoring, macro regimes')
+                    : activeModule === 'alpha_portfolio'
+                    ? (isVi ? 'Tối ưu danh mục HRP / Black-Litterman, phân bổ tỷ trọng an toàn' : 'HRP & Black-Litterman optimization, risk budgeting, portfolio rebalancing')
+                    : (<>{isVi ? 'Tên CSDL: ' : 'Database Name: '}<span className="text-emerald-400 font-semibold">OMEGA_QUANT_LAKEHOUSE_VN703</span></>)}
                 </p>
               </div>
             </div>
 
             <div className="flex items-center gap-2 text-right">
+              {activeModule === 'macro_news_hub' && (
+                <button
+                  type="button"
+                  onClick={() => useUiStore.getState().setIsCopilotDrawerOpen(true)}
+                  className="px-3 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-950/60 hover:bg-cyan-900/60 text-xs font-bold text-cyan-300 hover:text-white transition-all flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <Bot className="w-3.5 h-3.5" />
+                  {isVi ? 'Mở AI Copilot & Tin tức' : 'Launch AI Copilot & News'}
+                  <ArrowRight className="w-3 h-3" />
+                </button>
+              )}
+              {activeModule === 'alpha_portfolio' && (
+                <button
+                  type="button"
+                  onClick={() => navigateToFeature('barra_risk_tca', 'liquidity', 'F08')}
+                  className="px-3 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-950/60 hover:bg-emerald-900/60 text-xs font-bold text-emerald-300 hover:text-white transition-all flex items-center gap-1.5 shadow-sm cursor-pointer"
+                >
+                  <TrendingUp className="w-3.5 h-3.5" />
+                  {isVi ? 'Mở Tối ưu Danh mục' : 'Open Portfolio Optimizer'}
+                  <ArrowRight className="w-3 h-3" />
+                </button>
+              )}
               <span className="text-[10px] px-2 py-1 rounded bg-zinc-950 border border-white/10 text-zinc-300">
                 Format: <strong className="text-cyan-400">Apache Parquet + ZSTD</strong>
               </span>
@@ -490,7 +536,7 @@ export const LandingDatabaseHub: React.FC = () => {
 
             <div className="p-2.5 rounded-lg bg-zinc-950/60 border border-white/5 flex flex-col gap-0.5">
               <span className="text-[10px] text-zinc-500">{isVi ? 'Không gian Đầu tư' : 'Universe Coverage'}</span>
-              <span className="text-xs font-bold text-purple-300">VN30 / VN703 HOSE+HNX</span>
+              <span className="text-xs font-bold text-cyan-300">VN30 / VN703 HOSE+HNX</span>
               <span className="text-[9px] text-zinc-400">2,580,000+ Records</span>
             </div>
 
@@ -572,7 +618,7 @@ export const LandingDatabaseHub: React.FC = () => {
         {/* Header Ribbon & Filter Controls */}
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-3">
           <div className="flex items-center gap-2.5">
-            <div className="p-2 rounded-lg bg-purple-500/10 border border-purple-500/20 text-purple-400">
+            <div className="p-2 rounded-lg bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
               <Zap className="w-5 h-5" />
             </div>
               <div>
