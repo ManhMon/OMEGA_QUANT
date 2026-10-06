@@ -11,7 +11,7 @@ def report(scan_lines: str) -> str:
     return """# Report
 ## Repo-Local Files Read
 - REPO_AGENT_ROOT/.agents/agent/backend-engineer.md
-- REPO_SKILL_ROOT/.agents/skills/clean-code/SKILL.md
+- REPO_SKILL_ROOT/.agents/skills/clean-code/skill.md
 ## Forbidden Path Scan
 """ + scan_lines
 

@@ -38,7 +38,7 @@ TASK_KEYWORDS = {
 }
 
 DEFAULT_SKILLS = [
-    ".agents/skills/omega-sod/SKILL.md",
+    ".agents/skills/omega-sod/skill.md",
 ]
 
 

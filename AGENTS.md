@@ -1,3 +1,15 @@
+# AGENTS.md - OMEGA_QUANT Protocol
+
+> [!IMPORTANT]
+> The authoritative rules and specifications for the OMEGA_QUANT multi-agent SoD protocol have been consolidated to the workspace customization root path to ensure a single source of truth:
+> - [.agents/AGENTS.md](file:///C:/Users/GHC/repos/OMEGA_QUANT/.agents/AGENTS.md)
+
+Please refer to and edit `.agents/AGENTS.md` for all protocol modifications, role updates, and platform specifications.
+
+## Anti-Polling & Zero-Idle Directive
+
+`ANTI_POLLING_ZERO_IDLE_20260918`: Never poll, loop, or repeatedly invoke status or gate-enforcer tools while waiting for background execution. Stop calling tools immediately and yield the turn when a long-running or background command starts.
+
 <!-- vnai-bootstrap | name: vnstock-bootstrap | version: 3.1.0 | last_updated: 27/09/2026 -->
 # Vnstock — reference for AI assistants
 

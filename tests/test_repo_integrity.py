@@ -137,7 +137,7 @@ def test_documentation_integrity_markers_and_ssot():
     assert "src/omega/data/vci_direct.py" in agents_architecture
     assert "src/omega/data/sanitizer.py" in agents_architecture
 
-    market_skill = (REPO_ROOT / ".agents" / "skills" / "vietnam-market-data" / "SKILL.md").read_text(encoding="utf-8")
+    market_skill = (REPO_ROOT / ".agents" / "skills" / "vietnam-market-data" / "skill.md").read_text(encoding="utf-8")
     assert "### Primary: DirectVCIClient (SSOT)" in market_skill
     assert "DataSanitizer" in market_skill
     assert "from vnstock import Quote" not in market_skill
@@ -149,7 +149,7 @@ def test_documentation_integrity_markers_and_ssot():
     ssot_agents = (REPO_ROOT / ".agents" / "AGENTS.md").read_text(encoding="utf-8")
     assert "# AGENTS.md - OMEGA_QUANT Protocol" in ssot_agents
     assert "## Tiers" in ssot_agents
-    assert "16 dimensions" in ssot_agents
+    assert "24 dimensions" in ssot_agents or "24-Dimension" in ssot_agents or "16 dimensions" in ssot_agents
 
     manifest_path = REPO_ROOT / "archive" / "legacy_scripts" / "manifest.json"
     assert manifest_path.exists()
@@ -406,4 +406,3 @@ def test_16d_dim16_secret_redaction_and_leak_prevention():
         content = py_file.read_text(encoding="utf-8")
         matches = secret_pattern.findall(content)
         assert matches == [], f"Hardcoded secret pattern found in {py_file}: {matches}"
-

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 L2_LEAD_ALLOWLIST = ("9router/cx/gpt-6.1-sol", "9router/cx/gpt-6-luna")
-L2_SUBAGENT_ALLOWLIST = ("ag/gemini", "9router/cx/gpt-6-luna", "cx/gpt-6-luna")
+L2_SUBAGENT_ALLOWLIST = ("9router/cx/gpt-6-luna", "cx/gpt-6-luna", "ag/gemini")
 L3_LEAD_ALLOWLIST = (
     "cx/gpt-6.1-sol",
     "cx/gpt-6.1-sol(medium)",
@@ -61,7 +61,7 @@ DIMENSION_COUNT = len(DIMENSION_CATALOG)
 LEGACY_DIMENSION_COUNTS = (16,)
 DIMENSION_MATRIX_COUNTS = tuple(sorted({DIMENSION_COUNT, *LEGACY_DIMENSION_COUNTS}))
 DIMENSION_MATRIX_HEADING_RE = re.compile(
-    rf"(?im)^##[ \t]+(?:{'|'.join(map(str, DIMENSION_MATRIX_COUNTS))})-Dimension Adversarial Matrix[ \t]*$"
+    rf"(?im)^##[ \t]+(?:{'|'.join(map(str, DIMENSION_MATRIX_COUNTS))})-Dimension (?:Adversarial Matrix|Evaluation)[ \t]*$"
 )
 
 

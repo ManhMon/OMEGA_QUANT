@@ -1,0 +1,1 @@
+raise RuntimeError('DEPRECATED: Script archived to archive/legacy_scripts/run_l2_hook_ingest_703.py.txt')

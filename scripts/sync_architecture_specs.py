@@ -47,7 +47,7 @@ def sync_architecture():
     skills = []
     for skill_dir in SKILLS_DIR.iterdir():
         if skill_dir.is_dir():
-            skill_file = skill_dir / "SKILL.md"
+            skill_file = skill_dir / "skill.md"
             if skill_file.exists():
                 meta = parse_frontmatter(skill_file)
                 if meta:

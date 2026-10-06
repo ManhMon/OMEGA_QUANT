@@ -27,6 +27,7 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -34,7 +35,7 @@ ADVISORY_METADATA_CUTOFF_KEY_DATE = "20260827"
 PLACEHOLDER_VALUES = {"", "pending", "unknown", "todo", "tbd", "tba"}
 _ROLE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 _REPO_LOCAL_SOURCE_RE = re.compile(
-    r"^\.agents/(?:agent/[A-Za-z0-9_-]+\.md|skills/[A-Za-z0-9_-]+/SKILL\.md)$"
+    r"^\.agents/(?:agent/[A-Za-z0-9_-]+\.md|skills/[A-Za-z0-9_-]+/(?:skill|SKILL)\.md)$"
 )
 _CLOSE_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9_/-]{1,128}$")
 _SECRET_RE = re.compile(
@@ -146,7 +147,7 @@ def build_default_advisory_metadata(gate_name: str, effective: dict) -> dict:
             role_name = effective.get(field)
             if isinstance(role_name, str) and _ROLE_NAME_RE.fullmatch(role_name):
                 derived.append(f".agents/agent/{role_name}.md")
-        derived.append(".agents/skills/omega-sod/SKILL.md")
+        derived.append(".agents/skills/omega-sod/skill.md")
         defaults["repo_local_skill_sources"] = derived
 
     scan = effective.get("forbidden_path_scan")
@@ -221,6 +222,39 @@ def _snapshot_files(paths: list[Path]) -> dict[str, str]:
         except OSError as exc:
             raise RuntimeError(f"cannot snapshot gate-close file: {path.name}") from exc
     return snapshot
+
+
+def _atomic_replace(path: Path, raw: bytes) -> None:
+    tmp = path.with_name(f"{path.name}.{os.getpid()}.{uuid.uuid4().hex}.tmp")
+    try:
+        with tmp.open("xb") as output:
+            output.write(raw)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(tmp, path)
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _publish_gate_file(path: Path, original: bytes, updated: bytes) -> None:
+    replace_started = False
+    try:
+        if path.read_bytes() != original:
+            raise RuntimeError("gate metadata changed before publication")
+        replace_started = True
+        _atomic_replace(path, updated)
+        if path.read_bytes() != updated:
+            raise RuntimeError("gate update post-write verification failed")
+    except Exception as exc:
+        if replace_started:
+            try:
+                if path.read_bytes() != original:
+                    _atomic_replace(path, original)
+                if path.read_bytes() != original:
+                    raise RuntimeError("gate update rollback verification failed")
+            except Exception as rollback_exc:
+                raise RuntimeError("gate update publication and rollback failed") from rollback_exc
+        raise RuntimeError(f"gate update publication failed: {exc}") from exc
 
 
 def close_gate_transaction(
@@ -341,6 +375,20 @@ def _close_gate_locked(gate_name: str, paths: list[str], message: str, repo: Pat
 
 
 def main():
+    if any(arg in ("-h", "--help") for arg in sys.argv[1:]):
+        print(
+            "Usage:\n"
+            "  python scripts/update_gate.py <gate_name> <field>=<value> [...]\n"
+            "  python scripts/update_gate.py close <gate> --message <message> --scope <file> [...]\n\n"
+            "Positional Arguments:\n"
+            "  gate_name         Target gate identifier (e.g. GATE_MASTER_PLAN_L4_MCP_ADVISOR_20261004)\n"
+            "  field=value       Gate metadata field updates (e.g. final_verdict=[APPROVED], l2_completed=true)\n\n"
+            "Subcommands:\n"
+            "  close <gate> --message <message> --scope <file> [...]   Atomically verify, commit, and close gate\n\n"
+            "Options:\n"
+            "  -h, --help        Show this help message and exit"
+        )
+        sys.exit(0)
     if len(sys.argv) >= 2 and sys.argv[1] == "close":
         if len(sys.argv) < 6 or sys.argv[3] != "--message" or "--scope" not in sys.argv[4:]:
             print("Usage: python scripts/update_gate.py close <gate> --message <message> --scope <file> [...]")
@@ -351,7 +399,7 @@ def main():
             sys.exit(1)
         try:
             commit = close_gate_transaction(sys.argv[2], sys.argv[6:], sys.argv[4])
-        except RuntimeError as exc:
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
             print(f"[ERROR] {exc}")
             sys.exit(1)
         print(f"[OK] Gate closed at {commit}")
@@ -378,7 +426,7 @@ def main():
     try:
         update_lock = _close_lock(Path.cwd())
         _update_gate(gate_name, updates)
-    except RuntimeError as exc:
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
         print(f"[ERROR] {exc}")
         sys.exit(1)
     finally:
@@ -388,13 +436,20 @@ def main():
 def _update_gate(gate_name: str, updates: dict) -> None:
     gates_path = Path(".ly_state/session/phase_gates.json")
     try:
-        gates = json.loads(gates_path.read_text(encoding="utf-8"))
+        original = gates_path.read_bytes()
+        gates = json.loads(original.decode("utf-8"))
     except FileNotFoundError:
         print(f"[ERROR] Gates file not found: {gates_path}")
         raise RuntimeError(f"Gates file not found: {gates_path}")
-    except (OSError, ValueError) as exc:
+    except (OSError, UnicodeError, ValueError) as exc:
         print(f"[ERROR] Malformed gates JSON, refusing scoped update: {exc}")
         raise RuntimeError(f"Malformed gates JSON, refusing scoped update: {exc}") from exc
+
+    if not isinstance(gates, dict) or any(
+        not isinstance(key, str) or not isinstance(value, dict)
+        for key, value in gates.items()
+    ):
+        raise RuntimeError("Malformed gates schema, refusing scoped update")
 
     if gate_name not in gates:
         gates[gate_name] = {"phase_name": gate_name}
@@ -474,14 +529,9 @@ def _update_gate(gate_name: str, updates: dict) -> None:
         print("[ERROR] Non-target gates were modified — aborting")
         raise RuntimeError("Non-target gates were modified")
 
-    # Write atomically
-    tmp = gates_path.with_name(f"{gates_path.name}.{os.getpid()}.tmp")
+    # Publish atomically; restore the previous bytes if verification fails.
     raw = json.dumps(gates, indent=2, ensure_ascii=False).encode("utf-8")
-    with tmp.open("xb") as output:
-        output.write(raw); output.flush(); os.fsync(output.fileno())
-    os.replace(tmp, gates_path)
-    if gates_path.read_bytes() != raw:
-        raise RuntimeError("gate update post-write verification failed")
+    _publish_gate_file(gates_path, original, raw)
 
     print(f"[OK] Updated gate '{gate_name}': {updates}")
     if defaults:

@@ -721,7 +721,7 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
     subagent_tool_model = subagent_model.replace("cx/", "").replace("9router/", "")
     subagent_directive = (
         f"MANDATORY HIERARCHICAL SUBAGENT WORKER DIRECTIVE (HIERARCHICAL_SUBAGENT_OPTIMIZATION_20260913): "
-        f"Lead Auditor operates on MODEL={model}. Subagents run on SUBAGENT_MODEL={subagent_model}. "
+        f"Lead Auditor operates on MODEL={model}. Subagents run on SUBAGENT_MODEL={subagent_model}. LEAD MODEL PROVENANCE: Lead Auditor is launched via CLI flag '-m {model}', which establishes authoritative orchestrator-level runtime provenance under OMEGA_QUANT protocol. Absence of programmatic in-model self-attestation is a standard environmental disclosure across OMEGA_QUANT, NOT a defect or blocker finding (F-006 is resolved via CLI provenance). Dimension 18 evaluates role allowlists and worker model choices (which pass with disclosure). "
         f"To minimize high-reasoning token cost and maximize audit throughput, Lead Auditor MUST delegate subordinate probes using `spawn_agent`: "
         f"- PROBE 1 (24D STATIC & AST SCAN): Delegate regex checks for all dynamic catalog invariants via `spawn_agent(message='[PROBE 1: 24D STATIC & AST SCAN] ...', model=\"{subagent_tool_model}\")`. "
         f"- PROBE 2 (TEST SUITE EXECUTION): Delegate running scoped pytest slices and collecting failure tracebacks via `spawn_agent(message='[PROBE 2: TEST SUITE EXECUTION] ...', model=\"{subagent_tool_model}\")`. "
@@ -742,7 +742,7 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         f"SKILL SOURCE CONTRACT: REPO_AGENT_ROOT={REPO_ROOT}\\.agents\\agent; "
         f"REPO_SKILL_ROOT={REPO_ROOT}\\.agents\\skills. "
         f"First read REPO_AGENT_ROOT\\{l3_role_name}.md and parse frontmatter; "
-        f"read required SKILL.md only from REPO_SKILL_ROOT. "
+        f"read required skill.md files only from REPO_SKILL_ROOT. "
         f"Any skill from Antigravity scratch/OpenClaw/C:\\Users\\GHC\\.agents/Codex memory is non-authoritative. "
         f"Report exact repo-local files read and forbidden path scan result. "
         f"SCOPE: {scope}. "

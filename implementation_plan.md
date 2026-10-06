@@ -64,15 +64,14 @@ python scripts/run_weekly_evolution.py --generations 15 --population-size 150 --
 ### Authoritative Repo-Local Files Read (Role 16 L2):
 - `.agents/AGENTS.md`
 - `.agents/agent/machine-learning-engineer.md`
-- `.agents/skills/python-patterns/SKILL.md`
-- `.agents/skills/clean-code/SKILL.md`
-- `.agents/skills/testing-patterns/SKILL.md`
-- `.agents/skills/performance-profiling/SKILL.md`
-- `.agents/skills/systematic-debugging/SKILL.md`
-- `.agents/skills/ml-dl-rl/SKILL.md`
-- `.agents/skills/backtesting-pit-safety/SKILL.md`
-- `.agents/skills/vietnam-market-data/SKILL.md`
+- `.agents/skills/python-patterns/skill.md`
+- `.agents/skills/clean-code/skill.md`
+- `.agents/skills/testing-patterns/skill.md`
+- `.agents/skills/performance-profiling/skill.md`
+- `.agents/skills/systematic-debugging/skill.md`
+- `.agents/skills/ml-dl-rl/skill.md`
+- `.agents/skills/backtesting-pit-safety/skill.md`
+- `.agents/skills/vietnam-market-data/skill.md`
 
 ### Forbidden Path Scan Result:
 - Hoàn toàn tuân thủ, không truy cập bất kỳ nguồn non-authoritative nào.
-

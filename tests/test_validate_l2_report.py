@@ -17,7 +17,10 @@ CONTRACT_REL = f".ly_state/session/anti_drip_contract_{SESSION}.json"
 AUDIT_REL = ".ly_state/session/audit_reports/role21_anti_drip_pipeline_hardening_20260907.md"
 NODE = "tests/test_probe.py::test_regression"
 FAULT_NODE = "tests/test_probe.py::test_fault_injection"
-SKILLS = ("deployment-procedures", "server-management", "clean-code", "testing-patterns", "systematic-debugging")
+SKILLS = (
+    "deployment-procedures", "server-management", "powershell-windows", "bash-linux",
+    "clean-code", "testing-patterns", "systematic-debugging",
+)
 
 
 def canonical(payload):
@@ -55,7 +58,7 @@ def sweep(digest, source_sha):
 
 
 def report(mode, digest, payload=None):
-    skill_lines = "\n".join(f"- `.agents/skills/{name}/SKILL.md`" for name in SKILLS)
+    skill_lines = "\n".join(f"- `.agents/skills/{name}/skill.md`" for name in SKILLS)
     common = f"""# L2 Implementation Report
 
 - **Role**: 11 devops-engineer - OpenCode L2 Implementation

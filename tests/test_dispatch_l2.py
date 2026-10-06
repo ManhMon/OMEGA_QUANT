@@ -171,7 +171,7 @@ def test_resolve_l2_role_rejects_declared_skill_symlink(tmp_path, monkeypatch):
     agent_root = repo / ".agents" / "agent"
     skill_root = repo / ".agents" / "skills"
     agent_root.mkdir(parents=True)
-    skill_file = skill_root / "clean-code" / "SKILL.md"
+    skill_file = skill_root / "clean-code" / "skill.md"
     skill_file.parent.mkdir(parents=True)
     skill_file.write_text("skill", encoding="utf-8")
     role_file = agent_root / "devops-engineer.md"
@@ -183,6 +183,23 @@ def test_resolve_l2_role_rejects_declared_skill_symlink(tmp_path, monkeypatch):
     monkeypatch.setattr(Path, "is_symlink", lambda path: path == skill_file or original_is_symlink(path))
     with pytest.raises(RuntimeError, match="REPO_SKILL_ROOT"):
         dispatch_l2.resolve_l2_role("devops-engineer", repo)
+
+
+def test_resolve_l2_role_reports_lowercase_skill_path(tmp_path):
+    repo = tmp_path / "repo"
+    skill_file = repo / ".agents" / "skills" / "clean-code" / "skill.md"
+    skill_file.parent.mkdir(parents=True)
+    skill_file.write_text("skill", encoding="utf-8")
+    role_file = repo / ".agents" / "agent" / "devops-engineer.md"
+    role_file.parent.mkdir(parents=True)
+    role_file.write_text(
+        "---\nname: devops-engineer\nrole_id: 11\ntier: 2\nplatform: OpenCode\nskills: [clean-code]\n---\nRole\n",
+        encoding="utf-8",
+    )
+
+    resolved = dispatch_l2.resolve_l2_role("devops-engineer", repo)
+
+    assert resolved["skill_files"] == [".agents/skills/clean-code/skill.md"]
 
 
 def test_parse_cli_args_accepts_dry_run_flag():
@@ -316,8 +333,8 @@ def test_model_mapping():
         assert isinstance(MODELS[level], str)
         assert len(MODELS[level]) > 0
     assert MODELS["high"] == "9router/cx/gpt-6.1-sol"
-    assert MODELS["medium"] == "9router/cx/gpt-6-luna"
-    assert MODELS["low"] == "9router/cx/gpt-6-luna"
+    assert MODELS["medium"] == "9router/cx/gpt-6.1-sol"
+    assert MODELS["low"] == "9router/cx/gpt-6.1-sol"
 
 
 def test_parse_frontmatter():
@@ -374,7 +391,7 @@ def test_dispatch_l2_cli_run_and_prompt_construction():
     assert "---COMMAND---" in stdout
 
     command, prompt_path, prompt = _parse_command_and_prompt(stdout)
-    assert '-m "9router/cx/gpt-6-luna"' in command
+    assert '-m "9router/cx/gpt-6.1-sol"' in command
 
     # Prompt check: complete dynamic 24-dimension catalog
     assert "MANDATORY 24-DIMENSION ADVERSARIAL TESTING DIRECTIVE" in prompt
@@ -642,7 +659,7 @@ Valid summary.
 
     # 4. Placeholders rejection: [SKILL_NAME] and [absent|not read]
     report_with_placeholders = """
-- `.agents/skills/[SKILL_NAME]/SKILL.md`
+- `.agents/skills/[SKILL_NAME]/skill.md`
 - `.gemini\\antigravity-ide\\scratch\\ag-kit`: [absent|not read]; non-authoritative scan evidence only; no reliance.
 - 1. Out of bounds: [passed/verified]
 """
@@ -2047,7 +2064,7 @@ def test_build_l2_report_scaffold_baseline_and_remediation(tmp_path):
         contract=baseline_contract,
         contract_sha256="0" * 64,
         contract_path=contract_path,
-        source_files=[".agents/agent/data-engineer.md", ".agents/skills/clean-code/SKILL.md"],
+        source_files=[".agents/agent/data-engineer.md", ".agents/skills/clean-code/skill.md"],
         repo_root=tmp_path,
     )
     ok, errs = _check_required_headings(baseline_md, remediation_required=False)
@@ -2118,3 +2135,18 @@ def test_format_l2_report_utility(tmp_path, monkeypatch):
     content = report_file.read_text(encoding="utf-8")
     assert "# L2 Implementation Report" in content
     assert f"- **Session**: `{session_id}`" in content
+
+
+def test_dispatch_l2_help_flags(monkeypatch, capsys):
+    import pytest
+    from scripts.dispatch_l2 import main
+    import sys
+
+    for flag in ("-h", "--help"):
+        monkeypatch.setattr(sys, "argv", ["scripts/dispatch_l2.py", flag])
+        with pytest.raises(SystemExit) as exc_info:
+            main()
+        assert exc_info.value.code == 0
+        captured = capsys.readouterr()
+        assert "Usage: python scripts/dispatch_l2.py" in captured.out
+

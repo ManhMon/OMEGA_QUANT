@@ -3,6 +3,9 @@ import React, { act } from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { advancedQuantApi } from '../api/advancedQuant';
+import { useUiStore } from '../store/uiStore';
+import { en } from '../i18n/en';
+import { vi as vietnamese } from '../i18n/vi';
 
 import { VpinToxicityPanel } from '../modules/chart_station/VpinToxicityPanel';
 import { OrderbookDepthWaterfall } from '../modules/chart_station/OrderbookDepthWaterfall';
@@ -302,7 +305,9 @@ describe('Phase 2 UI Lifecycle & Adversarial Resistance Tests', () => {
     expect(container).not.toBeNull();
 
     renderWithProviders(React.createElement(BarraRiskTcaAnalyticsView, null));
-    expect(container?.textContent).toContain('Real-Time Risk Controls & Stress Testing');
+    const t = useUiStore.getState().locale === 'vi' ? vietnamese : en;
+    expect(container?.querySelector('[role="alert"]')?.textContent).toBe(t.common.integrationUnavailable);
+    expect(container?.textContent).not.toContain('BARRA_VN_V3');
 
     renderWithProviders(React.createElement(FundamentalMatrixView, null));
     expect(container?.textContent).toContain('Corporate Ownership & Supply Chain Graph');

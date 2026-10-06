@@ -1206,7 +1206,7 @@ AUDIT_GATE_RE = re.compile(
     r"(?im)^[ \t]*[-*][ \t]+(?:\*\*)?Gate(?:\*\*)?[ \t]*:[ \t]*`?"
     r"(?P<gate>[A-Za-z0-9_-]{1,128})`?[ \t]*$"
 )
-VERDICT_SECTION_RE = re.compile(r"(?ims)^##[ \t]+(?:.*?[ \t]+)?Verdict[ \t]*\r?\n(?P<body>.*?)(?=^##[ \t]+|\Z)")
+VERDICT_SECTION_RE = re.compile(r"(?im)^##[ \t]+[^\r\n]*?\bVerdict\b[^\r\n]*\r?\n(?P<body>.*?)(?=^[ \t]*##[ \t]+|\Z)", re.DOTALL)
 VERDICT_FIELD_RE = re.compile(
     r"(?im)^[ \t]*(?:[-*][ \t]+)?\*{0,2}(?:final[_ -]?verdict|verdict|status)"
     r"[ \t]*:?\*{0,2}[ \t]*:?[ \t]*`?\*{0,2}\[(?P<verdict>APPROVED|NEEDS_FIX)\]"
@@ -1692,8 +1692,8 @@ def build_l2_report_scaffold(
 
 
 L2_LEAD_MODELS = ("9router/cx/gpt-6.1-sol", "9router/cx/gpt-6-luna")
-L2_SUBAGENT_MODELS = ("ag/gemini", "9router/cx/gpt-6-luna", "cx/gpt-6-luna")
-MODELS = {"high": L2_LEAD_MODELS[0], "medium": L2_LEAD_MODELS[1], "low": L2_LEAD_MODELS[1]}
+L2_SUBAGENT_MODELS = ("9router/cx/gpt-6-luna", "cx/gpt-6-luna", "ag/gemini")
+MODELS = {"high": L2_LEAD_MODELS[0], "medium": L2_LEAD_MODELS[0], "low": L2_LEAD_MODELS[0]}
 DEFAULT_L2_SUBAGENT_MODEL = L2_SUBAGENT_MODELS[0]
 VALID_RISK_LEVELS = ("low", "medium", "high")
 
@@ -1731,15 +1731,34 @@ def infer_risk(scope: str) -> tuple[str, str]:
 
 
 def parse_frontmatter(content: str) -> dict:
-    """Extract YAML frontmatter fields from role markdown."""
+    """Extract YAML frontmatter fields from role markdown.
+
+    Handles both inline values and YAML block list syntax:
+        skills: [a, b, c]   # inline — preserved as-is
+        skills:             # block list — accumulated into [a,b,c]
+        - a
+        - b
+    """
     if not content.startswith("---"):
         return {}
     parts = content.split("---")
     if len(parts) < 3:
         return {}
     fm = parts[1]
-    result = {}
+    result: dict = {}
+    current_key: str | None = None
+    list_items: list[str] | None = None
     for line in fm.strip().split("\n"):
+        if line.startswith("- ") and current_key is not None:
+            # YAML block list item
+            if list_items is None:
+                list_items = []
+            list_items.append(line[2:].strip())
+            result[current_key] = "[" + ",".join(list_items) + "]"
+            continue
+        # New key line
+        current_key = None
+        list_items = None
         if ":" in line:
             k, v = line.split(":", 1)
             v = v.strip().strip("'\"")
@@ -1747,7 +1766,8 @@ def parse_frontmatter(content: str) -> dict:
                 v = int(v)
             except ValueError:
                 pass
-            result[k.strip()] = v
+            current_key = k.strip()
+            result[current_key] = v
     return result
 
 
@@ -1841,7 +1861,31 @@ def _parse_cli_args(args: list[str]):
             else:
                 explicit_l2_subagent_model = args[i + 1]
             i += 2
-            continue
+        elif arg in ("-h", "--help"):
+            print(
+                "Usage: python scripts/dispatch_l2.py <role_name> <gate_name> <task_slug> <task_description> <scope>\n"
+                "                                    [--risk low|medium|high] [--co-role <role_name>]... [--token-saver]\n"
+                "                                    [--model <model>] [--l2-model <model>] [--l2-subagent-model <model>]\n"
+                "                                    [--dry-run] [--graph-evidence <path>]\n\n"
+                "Pre-dispatch validator, graph resolver, lesson retriever, and command generator for L2 OpenCode.\n\n"
+                "Positional Arguments:\n"
+                "  role_name         Kebab-case L2 role name (role IDs 6-16, e.g. backend-engineer, devops-engineer)\n"
+                "  gate_name         Target gate identifier (e.g. GATE_L4_MCP_ADVISOR_STAGE1_20261004)\n"
+                "  task_slug         Short slug for task session (e.g. l4_mcp_advisor_stage1)\n"
+                "  task_description  Description of the implementation task\n"
+                "  scope             Space-separated list of target files under implementation\n\n"
+                "Options:\n"
+                "  -h, --help        Show this help message and exit\n"
+                "  --risk LEVEL      Risk tier ('low', 'medium', 'high') to select model\n"
+                "  --co-role ROLE    Optional co-assigned specialist role within same tier\n"
+                "  --token-saver     Force low-risk model to conserve tokens\n"
+                "  --model MODEL     Override model identifier explicitly\n"
+                "  --l2-model MODEL  Override L2 lead model explicitly\n"
+                "  --subagent-model MODEL Override L2 subagent model explicitly\n"
+                "  --dry-run         Run validation without writing prompt or lock\n"
+                "  --graph-evidence PATH Use existing graph evidence file"
+            )
+            sys.exit(0)
         elif arg.startswith("-"):
             print(f"[ERROR] Unknown or unsupported flag: '{arg}'.", file=sys.stderr)
             sys.exit(2)
@@ -1923,14 +1967,14 @@ def resolve_l2_role(role_name: str, repo_root: Path | None = None) -> dict:
     skills = _parse_skills(fm.get("skills"))
     skill_files = []
     for skill in skills:
-        path = skill_root / skill / "SKILL.md"
+        path = skill_root / skill / "skill.md"
         if not is_safe_repo_local_file(path, skill_root, root):
             raise RuntimeError(f"declared skill is missing or outside REPO_SKILL_ROOT: {skill}")
         try:
             path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             raise RuntimeError(f"declared skill is unreadable: {skill}") from exc
-        skill_files.append(f".agents/skills/{skill}/SKILL.md")
+        skill_files.append(f".agents/skills/{skill}/skill.md")
     return {
         "name": role_name,
         "role_id": role_id,
@@ -2111,7 +2155,7 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         f"REPO_SKILL_ROOT={REPO_ROOT}\\.agents\\skills. "
         f"First run Set-Location '{REPO_ROOT}'; "
         f"first read each exact role file listed above and parse frontmatter; "
-        f"then read each exact declared SKILL.md listed above only from REPO_SKILL_ROOT. "
+        f"then read each exact declared skill.md listed above only from REPO_SKILL_ROOT. "
         f"Any skill loaded from Antigravity scratch/OpenClaw/C:\\Users\\GHC\\.agents/Codex memory is non-authoritative. "
         f"Report every exact repo-local role/skill file listed above and forbidden path scan result. "
         f"SCOPE: {scope}. "
@@ -2127,7 +2171,7 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         f"(2) '## Summary' with concise overview. "
         f"(3) '## Repo-Local Files Read' heading followed by bullet list of every file actually read "
         f"from REPO_AGENT_ROOT and REPO_SKILL_ROOT (e.g. '- .agents/agent/{role_name}.md', "
-        f"'- .agents/skills/{{skill}}/SKILL.md'). "
+        f"'- .agents/skills/{{skill}}/skill.md'). "
         f"(4) '## Changes Made' listing modified files. "
         f"(5) '## Verification' with actual test command outputs. "
         f"(6) '## Forbidden Path Scan' with EXACTLY four lines, one per forbidden path, each line "

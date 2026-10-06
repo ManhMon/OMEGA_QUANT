@@ -71,9 +71,9 @@ Role: system-architect (Role 6)
 
 ## REPO-LOCAL SKILL SOURCE EVIDENCE (STRICT_REPO_LOCAL_SKILL_LOADING_20260612)
 - Read agent specification file from REPO_AGENT_ROOT: `.agents/agent/system-architect.md`
-- Read skill index from REPO_SKILL_ROOT: `.agents/skills/clean-code/SKILL.md`
-- Read skill index from REPO_SKILL_ROOT: `.agents/skills/architecture/SKILL.md`
-- Read skill index from REPO_SKILL_ROOT: `.agents/skills/omega-sod/SKILL.md`
+- Read skill index from REPO_SKILL_ROOT: `.agents/skills/clean-code/skill.md`
+- Read skill index from REPO_SKILL_ROOT: `.agents/skills/architecture/skill.md`
+- Read skill index from REPO_SKILL_ROOT: `.agents/skills/omega-sod/skill.md`
 
 ## Forbidden Path Scan Result:
 - Forbidden path `.gemini\\antigravity-ide\\scratch\\ag-kit` is non-authoritative and not used as source.
@@ -154,9 +154,9 @@ As System Architect, I have reviewed the unified integration plan for OMEGA_QUAN
         skills_list = [s.strip() for s in skills_raw.split(",") if s.strip()]
         repo_local_skills = [f".agents/agent/{role_name}.md"]
         for s in skills_list:
-            repo_local_skills.append(f".agents/skills/{s}/SKILL.md")
+            repo_local_skills.append(f".agents/skills/{s}/skill.md")
         # Add default enforcer skill
-        repo_local_skills.append(".agents/skills/omega-sod/SKILL.md")
+        repo_local_skills.append(".agents/skills/omega-sod/skill.md")
         
         l3_content = f"""# L3 Audit Report - {role_specs[r_id]['description'].capitalize()}
 Phase ID: UNIFIED_PLAN_INTEGRATION_20260619

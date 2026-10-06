@@ -434,14 +434,14 @@ def run_gate6_validation(best_entry: dict[str, object], validation_df: pd.DataFr
 def write_l2_report(report_path: Path, gate6_metrics: dict[str, Any] | None, verification: list[str]) -> None:
     role_and_skill_files = [
         ".agents/agent/machine-learning-engineer.md",
-        ".agents/skills/python-patterns/SKILL.md",
-        ".agents/skills/clean-code/SKILL.md",
-        ".agents/skills/testing-patterns/SKILL.md",
-        ".agents/skills/performance-profiling/SKILL.md",
-        ".agents/skills/systematic-debugging/SKILL.md",
-        ".agents/skills/ml-dl-rl/SKILL.md",
-        ".agents/skills/backtesting-pit-safety/SKILL.md",
-        ".agents/skills/vietnam-market-data/SKILL.md",
+        ".agents/skills/python-patterns/skill.md",
+        ".agents/skills/clean-code/skill.md",
+        ".agents/skills/testing-patterns/skill.md",
+        ".agents/skills/performance-profiling/skill.md",
+        ".agents/skills/systematic-debugging/skill.md",
+        ".agents/skills/ml-dl-rl/skill.md",
+        ".agents/skills/backtesting-pit-safety/skill.md",
+        ".agents/skills/vietnam-market-data/skill.md",
     ]
     lines = [
         "# L2 Report - Gate 6 Production Validation",

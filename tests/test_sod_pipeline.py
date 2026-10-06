@@ -511,3 +511,399 @@ def test_run_powershell_cleanup_oserror_does_not_mask_result(monkeypatch, tmp_pa
 
     monkeypatch.setattr(pipeline.Path, "unlink", fail_cleanup)
     assert pipeline.run("if ($true) { exit 7 }", "fault", check=False) == 7
+
+
+def _owned_planning_lock(tmp_path):
+    lock = tmp_path / ".implementation_plan.md.lock"
+    owner = b"owner-a"
+    lock.write_bytes(owner)
+    return lock, lock.lstat(), owner
+
+
+def _exclusive_planning_reacquisition(lock):
+    fd = pipeline.os.open(lock, pipeline.os.O_CREAT | pipeline.os.O_EXCL | pipeline.os.O_WRONLY)
+    try:
+        assert pipeline.os.write(fd, b"new-live-owner") == len(b"new-live-owner")
+        pipeline.os.fsync(fd)
+        return pipeline.os.fstat(fd)
+    finally:
+        pipeline.os.close(fd)
+
+
+def test_release_planning_lock_l3_raced_lstat_replacement_survives(tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    replacement = tmp_path / "replacement.lock"
+    replacement.write_bytes(b"foreign-owner")
+    replacement_identity = replacement.lstat()
+    assert identity.st_ino != replacement_identity.st_ino
+    real_lstat, calls = Path.lstat, 0
+
+    def raced_lstat(path, *args, **kwargs):
+        nonlocal calls
+        observed = real_lstat(path, *args, **kwargs)
+        if path == lock:
+            calls += 1
+            if calls == 2:
+                pipeline.os.replace(replacement, lock)
+        return observed
+
+    monkeypatch.setattr(Path, "lstat", raced_lstat)
+    pipeline._release_planning_lock(lock, identity, owner)
+    assert calls == 2
+    assert lock.read_bytes() == b"foreign-owner", "release_race: deleted foreign lock"
+    assert lock.stat().st_ino == replacement_identity.st_ino
+    assert not replacement.exists() and not list(tmp_path.glob("*.trash"))
+
+
+@pytest.mark.parametrize("replacement", ["identity", "owner", "owner-prefix"],
+                         ids=["identity", "owner", "owner-prefix"])
+@pytest.mark.parametrize("reacquire", ["vacant", "after-capture", "before-restore"])
+def test_release_planning_lock_verifies_atomically_captured_lock(replacement, reacquire, tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    sibling = tmp_path / "replacement.lock"
+    sibling.write_bytes(owner)
+    sibling_identity = sibling.stat()
+    assert sibling_identity.st_ino != identity.st_ino
+    real_replace, real_link = pipeline.os.replace, pipeline.os.link
+    moves, newer = [], []
+
+    def replace_before_capture(source, target):
+        if source == lock:
+            if replacement == "identity":
+                real_replace(sibling, lock)
+            else:
+                lock.write_bytes(b"foreign-owner" if replacement == "owner" else owner + b"x")
+        moves.append((source, target))
+        real_replace(source, target)
+        if reacquire == "after-capture":
+            newer.append(_exclusive_planning_reacquisition(lock))
+
+    def restore(source, target):
+        moves.append((source, target))
+        if reacquire == "before-restore":
+            newer.append(_exclusive_planning_reacquisition(lock))
+        real_link(source, target)
+
+    monkeypatch.setattr(pipeline.os, "replace", replace_before_capture)
+    monkeypatch.setattr(pipeline.os, "link", restore)
+    if reacquire == "vacant":
+        pipeline._release_planning_lock(lock, identity, owner)
+    else:
+        with pytest.raises(FileExistsError):
+            pipeline._release_planning_lock(lock, identity, owner)
+    assert len(moves) == 2 and moves[1] == (moves[0][1], lock)
+    trash = moves[0][1]
+    assert trash.parent == lock.parent and trash.suffix == ".trash"
+    captured_bytes = owner if replacement == "identity" else b"foreign-owner" if replacement == "owner" else owner + b"x"
+    if newer:
+        assert lock.read_bytes() == b"new-live-owner"
+        assert (lock.stat().st_dev, lock.stat().st_ino) == (newer[0].st_dev, newer[0].st_ino)
+        assert trash.read_bytes() == captured_bytes
+        captured_identity = sibling_identity if replacement == "identity" else identity
+        assert (trash.stat().st_dev, trash.stat().st_ino) == (captured_identity.st_dev, captured_identity.st_ino)
+        return
+    assert lock.read_bytes() == captured_bytes
+    assert lock.stat().st_ino != identity.st_ino if replacement == "identity" else lock.stat().st_ino == identity.st_ino
+    assert not trash.exists()
+
+
+def test_release_planning_lock_preserves_new_owner_after_capture(tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    real_replace = pipeline.os.replace
+    moves = []
+
+    def new_owner_after_capture(source, target):
+        assert source == lock and target.parent == lock.parent
+        real_replace(source, target)
+        moves.append(target)
+        lock.write_bytes(b"new-owner")
+
+    monkeypatch.setattr(pipeline.os, "replace", new_owner_after_capture)
+    pipeline._release_planning_lock(lock, identity, owner)
+    assert len(moves) == 1 and not moves[0].exists()
+    assert lock.read_bytes() == b"new-owner"
+    assert lock.stat().st_ino != identity.st_ino
+
+
+@pytest.mark.parametrize("fault", ["missing", "capture-oserror"], ids=["missing", "capture-oserror"])
+def test_release_planning_lock_capture_failure_preserves_owner(fault, tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+
+    def fail_replace(source, target):
+        if fault == "missing":
+            source.unlink()
+            raise FileNotFoundError("lock vanished")
+        raise PermissionError("capture denied")
+
+    monkeypatch.setattr(pipeline.os, "replace", fail_replace)
+    if fault == "missing":
+        pipeline._release_planning_lock(lock, identity, owner)
+        assert not lock.exists()
+    else:
+        with pytest.raises(PermissionError, match="capture denied"):
+            pipeline._release_planning_lock(lock, identity, owner)
+        assert lock.read_bytes() == owner
+    assert not list(tmp_path.glob("*.trash"))
+
+
+@pytest.mark.parametrize("fault", ["lstat", "open", "fstat", "read", "close", "unlink", "missing-open", "missing-unlink"],
+                         ids=["lstat", "open", "fstat", "read", "close", "unlink", "missing-open", "missing-unlink"])
+@pytest.mark.parametrize("reacquire", ["vacant", "after-capture", "before-restore"])
+def test_release_planning_lock_post_capture_error_restores_owner(fault, reacquire, tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    real_lstat, real_open, real_unlink, real_fstat = Path.lstat, Path.open, Path.unlink, pipeline.os.fstat
+    real_replace, real_link = pipeline.os.replace, pipeline.os.link
+    reads, failed, descriptors = [], [], []
+    captured, newer = [], []
+
+    def capture(source, target):
+        real_replace(source, target)
+        captured.append(target)
+        if reacquire == "after-capture":
+            newer.append(_exclusive_planning_reacquisition(lock))
+
+    def restore(source, target):
+        if reacquire == "before-restore":
+            newer.append(_exclusive_planning_reacquisition(lock))
+        real_link(source, target)
+
+    def fail():
+        failed.append(fault)
+        error = FileNotFoundError if fault.startswith("missing-") else PermissionError
+        raise error("captured lock fault")
+
+    def trash_lstat(path, *args, **kwargs):
+        if path.suffix == ".trash" and fault == "lstat" and not failed:
+            fail()
+        return real_lstat(path, *args, **kwargs)
+
+    class FaultyReader:
+        def __init__(self, handle):
+            self.handle = handle
+        def __enter__(self):
+            return self
+        def __exit__(self, *_args):
+            self.handle.close()
+            if fault == "close":
+                fail()
+        def fileno(self):
+            return self.handle.fileno()
+        def read(self, size):
+            reads.append(size)
+            assert size == len(owner) + 1
+            if fault == "read":
+                fail()
+            return self.handle.read(size)
+
+    def trash_open(path, *args, **kwargs):
+        if path.suffix == ".trash":
+            if fault in {"open", "missing-open"}:
+                fail()
+            handle = real_open(path, *args, **kwargs)
+            descriptors.append(handle.fileno())
+            return FaultyReader(handle)
+        return real_open(path, *args, **kwargs)
+
+    def trash_fstat(fd):
+        if fault == "fstat" and fd in descriptors and not failed:
+            fail()
+        return real_fstat(fd)
+
+    def trash_unlink(path, *args, **kwargs):
+        if path.suffix == ".trash" and fault in {"unlink", "missing-unlink"} and not failed:
+            fail()
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", trash_lstat)
+    monkeypatch.setattr(Path, "open", trash_open)
+    monkeypatch.setattr(Path, "unlink", trash_unlink)
+    monkeypatch.setattr(pipeline.os, "fstat", trash_fstat)
+    monkeypatch.setattr(pipeline.os, "replace", capture)
+    monkeypatch.setattr(pipeline.os, "link", restore)
+    with pytest.raises(OSError, match="captured lock fault" if reacquire == "vacant" else None):
+        pipeline._release_planning_lock(lock, identity, owner)
+    assert failed == [fault]
+    assert lock.read_bytes() == (b"new-live-owner" if newer else owner)
+    expected = newer[0] if newer else identity
+    assert (lock.stat().st_dev, lock.stat().st_ino) == (expected.st_dev, expected.st_ino)
+    assert reads == ([len(owner) + 1] if fault in {"read", "close", "unlink", "missing-unlink"} else [])
+    if newer:
+        with real_open(captured[0], "rb") as handle:
+            assert handle.read() == owner
+        assert (real_lstat(captured[0]).st_dev, real_lstat(captured[0]).st_ino) == (identity.st_dev, identity.st_ino)
+    else:
+        assert not list(tmp_path.glob("*.trash"))
+
+
+@pytest.mark.parametrize("reacquire", ["vacant", "after-capture", "before-restore"])
+def test_release_planning_lock_opened_identity_mismatch_restores_owner(reacquire, tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    real_replace, real_link, real_fstat = pipeline.os.replace, pipeline.os.link, pipeline.os.fstat
+    captured, newer = [], []
+
+    def capture(source, target):
+        real_replace(source, target)
+        captured.append(target)
+        if reacquire == "after-capture":
+            newer.append(_exclusive_planning_reacquisition(lock))
+
+    def restore(source, target):
+        if reacquire == "before-restore":
+            newer.append(_exclusive_planning_reacquisition(lock))
+        real_link(source, target)
+
+    def changed_fstat(fd):
+        observed = real_fstat(fd)
+        return SimpleNamespace(st_dev=observed.st_dev, st_ino=observed.st_ino + 1) if captured and observed.st_ino == identity.st_ino else observed
+
+    monkeypatch.setattr(pipeline.os, "replace", capture)
+    monkeypatch.setattr(pipeline.os, "link", restore)
+    monkeypatch.setattr(pipeline.os, "fstat", changed_fstat)
+    if reacquire == "vacant":
+        pipeline._release_planning_lock(lock, identity, owner)
+        assert lock.read_bytes() == owner and lock.stat().st_ino == identity.st_ino
+        assert not list(tmp_path.glob("*.trash"))
+    else:
+        with pytest.raises(FileExistsError):
+            pipeline._release_planning_lock(lock, identity, owner)
+        assert lock.read_bytes() == b"new-live-owner"
+        assert (lock.stat().st_dev, lock.stat().st_ino) == (newer[0].st_dev, newer[0].st_ino)
+        assert captured[0].read_bytes() == owner and captured[0].stat().st_ino == identity.st_ino
+    assert len(captured) == 1
+
+
+@pytest.mark.parametrize("fault", ["mismatch", "verification-error"], ids=["mismatch", "verification-error"])
+def test_release_planning_lock_failed_restore_retains_captured_lock(fault, tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    real_replace, real_open = pipeline.os.replace, Path.open
+    captured = []
+
+    def capture(source, target):
+        if fault == "mismatch":
+            lock.write_bytes(b"foreign-owner")
+        real_replace(source, target)
+        captured.append(target)
+
+    def fail_restore(source, target):
+        assert source == captured[0] and target == lock
+        raise PermissionError("restore denied")
+
+    def fail_verification(path, *args, **kwargs):
+        if path.suffix == ".trash" and fault == "verification-error":
+            raise PermissionError("verification denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline.os, "replace", capture)
+    monkeypatch.setattr(pipeline.os, "link", fail_restore)
+    monkeypatch.setattr(Path, "open", fail_verification)
+    with pytest.raises(PermissionError, match="restore denied"):
+        pipeline._release_planning_lock(lock, identity, owner)
+    assert len(captured) == 1 and not lock.exists()
+    with real_open(captured[0], "rb") as handle:
+        assert handle.read() == (b"foreign-owner" if fault == "mismatch" else owner)
+    assert captured[0].stat().st_ino == identity.st_ino
+
+
+@pytest.mark.parametrize("fault", ["mismatch", "verification-error"])
+def test_release_planning_lock_occupied_directory_retains_evidence(fault, tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    real_replace, real_open = pipeline.os.replace, Path.open
+    captured = []
+
+    def capture(source, target):
+        if fault == "mismatch":
+            lock.write_bytes(b"foreign-owner")
+        real_replace(source, target)
+        captured.append(target)
+        lock.mkdir()
+
+    def verify(path, *args, **kwargs):
+        if path.suffix == ".trash" and fault == "verification-error":
+            raise PermissionError("verification denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline.os, "replace", capture)
+    monkeypatch.setattr(Path, "open", verify)
+    with pytest.raises(OSError):
+        pipeline._release_planning_lock(lock, identity, owner)
+    assert lock.is_dir()
+    with real_open(captured[0], "rb") as handle:
+        assert handle.read() == (b"foreign-owner" if fault == "mismatch" else owner)
+    assert captured[0].stat().st_ino == identity.st_ino
+
+
+@pytest.mark.parametrize("fault", ["mismatch", "verification-error"])
+def test_release_planning_lock_restore_cleanup_error_retains_both_entries(fault, tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    real_replace, real_open, real_unlink = pipeline.os.replace, Path.open, Path.unlink
+    captured = []
+
+    def capture(source, target):
+        if fault == "mismatch":
+            lock.write_bytes(b"foreign-owner")
+        real_replace(source, target)
+        captured.append(target)
+
+    def verify(path, *args, **kwargs):
+        if path.suffix == ".trash" and fault == "verification-error":
+            raise PermissionError("verification denied")
+        return real_open(path, *args, **kwargs)
+
+    def cleanup(path, *args, **kwargs):
+        if path.suffix == ".trash":
+            raise PermissionError("restore cleanup denied")
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(pipeline.os, "replace", capture)
+    monkeypatch.setattr(Path, "open", verify)
+    monkeypatch.setattr(Path, "unlink", cleanup)
+    with pytest.raises(PermissionError, match="restore cleanup denied"):
+        pipeline._release_planning_lock(lock, identity, owner)
+    expected = b"foreign-owner" if fault == "mismatch" else owner
+    assert lock.read_bytes() == expected
+    with real_open(captured[0], "rb") as handle:
+        assert handle.read() == expected
+    assert lock.stat().st_ino == captured[0].stat().st_ino == identity.st_ino
+
+
+def test_release_planning_lock_without_identity_or_path_is_harmless(tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    pipeline._release_planning_lock(lock, None, owner)
+    assert lock.read_bytes() == owner
+    lock.unlink()
+    pipeline._release_planning_lock(lock, identity, owner)
+    assert not lock.exists()
+
+
+def test_release_planning_lock_owned_trash_names_are_unique(tmp_path, monkeypatch):
+    real_replace = pipeline.os.replace
+    captured = []
+
+    def capture(source, target):
+        assert source != target and source.parent == target.parent
+        assert target.suffix == ".trash" and not target.exists()
+        real_replace(source, target)
+        captured.append(target)
+
+    monkeypatch.setattr(pipeline.os, "replace", capture)
+    for _ in range(2):
+        lock, identity, owner = _owned_planning_lock(tmp_path)
+        pipeline._release_planning_lock(lock, identity, owner)
+        assert not lock.exists()
+    assert len(set(captured)) == 2 and not list(tmp_path.glob("*.trash"))
+
+
+def test_release_planning_lock_missing_captured_trash_fails_closed(tmp_path, monkeypatch):
+    lock, identity, owner = _owned_planning_lock(tmp_path)
+    real_replace = pipeline.os.replace
+
+    def remove_captured_trash(source, target):
+        real_replace(source, target)
+        target.unlink()
+
+    monkeypatch.setattr(pipeline.os, "replace", remove_captured_trash)
+    with pytest.raises(FileNotFoundError):
+        pipeline._release_planning_lock(lock, identity, owner)
+    assert not lock.exists() and not list(tmp_path.glob("*.trash"))

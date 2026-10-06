@@ -71,12 +71,12 @@ Role: system-architect (Role 6)
 
 ## Repo-Local Files Read
 - `.agents/agent/system-architect.md`
-- `.agents/skills/architecture/SKILL.md`
-- `.agents/skills/api-patterns/SKILL.md`
-- `.agents/skills/database-design/SKILL.md`
-- `.agents/skills/clean-code/SKILL.md`
-- `.agents/skills/plan-writing/SKILL.md`
-- `.agents/skills/nodejs-best-practices/SKILL.md`
+- `.agents/skills/architecture/skill.md`
+- `.agents/skills/api-patterns/skill.md`
+- `.agents/skills/database-design/skill.md`
+- `.agents/skills/clean-code/skill.md`
+- `.agents/skills/plan-writing/skill.md`
+- `.agents/skills/nodejs-best-practices/skill.md`
 
 ## Forbidden Path Scan Result:
 - Forbidden path `.gemini\\antigravity-ide\\scratch\\ag-kit` is non-authoritative and not used as source.
@@ -157,10 +157,10 @@ As System Architect, I have reviewed the implementation plan for the Hybrid GMM-
         skills_list = [s.strip() for s in skills_raw.split(",") if s.strip()]
         repo_local_skills = [f".agents/agent/{role_name}.md"]
         for s in skills_list:
-            repo_local_skills.append(f".agents/skills/{s}/SKILL.md")
+            repo_local_skills.append(f".agents/skills/{s}/skill.md")
         # Add default enforcer skill if declared
         if "omega-sod" in skills_list:
-            repo_local_skills.append(".agents/skills/omega-sod/SKILL.md")
+            repo_local_skills.append(".agents/skills/omega-sod/skill.md")
         
         l3_files_read_str = "\n".join([f"- {s}" for s in repo_local_skills])
         

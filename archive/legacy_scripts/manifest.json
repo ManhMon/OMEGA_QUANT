@@ -132,15 +132,15 @@
                                      "archived_at":  "2026-09-15T19:52:17.2342933Z"
                                  },
     "run_l2_hook_ingest_703.py.txt":  {
-                                          "sha256":  "3b0f79824a85b08af1f3452196f986279e7e843e46c071dd38a4adfa2357a648",
+                                          "sha256":  "3680b59aa2bbaaa674f32202917b9f313bf9d9bd4f4b666ba8a89fc791be359d",
                                           "original_path":  "scripts/run_l2_hook_ingest_703.py",
-                                          "line_count":  529,
+                                          "line_count":  1,
                                           "archived_at":  "2026-09-15T19:52:17.2342933Z"
                                       },
     "run_l3_audit_phase2.py.txt":  {
-                                       "sha256":  "d36901d34d74f4efa62f1d141a335a4e5948c4f22c6b574e7cf3d351c2d3bc4c",
+                                       "sha256":  "a54c55954897d486ec9e52ff7ea4f60023fdb6562d2a1ab2dbccbe6fdb094b5b",
                                        "original_path":  "scripts/run_l3_audit_phase2.py",
-                                       "line_count":  253,
+                                       "line_count":  1,
                                        "archived_at":  "2026-09-15T19:52:17.2342933Z"
                                    },
     "run_phase6_continuous_learning.py.txt":  {
