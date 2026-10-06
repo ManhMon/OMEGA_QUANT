@@ -27,7 +27,10 @@ export const vi: Translations = {
     page: 'Trang',
     of: 'trên',
     showing: 'HIỂN THỊ',
-    records: 'bản ghi'
+    records: 'bản ghi',
+    unavailable: 'Phân hệ này không khả dụng trong bản dựng này.',
+    integrationUnavailable: 'Tích hợp này không khả dụng trong bản dựng này.',
+    close: 'Đóng'
   },
   nav: {
     quantModules: 'Phân Hệ Định Lượng',
@@ -59,7 +62,11 @@ export const vi: Translations = {
     ops: 'TÁC VỤ',
     timeZone: 'ICT (GIỜ VN)',
     langVi: 'VI',
-    langEn: 'EN'
+    langEn: 'EN',
+    enableDigitShortcuts: 'Bật phím tắt chữ số',
+    language: 'Ngôn ngữ',
+    copilot: 'Copilot',
+    configuration: 'Cấu hình'
   },
   workspace: {
     gridStandard: 'LƯỚI: CHUẨN_ĐỊNH_CHẾ',
@@ -574,6 +581,9 @@ export const vi: Translations = {
     testFailed: 'Kết Nối Thất Bại',
     saveSuccess: 'Đã lưu cấu hình LLM thành công',
     saveFailed: 'Lỗi lưu cấu hình LLM',
+    modelCatalogFailed: 'Không thể dò tìm danh mục mô hình.',
+    probeFailed: 'Lỗi mạng khi kiểm tra kết nối.',
+    profilesSynchronized: 'Đã đồng bộ cài đặt cho cả 4 hồ sơ LLM.',
     hasKeySet: 'Đã cấu hình mã khóa',
     noKeySet: 'Chưa cài đặt mã khóa',
     fetchModelsBtn: 'Tải Mô Hình',

@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import { useCopilot, ChatMessage } from '../../hooks/useCopilot';
 import { useTranslation } from '../../i18n';
+import { containModalFocus } from './LLMConfigModal';
 import { RecommendationActionItem, CopilotStreamEvent } from '../../api/client';
 
 interface OmniQuantCopilotDrawerProps {
@@ -212,9 +213,29 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
     executingActionId,
     streamEvents,
     isSseConnected,
+    isUnavailable,
   } = useCopilot(isOpen);
 
+  const dialogRef = useRef<HTMLDialogElement>(null);
+  useEffect(() => {
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    if (isOpen) dialog?.showModal();
+    return () => {
+      if (dialog?.open) dialog.close();
+      if (isOpen && previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, [isOpen, isUnavailable]);
+
   if (!isOpen) return null;
+  if (isUnavailable) return (
+    <dialog ref={dialogRef} onKeyDown={containModalFocus} aria-modal="true" aria-label={t.copilot.drawerTitle} data-drawer
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      className="bg-zinc-950 text-zinc-100 p-4 backdrop:bg-black/60">
+      <p role="alert">{t.common.integrationUnavailable}</p>
+      <button type="button" autoFocus onClick={onClose}>{t.common.cancel}</button>
+    </dialog>
+  );
 
   const quickPrompts = [
     locale === 'vi' ? '🔍 Chuyển sang Sàng lọc và lọc cổ phiếu ROE > 20%' : '🔍 Switch to Screener and filter ROE > 20%',
@@ -249,7 +270,9 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm transition-all duration-300">
+    <dialog ref={dialogRef} onKeyDown={containModalFocus} aria-modal="true" aria-label={t.copilot.drawerTitle} data-drawer
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      className="fixed inset-0 m-0 h-screen max-h-screen w-screen max-w-none z-50 flex justify-end bg-transparent text-zinc-100 backdrop:bg-black/60 backdrop:backdrop-blur-sm transition-all duration-300">
       {/* Backdrop click to close */}
       <div className="flex-1" onClick={onClose} />
 
@@ -298,6 +321,7 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
               <RefreshCw className={`w-4 h-4 ${isSynthesisLoading ? 'animate-spin' : ''}`} />
             </button>
             <button
+              autoFocus aria-label={t.common.close}
               onClick={onClose}
               className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
             >
@@ -591,6 +615,6 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
           )}
         </div>
       </div>
-    </div>
+    </dialog>
   );
 };

@@ -252,8 +252,8 @@ def print_final_report(results: List[dict], start_time: datetime):
         print()
     
     # Final verdict
-    if failed > 0:
-        print_error(f"VERIFICATION FAILED - {failed} check(s) need attention")
+    if failed > 0 or passed == 0:
+        print_error(f"VERIFICATION FAILED - {failed} failed check(s), {passed} completed check(s)")
         print(f"\n{Colors.YELLOW}💡 Tip: Fix critical (security, lint) issues first{Colors.ENDC}")
         return False
     else:
@@ -292,6 +292,8 @@ Examples:
     # Detect agent directory dynamically (default to .agents if exists, fallback to .agent)
     agent_dir_name = ".agents" if (project_path / ".agents").exists() else ".agents"
     
+    results = []
+
     # Run all verification categories
     for suite in VERIFICATION_SUITE:
         category = suite["category"]
@@ -311,6 +313,8 @@ Examples:
             actual_script_path = Path(script_path.replace(".agents", agent_dir_name))
             script = project_path / actual_script_path
             result = run_script(name, script, str(project_path), args.url)
+            if required and result.get("skipped"):
+                result.update(passed=False, skipped=False, error="Required check was not executed")
             result["category"] = category
             results.append(result)
             

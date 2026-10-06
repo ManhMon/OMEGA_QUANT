@@ -1,12 +1,9 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
+import { LandingDatabaseHub } from './modules/macro_cockpit/LandingDatabaseHub';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CheckCircle2, AlertCircle, Info, AlertTriangle, X } from 'lucide-react';
-import { TopNavBar } from './layout/TopNavBar';
-import { SideDock, ModuleType } from './layout/SideDock';
-import { WorkspaceGrid } from './layout/WorkspaceGrid';
-import { MacroCockpitView } from './modules/macro_cockpit/MacroCockpitView';
+import { SideDock, type ModuleType } from './layout/SideDock';
 import { FundamentalMatrixView } from './modules/fundamental_matrix/FundamentalMatrixView';
-import { AlphaPortfolioView } from './modules/alpha_portfolio/AlphaPortfolioView';
 import { BarraRiskTcaAnalyticsView } from './modules/barra_risk_tca/BarraRiskTcaAnalyticsView';
 import { ChartStationView } from './modules/chart_station/ChartStationView';
 import { ExecutionBlotterView } from './modules/execution_blotter/ExecutionBlotterView';
@@ -15,15 +12,13 @@ import { PipelineOrchestrationConsole } from './modules/pipeline_console/Pipelin
 import { ModelRegistryView } from './modules/model_registry/ModelRegistryView';
 import { StrategyLabView } from './modules/strategy_lab/StrategyLabView';
 import { AlphaFactoryDiscoveryStation } from './modules/alpha_factory/AlphaFactoryDiscoveryStation';
-import { MacroNewsSentimentHub } from './modules/macro_news/MacroNewsSentimentHub';
-import { OpsProgressDrawer } from './modules/ops_drawer/OpsProgressDrawer';
 import { OmniQuantCopilotDrawer } from './modules/copilot/OmniQuantCopilotDrawer';
-import { LLMConfigModal } from './modules/copilot/LLMConfigModal';
-import { FloatingCopilotTrigger } from './modules/copilot/FloatingCopilotTrigger';
+import { LLMConfigModal, containModalFocus } from './modules/copilot/LLMConfigModal';
 import { useUiStore } from './store/uiStore';
 import { useRealtimeStream } from './hooks/useRealtimeStream';
 import { useControlOps } from './hooks/useControlOps';
-import { I18nProvider, useTranslation } from './i18n';
+import { en } from './i18n/en';
+import { vi } from './i18n/vi';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -35,7 +30,7 @@ const queryClient = new QueryClient({
   }
 });
 
-const getModuleTitle = (module: ModuleType, t: ReturnType<typeof useTranslation>['t']): { title: string; tag: string } => {
+const getModuleTitle = (module: ModuleType, t: typeof en): { title: string; tag: string } => {
   switch (module) {
     case 'pipeline_console':
       return { title: t.pipelineConsole.title, tag: 'IN_PROCESS_EXEC' };
@@ -74,10 +69,9 @@ const DashboardContent: React.FC = () => {
   const isStreamingConnected = useUiStore((state) => state.isStreamingConnected);
   const toasts = useUiStore((state) => state.toasts);
   const removeToast = useUiStore((state) => state.removeToast);
-
-  const { t } = useTranslation();
   const [isCopilotDrawerOpen, setIsCopilotDrawerOpen] = useState(false);
   const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
+  const [digitShortcutsEnabled, setDigitShortcutsEnabled] = useState(true);
   const {
     tasks,
     selectedTaskId,
@@ -85,6 +79,50 @@ const DashboardContent: React.FC = () => {
     isDrawerOpen,
     setIsDrawerOpen
   } = useControlOps();
+  const toggleLocale = useUiStore((state) => state.toggleLocale);
+  const opsDialogRef = useRef<HTMLDialogElement>(null);
+
+  useEffect(() => {
+    const dialog = opsDialogRef.current;
+    const previousFocus = document.activeElement;
+    if (isDrawerOpen) dialog?.showModal();
+    return () => {
+      if (dialog?.open) dialog.close();
+      if (isDrawerOpen && previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
+    };
+  }, [isDrawerOpen]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      const isInteractive = (target: EventTarget | null) => target instanceof Element && (
+        (target instanceof HTMLElement && target.isContentEditable) ||
+        target.closest('button, a, input, textarea, select, [contenteditable]:not([contenteditable="false"]), dialog, [role="dialog"], [aria-modal="true"], [data-drawer]') !== null
+      );
+      const isInputActive = isInteractive(document.activeElement) || isInteractive(event.target);
+      const hasOverlayOpen = isCopilotDrawerOpen || isConfigModalOpen || isDrawerOpen ||
+        document.querySelector('dialog[open], [role="dialog"], [role="menu"], [role="listbox"], [aria-modal="true"]') !== null;
+
+      if (
+        !digitShortcutsEnabled || isInputActive || event.defaultPrevented || event.isComposing || event.ctrlKey || event.metaKey ||
+        event.altKey || event.shiftKey || hasOverlayOpen || event.repeat ||
+        !/^[1-9]$/.test(event.key)
+      ) return;
+
+      const module = [
+        'pipeline_console', 'control_center', 'model_registry', 'alpha_factory',
+        'strategy_lab', 'macro_cockpit', 'macro_news_hub', 'fundamental_matrix',
+        'alpha_portfolio',
+      ][Number(event.key) - 1] as ModuleType | undefined;
+
+      if (module) setActiveModule(module);
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [digitShortcutsEnabled, isCopilotDrawerOpen, isConfigModalOpen, isDrawerOpen, setActiveModule]);
+
+  const locale = useUiStore((state) => state.locale);
+  const t = locale === 'vi' ? vi : en;
 
   // Initialize background live event stream
   useRealtimeStream({ enabled: true });
@@ -102,13 +140,13 @@ const DashboardContent: React.FC = () => {
       case 'strategy_lab':
         return <StrategyLabView />;
       case 'macro_cockpit':
-        return <MacroCockpitView />;
+        return <LandingDatabaseHub />;
       case 'macro_news_hub':
-        return <MacroNewsSentimentHub />;
+        return <LandingDatabaseHub />;
       case 'fundamental_matrix':
         return <FundamentalMatrixView />;
       case 'alpha_portfolio':
-        return <AlphaPortfolioView />;
+        return <LandingDatabaseHub />;
       case 'barra_risk_tca':
         return <BarraRiskTcaAnalyticsView />;
       case 'chart_station':
@@ -125,15 +163,20 @@ const DashboardContent: React.FC = () => {
   return (
     <div className="flex flex-col h-screen w-screen bg-zinc-950 text-zinc-100 overflow-hidden font-sans select-none">
       {/* 1. Institutional Top Navigation */}
-      <TopNavBar
-        systemStatus={isStreamingConnected ? 'ONLINE' : 'STANDBY'}
-        activeEngineCount={12}
-        onOpenOpsDrawer={() => setIsDrawerOpen(true)}
-        onOpenCopilotDrawer={() => setIsCopilotDrawerOpen(true)}
-        onOpenConfigModal={() => setIsConfigModalOpen(true)}
-        activeTaskCount={Object.keys(tasks).length}
-        pendingRecommendationsCount={4}
-      />
+      <header className="flex flex-wrap items-center gap-4 p-3 border-b border-white/10">
+        <h1>OMEGA</h1>
+        <label>
+          <input type="checkbox" checked={digitShortcutsEnabled} onChange={(event) => setDigitShortcutsEnabled(event.target.checked)} />
+          {t.topNav.enableDigitShortcuts}
+        </label>
+        <span role="status">{isStreamingConnected ? t.common.online : t.common.standby}</span>
+        <button type="button" aria-label={t.topNav.language} onClick={toggleLocale} className="rounded px-3 py-2 focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
+          <span lang="vi">{t.topNav.langVi}</span> / <span lang="en">{t.topNav.langEn}</span>: {locale.toUpperCase()}
+        </button>
+        <button type="button" aria-expanded={isDrawerOpen} onClick={() => setIsDrawerOpen(true)}>{t.topNav.ops} ({Object.keys(tasks).length})</button>
+        <button type="button" onClick={() => setIsCopilotDrawerOpen(true)}>{t.topNav.copilot}</button>
+        <button type="button" onClick={() => setIsConfigModalOpen(true)}>{t.topNav.configuration}</button>
+      </header>
 
       {/* 2. Main Workstation Shell: Side Dock + Workspace Grid */}
       <div className="flex flex-1 overflow-hidden relative">
@@ -144,22 +187,31 @@ const DashboardContent: React.FC = () => {
           onToggleCollapse={toggleSideDockCollapse}
         />
 
-        <WorkspaceGrid
-          activeModuleName={moduleHeader.title}
-          activeModuleTag={moduleHeader.tag}
-        >
+        <main aria-label={moduleHeader.title} className="flex-1 overflow-auto p-4">
+          <h2>{moduleHeader.title}</h2>
+          <span>{moduleHeader.tag}</span>
           {renderModule()}
-        </WorkspaceGrid>
+        </main>
       </div>
 
       {/* Global Ops Drawer */}
-      <OpsProgressDrawer
-        isOpen={isDrawerOpen}
-        onClose={() => setIsDrawerOpen(false)}
-        tasks={tasks}
-        selectedTaskId={selectedTaskId}
-        onSelectTask={setSelectedTaskId}
-      />
+      {isDrawerOpen && <dialog ref={opsDialogRef} onKeyDown={containModalFocus} aria-label={t.topNav.ops} data-drawer onCancel={(event) => { event.preventDefault(); setIsDrawerOpen(false); }} className="fixed inset-y-0 left-auto right-0 m-0 h-screen max-h-screen w-full max-w-lg overflow-y-auto bg-zinc-900 text-zinc-100 p-4 backdrop:bg-black/60">
+        <h2>{t.controlCenter.taskProgressLabel}</h2>
+        <button type="button" autoFocus onClick={() => setIsDrawerOpen(false)}>{t.common.close}</button>
+        {Object.values(tasks).length === 0 && <p role="status">{t.common.standby}</p>}
+        {Object.values(tasks).map((task) => (
+          <section key={task.taskId} className="border-b border-white/10 py-3">
+            <button type="button" aria-pressed={selectedTaskId === task.taskId} onClick={() => setSelectedTaskId(task.taskId)}>
+              {task.taskType}: {task.status}
+            </button>
+            <p>{t.controlCenter.currentStageLabel} {task.stage}</p>
+            <progress aria-label={`${t.controlCenter.taskProgressLabel}: ${task.taskId}`} max={100} value={task.progress} />
+            <span>{task.progress}%</span>
+            <p role={task.status === 'FAILED' ? 'alert' : 'status'}>{task.message}</p>
+            {task.errorCode && <p>{task.errorCode}</p>}
+          </section>
+        ))}
+      </dialog>}
 
       {/* Phase 11: Omni-Quant AI Copilot Drawer & Floating Trigger */}
       <OmniQuantCopilotDrawer
@@ -174,10 +226,7 @@ const DashboardContent: React.FC = () => {
         onClose={() => setIsConfigModalOpen(false)}
       />
 
-      <FloatingCopilotTrigger
-        onClick={() => setIsCopilotDrawerOpen(true)}
-        pendingRecommendationsCount={4}
-      />
+      <button type="button" className="fixed bottom-6 left-6" onClick={() => setIsCopilotDrawerOpen(true)}>{t.topNav.copilot}</button>
 
       {/* Global Actionable Toast Feedback Container */}
       <div className="fixed bottom-6 right-6 z-50 flex flex-col gap-2 pointer-events-none max-w-sm font-mono text-xs select-none">
@@ -205,6 +254,7 @@ const DashboardContent: React.FC = () => {
               </div>
             </div>
             <button
+              aria-label={t.common.close}
               onClick={() => removeToast(toast.id)}
               className="p-1 rounded hover:bg-white/10 text-zinc-400 hover:text-zinc-200 transition-colors"
             >
@@ -220,9 +270,7 @@ const DashboardContent: React.FC = () => {
 export const App: React.FC = () => {
   return (
     <QueryClientProvider client={queryClient}>
-      <I18nProvider>
-        <DashboardContent />
-      </I18nProvider>
+      <DashboardContent />
     </QueryClientProvider>
   );
 };

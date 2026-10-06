@@ -28,6 +28,9 @@ export interface Translations {
     of: string;
     showing: string;
     records: string;
+    unavailable: string;
+    integrationUnavailable: string;
+    close: string;
   };
   nav: {
     quantModules: string;
@@ -60,6 +63,10 @@ export interface Translations {
     timeZone: string;
     langVi: string;
     langEn: string;
+    enableDigitShortcuts: string;
+    language: string;
+    copilot: string;
+    configuration: string;
   };
   workspace: {
     gridStandard: string;
@@ -574,6 +581,9 @@ export interface Translations {
     testFailed: string;
     saveSuccess: string;
     saveFailed: string;
+    modelCatalogFailed: string;
+    probeFailed: string;
+    profilesSynchronized: string;
     hasKeySet: string;
     noKeySet: string;
     fetchModelsBtn: string;

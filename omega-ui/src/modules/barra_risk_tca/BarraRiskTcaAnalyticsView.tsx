@@ -26,7 +26,7 @@ import { LiquidityConstraintTable } from './LiquidityConstraintTable';
 import { useTranslation } from '../../i18n';
 
 export const BarraRiskTcaAnalyticsView: React.FC = () => {
-  const { data: barra, refetch: refetchBarra } = useBarraDecomposition();
+  const { data: barra, refetch: refetchBarra, isError: isBarraError } = useBarraDecomposition();
   const { data: stress, refetch: refetchStress } = useStressScenarios();
   const { data: postTrade, refetch: refetchPostTrade } = usePostTradeReport();
   const { data: routing, refetch: refetchRouting } = useRoutingDiagnostics();
@@ -71,6 +71,13 @@ export const BarraRiskTcaAnalyticsView: React.FC = () => {
   };
 
   const impactResult = preTradeMutation.data;
+
+  if (!barra || !stress || !postTrade || !routing || isBarraError) return (
+    <section aria-label={t.barraRiskTca.headerTitle}>
+      <p role="alert">{t.common.integrationUnavailable}</p>
+      <button type="button" onClick={() => { refetchBarra(); refetchStress(); refetchPostTrade(); refetchRouting(); }}>{t.common.retry}</button>
+    </section>
+  );
 
   return (
     <div className="flex flex-col gap-4 p-1 pb-10">

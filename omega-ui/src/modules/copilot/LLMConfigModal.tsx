@@ -25,6 +25,21 @@ import { useLLMConfig } from '../../hooks/useLLMConfig';
 import { useTranslation } from '../../i18n';
 import { LLMProfileItem, MultiProfileLLMConfigPayload, LLMModelItem } from '../../api/client';
 
+export const containModalFocus = (event: React.KeyboardEvent<HTMLDialogElement>) => {
+  if (event.key !== 'Tab') return;
+  const dialog = event.currentTarget;
+  const controls = Array.from(dialog.querySelectorAll<HTMLElement>('a[href], button, input, select, textarea, [tabindex]'))
+    .filter((element) => element.tabIndex >= 0 && !element.matches(':disabled') && element.getClientRects().length > 0);
+  const first = controls[0];
+  const last = controls[controls.length - 1];
+  if (!first || !dialog.contains(document.activeElement) ||
+      (event.shiftKey ? document.activeElement === first : document.activeElement === last)) {
+    event.preventDefault();
+    (event.shiftKey ? last : first)?.focus();
+    if (!first) dialog.focus();
+  }
+};
+
 interface LLMConfigModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -63,7 +78,7 @@ const CURATED_LOCAL_MODELS: Record<string, LLMModelItem[]> = {
 
 export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose }) => {
   const { t } = useTranslation();
-  const { config, isLoading, saveConfig, isSaving, testProbe, fetchModels, isFetchingModels } = useLLMConfig();
+  const { config, isLoading, isError, saveConfig, isSaving, testProbe, fetchModels, isFetchingModels } = useLLMConfig();
 
   const [activeTab, setActiveTab] = useState<TabKey>('global_profile');
   const [showApiKey, setShowApiKey] = useState<Record<TabKey, boolean>>({
@@ -190,17 +205,16 @@ export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose 
     }
   }, [isOpen]);
 
-  // Escape key handler to close modal immediately
+  const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => {
-    if (!isOpen) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        onClose();
-      }
+    const dialog = dialogRef.current;
+    const previousFocus = document.activeElement;
+    if (isOpen) dialog?.showModal();
+    return () => {
+      if (dialog?.open) dialog.close();
+      if (isOpen && previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
     };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, onClose]);
+  }, [isOpen, !!config, isError]);
 
   // Click outside to close combobox dropdown
   useEffect(() => {
@@ -310,11 +324,11 @@ export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose 
         });
         setTimeout(() => setNotification(null), 3000);
       }
-    } catch (err: any) {
+    } catch {
       if (showToast) {
         setNotification({
           type: 'error',
-          message: err?.message || 'Failed to probe model catalog.',
+          message: t.copilot.modelCatalogFailed,
         });
         setTimeout(() => setNotification(null), 4000);
       }
@@ -349,13 +363,13 @@ export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose 
           message: res.message,
         },
       }));
-    } catch (err: any) {
+    } catch {
       setPingStatus((prev) => ({
         ...prev,
         [tab]: {
           testing: false,
           success: false,
-          message: err?.message || 'Network error occurred during probe.',
+          message: t.copilot.probeFailed,
         },
       }));
     }
@@ -371,7 +385,7 @@ export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose 
     });
     setNotification({
       type: 'success',
-      message: `Profile '${activeTab}' settings synchronized across all 4 LLM profiles.`,
+      message: t.copilot.profilesSynchronized,
     });
     setTimeout(() => setNotification(null), 4000);
   };
@@ -387,10 +401,10 @@ export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose 
         setNotification(null);
         onClose();
       }, 1200);
-    } catch (err: any) {
+    } catch {
       setNotification({
         type: 'error',
-        message: err?.message || t.copilot.saveFailed,
+        message: t.copilot.saveFailed,
       });
     }
   };
@@ -428,9 +442,18 @@ export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose 
   };
 
   if (!isOpen) return null;
+  if (!config || isError) return (
+    <dialog ref={dialogRef} onKeyDown={containModalFocus} aria-modal="true" aria-label={t.copilot.configModalTitle}
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
+      className="bg-zinc-950 text-zinc-100 p-4 backdrop:bg-black/75">
+      <p role="alert">{t.common.integrationUnavailable}</p>
+      <button type="button" autoFocus onClick={onClose}>{t.common.cancel}</button>
+    </dialog>
+  );
 
   return (
-    <div
+    <dialog ref={dialogRef} onKeyDown={containModalFocus} aria-modal="true" aria-label={t.copilot.configModalTitle}
+      onCancel={(event) => { event.preventDefault(); onClose(); }}
       onMouseDown={(e) => {
         mouseDownTargetRef.current = e.target;
       }}
@@ -439,7 +462,7 @@ export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose 
           onClose();
         }
       }}
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 backdrop-blur-sm p-4 animate-in fade-in duration-200"
+      className="fixed inset-0 m-0 h-screen max-h-screen w-screen max-w-none z-50 flex items-center justify-center bg-transparent text-zinc-100 backdrop:bg-black/75 backdrop:backdrop-blur-sm p-4 animate-in fade-in duration-200"
     >
       <div
         onClick={(e) => e.stopPropagation()}
@@ -471,6 +494,7 @@ export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose 
           </div>
 
           <button
+            autoFocus aria-label={t.common.close}
             onClick={onClose}
             className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
           >
@@ -877,6 +901,6 @@ export const LLMConfigModal: React.FC<LLMConfigModalProps> = ({ isOpen, onClose 
           </div>
         </div>
       </div>
-    </div>
+    </dialog>
   );
 };

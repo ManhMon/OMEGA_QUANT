@@ -27,7 +27,10 @@ export const en: Translations = {
     page: 'Page',
     of: 'of',
     showing: 'SHOWING',
-    records: 'records'
+    records: 'records',
+    unavailable: 'This module is unavailable in this build.',
+    integrationUnavailable: 'This integration is unavailable in this build.',
+    close: 'Close'
   },
   nav: {
     quantModules: 'Quant Modules',
@@ -59,7 +62,11 @@ export const en: Translations = {
     ops: 'OPS',
     timeZone: 'ICT',
     langVi: 'VI',
-    langEn: 'EN'
+    langEn: 'EN',
+    enableDigitShortcuts: 'Enable digit shortcuts',
+    language: 'Language',
+    copilot: 'Copilot',
+    configuration: 'Configuration'
   },
   workspace: {
     gridStandard: 'GRID: INSTITUTIONAL_STANDARD',
@@ -574,6 +581,9 @@ export const en: Translations = {
     testFailed: 'Connection Failed',
     saveSuccess: 'Configuration saved successfully',
     saveFailed: 'Failed to save configuration',
+    modelCatalogFailed: 'Failed to probe model catalog.',
+    probeFailed: 'Network error occurred during probe.',
+    profilesSynchronized: 'Settings synchronized across all 4 LLM profiles.',
     hasKeySet: 'Secret key configured',
     noKeySet: 'No secret key set',
     fetchModelsBtn: 'Fetch Models',
