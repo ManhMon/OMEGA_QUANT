@@ -88,6 +88,12 @@ export interface UiState {
   isCopilotDrawerOpen: boolean;
   setIsCopilotDrawerOpen: (open: boolean) => void;
 
+  digitShortcutsEnabled: boolean;
+  setDigitShortcutsEnabled: (enabled: boolean) => void;
+
+  isConfigModalOpen: boolean;
+  setIsConfigModalOpen: (open: boolean) => void;
+
   // Global Actionable Toast Notifications
   toasts: ToastMessage[];
   addToast: (toast: Omit<ToastMessage, 'id' | 'timestamp'>) => void;
@@ -312,6 +318,12 @@ export const useUiStore = create<UiState>((set) => ({
 
   isCopilotDrawerOpen: false,
   setIsCopilotDrawerOpen: (open) => set({ isCopilotDrawerOpen: open }),
+
+  digitShortcutsEnabled: true,
+  setDigitShortcutsEnabled: (enabled) => set({ digitShortcutsEnabled: enabled }),
+
+  isConfigModalOpen: false,
+  setIsConfigModalOpen: (open) => set({ isConfigModalOpen: open }),
 
   // Global Actionable Toast Notifications
   toasts: [],

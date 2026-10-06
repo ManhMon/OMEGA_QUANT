@@ -14,6 +14,7 @@ import { StrategyLabView } from './modules/strategy_lab/StrategyLabView';
 import { AlphaFactoryDiscoveryStation } from './modules/alpha_factory/AlphaFactoryDiscoveryStation';
 import { OmniQuantCopilotDrawer } from './modules/copilot/OmniQuantCopilotDrawer';
 import { LLMConfigModal, containModalFocus } from './modules/copilot/LLMConfigModal';
+import { TopNavBar } from './layout/TopNavBar';
 import { useUiStore } from './store/uiStore';
 import { useRealtimeStream } from './hooks/useRealtimeStream';
 import { useControlOps } from './hooks/useControlOps';
@@ -71,8 +72,9 @@ const DashboardContent: React.FC = () => {
   const removeToast = useUiStore((state) => state.removeToast);
   const isCopilotDrawerOpen = useUiStore((state) => state.isCopilotDrawerOpen);
   const setIsCopilotDrawerOpen = useUiStore((state) => state.setIsCopilotDrawerOpen);
-  const [isConfigModalOpen, setIsConfigModalOpen] = useState(false);
-  const [digitShortcutsEnabled, setDigitShortcutsEnabled] = useState(true);
+  const digitShortcutsEnabled = useUiStore((state) => state.digitShortcutsEnabled);
+  const isConfigModalOpen = useUiStore((state) => state.isConfigModalOpen);
+  const setIsConfigModalOpen = useUiStore((state) => state.setIsConfigModalOpen);
   const {
     tasks,
     selectedTaskId,
@@ -167,41 +169,7 @@ const DashboardContent: React.FC = () => {
   return (
     <div className="flex flex-col h-screen w-screen bg-zinc-950 text-zinc-100 overflow-hidden font-sans select-none">
       {/* 1. Institutional Top Navigation */}
-      <header className="h-14 border-b border-white/10 bg-zinc-950/95 backdrop-blur-md px-4 flex items-center justify-between font-mono select-none z-30 shrink-0">
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-2.5">
-            <h1 className="text-sm font-black tracking-widest bg-gradient-to-r from-emerald-400 via-teal-300 to-cyan-400 bg-clip-text text-transparent">OMEGA</h1>
-            <span className="text-[10px] px-1.5 py-0.5 rounded font-bold uppercase tracking-wider bg-emerald-950/80 border border-emerald-500/30 text-emerald-300">QUANT_v3</span>
-          </div>
-
-          <div className="h-4 w-px bg-white/10 hidden sm:block" />
-
-          <div className="flex items-center gap-2 px-2.5 py-1 rounded-md bg-zinc-900/90 border border-white/5">
-            <span className={`w-2 h-2 rounded-full ${isStreamingConnected ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.8)]' : 'bg-amber-400'}`} />
-            <span role="status" className="text-[11px] font-bold tracking-wider text-zinc-300">{isStreamingConnected ? t.common.online : t.common.standby}</span>
-          </div>
-
-          <label className="flex items-center gap-2 text-xs text-zinc-400 hover:text-zinc-200 cursor-pointer px-2 py-1 rounded hover:bg-white/5 transition-colors">
-            <input type="checkbox" checked={digitShortcutsEnabled} onChange={(event) => setDigitShortcutsEnabled(event.target.checked)} className="rounded border-white/20 bg-zinc-900 text-emerald-500 focus:ring-0 focus:ring-offset-0 cursor-pointer accent-emerald-500" />
-            <span className="text-[11px] font-mono">{t.topNav.enableDigitShortcuts}</span>
-          </label>
-        </div>
-
-        <button type="button" aria-label={t.topNav.language} onClick={toggleLocale} className="ml-auto px-2.5 py-1.5 rounded-lg border border-white/10 bg-zinc-900/90 hover:bg-zinc-800 text-xs font-bold text-zinc-300 hover:text-white transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-emerald-400">
-          <span lang="vi">{t.topNav.langVi}</span> / <span lang="en">{t.topNav.langEn}</span>: {locale.toUpperCase()}
-        </button>
-        <button
-          ref={opsOpenerRef}
-          type="button"
-          aria-expanded={isDrawerOpen}
-          onClick={() => setIsDrawerOpen(true)}
-          className="px-2.5 py-1.5 rounded-lg border border-cyan-500/30 bg-cyan-950/40 hover:bg-cyan-900/50 text-xs font-bold text-cyan-300 hover:text-cyan-200 transition-colors shadow-sm"
-        >
-          {t.topNav.ops} ({Object.keys(tasks).length})
-        </button>
-        <button type="button" onClick={() => setIsCopilotDrawerOpen(true)} className="px-2.5 py-1.5 rounded-lg border border-emerald-500/30 bg-emerald-950/40 hover:bg-emerald-900/50 text-xs font-bold text-emerald-300 hover:text-emerald-200 transition-colors shadow-sm">{t.topNav.copilot}</button>
-        <button type="button" onClick={() => setIsConfigModalOpen(true)} className="px-2.5 py-1.5 rounded-lg border border-white/10 bg-zinc-900/90 hover:bg-zinc-800 text-xs font-bold text-zinc-300 hover:text-white transition-colors shadow-sm">{t.topNav.configuration}</button>
-      </header>
+      <TopNavBar />
 
       {/* 2. Main Workstation Shell: Side Dock + Workspace Grid */}
       <div className="flex flex-1 overflow-hidden relative">
@@ -330,3 +298,4 @@ export const App: React.FC = () => {
 };
 
 export default App;
+
