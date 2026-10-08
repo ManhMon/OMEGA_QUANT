@@ -388,6 +388,43 @@ export interface ConformalPredictResponse {
   provenance?: ProvenanceEnvelope | null;
 }
 
+export interface CallerSampleProvenance extends Omit<ProvenanceEnvelope, 'source' | 'dataset_id' | 'is_synthetic' | 'max_included_available_at'> {
+  source: 'caller_sample';
+  dataset_id: 'caller_sample';
+  is_synthetic: true;
+  pit_verified: false;
+  max_included_available_at: null;
+}
+
+export interface AlphaEvaluationRequest {
+  expression: string;
+  universe?: string;
+  sample_data?: Record<string, number[]>;
+  as_of?: string;
+  pit_cutoff?: string;
+}
+
+export interface AlphaDiscoveryRequest {
+  population_size?: number;
+  generations?: number;
+  mutation_rate?: number;
+  crossover_rate?: number;
+  target_ic?: number;
+  target_ir?: number;
+  allowed_operators?: string[];
+}
+
+export interface AlphaDiscoveryEvent {
+  session_id: string;
+  event_type: 'SNAPSHOT' | 'GENERATION_UPDATE' | 'DISCOVERY_COMPLETED' | 'DISCOVERY_FAILED' | 'PING';
+  generation: number;
+  max_generations: number;
+  progress: number;
+  best_fitness: number;
+  best_formula: string;
+  timestamp: string;
+}
+
 export interface AlphaEvaluationResponse {
   status: string;
   expression: string;
@@ -399,7 +436,7 @@ export interface AlphaEvaluationResponse {
   complexity_score: number;
   sample_result?: number[] | null;
   error?: string | null;
-  provenance?: ProvenanceEnvelope | null;
+  provenance?: ProvenanceEnvelope | CallerSampleProvenance | null;
 }
 
 export interface AlphaSignalItem {
@@ -448,6 +485,8 @@ export interface GeneticDiscoveryGenerationHistory {
 }
 
 export interface GeneticDiscoveryResponse {
+  session_id?: string | null;
+  stream_url?: string | null;
   status: string;
   job_id: string;
   task_type: string;
@@ -760,6 +799,161 @@ export async function resilientApiRequest<T>(
   }
 }
 
+export function formatAlphaMetric(value: unknown, digits = 2): string {
+  return typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12
+    ? value.toFixed(digits) : '--';
+}
+
+function alphaFields(value: unknown, allowed: string[]): void {
+  if (Object.keys(alphaRecord(value)).some((key) => !allowed.includes(key))) throw new Error('INVALID_ALPHA_PAYLOAD');
+}
+
+function alphaRecord(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('INVALID_ALPHA_PAYLOAD');
+  return value as Record<string, unknown>;
+}
+
+function alphaNumber(value: unknown, min = -1e12, max = 1e12, integer = false): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) {
+    throw new Error('INVALID_ALPHA_NUMBER');
+  }
+  return value;
+}
+
+function alphaText(value: unknown, max: number, empty = false): string {
+  if (typeof value !== 'string' || value.length > max || (!empty && !value.trim())) throw new Error('INVALID_ALPHA_TEXT');
+  return value;
+}
+
+function alphaArray(value: unknown, max: number): unknown[] {
+  if (!Array.isArray(value) || value.length > max) throw new Error('INVALID_ALPHA_ARRAY');
+  return value;
+}
+
+function alphaTimestamp(value: unknown): number {
+  const text = alphaText(value, 64);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(text) || !Number.isFinite(Date.parse(text))) {
+    throw new Error('INVALID_ALPHA_TIMESTAMP');
+  }
+  if (new Date(`${text.slice(0, 10)}T00:00:00Z`).toISOString().slice(0, 10) !== text.slice(0, 10) || Number(text.slice(11, 13)) > 23 || Number(text.slice(14, 16)) > 59 || Number(text.slice(17, 19)) > 59) throw new Error('INVALID_ALPHA_TIMESTAMP');
+  return Date.parse(text);
+}
+
+export function validateAlphaProvenance(value: unknown): void {
+  if (value == null) return;
+  const p = alphaRecord(value);
+  alphaText(p.source, 64); alphaText(p.dataset_id, 128); alphaText(p.dataset_version, 128);
+  if (typeof p.content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(p.content_hash)) throw new Error('INVALID_ALPHA_PIT');
+  alphaTimestamp(p.computed_at);
+  alphaNumber(p.excluded_future_rows, 0, 1e12, true);
+  const asOf = alphaTimestamp(p.as_of);
+  const cutoff = alphaTimestamp(p.effective_cutoff);
+  if (cutoff > asOf || p.normalized_timezone !== 'UTC') throw new Error('INVALID_ALPHA_PIT');
+  if (p.requested_pit_cutoff != null && alphaTimestamp(p.requested_pit_cutoff) !== cutoff) throw new Error('INVALID_ALPHA_PIT');
+  if (p.source === 'caller_sample') {
+    if (p.dataset_id !== 'caller_sample' || p.excluded_future_rows !== 0 || p.is_synthetic !== true || p.pit_verified !== false || p.input_timezone !== 'UNVERIFIED' || p.max_included_available_at !== null) {
+      throw new Error('INVALID_ALPHA_PIT');
+    }
+  } else if (p.is_synthetic !== false || p.pit_verified === false || (p.max_included_available_at != null && alphaTimestamp(p.max_included_available_at) > cutoff)) {
+    throw new Error('INVALID_ALPHA_PIT');
+  }
+}
+
+export function validateAlphaEvaluation(value: unknown): AlphaEvaluationResponse {
+  const r = alphaRecord(value);
+  alphaText(r.expression, 4096);
+  alphaText(r.ast_type, 64);
+  if (r.status !== 'success' || typeof r.is_valid !== 'boolean') throw new Error('INVALID_ALPHA_PAYLOAD');
+  alphaNumber(r.ic_estimate, -1, 1);
+  alphaNumber(r.ir_estimate);
+  alphaNumber(r.turnover_estimate_pct, 0, 100);
+  alphaNumber(r.complexity_score, 1, 10000, true);
+  if (r.sample_result != null) alphaArray(r.sample_result, 10).forEach((v) => alphaNumber(v));
+  if (r.error != null) alphaText(r.error, 4096, true);
+  validateAlphaProvenance(r.provenance);
+  return value as AlphaEvaluationResponse;
+}
+
+export function validateAlphaArsenal(value: unknown): AlphaArsenalResponse {
+  const r = alphaRecord(value);
+  if (r.status !== 'success') throw new Error('INVALID_ALPHA_PAYLOAD');
+  alphaNumber(r.total_available, 0, 1e12, true);
+  const signals = alphaArray(r.signals, 1000);
+  if (alphaNumber(r.count, 0, 1000, true) !== signals.length || (r.total_available as number) < signals.length) throw new Error('INVALID_ALPHA_PAYLOAD');
+  const ids = new Set<string>();
+  signals.forEach((value) => {
+    const s = alphaRecord(value);
+    const id = alphaText(s.alpha_id, 64);
+    if (ids.has(id) || !['ACTIVE', 'CANDIDATE', 'DECAYED', 'INCUBATING'].includes(s.status as string)) throw new Error('INVALID_ALPHA_PAYLOAD');
+    ids.add(id);
+    alphaText(s.name, 256); alphaText(s.category, 64); alphaText(s.formula, 4096);
+    alphaNumber(s.ic_mean, -1, 1); alphaNumber(s.ir_annualized); alphaNumber(s.turnover_pct, 0, 100);
+  });
+  validateAlphaProvenance(r.provenance);
+  return value as AlphaArsenalResponse;
+}
+
+export function validateAlphaDecay(value: unknown): AlphaDecayProfileResponse {
+  const r = alphaRecord(value);
+  if (r.status !== 'success') throw new Error('INVALID_ALPHA_PAYLOAD');
+  alphaText(r.alpha_id, 64); alphaText(r.name, 256); alphaText(r.decay_regime, 128);
+  alphaNumber(r.half_life_days, 1, 1e12);
+  let previousLag = 0;
+  alphaArray(r.profile, 1000).forEach((value) => {
+    const p = alphaRecord(value);
+    previousLag = alphaNumber(p.lag_days, previousLag + 1, 1e12, true);
+    alphaNumber(p.ic, -1, 1); alphaNumber(p.ir); alphaNumber(p.correlation_decay, 0, 1);
+  });
+  validateAlphaProvenance(r.provenance);
+  return value as AlphaDecayProfileResponse;
+}
+
+export function validateAlphaDiscoveryEvent(value: unknown, sessionId: string): AlphaDiscoveryEvent {
+  const r = alphaRecord(value);
+  if (r.session_id !== sessionId || !['SNAPSHOT', 'GENERATION_UPDATE', 'DISCOVERY_COMPLETED', 'DISCOVERY_FAILED', 'PING'].includes(r.event_type as string)) throw new Error('INVALID_ALPHA_EVENT');
+  if (r.event_type === 'PING' || r.event_type === 'DISCOVERY_FAILED') return value as AlphaDiscoveryEvent;
+  const max = alphaNumber(r.max_generations, 1, 100, true);
+  alphaNumber(r.generation, 0, max, true); alphaNumber(r.progress, 0, 100);
+  alphaNumber(r.best_fitness); alphaText(r.best_formula, 1024, r.event_type === 'SNAPSHOT'); alphaTimestamp(r.timestamp);
+  if (r.event_type === 'DISCOVERY_COMPLETED' && (r.progress !== 100 || r.generation !== max)) throw new Error('INVALID_ALPHA_EVENT');
+  return value as AlphaDiscoveryEvent;
+}
+
+function validateAlphaDiscovery(value: unknown): GeneticDiscoveryResponse {
+  const r = alphaRecord(value);
+  if (r.status !== 'success') throw new Error('INVALID_ALPHA_PAYLOAD');
+  alphaText(r.job_id, 64);
+  const max = alphaNumber(r.generations, 1, 100, true);
+  alphaNumber(r.population_size, 10, 500, true);
+  alphaNumber(r.best_fitness); alphaNumber(r.best_ic, -1, 1); alphaNumber(r.best_ir);
+  alphaText(r.best_formula, 1024);
+  if (r.stream_url != null) alphaText(r.stream_url, 256);
+  if (r.session_id != null) alphaText(r.session_id, 64);
+  let generation = 0;
+  alphaArray(r.history, 100).forEach((value) => {
+    const h = alphaRecord(value);
+    generation = alphaNumber(h.generation, generation + 1, max, true);
+    if (h.max_generations !== max) throw new Error('INVALID_ALPHA_PAYLOAD');
+    alphaText(h.best_formula, 1024); alphaNumber(h.best_fitness); alphaNumber(h.mean_fitness); alphaNumber(h.fittest_ic, -1, 1);
+  });
+  validateAlphaProvenance(r.provenance);
+  return value as GeneticDiscoveryResponse;
+}
+
+export function alphaDiscoveryUrl(streamUrl: string, sessionId?: string): string {
+  const url = new URL(streamUrl, API_BASE);
+  const base = new URL(API_BASE);
+  if (url.origin !== base.origin || url.username || url.password || url.hash || url.pathname !== '/sse/v1/alpha/discovery/stream') throw new Error('INVALID_ALPHA_STREAM_URL');
+  if (sessionId !== undefined && (url.searchParams.getAll('session_id').length !== 1 || url.searchParams.get('session_id') !== sessionId)) throw new Error('INVALID_ALPHA_STREAM_URL');
+  return url.toString();
+}
+
+export function alphaErrorMessage(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (code === 'DATA_DEPENDENCY_UNAVAILABLE' || code === 'DATA_NOT_FOUND') return String(code);
+  return 'Alpha request failed. Retry with valid inputs and available data.';
+}
+
 export const advancedQuantApi = {
   submitJob: (request: JobSubmitRequest, idempotencyKey: string, signal?: AbortSignal) =>
     apiRequest<JobAcceptedResponse>('/api/v1/jobs', {
@@ -872,33 +1066,69 @@ export const advancedQuantApi = {
   getMarketConformal: (symbol: string, horizonDays = 5, signal?: AbortSignal) =>
     apiRequest<ConformalPredictResponse>(`/api/v1/market/conformal/${encodeURIComponent(symbol)}?horizon_days=${horizonDays}`, { signal }),
 
-  evaluateAlphaAst: (payload: { expression: string; universe?: string; sample_data?: Record<string, number[]> }, signal?: AbortSignal) =>
-    apiRequest<AlphaEvaluationResponse>('/api/v1/alpha/ast/evaluate', {
+  evaluateAlphaAst: async (payload: AlphaEvaluationRequest, signal?: AbortSignal) => {
+    alphaFields(payload, ['expression', 'universe', 'sample_data', 'as_of', 'pit_cutoff']);
+    alphaText(payload.expression, 4096);
+    if (payload.universe !== undefined) alphaText(payload.universe, 64);
+    const asOf = payload.as_of === undefined ? Date.now() : alphaTimestamp(payload.as_of);
+    if (payload.pit_cutoff !== undefined && alphaTimestamp(payload.pit_cutoff) > asOf) throw new Error('INVALID_ALPHA_PIT');
+    if (payload.sample_data != null) {
+      const entries = Object.entries(alphaRecord(payload.sample_data));
+      if (!entries.length || entries.length > 64) throw new Error('INVALID_ALPHA_PAYLOAD');
+      entries.forEach(([key, values]) => {
+        alphaText(key, 64);
+        const samples = alphaArray(values, 10000);
+        if (!samples.length) throw new Error('INVALID_ALPHA_ARRAY');
+        samples.forEach((v) => alphaNumber(v));
+      });
+    }
+    const result = validateAlphaEvaluation(await resilientApiRequest<unknown>('/api/v1/alpha/ast/evaluate', {
+      maxRetries: 0,
       method: 'POST',
       body: JSON.stringify(payload),
       headers: { 'Content-Type': 'application/json' },
       signal,
-    }),
-
-  getAlphaArsenalSignals: (params: { category?: string; status?: string; search?: string; limit?: number } = {}, signal?: AbortSignal) => {
-    const qParams = new URLSearchParams();
-    if (params.category) qParams.append('category', params.category);
-    if (params.status) qParams.append('status', params.status);
-    if (params.search) qParams.append('search', params.search);
-    if (params.limit) qParams.append('limit', String(params.limit));
-    return apiRequest<AlphaArsenalResponse>(`/api/v1/alpha/arsenal/signals?${qParams.toString()}`, { signal });
+    }));
+    if (result.provenance) {
+      if (payload.as_of !== undefined && alphaTimestamp(result.provenance.as_of) !== asOf) throw new Error('INVALID_ALPHA_PIT');
+      if (payload.pit_cutoff !== undefined && alphaTimestamp(result.provenance.effective_cutoff) !== alphaTimestamp(payload.pit_cutoff)) throw new Error('INVALID_ALPHA_PIT');
+      if (payload.sample_data != null && result.provenance.source !== 'caller_sample') throw new Error('INVALID_ALPHA_PIT');
+    }
+    return result;
   },
 
-  getAlphaDecayProfile: (alphaId: string, signal?: AbortSignal) =>
-    apiRequest<AlphaDecayProfileResponse>(`/api/v1/alpha/decay-profile/${encodeURIComponent(alphaId)}`, { signal }),
+  getAlphaArsenalSignals: (params: { category?: string; status?: string; search?: string; limit?: number } = {}, signal?: AbortSignal) => {
+    alphaFields(params, ['category', 'status', 'search', 'limit']);
+    const qParams = new URLSearchParams();
+    if (params.category !== undefined) qParams.append('category', alphaText(params.category, 64, true));
+    if (params.status !== undefined) qParams.append('status', alphaText(params.status, 64, true));
+    if (params.search !== undefined) qParams.append('search', alphaText(params.search, 4096, true));
+    if (params.limit !== undefined) qParams.append('limit', String(alphaNumber(params.limit, 1, 1000, true)));
+    return resilientApiRequest<unknown>(`/api/v1/alpha/arsenal/signals?${qParams.toString()}`, { signal, maxRetries: 0 }).then(validateAlphaArsenal);
+  },
 
-  startAlphaDiscovery: (payload: { population_size?: number; generations?: number; mutation_rate?: number; crossover_rate?: number; target_ic?: number; target_ir?: number; allowed_operators?: string[] }, signal?: AbortSignal) =>
-    apiRequest<GeneticDiscoveryResponse>('/api/v1/alpha/discovery/start', {
+  getAlphaDecayProfile: async (alphaId: string, signal?: AbortSignal) => {
+    alphaText(alphaId, 64);
+    return validateAlphaDecay(await resilientApiRequest<unknown>(`/api/v1/alpha/decay-profile/${encodeURIComponent(alphaId)}`, { signal, maxRetries: 0 }));
+  },
+
+  startAlphaDiscovery: async (payload: AlphaDiscoveryRequest, signal?: AbortSignal) => {
+    alphaFields(payload, ['population_size', 'generations', 'mutation_rate', 'crossover_rate', 'target_ic', 'target_ir', 'allowed_operators']);
+    alphaNumber(payload.generations === undefined ? 10 : payload.generations, 1, 100, true);
+    alphaNumber(payload.population_size === undefined ? 50 : payload.population_size, 10, 500, true);
+    alphaNumber(payload.mutation_rate === undefined ? 0.15 : payload.mutation_rate, Number.MIN_VALUE, 1);
+    alphaNumber(payload.crossover_rate === undefined ? 0.75 : payload.crossover_rate, Number.MIN_VALUE, 1);
+    alphaNumber(payload.target_ic === undefined ? 0.04 : payload.target_ic, Number.MIN_VALUE, 0.5);
+    alphaNumber(payload.target_ir === undefined ? 1.5 : payload.target_ir, Number.MIN_VALUE, 10);
+    if (payload.allowed_operators !== undefined) alphaArray(payload.allowed_operators, 64).forEach((op) => alphaText(op, 64));
+    return validateAlphaDiscovery(await resilientApiRequest<unknown>('/api/v1/alpha/discovery/start', {
+      maxRetries: 0,
       method: 'POST',
       body: JSON.stringify(payload),
       headers: { 'Content-Type': 'application/json' },
       signal,
-    }),
+    }));
+  },
 
   executePortfolioRebalance: (payload: { totp_code: string; strategy_id?: string; target_portfolio?: Record<string, number>; portfolio_value?: number; drift_threshold?: number; max_turnover?: number; routing_algo?: string; duration_minutes?: number }, signal?: AbortSignal) =>
     apiRequest<PortfolioRebalanceExecuteResponse>('/api/v1/portfolio/rebalance/execute', {

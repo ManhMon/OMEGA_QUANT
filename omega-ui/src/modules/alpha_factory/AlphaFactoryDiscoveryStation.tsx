@@ -1,4 +1,4 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Code,
   Sparkles,
@@ -21,7 +21,7 @@ import {
   ChevronsRight,
 } from 'lucide-react';
 import { useAlphaFactory } from '../../hooks/useAlphaFactory';
-import { advancedQuantApi, AlphaEvaluationResponse, AlphaDecayProfileResponse } from '../../api/advancedQuant';
+import { formatAlphaMetric, alphaErrorMessage } from '../../api/advancedQuant';
 import { useTranslation } from '../../i18n';
 import { useUiStore } from '../../store/uiStore';
 
@@ -54,6 +54,17 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
     arsenalSignals,
     totalArsenalCount,
     isArsenalLoading,
+    arsenalError,
+    targetUniverse,
+    setTargetUniverse,
+    evaluationResult: localEvalResult,
+    isEvaluating: isLocalEvaluating,
+    evaluateError,
+    handleEvaluate: handleEvaluateLocal,
+    decayProfile: localDecayProfile,
+    isDecayLoading: isLocalDecayLoading,
+    decayError,
+    discoveryError,
     discoveryState,
     isDiscovering,
     handleStartDiscovery,
@@ -77,93 +88,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
   const [generations, setGenerations] = useState<number>(10);
   const [popSize, setPopSize] = useState<number>(50);
   const [currentPage, setCurrentPage] = useState<number>(1);
-  const [localEvalResult, setLocalEvalResult] = useState<AlphaEvaluationResponse | null>(null);
-  const [isLocalEvaluating, setIsLocalEvaluating] = useState<boolean>(false);
-  const [localDecayProfile, setLocalDecayProfile] = useState<AlphaDecayProfileResponse | null>(null);
-  const [isLocalDecayLoading, setIsLocalDecayLoading] = useState<boolean>(false);
-
   const pageSize = 50;
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const rafIdRef = useRef<number | null>(null);
-
-  // Debounced AST formula auto-evaluator & Decay fetcher with setData(null) clearing & RAF
-  useEffect(() => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    setLocalDecayProfile(null);
-    if (selectedAlphaId) {
-      setIsLocalDecayLoading(true);
-      const timer = setTimeout(async () => {
-        try {
-          const profile = await advancedQuantApi.getAlphaDecayProfile(selectedAlphaId, controller.signal);
-          if (!controller.signal.aborted) {
-            if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
-            rafIdRef.current = requestAnimationFrame(() => {
-              setLocalDecayProfile(profile);
-              setIsLocalDecayLoading(false);
-            });
-          }
-        } catch (err) {
-          if (!controller.signal.aborted) {
-            setIsLocalDecayLoading(false);
-          }
-        }
-      }, 500);
-
-      return () => {
-        clearTimeout(timer);
-        controller.abort();
-        if (rafIdRef.current) {
-          cancelAnimationFrame(rafIdRef.current);
-          rafIdRef.current = null;
-        }
-      };
-    }
-  }, [selectedAlphaId]);
-
-  const handleEvaluateLocal = async () => {
-    if (!expression.trim()) return;
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    setIsLocalEvaluating(true);
-    setLocalEvalResult(null);
-    try {
-      const res = await advancedQuantApi.evaluateAlphaAst({
-        expression: expression.trim(),
-        universe: 'VN703',
-      }, controller.signal);
-      if (!controller.signal.aborted) {
-        if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
-        rafIdRef.current = requestAnimationFrame(() => {
-          setLocalEvalResult(res);
-          setIsLocalEvaluating(false);
-        });
-      }
-    } catch (err: unknown) {
-      if (!controller.signal.aborted) {
-        setIsLocalEvaluating(false);
-        setLocalEvalResult({
-          status: 'error',
-          expression,
-          is_valid: false,
-          ast_type: 'Unknown',
-          ic_estimate: 0,
-          ir_estimate: 0,
-          turnover_estimate_pct: 0,
-          complexity_score: 1,
-          error: err instanceof Error ? err.message : 'Evaluation error',
-        });
-      }
-    }
-  };
 
   const totalPages = Math.ceil(arsenalSignals.length / pageSize) || 1;
   const validCurrentPage = Math.min(Math.max(currentPage, 1), totalPages);
@@ -212,7 +137,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
             <Database className="w-3.5 h-3.5" />
             {t.alphaFactory.tabArsenal}
             <span className="text-[10px] bg-cyan-900/60 text-cyan-200 px-1.5 py-0.2 rounded font-mono ml-1">
-              {totalArsenalCount || 703}
+              {totalArsenalCount ?? '--'}
             </span>
           </button>
 
@@ -247,6 +172,12 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
 
       {/* 2. Main Tab View Content */}
       <div className="flex-1 overflow-auto p-4 bg-zinc-950">
+        {(evaluateError || arsenalError || decayError || discoveryError) && (
+          <div role="alert" className="mb-3 border border-rose-500/30 p-3 text-zinc-100">
+            {[evaluateError, arsenalError, decayError].filter(Boolean).map((error, index) => <p key={index}>{alphaErrorMessage(error)}</p>)}
+            {discoveryError && <p>{discoveryError}</p>}
+          </div>
+        )}
         {/* TAB 1: AST Formula Studio */}
         {activeTab === 'AST_STUDIO' && (
           <div className="grid grid-cols-12 gap-4 h-full">
@@ -268,7 +199,9 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
 
                 <div className="relative">
                   <textarea
-                    value={expression}
+                    aria-label="Alpha expression"
+                maxLength={4096}
+                value={expression}
                     onChange={(e) => setExpression(e.target.value)}
                     rows={4}
                     placeholder={t.alphaFactory.formulaPlaceholder}
@@ -281,6 +214,8 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                     <span className="text-zinc-300 text-[11px]">{t.alphaFactory.universeLabel}</span>
                     <select
                       aria-label="Universe Selection"
+                  value={targetUniverse}
+                  onChange={(e) => setTargetUniverse(e.target.value)}
                       className="bg-zinc-800 border border-white/10 text-zinc-200 rounded px-2 py-1 text-xs focus:outline-none"
                     >
                       <option value="VN703">VN703 All-Share</option>
@@ -354,30 +289,34 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
 
                   {localEvalResult.error && (
                     <div className="bg-rose-950/40 border border-rose-500/30 p-2.5 rounded text-rose-300 text-xs">
-                      {localEvalResult.error}
+                      Invalid formula or result. Check the expression and input data.
                     </div>
                   )}
 
-                  {/* Quantitative Metrics Grid */}
+                  <p className="text-zinc-300">
+                  {localEvalResult.provenance?.source === 'caller_sample' ? 'Caller sample: PIT unverified' : localEvalResult.provenance ? `Historical cutoff: ${localEvalResult.provenance.effective_cutoff}` : 'PIT provenance unavailable'}
+                  {' · Daily close available at 15:30 ICT (inclusive).'}
+                </p>
+                {/* Quantitative Metrics Grid */}
                   <div className="grid grid-cols-2 gap-2">
                     <div className="bg-zinc-950 p-2.5 rounded-lg border border-white/5 flex flex-col">
                       <span className="text-zinc-300 text-[10px]">{t.alphaFactory.icMean}</span>
                       <span className="text-emerald-400 font-bold text-base mt-0.5">
-                        +{localEvalResult.ic_estimate.toFixed(3)}
+                        {formatAlphaMetric(localEvalResult.is_valid ? localEvalResult.ic_estimate : null, 3)}
                       </span>
                     </div>
 
                     <div className="bg-zinc-950 p-2.5 rounded-lg border border-white/5 flex flex-col">
                       <span className="text-zinc-300 text-[10px]">{t.alphaFactory.irAnnual}</span>
                       <span className="text-cyan-400 font-bold text-base mt-0.5">
-                        {localEvalResult.ir_estimate.toFixed(2)}
+                        {formatAlphaMetric(localEvalResult.is_valid ? localEvalResult.ir_estimate : null, 2)}
                       </span>
                     </div>
 
                     <div className="bg-zinc-950 p-2.5 rounded-lg border border-white/5 flex flex-col">
                       <span className="text-zinc-300 text-[10px]">{t.alphaFactory.turnoverEst}</span>
                       <span className="text-amber-400 font-bold text-base mt-0.5">
-                        {localEvalResult.turnover_estimate_pct.toFixed(1)}% / day
+                        {formatAlphaMetric(localEvalResult.is_valid ? localEvalResult.turnover_estimate_pct : null, 1)}% / day
                       </span>
                     </div>
 
@@ -399,7 +338,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                             key={idx}
                             className="bg-zinc-800 text-zinc-200 px-2 py-0.5 rounded text-[10px] font-mono shrink-0"
                           >
-                            [{idx}]: {val.toFixed(3)}
+                            [{idx}]: {formatAlphaMetric(val, 3)}
                           </span>
                         ))}
                       </div>
@@ -499,6 +438,10 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                         <div
                           key={item.alpha_id}
                           onClick={() => setSelectedAlphaId(item.alpha_id)}
+                        role="button"
+                        tabIndex={0}
+                        aria-pressed={isSelected}
+                        onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setSelectedAlphaId(item.alpha_id); } }}
                           className={`grid grid-cols-12 px-3 py-2 text-xs items-center cursor-pointer transition-all ${
                             isSelected
                               ? 'bg-cyan-500/15 text-cyan-200 border-l-2 border-cyan-400 font-semibold'
@@ -516,10 +459,10 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                             {item.formula}
                           </div>
                           <div className="col-span-1 text-right font-mono text-emerald-400">
-                            {item.ic_mean.toFixed(3)}
+                            {formatAlphaMetric(item.ic_mean, 3)}
                           </div>
                           <div className="col-span-1 text-right font-mono text-cyan-400">
-                            {item.ir_annualized.toFixed(2)}
+                            {formatAlphaMetric(item.ir_annualized, 2)}
                           </div>
                           <div className="col-span-1 text-center">
                             <span
@@ -638,8 +581,8 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                       {localDecayProfile.profile.slice(0, 8).map((p) => (
                         <div key={p.lag_days} className="grid grid-cols-4 px-2 py-1 text-[10px] font-mono">
                           <div className="text-zinc-300">T+{p.lag_days}</div>
-                          <div className="text-right text-emerald-400">{p.ic.toFixed(3)}</div>
-                          <div className="text-right text-cyan-400">{p.ir.toFixed(2)}</div>
+                          <div className="text-right text-emerald-400">{formatAlphaMetric(p.ic, 3)}</div>
+                          <div className="text-right text-cyan-400">{formatAlphaMetric(p.ir, 2)}</div>
                           <div className="text-right text-zinc-300">
                             {Math.round(p.correlation_decay * 100)}%
                           </div>
@@ -692,8 +635,8 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                   {localDecayProfile.profile.map((d) => (
                     <div key={d.lag_days} className="p-3 rounded-lg bg-zinc-950 border border-white/5 flex flex-col gap-1">
                       <span className="text-[10px] text-zinc-400">Lag: T+{d.lag_days}</span>
-                      <span className="text-xs font-bold text-emerald-400">IC: {d.ic.toFixed(3)}</span>
-                      <span className="text-[9px] text-zinc-500">IR: {d.ir.toFixed(2)}</span>
+                      <span className="text-xs font-bold text-emerald-400">IC: {formatAlphaMetric(d.ic, 3)}</span>
+                      <span className="text-[9px] text-zinc-500">IR: {formatAlphaMetric(d.ir, 2)}</span>
                     </div>
                   ))}
                 </div>
@@ -721,6 +664,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                   <div>
                     <label className="text-zinc-300 text-[10px] block mb-1">{t.alphaFactory.generationsCount}</label>
                     <input
+                      aria-label="Generations"
                       type="number"
                       min={1}
                       max={50}
@@ -733,6 +677,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                   <div>
                     <label className="text-zinc-300 text-[10px] block mb-1">{t.alphaFactory.populationSize}</label>
                     <input
+                      aria-label="Population size"
                       type="number"
                       min={10}
                       max={200}
@@ -746,7 +691,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                 <button
                   data-testid="launch-discovery-btn"
                   onClick={() => handleStartDiscovery({ generations, population_size: popSize })}
-                  disabled={isDiscovering}
+                  disabled={isDiscovering || !Number.isInteger(generations) || generations < 1 || generations > 50 || !Number.isInteger(popSize) || popSize < 10 || popSize > 200}
                   className="flex items-center justify-center gap-2 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-bold py-2.5 rounded-lg shadow-md transition-all active:scale-95"
                 >
                   <Play className="w-3.5 h-3.5 fill-current" />
@@ -774,6 +719,11 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
 
                 <div
                   data-testid="discovery-progress-bar"
+                role="progressbar"
+                aria-label="Discovery progress"
+                aria-valuemin={0}
+                aria-valuemax={100}
+                aria-valuenow={discoveryState.progress}
                   className="w-full bg-zinc-950 h-2 rounded-full overflow-hidden border border-white/5 my-1"
                 >
                   <div
@@ -783,7 +733,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                 </div>
 
                 <div className="flex items-center justify-between text-[10px] text-zinc-300">
-                  <span>Progress: {discoveryState.progress.toFixed(1)}%</span>
+                  <span>Progress: {formatAlphaMetric(discoveryState.progress, 1)}%</span>
                   <span>
                     Gen: {discoveryState.generation} / {discoveryState.maxGenerations}
                   </span>
@@ -799,12 +749,12 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                     <Activity className="w-4 h-4 text-purple-400" />
                     <span className="font-bold text-zinc-200">{t.alphaFactory.fittestDiscovered}</span>
                   </div>
-                  {discoveryState.bestFitness > 0 && (
+                  {discoveryState.bestFitness !== null && (
                     <span
                       data-testid="discovery-best-fitness"
                       className="text-purple-300 font-mono font-bold text-xs"
                     >
-                      Fitness: {discoveryState.bestFitness.toFixed(2)}
+                      Fitness: {formatAlphaMetric(discoveryState.bestFitness, 2)}
                     </span>
                   )}
                 </div>
@@ -849,7 +799,7 @@ export const AlphaFactoryDiscoveryStation: React.FC = () => {
                             Gen {ev.generation}/{ev.max_generations}
                           </span>
                           <span className="truncate max-w-[280px] text-zinc-300">{ev.best_formula}</span>
-                          <span className="text-emerald-400">Fit: {ev.best_fitness.toFixed(2)}</span>
+                          <span className="text-emerald-400">Fit: {formatAlphaMetric(ev.best_fitness, 2)}</span>
                         </div>
                       ))
                     )}

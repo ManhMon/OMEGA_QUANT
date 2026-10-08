@@ -1,258 +1,173 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
-  apiClient,
-  API_BASE,
-  AlphaSignalItem,
-  DecayProfileResponse,
-  EvaluateExpressionResponse,
-  DiscoveryProgressEvent,
-  StartDiscoveryRequest,
-} from '../api/client';
+  advancedQuantApi, AlphaDiscoveryRequest, AlphaDiscoveryEvent,
+  validateAlphaDiscoveryEvent, alphaDiscoveryUrl, alphaErrorMessage,
+} from '../api/advancedQuant';
 
 export interface DiscoverySessionState {
   sessionId: string;
   generation: number;
   maxGenerations: number;
   progress: number;
-  bestFitness: number;
+  bestFitness: number | null;
   bestFormula: string;
   status: 'IDLE' | 'RUNNING' | 'COMPLETED' | 'ERROR';
-  history: DiscoveryProgressEvent[];
+  history: AlphaDiscoveryEvent[];
 }
+
+const initialDiscovery: DiscoverySessionState = {
+  sessionId: '', generation: 0, maxGenerations: 10, progress: 0,
+  bestFitness: null, bestFormula: '', status: 'IDLE', history: [],
+};
 
 export function useAlphaFactory() {
   const queryClient = useQueryClient();
-
-  // 1. AST Formula Studio State
-  const [expression, setExpression] = useState<string>('ts_rank(close, 10)');
-  const [targetUniverse, setTargetUniverse] = useState<string>('VN703');
-
-  // 2. Arsenal Filters & Selected Signal
-  const [selectedCategory, setSelectedCategory] = useState<string>('');
-  const [selectedStatus, setSelectedStatus] = useState<string>('');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [selectedAlphaId, setSelectedAlphaId] = useState<string>('ALP_001');
-
-  // 3. Genetic Evolution State
-  const [discoveryState, setDiscoveryState] = useState<DiscoverySessionState>({
-    sessionId: '',
-    generation: 0,
-    maxGenerations: 10,
-    progress: 0,
-    bestFitness: 0,
-    bestFormula: '',
-    status: 'IDLE',
-    history: [],
-  });
-
+  const [expression, setExpression] = useState('ts_rank(close, 10)');
+  const [targetUniverse, setTargetUniverse] = useState('VN703');
+  const [selectedCategory, setSelectedCategory] = useState('');
+  const [selectedStatus, setSelectedStatus] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedAlphaId, setSelectedAlphaId] = useState('ALPHA_0001_VNM');
+  const [discoveryState, setDiscoveryState] = useState(initialDiscovery);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const discoveryController = useRef<AbortController | null>(null);
+  const evaluationController = useRef<AbortController | null>(null);
+  const mounted = useRef(true);
 
-  // Queries
-  const {
-    data: arsenalData,
-    isLoading: isArsenalLoading,
-    refetch: refetchArsenal,
-  } = useQuery({
+  const arsenal = useQuery({
     queryKey: ['alpha-arsenal', selectedCategory, selectedStatus, searchQuery],
-    queryFn: () =>
-      apiClient.getAlphaArsenalSignals({
-        category: selectedCategory || undefined,
-        status: selectedStatus || undefined,
-        search: searchQuery || undefined,
-        limit: 703,
-      }),
-    staleTime: 60000,
+    queryFn: ({ signal }) => advancedQuantApi.getAlphaArsenalSignals({
+      category: selectedCategory || undefined, status: selectedStatus || undefined,
+      search: searchQuery || undefined, limit: 703,
+    }, signal),
+    staleTime: 60000, retry: false,
   });
-
-  const {
-    data: decayProfile,
-    isLoading: isDecayLoading,
-  } = useQuery<DecayProfileResponse>({
+  const decay = useQuery({
     queryKey: ['alpha-decay-profile', selectedAlphaId],
-    queryFn: () => apiClient.getAlphaDecayProfile(selectedAlphaId),
-    enabled: Boolean(selectedAlphaId),
-    staleTime: 30000,
+    queryFn: ({ signal }) => advancedQuantApi.getAlphaDecayProfile(selectedAlphaId, signal),
+    enabled: Boolean(selectedAlphaId), staleTime: 30000, retry: false,
   });
 
-  // Evaluate Expression Mutation
   const evaluateMutation = useMutation({
-    mutationFn: (expr: string) =>
-      apiClient.evaluateAlphaExpression({
-        expression: expr,
-        universe: targetUniverse,
-      }),
-  });
-
-  // Start Discovery Mutation
-  const startDiscoveryMutation = useMutation({
-    mutationFn: (req: StartDiscoveryRequest) => apiClient.startAlphaDiscovery(req),
-    onSuccess: (resp: {
-      job_id?: string;
-      session_id?: string;
-      best_fitness?: number;
-      best_formula?: string;
-      stream_url?: string;
-      history?: Array<{
-        generation: number;
-        max_generations?: number;
-        best_fitness: number;
-        best_formula: string;
-      }>;
-    }) => {
-      // 1. Prioritize live SSE streaming if stream_url provided
-      if (resp.stream_url) {
-        if (eventSourceRef.current) {
-          eventSourceRef.current.close();
-        }
-
-        const activeSessionId = String(resp.session_id ?? resp.job_id ?? 'alpha-discovery');
-        setDiscoveryState({
-          sessionId: activeSessionId,
-          generation: 0,
-          maxGenerations: 10,
-          progress: 0,
-          bestFitness: 0,
-          bestFormula: '',
-          status: 'RUNNING',
-          history: [],
-        });
-
-        const sseUrl = `${API_BASE}${resp.stream_url}`;
-        try {
-          const es = new EventSource(sseUrl);
-          eventSourceRef.current = es;
-
-          es.onmessage = (e) => {
-            try {
-              const data: DiscoveryProgressEvent = JSON.parse(e.data);
-              if (data.event_type === 'PING') return;
-
-              setDiscoveryState((prev) => ({
-                ...prev,
-                generation: data.generation,
-                maxGenerations: data.max_generations ?? prev.maxGenerations,
-                progress: data.progress,
-                bestFitness: data.best_fitness,
-                bestFormula: data.best_formula,
-                status: data.progress >= 100 || data.event_type === 'DISCOVERY_COMPLETED' ? 'COMPLETED' : 'RUNNING',
-                history: [...prev.history.slice(-19), data],
-              }));
-
-              if (data.progress >= 100 || data.event_type === 'DISCOVERY_COMPLETED') {
-                es.close();
-                queryClient.invalidateQueries({ queryKey: ['alpha-arsenal'] });
-              }
-            } catch {
-              // Malformed event payload
-            }
-          };
-
-          es.onerror = () => {
-            es.close();
-            setDiscoveryState((prev) => ({
-              ...prev,
-              status: prev.progress >= 100 ? 'COMPLETED' : 'ERROR',
-            }));
-          };
-        } catch {
-          setDiscoveryState((prev) => ({ ...prev, status: 'ERROR' }));
-        }
-        return;
-      }
-
-      // 2. Synchronous fallback if direct history returned without stream_url
-      if (resp.history && resp.history.length > 0) {
-        const lastGen = resp.history[resp.history.length - 1];
-        setDiscoveryState({
-          sessionId: String(resp.job_id ?? resp.session_id ?? 'gp-job'),
-          generation: lastGen.generation,
-          maxGenerations: lastGen.max_generations ?? 10,
-          progress: 100,
-          bestFitness: resp.best_fitness ?? lastGen.best_fitness,
-          bestFormula: resp.best_formula ?? lastGen.best_formula,
-          status: 'COMPLETED',
-          history: resp.history.map((h) => ({
-            session_id: String(resp.job_id ?? resp.session_id ?? 'gp-job'),
-            event_type: 'GENERATION_UPDATE',
-            generation: h.generation,
-            max_generations: h.max_generations ?? 10,
-            progress: Math.round((h.generation / (h.max_generations ?? 10)) * 100),
-            best_fitness: h.best_fitness,
-            best_formula: h.best_formula,
-            timestamp: new Date().toISOString(),
-          })),
-        });
-        queryClient.invalidateQueries({ queryKey: ['alpha-arsenal'] });
-        return;
-      }
-
-      const fallbackSessionId = String(resp.session_id ?? resp.job_id ?? 'alpha-discovery');
-      setDiscoveryState({
-        sessionId: fallbackSessionId,
-        generation: 0,
-        maxGenerations: 10,
-        progress: 100,
-        bestFitness: resp.best_fitness ?? 0,
-        bestFormula: resp.best_formula ?? '',
-        status: 'COMPLETED',
-        history: [],
-      });
+    mutationFn: ({ expr, universe, controller }: { expr: string; universe: string; controller: AbortController }) => {
+      const cutoff = new Date().toISOString();
+      return advancedQuantApi.evaluateAlphaAst({ expression: expr, universe, as_of: cutoff, pit_cutoff: cutoff }, controller.signal);
     },
+    retry: false,
   });
-
   const handleEvaluate = useCallback(() => {
     if (!expression.trim()) return;
-    evaluateMutation.mutate(expression);
-  }, [expression, evaluateMutation]);
+    evaluationController.current?.abort();
+    const controller = new AbortController();
+    evaluationController.current = controller;
+    evaluateMutation.mutate({ expr: expression.trim(), universe: targetUniverse, controller });
+  }, [expression, targetUniverse, evaluateMutation]);
+  useEffect(() => {
+    evaluationController.current?.abort();
+    evaluateMutation.reset();
+  }, [expression, targetUniverse]);
 
-  const handleStartDiscovery = useCallback(
-    (params: StartDiscoveryRequest = {}) => {
-      startDiscoveryMutation.mutate({
-        generations: params.generations || 10,
-        population_size: params.population_size || 50,
-        mutation_rate: params.mutation_rate || 0.15,
-        crossover_rate: params.crossover_rate || 0.75,
-        target_ic: params.target_ic || 0.04,
-        target_ir: params.target_ir || 1.5,
+  const startDiscoveryMutation = useMutation({
+    mutationFn: ({ params, controller }: { params: AlphaDiscoveryRequest; controller: AbortController }) =>
+      advancedQuantApi.startAlphaDiscovery(params, controller.signal),
+    retry: false,
+    onSuccess: (resp, { controller }) => {
+      if (!mounted.current || controller.signal.aborted) return;
+      const sessionId = resp.session_id ?? resp.job_id;
+      const fail = () => {
+        eventSourceRef.current?.close();
+        eventSourceRef.current = null;
+        setDiscoveryState((prev) => ({ ...prev, status: 'ERROR' }));
+        setDiscoveryError('Discovery failed. Retry with available data.');
+      };
+      if (resp.stream_url) {
+        try {
+          const es = new EventSource(alphaDiscoveryUrl(resp.stream_url, sessionId));
+          eventSourceRef.current = es;
+          setDiscoveryState({ ...initialDiscovery, sessionId, maxGenerations: resp.generations, status: 'RUNNING' });
+          let generation = 0;
+          let progress = 0;
+          es.onmessage = (event) => {
+            if (!mounted.current || controller.signal.aborted || eventSourceRef.current !== es) return;
+            try {
+              if (event.data.length > 65536) throw new Error('INVALID_ALPHA_EVENT');
+              const data = validateAlphaDiscoveryEvent(JSON.parse(event.data), sessionId);
+              if (data.event_type === 'PING') return;
+              if (data.event_type === 'DISCOVERY_FAILED') { fail(); return; }
+              if (data.generation < generation || data.progress < progress || data.max_generations !== resp.generations) throw new Error('INVALID_ALPHA_EVENT');
+              generation = data.generation;
+              progress = data.progress;
+              const completed = data.event_type === 'DISCOVERY_COMPLETED';
+              setDiscoveryState((prev) => ({
+                sessionId, generation, maxGenerations: data.max_generations, progress,
+                bestFitness: data.best_formula ? data.best_fitness : null,
+                bestFormula: data.best_formula, status: completed ? 'COMPLETED' : 'RUNNING',
+                history: [...prev.history.slice(-19), data],
+              }));
+              if (completed) {
+                es.close(); eventSourceRef.current = null;
+                queryClient.invalidateQueries({ queryKey: ['alpha-arsenal'] });
+              }
+            } catch { fail(); }
+          };
+          es.onerror = () => {
+            if (eventSourceRef.current === es && !controller.signal.aborted && mounted.current) fail();
+          };
+        } catch { fail(); }
+        return;
+      }
+      const last = resp.history.at(-1);
+      if (!last || last.generation !== resp.generations) { fail(); return; }
+      setDiscoveryState({
+        sessionId, generation: last.generation, maxGenerations: resp.generations, progress: 100,
+        bestFitness: resp.best_fitness, bestFormula: resp.best_formula, status: 'COMPLETED',
+        history: resp.history.slice(-20).map((h) => ({
+          ...h, session_id: sessionId, event_type: 'GENERATION_UPDATE',
+          progress: h.generation / resp.generations * 100, timestamp: new Date().toISOString(),
+        })),
       });
+      queryClient.invalidateQueries({ queryKey: ['alpha-arsenal'] });
     },
-    [startDiscoveryMutation]
-  );
+    onError: (error, { controller }) => {
+      if (!mounted.current || controller.signal.aborted) return;
+      setDiscoveryState((prev) => ({ ...prev, status: 'ERROR' }));
+      setDiscoveryError(alphaErrorMessage(error));
+    },
+  });
+  const handleStartDiscovery = useCallback((params: AlphaDiscoveryRequest = {}) => {
+    discoveryController.current?.abort();
+    eventSourceRef.current?.close();
+    eventSourceRef.current = null;
+    const controller = new AbortController();
+    discoveryController.current = controller;
+    setDiscoveryError(null);
+    setDiscoveryState(initialDiscovery);
+    startDiscoveryMutation.mutate({ params, controller });
+  }, [startDiscoveryMutation]);
 
   useEffect(() => {
+    mounted.current = true;
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close();
-      }
+      mounted.current = false;
+      eventSourceRef.current?.close();
+      discoveryController.current?.abort();
+      evaluationController.current?.abort();
     };
   }, []);
 
   return {
-    expression,
-    setExpression,
-    targetUniverse,
-    setTargetUniverse,
-    selectedCategory,
-    setSelectedCategory,
-    selectedStatus,
-    setSelectedStatus,
-    searchQuery,
-    setSearchQuery,
-    selectedAlphaId,
-    setSelectedAlphaId,
-    arsenalSignals: (arsenalData?.signals as AlphaSignalItem[]) || [],
-    totalArsenalCount: arsenalData?.total_available || 0,
-    isArsenalLoading,
-    refetchArsenal,
-    decayProfile,
-    isDecayLoading,
-    evaluationResult: evaluateMutation.data as EvaluateExpressionResponse | undefined,
-    isEvaluating: evaluateMutation.isPending,
-    evaluateError: evaluateMutation.error,
-    handleEvaluate,
-    discoveryState,
-    isDiscovering: startDiscoveryMutation.isPending || discoveryState.status === 'RUNNING',
-    handleStartDiscovery,
+    expression, setExpression, targetUniverse, setTargetUniverse,
+    selectedCategory, setSelectedCategory, selectedStatus, setSelectedStatus,
+    searchQuery, setSearchQuery, selectedAlphaId, setSelectedAlphaId,
+    arsenalSignals: arsenal.isError ? [] : arsenal.data?.signals ?? [],
+    totalArsenalCount: arsenal.isError ? null : arsenal.data?.total_available ?? null,
+    isArsenalLoading: arsenal.isLoading, arsenalError: arsenal.error, refetchArsenal: arsenal.refetch,
+    decayProfile: decay.isError ? undefined : decay.data, isDecayLoading: decay.isLoading, decayError: decay.error,
+    evaluationResult: evaluateMutation.data, isEvaluating: evaluateMutation.isPending,
+    evaluateError: evaluateMutation.error, handleEvaluate,
+    discoveryState, discoveryError,
+    isDiscovering: startDiscoveryMutation.isPending || discoveryState.status === 'RUNNING', handleStartDiscovery,
   };
 }

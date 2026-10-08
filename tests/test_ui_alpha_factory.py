@@ -1,4 +1,6 @@
 import math
+from pathlib import Path
+import subprocess
 from datetime import date, datetime
 
 import numpy as np
@@ -733,3 +735,227 @@ def test_pareto_point_strict_contract(field, value):
     ParetoPointDTO.model_validate(point)
     with pytest.raises(ValidationError):
         ParetoPointDTO.model_validate({**point, field: value})
+
+
+@pytest.fixture(scope="module")
+def alpha_ui_runtime(tmp_path_factory):
+    root = Path(__file__).resolve().parents[1]
+    runner = tmp_path_factory.mktemp("alpha_ui_runtime") / "check.cjs"
+    runner.write_text(r'''
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const Module = require('node:module');
+const root = process.argv[2];
+const mode = process.argv[3];
+const ts = require(path.join(root, 'omega-ui/node_modules/typescript'));
+const load = file => {
+  const m = new Module(file, module);
+  m.filename = file; m.paths = Module._nodeModulePaths(path.dirname(file));
+  require.cache[file] = m;
+  m._compile(ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+    compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+  }).outputText, file);
+  return m.exports;
+};
+const oldTs = require.extensions['.ts'];
+require.extensions['.ts'] = (m, file) => { m.exports = load(file); };
+const api = load(path.join(root, 'omega-ui/src/api/advancedQuant.ts'));
+const evalResult = { status: 'success', expression: 'close', is_valid: true, ast_type: 'Name',
+  ic_estimate: 0, ir_estimate: 0, turnover_estimate_pct: 0, complexity_score: 1, sample_result: [0, -1, 50000] };
+const decay = { status: 'success', alpha_id: 'ALPHA_0001_VNM', name: 'Seed', half_life_days: 8,
+  decay_regime: 'EXPONENTIAL_PERSISTENT', profile: [{ lag_days: 1, ic: 0, ir: 0, correlation_decay: 0 }] };
+const event = { session_id: 'session', event_type: 'GENERATION_UPDATE', generation: 1, max_generations: 2,
+  progress: 50, best_fitness: 0, best_formula: 'close', timestamp: '2026-10-08T08:30:00Z' };
+const provenance = { source: 'ast_expression', dataset_id: 'alpha_eval', dataset_version: 'v1', content_hash: 'a'.repeat(64),
+  computed_at: '2026-10-08T08:30:00Z', excluded_future_rows: 0, as_of: '2026-10-08T15:30:00+07:00',
+  effective_cutoff: '2026-10-08T08:30:00Z', requested_pit_cutoff: '2026-10-08T15:30:00+07:00',
+  normalized_timezone: 'UTC', is_synthetic: false, max_included_available_at: '2026-10-08T08:30:00Z' };
+async function main() {
+  if (mode === 'numeric') {
+    assert.equal(api.formatAlphaMetric(0, 3), '0.000');
+    assert.equal(api.formatAlphaMetric(-0.5, 2), '-0.50');
+    for (const value of [null, undefined, '', '0', [], {}, true, NaN, Infinity, -Infinity, 1e12 + 1]) {
+      assert.equal(api.formatAlphaMetric(value), '--');
+      assert.throws(() => api.validateAlphaEvaluation({ ...evalResult, ic_estimate: value }));
+      assert.throws(() => api.validateAlphaDecay({ ...decay, half_life_days: value }));
+    }
+    assert.equal(api.validateAlphaEvaluation(evalResult).sample_result[2], 50000);
+    assert.equal(api.validateAlphaDecay(decay).profile[0].ir, 0);
+    for (const divisor of [0, -1]) assert.throws(() => api.validateAlphaDecay({ ...decay, half_life_days: divisor }));
+    for (const result of [null, [], {}, { ...evalResult, sample_result: [Infinity] }, { ...evalResult, sample_result: Array(11).fill(0) }])
+      assert.throws(() => api.validateAlphaEvaluation(result));
+    assert.equal(api.validateAlphaArsenal({ status: 'success', total_available: 0, count: 0, signals: [] }).total_available, 0);
+    assert.throws(() => api.validateAlphaArsenal({ status: 'success', total_available: 0, count: 1, signals: [] }));
+    assert.throws(() => api.validateAlphaDecay({ ...decay, profile: [decay.profile[0], decay.profile[0]] }));
+  }
+  if (mode === 'pit') {
+    api.validateAlphaProvenance(provenance);
+    api.validateAlphaProvenance({ ...provenance, max_included_available_at: '2026-10-08T08:29:59Z' });
+    assert.throws(() => api.validateAlphaProvenance({ ...provenance, max_included_available_at: '2026-10-08T08:30:00.001Z' }));
+    assert.throws(() => api.validateAlphaProvenance({ ...provenance, effective_cutoff: '2026-10-08T08:30:01Z' }));
+    const caller = { ...provenance, source: 'caller_sample', dataset_id: 'caller_sample', is_synthetic: true, pit_verified: false,
+      input_timezone: 'UNVERIFIED', max_included_available_at: null };
+    api.validateAlphaProvenance(caller);
+    assert.throws(() => api.validateAlphaProvenance({ ...caller, pit_verified: true }));
+    let body;
+    global.fetch = async (_, init) => { body = JSON.parse(init.body); return { ok: true, json: async () => ({ ...evalResult, provenance }) }; };
+    const request = { expression: 'close', as_of: provenance.as_of, pit_cutoff: provenance.requested_pit_cutoff };
+    await api.advancedQuantApi.evaluateAlphaAst(request);
+    assert.deepEqual(body, request);
+    await assert.rejects(api.advancedQuantApi.evaluateAlphaAst({ ...request, as_of:'2026-10-08T08:31:00Z' }));
+    await assert.rejects(api.advancedQuantApi.evaluateAlphaAst({ ...request, sample_data:{close:[50000]} }));
+    global.fetch = async () => ({ ok:true, json:async () => ({ ...evalResult, provenance:caller }) });
+    assert.equal((await api.advancedQuantApi.evaluateAlphaAst({ ...request, sample_data:{close:[50000]} })).provenance.pit_verified,false);
+    for (const stamp of ['2026-10-08T15:30:00', '2026-02-30T08:30:00Z', 'garbage', '', null])
+      await assert.rejects(api.advancedQuantApi.evaluateAlphaAst({ expression: 'close', as_of: stamp }));
+    assert.equal(api.validateAlphaEvaluation({ ...evalResult, provenance: caller }).provenance.pit_verified, false);
+  }
+  if (mode === 'transport') {
+    for (const request of [null, [], { expression:'close', unexpected:1 }]) await assert.rejects(api.advancedQuantApi.evaluateAlphaAst(request));
+    for (const request of [null, [], { unexpected:1 }]) await assert.rejects(api.advancedQuantApi.startAlphaDiscovery(request));
+    for (const request of [null, [], { search:[] }, { category:1 }, { unexpected:1 }]) await assert.rejects(Promise.resolve().then(() => api.advancedQuantApi.getAlphaArsenalSignals(request)));
+    for (const field of ['generations', 'population_size', 'mutation_rate', 'crossover_rate', 'target_ic', 'target_ir'])
+      for (const value of [0, -1, NaN, Infinity, 1e12 + 1, '', [], null]) {
+        await assert.rejects(api.advancedQuantApi.startAlphaDiscovery({ [field]: value }));
+      }
+    let calls = 0;
+    global.fetch = async () => { calls++; throw new Error('https://user:secret@example.invalid'); };
+    await assert.rejects(api.advancedQuantApi.getAlphaDecayProfile('ALPHA_0001_VNM'));
+    assert.equal(calls, 1);
+    assert.ok(!api.alphaErrorMessage(new Error('https://user:secret@example.invalid')).includes('secret'));
+    for (const status of [422, 424, 429, 500]) {
+      calls = 0;
+      global.fetch = async () => { calls++; return { ok: false, status, json: async () => ({ detail: 'DATA_DEPENDENCY_UNAVAILABLE' }) }; };
+      await assert.rejects(api.advancedQuantApi.getAlphaArsenalSignals(), e => e.status === status);
+      assert.equal(calls, 1);
+    }
+    for (const value of [0, -1, NaN, Infinity]) await assert.rejects(Promise.resolve().then(() => api.advancedQuantApi.getAlphaArsenalSignals({ limit: value })));
+    const originalTimeout = global.setTimeout;
+    global.setTimeout = (fn, ms, ...args) => originalTimeout(fn, ms === 10000 ? 1 : ms, ...args);
+    global.fetch = (_, init) => new Promise((resolve, reject) => init.signal.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError'))));
+    try { await assert.rejects(api.advancedQuantApi.getAlphaDecayProfile('ALPHA_0001_VNM'), /timed out/); }
+    finally { global.setTimeout = originalTimeout; }
+    const aborted = new AbortController(); aborted.abort();
+    await assert.rejects(api.advancedQuantApi.getAlphaDecayProfile('ALPHA_0001_VNM', aborted.signal), /Aborted/);
+    assert.throws(() => api.alphaDiscoveryUrl('/sse/v1/alpha/discovery/stream?session_id=other', 'session'));
+    for (const url of ['https://user:secret@example.invalid/sse/v1/alpha/discovery/stream', 'https://other.invalid/sse/v1/alpha/discovery/stream', '/unexpected'])
+      assert.throws(() => api.alphaDiscoveryUrl(url));
+  }
+  if (mode === 'events') {
+    assert.equal(api.validateAlphaDiscoveryEvent(event, 'session').best_fitness, 0);
+    for (const value of [null, [], { ...event, session_id: 'other' }, { ...event, progress: Infinity },
+      { ...event, generation: 3 }, { ...event, max_generations: 0 }, { ...event, best_fitness: 1e12 + 1 },
+      { ...event, event_type: 'UNKNOWN' }, { ...event, event_type: 'DISCOVERY_COMPLETED' }])
+      assert.throws(() => api.validateAlphaDiscoveryEvent(value, 'session'));
+    assert.equal(api.validateAlphaDiscoveryEvent({ ...event, event_type: 'DISCOVERY_COMPLETED', generation: 2, progress: 100 }, 'session').progress, 100);
+    assert.equal(api.validateAlphaDiscoveryEvent({ session_id: 'session', event_type: 'DISCOVERY_FAILED' }, 'session').event_type, 'DISCOVERY_FAILED');
+  }
+  if (mode === 'lifecycle') {
+    const { JSDOM } = require(path.join(root, 'omega-ui/node_modules/jsdom'));
+    const dom = new JSDOM('<div id="root"></div>', { url: 'http://localhost:3000' });
+    global.window = dom.window; global.document = dom.window.document;
+    global.IS_REACT_ACT_ENVIRONMENT = true;
+    const React = require(path.join(root, 'omega-ui/node_modules/react'));
+    const { createRoot } = require(path.join(root, 'omega-ui/node_modules/react-dom/client'));
+    const uiRequire = Module.createRequire(path.join(root, 'omega-ui/package.json'));
+    const { QueryClient, QueryClientProvider } = uiRequire('@tanstack/react-query');
+    const hook = load(path.join(root, 'omega-ui/src/hooks/useAlphaFactory.ts'));
+    let current, evalCalls = [], decayCalls = [], submissions = [], streams = [];
+    const deferred = () => { let resolve, reject; const promise = new Promise((a,b) => { resolve=a; reject=b; }); return {promise,resolve,reject}; };
+    api.advancedQuantApi.getAlphaArsenalSignals = async () => ({ status: 'success', total_available: 0, count: 0, signals: [] });
+    api.advancedQuantApi.getAlphaDecayProfile = (id, signal) => { const d = deferred(); decayCalls.push({ id, signal, ...d }); return d.promise; };
+    api.advancedQuantApi.evaluateAlphaAst = (payload, signal) => { const d = deferred(); evalCalls.push({payload, signal, ...d}); return d.promise; };
+    api.advancedQuantApi.startAlphaDiscovery = (params, signal) => { const d = deferred(); submissions.push({params, signal, ...d}); return d.promise; };
+    global.EventSource = class { constructor(url) { this.url=url; streams.push(this); } close() { this.closed=true; } };
+    function Probe() { current=hook.useAlphaFactory(); return null; }
+    const qc = new QueryClient({defaultOptions:{queries:{retry:false,gcTime:0}}});
+    const renderRoot = createRoot(document.getElementById('root'));
+    const flush = async (fn = () => {}) => React.act(async () => { fn(); await new Promise(resolve => setTimeout(resolve, 10)); });
+    await flush(() => renderRoot.render(React.createElement(QueryClientProvider,{client:qc},React.createElement(Probe))));
+    await flush(() => current.handleEvaluate());
+    assert.equal(decayCalls[0].signal.aborted, false);
+    await flush(() => current.setExpression('volume'));
+    assert.equal(evalCalls[0].signal.aborted, true);
+    await flush(() => evalCalls[0].resolve(evalResult));
+    assert.equal(current.evaluationResult, undefined);
+    await flush(() => current.handleEvaluate());
+    await flush(() => current.setSelectedAlphaId('NEW'));
+    assert.equal(evalCalls[1].signal.aborted, false);
+    await flush(() => decayCalls[0].resolve(decay));
+    assert.equal(current.decayProfile, undefined);
+    await flush(() => evalCalls[1].resolve({ ...evalResult, expression: 'volume' }));
+    assert.equal(current.evaluationResult.expression, 'volume');
+    assert.equal(current.totalArsenalCount, 0);
+    const response = { status:'success',job_id:'session',session_id:'session',stream_url:'/sse/v1/alpha/discovery/stream?session_id=session',generations:2 };
+    await flush(() => current.handleStartDiscovery({ generations: 2 }));
+    await flush(() => submissions[0].resolve(response));
+    await flush(() => streams[0].onmessage({ data: JSON.stringify(event) }));
+    assert.equal(current.discoveryState.bestFitness, 0);
+    await flush(() => streams[0].onmessage({ data: JSON.stringify({ ...event, progress: 100 }) }));
+    assert.equal(current.discoveryState.status, 'RUNNING');
+    await flush(() => streams[0].onmessage({ data: JSON.stringify({ session_id:'session', event_type:'DISCOVERY_FAILED' }) }));
+    assert.equal(current.discoveryState.status, 'ERROR'); assert.equal(streams[0].closed,true);
+    await flush(() => current.handleStartDiscovery({ generations: 2 }));
+    await flush(() => submissions[1].resolve(response));
+    await flush(() => streams[0].onmessage({ data: JSON.stringify({ ...event, event_type:'DISCOVERY_COMPLETED', generation:2, progress:100 }) }));
+    assert.equal(current.discoveryState.status, 'RUNNING');
+    await flush(() => streams[1].onmessage({ data: '{malformed' }));
+    assert.equal(current.discoveryState.status, 'ERROR');
+    await flush(() => current.handleStartDiscovery({ generations: 2 }));
+    await flush(() => submissions[2].resolve({ ...response, stream_url: null, history: [] }));
+    assert.equal(current.discoveryState.status, 'ERROR');
+    await flush(() => current.handleStartDiscovery({ generations: 2 }));
+    await flush(() => submissions[3].resolve(response));
+    await flush(() => streams[2].onmessage({ data: JSON.stringify({ ...event, event_type:'DISCOVERY_COMPLETED', generation:2, progress:100 }) }));
+    assert.equal(current.discoveryState.status, 'COMPLETED'); assert.equal(streams[2].closed, true);
+    await flush(() => current.handleStartDiscovery({ generations: 2 }));
+    await flush(() => current.handleStartDiscovery({ generations: 2 }));
+    assert.equal(submissions[4].signal.aborted, true);
+    await flush(() => submissions[4].resolve(response));
+    assert.equal(streams.length, 3);
+    await flush(() => submissions[5].reject(new Error('https://user:secret@example.invalid')));
+    assert.equal(current.discoveryState.status, 'ERROR'); assert.ok(!current.discoveryError.includes('secret'));
+    await flush(() => renderRoot.unmount()); qc.clear();
+    assert.equal(decayCalls.at(-1).signal.aborted,true);
+    require.extensions['.tsx'] = (m, file) => { m.exports = load(file); };
+    api.advancedQuantApi.getAlphaDecayProfile = async () => decay;
+    api.advancedQuantApi.evaluateAlphaAst = async () => ({ ...evalResult, is_valid:false, error:'Invalid formula' });
+    const { useUiStore } = load(path.join(root, 'omega-ui/src/store/uiStore.ts'));
+    useUiStore.setState({ locale:'en', activeFeatureId:null, activeSubTabs:{alpha_factory:'AST_STUDIO'} });
+    const { AlphaFactoryDiscoveryStation } = load(path.join(root, 'omega-ui/src/modules/alpha_factory/AlphaFactoryDiscoveryStation.tsx'));
+    const stationRoot = createRoot(document.getElementById('root'));
+    await flush(() => stationRoot.render(React.createElement(QueryClientProvider,{client:qc},React.createElement(AlphaFactoryDiscoveryStation))));
+    const evaluateButton = Array.from(document.querySelectorAll('button')).find(b => /Evaluate/i.test(b.textContent));
+    assert.ok(evaluateButton);
+    await flush(() => evaluateButton.click());
+    assert.ok(document.body.textContent.includes('Invalid formula or result'));
+    assert.ok(document.body.textContent.includes('--'));
+    assert.ok(!/NaN|Infinity|\+-/.test(document.body.textContent));
+    assert.equal(document.querySelector('select[aria-label="Universe Selection"]').value, 'VN703');
+    await flush(() => useUiStore.setState({activeSubTabs:{alpha_factory:'GENETIC_EVOLUTION'}}));
+    const generations = document.querySelector('input[aria-label="Generations"]');
+    assert.ok(generations);
+    await flush(() => {
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype,'value').set.call(generations,'0');
+      generations.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
+    });
+    assert.equal(document.querySelector('[data-testid="launch-discovery-btn"]').disabled,true);
+    await flush(() => stationRoot.unmount()); qc.clear(); dom.window.close();
+  }
+  console.log(`alpha-ui ${mode}: passed`);
+}
+main().then(() => { require.extensions['.ts']=oldTs; process.exit(0); }, e => { console.error(e); process.exit(1); });
+''', encoding="utf-8", newline="\n")
+    return root, runner
+
+
+@pytest.mark.parametrize("mode", ["numeric", "pit", "transport", "events", "lifecycle"])
+def test_alpha_ui_runtime_boundaries(alpha_ui_runtime, mode):
+    root, runner = alpha_ui_runtime
+    result = subprocess.run(
+        ["node", str(runner), str(root), mode], cwd=root,
+        capture_output=True, text=True, encoding="utf-8", timeout=60,
+    )
+    if result.returncode:
+        pytest.fail(result.stdout + result.stderr)
