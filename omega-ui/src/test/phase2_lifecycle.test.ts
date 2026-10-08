@@ -31,8 +31,10 @@ describe('Phase 2 UI Lifecycle & Adversarial Resistance Tests', () => {
   let container: HTMLDivElement | null = null;
   let root: Root | null = null;
   let queryClient: QueryClient;
+  let storeSnapshot: ReturnType<typeof useUiStore.getState>;
 
   beforeEach(() => {
+    storeSnapshot = useUiStore.getState();
     vi.useFakeTimers();
     vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
       cb(performance.now());
@@ -163,8 +165,11 @@ describe('Phase 2 UI Lifecycle & Adversarial Resistance Tests', () => {
       });
       container.remove();
     }
+    queryClient.clear();
+    useUiStore.setState(storeSnapshot, true);
     vi.restoreAllMocks();
     vi.clearAllTimers();
+    vi.useRealTimers();
   });
 
   const renderWithProviders = (ui: React.ReactElement) => {
@@ -304,9 +309,26 @@ describe('Phase 2 UI Lifecycle & Adversarial Resistance Tests', () => {
     renderWithProviders(React.createElement(ChartStationView, null));
     expect(container).not.toBeNull();
 
+    vi.spyOn(advancedQuantApi, 'getBarraDecomposition').mockRejectedValue(new Error('BARRA_FACTOR_MODEL_UNAVAILABLE'));
+    vi.spyOn(advancedQuantApi, 'getStressScenarios').mockRejectedValue(new Error('STRESS_MODEL_UNAVAILABLE'));
+    vi.spyOn(advancedQuantApi, 'getPostTradeReport').mockRejectedValue(new Error('DATA_NOT_FOUND'));
+    vi.spyOn(advancedQuantApi, 'getRoutingDiagnostics').mockRejectedValue(new Error('https://user:DO_NOT_ECHO@example.com'));
     renderWithProviders(React.createElement(BarraRiskTcaAnalyticsView, null));
+    const barra = container?.querySelector('section[aria-label="Barra decomposition"]');
+    expect(barra?.querySelector('[role="status"]')?.textContent).toBe('Loading Barra model…');
+    await act(async () => { await vi.advanceTimersByTimeAsync(50); });
+    expect(advancedQuantApi.getBarraDecomposition).toHaveBeenCalledTimes(1);
+    expect(advancedQuantApi.getStressScenarios).toHaveBeenCalledTimes(1);
+    expect(advancedQuantApi.getPostTradeReport).toHaveBeenCalledTimes(1);
+    expect(advancedQuantApi.getRoutingDiagnostics).toHaveBeenCalledTimes(1);
     const t = useUiStore.getState().locale === 'vi' ? vietnamese : en;
-    expect(container?.querySelector('[role="alert"]')?.textContent).toBe(t.common.integrationUnavailable);
+    expect(barra?.querySelector('[role="status"]')?.textContent).toBe(t.common.integrationUnavailable);
+    expect(barra?.querySelector('[role="alert"]')?.textContent).toBe('Risk request failed. Check inputs and available data.');
+    for (const label of ['Stress scenarios', 'Liquidity constraints', 'Pre-trade impact']) {
+      expect(container?.querySelector(`section[aria-label="${label}"] form`)).not.toBeNull();
+    }
+    expect(container?.textContent).toContain('Risk request failed. Check inputs and available data.');
+    expect(container?.textContent).not.toContain('DO_NOT_ECHO');
     expect(container?.textContent).not.toContain('BARRA_VN_V3');
 
     renderWithProviders(React.createElement(FundamentalMatrixView, null));

@@ -223,7 +223,10 @@ it('mounts every real App route under network failure and closes streams', async
       act(() => useUiStore.getState().setLocale('en'));
     }
     if (module === 'barra_risk_tca') {
-      expect(container.querySelector('[role="alert"]')?.textContent).toBe(unavailableMessage);
+      const risk = container.querySelector('section[aria-label="Barra decomposition"]')!;
+      expect(risk.querySelector('[role="status"]')?.textContent).toBe(en.common.integrationUnavailable);
+      expect(risk.querySelector('[role="alert"]')?.textContent).toBe('Risk request failed. Check inputs and available data.');
+      expect(risk.querySelector('form')).not.toBeNull();
       expect(container.textContent).not.toContain('BARRA_VN_V3');
     }
   }
@@ -247,7 +250,7 @@ it('mounts every real App route under network failure and closes streams', async
   expect(closed).toHaveBeenCalled();
 });
 
-it('rejects stub actions without network calls, success data or secret echo', async () => {
+it('rejects unavailable actions and invalid risk inputs without network calls, success data or secret echo', async () => {
   let config!: ReturnType<typeof useLLMConfig>;
   let impact!: ReturnType<typeof usePreTradeImpact>;
   let copilot!: ReturnType<typeof useCopilot>;
@@ -267,7 +270,7 @@ it('rejects stub actions without network calls, success data or secret echo', as
     await expect(config.saveConfig({ global_profile: profile, alpha_quant: profile, news_sentiment: profile, macro_micro: profile })).rejects.toThrow(unavailableMessage);
     await expect(config.testProbe({ ...profile, profile_key: 'global_profile' })).rejects.toThrow(unavailableMessage);
     await expect(config.fetchModels(profile)).rejects.toThrow(unavailableMessage);
-    await expect(impact.mutateAsync({ symbol: '', order_size: 0, average_daily_volume: 0, arrival_price: 0 })).rejects.toThrow(unavailableMessage);
+    await expect(impact.mutateAsync({ symbol: '', order_size: 0, average_daily_volume: 0, arrival_price: 0 })).rejects.toThrow('INVALID_ALPHA_TEXT');
     copilot.sendQuery('DO_NOT_ECHO');
     copilot.dispatchAction({ id: 'invalid' } as Parameters<typeof copilot.dispatchAction>[0]);
   });
@@ -305,6 +308,28 @@ it('wraps modal boundaries while ignoring disabled, hidden and negative tab stop
   dialog.innerHTML = '';
   expect(key()).toHaveBeenCalled();
   expect(document.activeElement).toBe(dialog);
+});
+
+it('blocks malformed and non-finite pre-trade inputs before transport', async () => {
+  let impact!: ReturnType<typeof usePreTradeImpact>;
+  function Probe() { impact = usePreTradeImpact(); return null; }
+  act(() => root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
+  const valid = { symbol: 'FPT', side: 'BUY' as const, order_size: 1000, average_daily_volume: 10000,
+    volatility: 0.02, participation_rate: 0.1, arrival_price: 20000, observed_spread_bps: 1 };
+  await act(async () => {
+    for (const field of ['order_size', 'average_daily_volume', 'volatility', 'participation_rate', 'arrival_price', 'observed_spread_bps']) {
+      for (const value of [null, '', '1', [], NaN, Infinity, -Infinity, -1, 1e13]) {
+        await expect(impact.mutateAsync({ ...valid, [field]: value })).rejects.toThrow();
+      }
+    }
+    for (const field of ['order_size', 'average_daily_volume', 'volatility', 'participation_rate', 'arrival_price']) {
+      await expect(impact.mutateAsync({ ...valid, [field]: 0 })).rejects.toThrow();
+    }
+  });
+  await settle();
+  expect(impact.isError).toBe(true);
+  expect(impact.data).toBeUndefined();
+  expect(fetch).not.toHaveBeenCalled();
 });
 
 it('renders unavailable chart components without synthetic data claims', () => {

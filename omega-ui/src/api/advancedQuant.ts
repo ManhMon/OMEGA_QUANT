@@ -1,4 +1,5 @@
 import { API_BASE, apiRequest } from './client';
+import type { PostTradeTCAReportResponse, TCATradeItem, RoutingDiagnosticsResponse } from './client';
 
 export type JobStatus = 'CREATED' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'CANCELLED' | 'DEAD_LETTERED';
 
@@ -185,6 +186,7 @@ export interface StressTestSimulateResponse {
   average_loss_pct: number;
   scenarios: StressScenarioSimResult[];
   recommendation: string;
+  provenance?: ProvenanceEnvelope;
 }
 
 export interface ContagionNode {
@@ -230,6 +232,7 @@ export interface LiquidityStressValidateResponse {
   at_risk_symbols: string[];
   violation_message: string;
   breakdown: LiquidityStressBreakdownItem[];
+  provenance?: ProvenanceEnvelope;
 }
 
 export interface CorporateGraphNode {
@@ -954,7 +957,270 @@ export function alphaErrorMessage(error: unknown): string {
   return 'Alpha request failed. Retry with valid inputs and available data.';
 }
 
+export const BARRA_FACTORS = ['market_beta', 'size_smb', 'value_hml', 'momentum', 'volatility', 'liquidity', 'quality', 'leverage'] as const;
+export type BarraFactor = typeof BARRA_FACTORS[number];
+export interface BarraAssetInput extends Record<BarraFactor, number> {
+  symbol: string; sector: string; weight_pct: number; specific_risk_pct: number;
+}
+export interface BarraRequest {
+  assets: BarraAssetInput[];
+  factor_covariance: number[][];
+  specific_variances?: number[] | null;
+  covariance_unit?: 'annualized_pct_squared' | 'annualized_decimal_squared';
+}
+interface CallerRiskEstimate {
+  status: 'success'; source: 'request_factor_covariance' | 'request_market_observations';
+  schema_version: string; data_status: 'estimated'; is_synthetic: false;
+  provenance_status: 'caller_supplied_unverified'; pit_verified: false;
+  units: Record<string, string>;
+}
+export interface BarraResponse extends CallerRiskEstimate {
+  timestamp: string; factor_variance: number; specific_variance: number; total_variance: number;
+  total_risk_annualized_pct: number; factor_order: BarraFactor[];
+  factor_exposures: Record<BarraFactor, number>;
+  factor_variance_contributions: Record<BarraFactor, number>;
+  asset_exposures: BarraAssetInput[];
+}
+export interface TcaImpactRequest {
+  symbol: string; order_size: number; average_daily_volume: number; volatility: number;
+  participation_rate: number; side: 'BUY' | 'SELL'; arrival_price: number; observed_spread_bps: number;
+}
+export interface TcaImpactResponse extends CallerRiskEstimate {
+  symbol: string; side: 'BUY' | 'SELL'; estimated_impact_bps: number;
+  spread_cost_bps: number; total_cost_bps: number; total_cost_vnd: number;
+}
+export type TcaReport = Omit<PostTradeTCAReportResponse, 'trades'> & {
+  trades: (Omit<TCATradeItem, 'pre_trade_impact_bps'> & { pre_trade_impact_bps: number | null })[];
+};
+export type RoutingReport = Omit<RoutingDiagnosticsResponse, 'avg_roundtrip_latency_ms' | 'routers'> & {
+  avg_roundtrip_latency_ms: number | null;
+  routers: (Omit<RoutingDiagnosticsResponse['routers'][number], 'status' | 'ping_ms'> & { status: 'DATA_ONLY'; ping_ms: number | null })[];
+};
+export interface StressRequest {
+  portfolio_weights: Record<string, number>; market_shock_pct?: number;
+  volatility_shock_multiplier?: number; include_contagion?: boolean;
+}
+export interface LiquidityRequest {
+  positions: Record<string, number>; max_adv_participation?: number;
+  max_exit_days?: number; market_impact_coefficient?: number;
+}
+
+export const formatRiskMetric = formatAlphaMetric;
+export function riskErrorMessage(error: unknown): string {
+  const code = (error as { code?: unknown } | null)?.code;
+  return typeof code === 'string' && ['DATA_DEPENDENCY_UNAVAILABLE', 'DATA_NOT_FOUND', 'BARRA_FACTOR_MODEL_UNAVAILABLE', 'STRESS_MODEL_UNAVAILABLE', 'INSUFFICIENT_MARKET_HISTORY'].includes(code)
+    ? code : 'Risk request failed. Check inputs and available data.';
+}
+function riskSymbol(value: unknown): string {
+  const symbol = alphaText(value, 12).trim().toUpperCase();
+  if (!/^[A-Z0-9]{1,12}$/.test(symbol)) throw new Error('INVALID_RISK_SYMBOL');
+  return symbol;
+}
+function riskMap(value: unknown, positive: boolean, max: number): Record<string, number> {
+  const entries = Object.entries(alphaRecord(value));
+  if (!entries.length || entries.length > 703) throw new Error('INVALID_RISK_INPUT');
+  const result: Record<string, number> = {};
+  for (const [symbol, amount] of entries) {
+    const key = riskSymbol(symbol);
+    if (Object.hasOwn(result, key)) throw new Error('INVALID_RISK_INPUT');
+    result[key] = alphaNumber(amount, positive ? Number.MIN_VALUE : 0, max);
+  }
+  if (!Object.values(result).some((v) => v > 0)) throw new Error('INVALID_RISK_INPUT');
+  return result;
+}
+function riskClose(actual: number, expected: number): void {
+  if (!Number.isFinite(actual) || !Number.isFinite(expected) || Math.abs(actual - expected) > 1e-8 * Math.max(1, Math.abs(expected))) throw new Error('INVALID_RISK_METRICS');
+}
+function riskCaller(value: unknown, schema: string, source: string, units: Record<string, string>): Record<string, unknown> {
+  const r = alphaRecord(value);
+  if (r.status !== 'success' || r.schema_version !== schema || r.source !== source || r.data_status !== 'estimated' || r.is_synthetic !== false || r.provenance_status !== 'caller_supplied_unverified' || r.pit_verified !== false || r.provenance != null) throw new Error('INVALID_RISK_PROVENANCE');
+  const actual = alphaRecord(r.units);
+  if (Object.keys(actual).length !== Object.keys(units).length || Object.entries(units).some(([k, v]) => actual[k] !== v)) throw new Error('INVALID_RISK_UNITS');
+  return r;
+}
+function riskHistorical(value: unknown, dataset: string): void {
+  const p = alphaRecord(value);
+  alphaFields(p, ['source', 'dataset_id', 'dataset_version', 'as_of', 'computed_at', 'requested_pit_cutoff', 'effective_cutoff', 'input_timezone', 'normalized_timezone', 'cutoff_resolution', 'max_included_available_at', 'excluded_future_rows', 'content_hash', 'artifact_uri', 'is_synthetic']);
+  if (p.dataset_id !== dataset || !['REQUESTED', 'AS_OF_DEFAULT'].includes(p.cutoff_resolution as string)) throw new Error('INVALID_RISK_PROVENANCE');
+  alphaText(p.input_timezone, 64);
+  if (p.artifact_uri !== null) alphaText(p.artifact_uri, 4096);
+  validateAlphaProvenance(p);
+  if (p.is_synthetic !== false || p.source === 'caller_sample' || p.max_included_available_at == null || alphaTimestamp(p.computed_at) < alphaTimestamp(p.as_of)) throw new Error('INVALID_RISK_PROVENANCE');
+}
+function riskAssets(value: unknown): BarraAssetInput[] {
+  const assets = alphaArray(value, 703);
+  if (!assets.length) throw new Error('INVALID_RISK_INPUT');
+  const symbols = new Set<string>();
+  assets.forEach((item) => {
+    const a = alphaRecord(item);
+    alphaFields(a, ['symbol', 'sector', 'weight_pct', 'specific_risk_pct', ...BARRA_FACTORS]);
+    const symbol = riskSymbol(a.symbol);
+    if (symbol !== a.symbol || symbols.has(symbol)) throw new Error('INVALID_RISK_SYMBOL');
+    symbols.add(symbol); alphaText(a.sector, 128);
+    alphaNumber(a.weight_pct, 0, 100); alphaNumber(a.specific_risk_pct, 0);
+    BARRA_FACTORS.forEach((key) => alphaNumber(a[key]));
+  });
+  if (!assets.some((a) => (a as BarraAssetInput).weight_pct > 0)) throw new Error('INVALID_RISK_INPUT');
+  return assets as BarraAssetInput[];
+}
+export function validateBarraRequest(value: unknown): BarraRequest {
+  const r = alphaRecord(value);
+  alphaFields(r, ['assets', 'factor_covariance', 'specific_variances', 'covariance_unit']);
+  const assets = riskAssets(r.assets);
+  const matrix = alphaArray(r.factor_covariance, 8);
+  if (matrix.length !== 8) throw new Error('INVALID_RISK_INPUT');
+  matrix.forEach((row) => {
+    const cells = alphaArray(row, 8);
+    if (cells.length !== 8) throw new Error('INVALID_RISK_INPUT');
+    cells.forEach((v) => alphaNumber(v));
+  });
+  if (r.specific_variances != null) {
+    const variances = alphaArray(r.specific_variances, 703);
+    if (variances.length !== assets.length) throw new Error('INVALID_RISK_INPUT');
+    variances.forEach((v) => alphaNumber(v, 0));
+  }
+  if (r.covariance_unit !== undefined && !['annualized_pct_squared', 'annualized_decimal_squared'].includes(r.covariance_unit as string)) throw new Error('INVALID_RISK_UNITS');
+  // ponytail: PSD and covariance normalization remain the backend's responsibility.
+  return value as BarraRequest;
+}
+export function validateBarraResponse(value: unknown): BarraResponse {
+  const r = riskCaller(value, 'barra.v1', 'request_factor_covariance', { exposure: 'dimensionless', weight: 'pct', risk: 'annualized_pct', variance: 'annualized_pct_squared' });
+  alphaFields(r, ['status', 'timestamp', 'is_synthetic', 'source', 'factor_variance', 'specific_variance', 'total_variance', 'total_risk_annualized_pct', 'factor_exposures', 'factor_variance_contributions', 'asset_exposures', 'factor_order', 'schema_version', 'units', 'data_status', 'provenance_status', 'pit_verified']);
+  alphaTimestamp(r.timestamp);
+  const factor = alphaNumber(r.factor_variance, 0), specific = alphaNumber(r.specific_variance, 0), total = alphaNumber(r.total_variance, 0);
+  riskClose(total, factor + specific); riskClose(alphaNumber(r.total_risk_annualized_pct, 0) ** 2, total);
+  if (JSON.stringify(r.factor_order) !== JSON.stringify(BARRA_FACTORS)) throw new Error('INVALID_RISK_FACTORS');
+  const exposures = alphaRecord(r.factor_exposures), contributions = alphaRecord(r.factor_variance_contributions);
+  alphaFields(exposures, [...BARRA_FACTORS]); alphaFields(contributions, [...BARRA_FACTORS]);
+  BARRA_FACTORS.forEach((key) => { alphaNumber(exposures[key]); alphaNumber(contributions[key]); });
+  riskClose(Object.values(contributions).reduce<number>((sum, v) => sum + (v as number), 0), factor);
+  const assets = riskAssets(r.asset_exposures);
+  riskClose(assets.reduce((sum, a) => sum + a.weight_pct, 0), 100);
+  return value as BarraResponse;
+}
+export function validateImpactRequest(value: unknown): TcaImpactRequest {
+  const r = alphaRecord(value);
+  alphaFields(r, ['symbol', 'order_size', 'average_daily_volume', 'volatility', 'participation_rate', 'side', 'arrival_price', 'observed_spread_bps']);
+  riskSymbol(r.symbol);
+  ['order_size', 'average_daily_volume'].forEach((k) => alphaNumber(r[k], Number.MIN_VALUE));
+  alphaNumber(r.arrival_price, 1000 + Number.EPSILON * 1000);
+  ['volatility', 'participation_rate'].forEach((k) => alphaNumber(r[k], Number.MIN_VALUE, 1));
+  alphaNumber(r.observed_spread_bps, 0);
+  if (!['BUY', 'SELL'].includes(r.side as string)) throw new Error('INVALID_RISK_INPUT');
+  return value as TcaImpactRequest;
+}
+export function validateImpactResponse(value: unknown, request: TcaImpactRequest): TcaImpactResponse {
+  const r = riskCaller(value, 'tca.v1', 'request_market_observations', { price: 'VND_FULL', quantity: 'shares', cost: 'bps', total_cost: 'VND_FULL', volatility: 'daily_decimal' });
+  alphaFields(r, ['status', 'symbol', 'side', 'estimated_impact_bps', 'spread_cost_bps', 'total_cost_bps', 'total_cost_vnd', 'is_synthetic', 'source', 'schema_version', 'data_status', 'provenance_status', 'pit_verified', 'units']);
+  if (r.symbol !== riskSymbol(request.symbol) || r.side !== request.side) throw new Error('INVALID_RISK_BINDING');
+  const impact = alphaNumber(r.estimated_impact_bps, 0), spread = alphaNumber(r.spread_cost_bps, 0), cost = alphaNumber(r.total_cost_bps, 0);
+  riskClose(spread, request.observed_spread_bps); riskClose(cost, impact + spread);
+  riskClose(alphaNumber(r.total_cost_vnd, 0), request.order_size * request.arrival_price * cost / 10000);
+  return value as TcaImpactResponse;
+}
+export function validateStressResponse(value: unknown, request: StressRequest): StressTestSimulateResponse {
+  const r = alphaRecord(value);
+  alphaFields(r, ['status', 'timestamp', 'weights_evaluated', 'average_loss_pct', 'scenarios', 'recommendation', 'provenance']);
+  if (r.status !== 'success') throw new Error('INVALID_RISK_RESPONSE');
+  alphaTimestamp(r.timestamp); alphaNumber(r.average_loss_pct); alphaText(r.recommendation, 4096);
+  const weights = riskMap(r.weights_evaluated, false, 1), expected = riskMap(request.portfolio_weights, false, 1);
+  const sum = Object.values(expected).reduce((a, b) => a + b, 0);
+  if (Object.keys(weights).length !== Object.keys(expected).length) throw new Error('INVALID_RISK_BINDING');
+  Object.entries(expected).forEach(([key, weight]) => riskClose(weights[key], weight / sum));
+  const scenarios = alphaArray(r.scenarios, 100);
+  if (!scenarios.length) throw new Error('INVALID_RISK_RESPONSE');
+  const ids = new Set<string>();
+  scenarios.forEach((item) => {
+    const s = alphaRecord(item), id = alphaText(s.id, 128);
+    alphaFields(s, ['id', 'name', 'market_shock', 'portfolio_impact_pct', 'severity']);
+    if (ids.has(id)) throw new Error('INVALID_RISK_RESPONSE');
+    ids.add(id); alphaText(s.name, 256); alphaText(s.severity, 64);
+    alphaNumber(s.market_shock); alphaNumber(s.portfolio_impact_pct);
+  });
+  riskHistorical(r.provenance, 'stress_test_simulate');
+  return value as StressTestSimulateResponse;
+}
+export function validateLiquidityResponse(value: unknown, request: LiquidityRequest): LiquidityStressValidateResponse {
+  const r = alphaRecord(value), positions = riskMap(request.positions, true, 1e12);
+  alphaFields(r, ['status', 'is_safe', 'max_exit_days', 'total_impact_bps', 'at_risk_symbols', 'violation_message', 'breakdown', 'provenance']);
+  if (r.status !== 'success' || typeof r.is_safe !== 'boolean') throw new Error('INVALID_RISK_RESPONSE');
+  alphaNumber(r.max_exit_days, 0); alphaNumber(r.total_impact_bps, 0); alphaText(r.violation_message, 4096, true);
+  const rows = alphaArray(r.breakdown, 703), seen = new Set<string>(), atRisk: string[] = [];
+  if (rows.length !== Object.keys(positions).length) throw new Error('INVALID_RISK_BINDING');
+  rows.forEach((item) => {
+    const b = alphaRecord(item), symbol = riskSymbol(b.symbol);
+    alphaFields(b, ['symbol', 'quantity', 'adv', 'exit_days', 'exceeds_limit']);
+    if (symbol !== b.symbol || seen.has(symbol) || !Object.hasOwn(positions, symbol) || typeof b.exceeds_limit !== 'boolean') throw new Error('INVALID_RISK_RESPONSE');
+    seen.add(symbol); riskClose(alphaNumber(b.quantity, Number.MIN_VALUE), positions[symbol]);
+    const adv = alphaNumber(b.adv, Number.MIN_VALUE), days = alphaNumber(b.exit_days, 0);
+    riskClose(days, positions[symbol] / (adv * (request.max_adv_participation ?? 0.1)));
+    if (b.exceeds_limit !== (days > (request.max_exit_days ?? 3))) throw new Error('INVALID_RISK_RESPONSE');
+    if (b.exceeds_limit) atRisk.push(symbol);
+  });
+  riskClose(r.max_exit_days as number, Math.max(...rows.map((row) => (row as { exit_days: number }).exit_days)));
+  const reported = alphaArray(r.at_risk_symbols, 703).map(riskSymbol).sort();
+  if (JSON.stringify(reported) !== JSON.stringify(atRisk.sort()) || r.is_safe !== (atRisk.length === 0)) throw new Error('INVALID_RISK_RESPONSE');
+  riskHistorical(r.provenance, 'liquidity_stress_validate');
+  return value as LiquidityStressValidateResponse;
+}
+export function validateTcaReport(value: unknown): TcaReport {
+  const r = alphaRecord(value), summary = alphaRecord(r.summary);
+  if (r.status !== 'success') throw new Error('INVALID_RISK_RESPONSE');
+  alphaTimestamp(r.timestamp);
+  const trades = alphaArray(r.trades, 5000), seen = new Set<string>();
+  if (!trades.length || alphaNumber(summary.num_trades, 1, 5000, true) !== trades.length) throw new Error('INVALID_RISK_RESPONSE');
+  ['average_is_bps', 'average_slippage_bps', 'max_is_bps', 'min_is_bps', 'total_savings_vs_arrival_bps'].forEach((k) => alphaNumber(summary[k]));
+  alphaNumber(summary.total_traded_value_billion_vnd, 0);
+  trades.forEach((item) => {
+    const t = alphaRecord(item), id = alphaText(t.trade_id, 128);
+    if (seen.has(id) || !['BUY', 'SELL'].includes(t.side as string)) throw new Error('INVALID_RISK_RESPONSE');
+    seen.add(id); riskSymbol(t.symbol); alphaText(t.timestamp, 64, true); alphaText(t.broker, 64); alphaText(t.algo, 64); alphaText(t.status, 64);
+    ['parent_quantity', 'filled_quantity', 'avg_fill_price', 'benchmark_price', 'traded_value_vnd'].forEach((k) => alphaNumber(t[k], Number.MIN_VALUE));
+    if ((t.filled_quantity as number) > (t.parent_quantity as number) || (t.avg_fill_price as number) <= 1000 || (t.benchmark_price as number) <= 1000) throw new Error('INVALID_RISK_RESPONSE');
+    ['post_trade_slippage_bps', 'implementation_shortfall_bps'].forEach((k) => alphaNumber(t[k]));
+    if (t.pre_trade_impact_bps !== null) alphaNumber(t.pre_trade_impact_bps, 0);
+    riskClose(t.traded_value_vnd as number, (t.avg_fill_price as number) * (t.filled_quantity as number));
+  });
+  return value as TcaReport;
+}
+export function validateRoutingReport(value: unknown): RoutingReport {
+  const r = alphaRecord(value);
+  if (r.status !== 'success' || r.engine !== 'paper_trading') throw new Error('INVALID_RISK_RESPONSE');
+  alphaTimestamp(r.timestamp);
+  ['total_active_orders', 'total_active_slices'].forEach((k) => alphaNumber(r[k], 0, 5000, true));
+  if (r.avg_roundtrip_latency_ms !== null) alphaNumber(r.avg_roundtrip_latency_ms, 0);
+  alphaArray(r.routers, 100).forEach((item) => {
+    const b = alphaRecord(item);
+    alphaText(b.broker, 64); alphaText(b.channel, 128);
+    if (b.status !== 'DATA_ONLY' || b.ping_ms !== null) throw new Error('INVALID_RISK_RESPONSE');
+    ['fill_rate_pct', 'rejection_rate_pct'].forEach((k) => alphaNumber(b[k], 0, 100));
+    if (b.price_improvement_bps !== null) alphaNumber(b.price_improvement_bps);
+    alphaNumber(b.active_routes, 0, 5000, true);
+  });
+  alphaArray(r.active_queues, 5000).forEach((item) => {
+    const q = alphaRecord(item); alphaText(q.queue_id, 128); riskSymbol(q.symbol); alphaText(q.algo, 64);
+    ['active_slices', 'total_slices', 'target_qty', 'filled_qty'].forEach((k) => alphaNumber(q[k], 0));
+    alphaNumber(q.completion_pct, 0, 100); alphaNumber(q.obi_pressure, -1, 1);
+  });
+  return value as RoutingReport;
+}
+async function riskRequest<T>(path: string, validate: (value: unknown) => T, signal?: AbortSignal, payload?: unknown): Promise<T> {
+  try {
+    return validate(await resilientApiRequest<unknown>(path, { signal, maxRetries: 0, ...(payload === undefined ? {} : { method: 'POST', body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' } }) }));
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    throw new Error(riskErrorMessage(error));
+  }
+}
+
 export const advancedQuantApi = {
+  getBarraDecomposition: (signal?: AbortSignal) => riskRequest('/api/v1/risk/barra/decomposition', validateBarraResponse, signal),
+  calculateBarraDecomposition: (payload: BarraRequest, signal?: AbortSignal) => riskRequest('/api/v1/risk/barra/decomposition', validateBarraResponse, signal, validateBarraRequest(payload)),
+  // ponytail: no calibrated CVaR contract exists; never accept a legacy success payload.
+  getStressScenarios: (signal?: AbortSignal) => riskRequest('/api/v1/risk/stress-scenarios', (): never => { throw new Error('STRESS_MODEL_UNAVAILABLE'); }, signal),
+  calculatePreTradeImpact: (payload: TcaImpactRequest, signal?: AbortSignal) => riskRequest('/api/v1/tca/pre-trade-impact', (value) => validateImpactResponse(value, payload), signal, validateImpactRequest(payload)),
+  getPostTradeReport: (signal?: AbortSignal) => riskRequest('/api/v1/tca/post-trade-report', validateTcaReport, signal),
+  getRoutingDiagnostics: (signal?: AbortSignal) => riskRequest('/api/v1/execution/routing-diagnostics', validateRoutingReport, signal),
   submitJob: (request: JobSubmitRequest, idempotencyKey: string, signal?: AbortSignal) =>
     apiRequest<JobAcceptedResponse>('/api/v1/jobs', {
       method: 'POST',
@@ -996,24 +1262,26 @@ export const advancedQuantApi = {
   getCircuitBreakerStatus: (symbol = 'VNM', signal?: AbortSignal) =>
     apiRequest<CircuitBreakerStatusResponse>(`/api/v1/risk/circuit-breaker/status?symbol=${encodeURIComponent(symbol)}`, { signal }),
 
-  simulateStressTest: (payload: { portfolio_weights: Record<string, number>; market_shock_pct?: number; volatility_shock_multiplier?: number; include_contagion?: boolean }, signal?: AbortSignal) =>
-    apiRequest<StressTestSimulateResponse>('/api/v1/risk/stress-test/simulate', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-    }),
+  simulateStressTest: (payload: StressRequest, signal?: AbortSignal) => {
+    alphaFields(payload, ['portfolio_weights', 'market_shock_pct', 'volatility_shock_multiplier', 'include_contagion']);
+    riskMap(payload.portfolio_weights, false, 1);
+    if (payload.market_shock_pct !== undefined) alphaNumber(payload.market_shock_pct, -50, 50);
+    if (payload.volatility_shock_multiplier !== undefined) alphaNumber(payload.volatility_shock_multiplier, 0.5, 10);
+    if (payload.include_contagion !== undefined && typeof payload.include_contagion !== 'boolean') throw new Error('INVALID_RISK_INPUT');
+    return riskRequest('/api/v1/risk/stress-test/simulate', (value) => validateStressResponse(value, payload), signal, payload);
+  },
 
   getContagionGraph: (signal?: AbortSignal) =>
     apiRequest<ContagionRiskGraphResponse>('/api/v1/risk/contagion-graph', { signal }),
 
-  validateLiquidityStress: (payload: { positions: Record<string, number>; max_adv_participation?: number; max_exit_days?: number; market_impact_coefficient?: number }, signal?: AbortSignal) =>
-    apiRequest<LiquidityStressValidateResponse>('/api/v1/risk/liquidity-stress/validate', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-    }),
+  validateLiquidityStress: (payload: LiquidityRequest, signal?: AbortSignal) => {
+    alphaFields(payload, ['positions', 'max_adv_participation', 'max_exit_days', 'market_impact_coefficient']);
+    riskMap(payload.positions, true, 1e12);
+    if (payload.max_adv_participation !== undefined) alphaNumber(payload.max_adv_participation, Number.MIN_VALUE, 1);
+    if (payload.max_exit_days !== undefined) alphaNumber(payload.max_exit_days, 1, 30, true);
+    if (payload.market_impact_coefficient !== undefined) alphaNumber(payload.market_impact_coefficient, Number.MIN_VALUE, 2);
+    return riskRequest('/api/v1/risk/liquidity-stress/validate', (value) => validateLiquidityResponse(value, payload), signal, payload);
+  },
 
   getCorporateGraph: (symbol: string, signal?: AbortSignal) =>
     apiRequest<CorporateGraphResponse>(`/api/v1/fundamental/corporate-graph/${encodeURIComponent(symbol)}`, { signal }),
