@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useRef } from 'react';
 import { LandingDatabaseHub } from './modules/macro_cockpit/LandingDatabaseHub';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CheckCircle2, AlertCircle, Info, AlertTriangle, X } from 'lucide-react';
@@ -12,6 +12,7 @@ import { PipelineOrchestrationConsole } from './modules/pipeline_console/Pipelin
 import { ModelRegistryView } from './modules/model_registry/ModelRegistryView';
 import { StrategyLabView } from './modules/strategy_lab/StrategyLabView';
 import { AlphaFactoryDiscoveryStation } from './modules/alpha_factory/AlphaFactoryDiscoveryStation';
+import { AlphaPortfolioStationView } from './modules/alpha_portfolio/AlphaPortfolioStationView';
 import { OmniQuantCopilotDrawer } from './modules/copilot/OmniQuantCopilotDrawer';
 import { LLMConfigModal, containModalFocus } from './modules/copilot/LLMConfigModal';
 import { TopNavBar } from './layout/TopNavBar';
@@ -67,7 +68,6 @@ const DashboardContent: React.FC = () => {
   const setActiveModule = useUiStore((state) => state.setActiveModule);
   const isSideDockCollapsed = useUiStore((state) => state.isSideDockCollapsed);
   const toggleSideDockCollapse = useUiStore((state) => state.toggleSideDockCollapse);
-  const isStreamingConnected = useUiStore((state) => state.isStreamingConnected);
   const toasts = useUiStore((state) => state.toasts);
   const removeToast = useUiStore((state) => state.removeToast);
   const isCopilotDrawerOpen = useUiStore((state) => state.isCopilotDrawerOpen);
@@ -82,9 +82,7 @@ const DashboardContent: React.FC = () => {
     isDrawerOpen,
     setIsDrawerOpen
   } = useControlOps();
-  const toggleLocale = useUiStore((state) => state.toggleLocale);
   const opsDialogRef = useRef<HTMLDialogElement>(null);
-  const opsOpenerRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     const dialog = opsDialogRef.current;
@@ -152,7 +150,7 @@ const DashboardContent: React.FC = () => {
       case 'fundamental_matrix':
         return <FundamentalMatrixView />;
       case 'alpha_portfolio':
-        return <LandingDatabaseHub />;
+        return <AlphaPortfolioStationView />;
       case 'barra_risk_tca':
         return <BarraRiskTcaAnalyticsView />;
       case 'chart_station':

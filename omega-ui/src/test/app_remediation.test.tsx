@@ -15,6 +15,7 @@ vi.mock('../modules/control_center/QuantControlCenter', () => ({ QuantControlCen
 vi.mock('../modules/model_registry/ModelRegistryView', () => ({ ModelRegistryView: () => <p>model_registry mounted</p> }));
 vi.mock('../modules/strategy_lab/StrategyLabView', () => ({ StrategyLabView: () => <p>strategy_lab mounted</p> }));
 vi.mock('../modules/alpha_factory/AlphaFactoryDiscoveryStation', () => ({ AlphaFactoryDiscoveryStation: () => <p>alpha_factory mounted</p> }));
+vi.mock('../modules/alpha_portfolio/AlphaPortfolioStationView', () => ({ AlphaPortfolioStationView: () => <p>alpha_portfolio mounted</p> }));
 vi.mock('../modules/copilot/OmniQuantCopilotDrawer', () => ({ OmniQuantCopilotDrawer: ({ isOpen }: { isOpen: boolean }) => isOpen ? <aside data-drawer>Copilot open</aside> : null }));
 vi.mock('../modules/copilot/LLMConfigModal', () => ({ containModalFocus: vi.fn(), LLMConfigModal: ({ isOpen }: { isOpen: boolean }) => isOpen ? <div role="dialog">Configuration open</div> : null }));
 vi.mock('../hooks/useRealtimeStream', () => ({ useRealtimeStream: vi.fn() }));
@@ -211,7 +212,7 @@ describe('App remediation', () => {
   it.each([...modules, 'barra_risk_tca', 'chart_station', 'execution_blotter'] as ModuleType[])('mounts App branch %s', (module) => {
     act(() => useUiStore.getState().setActiveModule(module));
     const content = container.querySelector('main')!;
-    if (['macro_cockpit', 'macro_news_hub', 'alpha_portfolio'].includes(module)) {
+    if (['macro_cockpit', 'macro_news_hub'].includes(module)) {
       expect(content.textContent).toContain('LandingDatabaseHub mounted');
     } else if (module === 'pipeline_console') {
       expect(content.textContent).toContain('This module is unavailable in this build.');

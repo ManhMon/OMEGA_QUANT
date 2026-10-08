@@ -2,7 +2,7 @@ import React from 'react';
 import { useTranslation } from '../i18n';
 import { useUiStore } from '../store/uiStore';
 import { useControlOps } from '../hooks/useControlOps';
-import { Bot, Settings, Activity } from 'lucide-react';
+import { Bot, Activity } from 'lucide-react';
 
 export const TopNavBar: React.FC = () => {
   const { t } = useTranslation();

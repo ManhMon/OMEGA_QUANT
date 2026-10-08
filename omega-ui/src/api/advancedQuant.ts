@@ -1213,7 +1213,164 @@ async function riskRequest<T>(path: string, validate: (value: unknown) => T, sig
   }
 }
 
+export interface PortfolioReadRequest { as_of?: string }
+export interface PortfolioUniverseRequest extends PortfolioReadRequest {
+  min_adv_billion?: number; top_n?: number; sector_cap?: number; min_score?: number;
+}
+export interface TargetPortfolioHolding {
+  symbol: string; weight: number; marketValueBillionVnd: number; adv20BillionVnd: number;
+  alphaScore: number; sector: string; barraMomentum: null; barraValue: null; barraSize: null;
+  turnoverContribution: null; unrealizedPnlPercent: null;
+}
+export interface TargetPortfolioState {
+  status: 'success'; account_model: 'target_institutional_allocation';
+  weighting_method: 'hrp' | 'hrp_inverse_vol_fallback'; timestamp: string; price_scale: 'VND_FULL';
+  nav_method: 'fixed_weight_daily_basket_estimate_not_realized_performance';
+  aum_method: 'candidate_market_cap_reference_not_broker_assets';
+  total_aum_vnd: number; totalAumBillionVnd: number; unallocated_cash_vnd: number; cash_balance_vnd: number;
+  hrp_weights: Record<string, number>; holdings: TargetPortfolioHolding[];
+  nav_history: { timestamp: string; nav_vnd: number }[];
+  drawdown_series: { timestamp: string; drawdown_percent: number }[];
+  maxDrawdownEstimatePercent: number; expectedIrAnnualized: null; portfolioBeta: null;
+  dailyTurnoverEstimatePercent: null; icMean: null; icTStat: null; cvar99Percent: null;
+  provenance: ProvenanceEnvelope;
+}
+export interface PortfolioUniverseResponse {
+  status: 'success'; timestamp: string; selector_model: 'hybrid_rank_sector_capped';
+  symbols: string[]; selected_symbols: string[]; scores: Record<string, number>;
+  sector_weights: Record<string, number>; total_evaluated: number; total_selected: number;
+  selected_details: { symbol: string; sector: string; score: number; adv_billion_vnd: number; status: 'ACTIVE' | 'QUALIFIED' | 'WATCH' }[];
+  excluded_summary: Record<string, string>; units: { adv: 'billion_vnd'; weight: 'fraction' };
+  provenance: ProvenanceEnvelope;
+}
+
+export function portfolioErrorMessage(error: unknown): string {
+  const code = (error as { errorCode?: unknown } | null)?.errorCode ?? (error instanceof Error ? error.message : undefined);
+  return typeof code === 'string' && ['DATASET_PIT_INVALID', 'DATA_DEPENDENCY_UNAVAILABLE', 'DATA_SCHEMA_INVALID', 'TRADING_CALENDAR_UNAVAILABLE', 'PIT_CUTOFF_INVALID'].includes(code)
+    ? code : 'Portfolio request failed. Check inputs and available data.';
+}
+function portfolioFields(value: unknown, fields: string[]): Record<string, unknown> {
+  const record = alphaRecord(value);
+  if (Object.keys(record).length !== fields.length || fields.some((key) => !Object.hasOwn(record, key))) throw new Error('DATA_SCHEMA_INVALID');
+  return record;
+}
+function portfolioSector(value: unknown): string {
+  const text = alphaText(value, 80);
+  if (text.trim() !== text || /[\r\n]/.test(text)) throw new Error('DATA_SCHEMA_INVALID');
+  return text;
+}
+export function validatePortfolioRequest(value: unknown, universe = false): PortfolioUniverseRequest {
+  const r = alphaRecord(value);
+  alphaFields(r, universe ? ['as_of', 'min_adv_billion', 'top_n', 'sector_cap', 'min_score'] : ['as_of']);
+  if (r.as_of !== undefined && alphaTimestamp(r.as_of) > Date.now()) throw new Error('PIT_CUTOFF_INVALID');
+  if (universe) {
+    alphaNumber(r.min_adv_billion ?? 20, 1, 500); alphaNumber(r.top_n ?? 30, 5, 100, true);
+    alphaNumber(r.sector_cap ?? 0.3, 0.05, 1); alphaNumber(r.min_score ?? 0.25, 0, 1);
+    for (const key of ['min_adv_billion', 'top_n', 'sector_cap', 'min_score']) {
+      if (Object.hasOwn(r, key) && r[key] == null) throw new Error('DATA_SCHEMA_INVALID');
+    }
+  }
+  return structuredClone(value) as PortfolioUniverseRequest;
+}
+function portfolioProvenance(value: unknown, dataset: string, timestamp: unknown, request: PortfolioReadRequest): ProvenanceEnvelope {
+  const p = portfolioFields(value, ['source', 'dataset_id', 'dataset_version', 'as_of', 'computed_at', 'requested_pit_cutoff', 'effective_cutoff', 'input_timezone', 'normalized_timezone', 'cutoff_resolution', 'max_included_available_at', 'excluded_future_rows', 'content_hash', 'artifact_uri', 'is_synthetic']);
+  const decision = alphaTimestamp(timestamp), cutoff = alphaTimestamp(p.effective_cutoff), computed = alphaTimestamp(p.computed_at);
+  if (p.source !== 'target_portfolio_parquet' || p.dataset_id !== dataset || p.dataset_version !== 'portfolio.v1' || p.is_synthetic !== false || p.input_timezone !== 'UTC+7' || p.normalized_timezone !== 'UTC' || p.excluded_future_rows !== 0 || p.artifact_uri !== null
+    || typeof p.content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(p.content_hash)
+    || alphaTimestamp(p.as_of) !== decision || cutoff > decision || computed < decision || computed > Date.now() || alphaTimestamp(p.max_included_available_at) > cutoff) throw new Error('DATASET_PIT_INVALID');
+  const close = new Date(cutoff);
+  if (close.getUTCHours() !== 8 || close.getUTCMinutes() !== 30 || close.getUTCSeconds() !== 0 || close.getUTCMilliseconds() !== 0 || [0, 6].includes(close.getUTCDay())) throw new Error('DATASET_PIT_INVALID');
+  if (request.as_of === undefined) {
+    if (p.requested_pit_cutoff !== null || p.cutoff_resolution !== 'AS_OF_DEFAULT') throw new Error('DATASET_PIT_INVALID');
+  } else if (p.cutoff_resolution !== 'REQUESTED' || alphaTimestamp(p.requested_pit_cutoff) !== alphaTimestamp(request.as_of) || decision !== alphaTimestamp(request.as_of)) throw new Error('DATASET_PIT_INVALID');
+  // ponytail: holiday resolution is backend-owned; enforce session time/order here, extend with a registered calendar contract.
+  return value as ProvenanceEnvelope;
+}
+export function validateTargetPortfolio(value: unknown, request: PortfolioReadRequest = {}): TargetPortfolioState {
+  validatePortfolioRequest(request);
+  const nulls = ['expectedIrAnnualized', 'portfolioBeta', 'dailyTurnoverEstimatePercent', 'icMean', 'icTStat', 'cvar99Percent'];
+  const r = portfolioFields(value, ['status', 'account_model', 'weighting_method', 'timestamp', 'price_scale', 'nav_method', 'aum_method', 'total_aum_vnd', 'totalAumBillionVnd', 'unallocated_cash_vnd', 'cash_balance_vnd', 'hrp_weights', 'nav_history', 'drawdown_series', 'holdings', 'maxDrawdownEstimatePercent', ...nulls, 'provenance']);
+  if (r.status !== 'success' || r.account_model !== 'target_institutional_allocation' || !['hrp', 'hrp_inverse_vol_fallback'].includes(r.weighting_method as string) || r.price_scale !== 'VND_FULL' || r.nav_method !== 'fixed_weight_daily_basket_estimate_not_realized_performance' || r.aum_method !== 'candidate_market_cap_reference_not_broker_assets' || nulls.some((key) => r[key] !== null)) throw new Error('DATA_SCHEMA_INVALID');
+  const p = portfolioProvenance(r.provenance, 'target_portfolio_state', r.timestamp, request);
+  const aum = alphaNumber(r.total_aum_vnd, Number.MIN_VALUE), cash = alphaNumber(r.unallocated_cash_vnd, 0, aum);
+  riskClose(alphaNumber(r.totalAumBillionVnd, Number.MIN_VALUE), aum / 1e9); riskClose(alphaNumber(r.cash_balance_vnd, 0, aum), cash);
+  const holdings = alphaArray(r.holdings, 10), weights = alphaRecord(r.hrp_weights), seen = new Set<string>();
+  if (!holdings.length || Object.keys(weights).length !== holdings.length) throw new Error('DATA_SCHEMA_INVALID');
+  const nullable = ['barraMomentum', 'barraValue', 'barraSize', 'turnoverContribution', 'unrealizedPnlPercent'];
+  let sum = 0;
+  holdings.forEach((item) => {
+    const h = portfolioFields(item, ['symbol', 'weight', 'marketValueBillionVnd', 'adv20BillionVnd', 'alphaScore', 'sector', ...nullable]);
+    const symbol = riskSymbol(h.symbol), weight = alphaNumber(h.weight, 0, 1);
+    if (symbol !== h.symbol || seen.has(symbol) || !Object.hasOwn(weights, symbol) || nullable.some((key) => h[key] !== null)) throw new Error('DATA_SCHEMA_INVALID');
+    seen.add(symbol); sum += weight; portfolioSector(h.sector);
+    riskClose(alphaNumber(weights[symbol], 0, 1), weight);
+    riskClose(alphaNumber(h.marketValueBillionVnd, 0), aum * weight / 1e9);
+    alphaNumber(h.adv20BillionVnd, 0, 1000); alphaNumber(h.alphaScore, 0, 1);
+  });
+  riskClose(sum, 1); riskClose(cash, aum * Math.max(0, 1 - sum));
+  const nav = alphaArray(r.nav_history, 253), drawdown = alphaArray(r.drawdown_series, 253);
+  if (nav.length < 21 || nav.length !== drawdown.length) throw new Error('DATA_SCHEMA_INVALID');
+  let previous = -Infinity, peak = 0, worst = 0;
+  nav.forEach((item, i) => {
+    const n = portfolioFields(item, ['timestamp', 'nav_vnd']), d = portfolioFields(drawdown[i], ['timestamp', 'drawdown_percent']);
+    const time = alphaTimestamp(n.timestamp), amount = alphaNumber(n.nav_vnd, Number.MIN_VALUE);
+    if (time <= previous || time > alphaTimestamp(p.effective_cutoff) || alphaTimestamp(d.timestamp) !== time) throw new Error('DATASET_PIT_INVALID');
+    const session = new Date(time);
+    if (session.getUTCHours() !== 8 || session.getUTCMinutes() !== 30 || session.getUTCSeconds() !== 0 || session.getUTCMilliseconds() !== 0 || [0, 6].includes(session.getUTCDay())) throw new Error('DATASET_PIT_INVALID');
+    if (i === 0) riskClose(amount, aum);
+    peak = Math.max(peak, amount);
+    const dd = alphaNumber(d.drawdown_percent, -100, 0);
+    riskClose(dd, (amount / peak - 1) * 100); worst = Math.min(worst, dd); previous = time;
+  });
+  if (previous !== alphaTimestamp(p.effective_cutoff)) throw new Error('DATASET_PIT_INVALID');
+  riskClose(alphaNumber(r.maxDrawdownEstimatePercent, 0, 100), -worst);
+  return value as TargetPortfolioState;
+}
+export function validatePortfolioUniverse(value: unknown, request: PortfolioUniverseRequest = {}): PortfolioUniverseResponse {
+  validatePortfolioRequest(request, true);
+  const r = portfolioFields(value, ['status', 'timestamp', 'selector_model', 'symbols', 'scores', 'sector_weights', 'selected_symbols', 'selected_details', 'total_evaluated', 'total_selected', 'excluded_summary', 'units', 'provenance']);
+  if (r.status !== 'success' || r.selector_model !== 'hybrid_rank_sector_capped') throw new Error('DATA_SCHEMA_INVALID');
+  portfolioProvenance(r.provenance, 'dynamic_universe', r.timestamp, request);
+  const units = portfolioFields(r.units, ['adv', 'weight']);
+  if (units.adv !== 'billion_vnd' || units.weight !== 'fraction') throw new Error('DATA_SCHEMA_INVALID');
+  const symbols = alphaArray(r.symbols, request.top_n ?? 30), selected = alphaArray(r.selected_symbols, 100), rows = alphaArray(r.selected_details, 100);
+  const scores = alphaRecord(r.scores), sectors = alphaRecord(r.sector_weights), excluded = alphaRecord(r.excluded_summary);
+  const total = alphaNumber(r.total_evaluated, 1, 100000, true);
+  if (alphaNumber(r.total_selected, 0, 100, true) !== symbols.length || selected.length !== symbols.length || rows.length !== symbols.length || Object.keys(scores).length !== symbols.length || Object.keys(excluded).length + symbols.length !== total) throw new Error('DATA_SCHEMA_INVALID');
+  const seen = new Set<string>(), counts: Record<string, number> = Object.create(null);
+  let previousScore = Infinity, previousSymbol = '';
+  rows.forEach((item, i) => {
+    const d = portfolioFields(item, ['symbol', 'sector', 'score', 'adv_billion_vnd', 'status']);
+    const symbol = riskSymbol(d.symbol), sector = portfolioSector(d.sector), score = alphaNumber(d.score, request.min_score ?? 0.25, 1);
+    if (symbol !== d.symbol || symbol !== symbols[i] || symbol !== selected[i] || seen.has(symbol) || !Object.hasOwn(scores, symbol) || !['ACTIVE', 'QUALIFIED', 'WATCH'].includes(d.status as string) || score > previousScore || (score === previousScore && symbol <= previousSymbol)) throw new Error('DATA_SCHEMA_INVALID');
+    seen.add(symbol); riskClose(alphaNumber(scores[symbol], 0, 1), score);
+    alphaNumber(d.adv_billion_vnd, request.min_adv_billion ?? 20, 1000);
+    counts[sector] = (counts[sector] ?? 0) + 1; previousScore = score; previousSymbol = symbol;
+  });
+  if (Object.keys(sectors).length !== Object.keys(counts).length) throw new Error('DATA_SCHEMA_INVALID');
+  Object.entries(counts).forEach(([sector, count]) => {
+    if (!Object.hasOwn(sectors, sector)) throw new Error('DATA_SCHEMA_INVALID');
+    riskClose(alphaNumber(sectors[sector], 0, request.sector_cap ?? 0.3), count / symbols.length);
+  });
+  Object.entries(excluded).forEach(([symbol, reason]) => {
+    if (riskSymbol(symbol) !== symbol || seen.has(symbol) || reason !== 'not_selected_by_liquidity_score_lifecycle_or_sector_cap') throw new Error('DATA_SCHEMA_INVALID');
+  });
+  return value as PortfolioUniverseResponse;
+}
+async function portfolioRequest<T>(path: string, request: PortfolioUniverseRequest, universe: boolean, validate: (value: unknown, request: PortfolioUniverseRequest) => T, signal?: AbortSignal): Promise<T> {
+  try {
+    const snapshot = validatePortfolioRequest(request, universe);
+    const query = new URLSearchParams(Object.entries(snapshot).filter(([, value]) => value !== undefined).map(([key, value]) => [key, String(value)]));
+    return validate(await resilientApiRequest<unknown>(`${path}${query.size ? `?${query}` : ''}`, { signal, maxRetries: 0 }), snapshot);
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    throw new Error(portfolioErrorMessage(error));
+  }
+}
+
 export const advancedQuantApi = {
+  getTargetPortfolioState: (request: PortfolioReadRequest = {}, signal?: AbortSignal) => portfolioRequest('/api/v1/portfolio/state', request, false, validateTargetPortfolio, signal),
+  getPortfolioDynamicUniverse: (request: PortfolioUniverseRequest = {}, signal?: AbortSignal) => portfolioRequest('/api/v1/portfolio/dynamic-universe', request, true, validatePortfolioUniverse, signal),
   getBarraDecomposition: (signal?: AbortSignal) => riskRequest('/api/v1/risk/barra/decomposition', validateBarraResponse, signal),
   calculateBarraDecomposition: (payload: BarraRequest, signal?: AbortSignal) => riskRequest('/api/v1/risk/barra/decomposition', validateBarraResponse, signal, validateBarraRequest(payload)),
   // ponytail: no calibrated CVaR contract exists; never accept a legacy success payload.
