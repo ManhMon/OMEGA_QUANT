@@ -159,10 +159,31 @@ def test_market_orderbook_synthetic_fallback(client):
     assert resp.json()["bids"] and resp.json()["asks"]
 
 
-def test_portfolio_state_genuine_lakehouse_wiring(client):
-    resp = client.get("/api/v1/portfolio/state")
+def test_portfolio_state_genuine_lakehouse_wiring(client, tmp_path, monkeypatch):
+    from omega.api.routes import portfolio
+    from omega.data.calendar import VNTradingCalendar
+
+    hybrid = tmp_path / "hybrid.parquet"
+    market = tmp_path / "market.parquet"
+    monkeypatch.setattr(portfolio, "HYBRID_EVAL_PATH", hybrid)
+    monkeypatch.setattr(portfolio, "MARKET_PARQUET_PATH", market)
+    clock = "2026-01-30T08:30:00Z"
+    pd.DataFrame([{"symbol": "FPT", "sector": "Technology", "hybrid_score": 0.8,
+                   "adv20_billion_vnd": 25.0, "market_cap_billion_vnd": 1.0,
+                   "status": "ACTIVE", "as_of": clock, "available_at": clock}]).to_parquet(hybrid)
+    days = [day for day in pd.date_range("2025-12-01", "2026-01-30")
+            if VNTradingCalendar.is_trading_day(day.to_pydatetime())][-30:]
+    pd.DataFrame([{"ticker": "FPT", "date": day, "close": 100_000 + i * 1000,
+                   "price_scale": "VND_FULL",
+                   "as_of": (day + pd.Timedelta(hours=15, minutes=30)).tz_localize(portfolio.ICT).isoformat(),
+                   "available_at": (day + pd.Timedelta(hours=15, minutes=30)).tz_localize(portfolio.ICT).isoformat()}
+                  for i, day in enumerate(days)]).to_parquet(market)
+    resp = client.get("/api/v1/portfolio/state", params={"as_of": clock})
     assert resp.status_code == 200
-    assert resp.json()["holdings"]
+    data = resp.json()
+    assert data["holdings"][0]["symbol"] == "FPT"
+    assert data["nav_history"][0]["nav_vnd"] == 1e9
+    assert data["account_model"] == "target_institutional_allocation"
 
 
 def test_execution_blotter_wired(client):
@@ -351,11 +372,13 @@ def test_dim03_corrupted_duplicate_partial_payloads(client):
     ).status_code == 422
 
 
-def test_dim04_fail_closed_error_states(client):
-    # Wired entities return structured success envelopes without unhandled crashes.
+def test_dim04_fail_closed_error_states(client, tmp_path, monkeypatch):
+    from omega.api.routes import portfolio
+
+    monkeypatch.setattr(portfolio, "HYBRID_EVAL_PATH", tmp_path / "missing.parquet")
     resp = client.get("/api/v1/portfolio/state")
-    assert resp.status_code == 200
-    assert "holdings" in resp.json()
+    assert resp.status_code == 424
+    assert resp.json() == {"detail": "DATA_DEPENDENCY_UNAVAILABLE"}
 
     resp_diag = client.get("/api/v1/execution/routing-diagnostics")
     assert resp_diag.status_code == 200
@@ -810,8 +833,11 @@ def test_f001_no_fabricated_metrics(client):
     assert tca_data["estimated_impact_bps"] > 0
 
 
-def test_f002_fail_closed_empty_dependencies(client):
+def test_f002_fail_closed_empty_dependencies(client, tmp_path, monkeypatch):
     """F-002: Fail-closed contract for empty or unavailable dependencies."""
+    from omega.api.routes import portfolio
+
+    monkeypatch.setattr(portfolio, "HYBRID_EVAL_PATH", tmp_path / "missing.parquet")
     assert client.get("/api/v1/portfolio/dynamic-universe").status_code == 424
     assert client.get("/api/v1/portfolio/dynamic-universe").json()["detail"] == "DATA_DEPENDENCY_UNAVAILABLE"
 
