@@ -295,18 +295,183 @@ def test_functional_phase2_endpoints_complete():
     assert "max_exit_days" in res_liq.json()
     assert "provenance" in res_liq.json()
 
-    # 9. Corporate Graph (Real financial metrics, distinct percentages)
-    res_corp_fpt = client.get("/api/v1/fundamental/corporate-graph/FPT")
-    assert res_corp_fpt.status_code == 200
-    assert res_corp_fpt.json()["symbol"] == "FPT"
-    assert "provenance" in res_corp_fpt.json()
+    # 9. Legacy lakehouse financials lack explicit as_of; no inferred PIT provenance.
+    for symbol in ("FPT", "HPG"):
+        res_corp = client.get(f"/api/v1/fundamental/corporate-graph/{symbol}")
+        assert res_corp.status_code == 424
+        assert res_corp.json() == {"detail": "DATASET_PIT_INVALID"}
 
-    res_corp_hpg = client.get("/api/v1/fundamental/corporate-graph/HPG")
-    assert res_corp_hpg.status_code == 200
-    assert res_corp_hpg.json()["symbol"] == "HPG"
 
-    # Entities should not be identical hardcoded constants
-    assert res_corp_fpt.json()["nodes"][1]["ownership_pct"] != res_corp_hpg.json()["nodes"][1]["ownership_pct"]
+@pytest.fixture
+def corporate_artifacts(monkeypatch, tmp_path):
+    import pandas as pd
+    from omega.api.routes import risk_tca
+
+    sector = tmp_path / "sectors.csv"
+    financials = tmp_path / "financials.parquet"
+    pd.DataFrame({"symbol": ["FPT", "HPG"], "sector": ["Technology", "Materials"]}).to_csv(sector, index=False)
+    rows = []
+    for symbol, parent_profit in (("FPT", 80.0), ("HPG", 60.0)):
+        for item, value in {"revenue": 1000.0, "cost_of_goods_sold": 500.0,
+                            "net_profit": 100.0,
+                            "profit_after_tax_for_shareholders_of_parent_company": parent_profit}.items():
+            rows.append({"symbol": symbol, "item_code": item, "item_value": value,
+                         "as_of": "2026-10-07T08:30:00Z", "available_at": "2026-10-07T15:30:00+07:00"})
+    frame = pd.DataFrame(rows)
+    frame.to_parquet(financials)
+    monkeypatch.setattr(risk_tca, "SECTOR_MAPPING_PATH", sector)
+    monkeypatch.setattr(risk_tca, "FINANCIALS_PARQUET_PATH", financials)
+    class FixedDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return datetime(2026, 10, 8, 8, 30, tzinfo=timezone.utc).astimezone(tz)
+    monkeypatch.setattr(risk_tca, "datetime", FixedDateTime)
+    return frame, financials, sector
+
+
+def test_corporate_graph_explicit_pit_contract(corporate_artifacts):
+    results = [client.get(f"/api/v1/fundamental/corporate-graph/{symbol}") for symbol in ("FPT", "HPG")]
+    for symbol, response in zip(("FPT", "HPG"), results):
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["symbol"] == symbol
+        provenance = data["provenance"]
+        assert provenance["is_synthetic"] is False
+        assert provenance["source"] == "financial_statements_2015_now.parquet"
+        assert datetime.fromisoformat(provenance["max_included_available_at"]) == datetime(2026, 10, 7, 8, 30, tzinfo=timezone.utc)
+        assert provenance["max_included_available_at"] <= provenance["effective_cutoff"]
+    assert results[0].json()["nodes"][1]["ownership_pct"] != results[1].json()["nodes"][1]["ownership_pct"]
+
+
+@pytest.mark.parametrize("fault", ["missing", "directory", "corrupt", "missing_as_of", "missing_available_at",
+                                       "naive", "reversed", "null_time", "empty_time", "malformed_time",
+                                       "missing_item", "duplicate", "future", "empty"])
+def test_corporate_graph_dependency_faults(corporate_artifacts, fault):
+    frame, path, _ = corporate_artifacts
+    expected = "DATASET_PIT_INVALID"
+    status = 424
+    if fault in {"missing", "directory", "corrupt"}:
+        path.unlink()
+        if fault == "directory":
+            path.mkdir()
+        elif fault == "corrupt":
+            path.write_bytes(b"not parquet")
+        expected = "FINANCIALS_DATASET_UNAVAILABLE"
+    else:
+        if fault.startswith("missing_"):
+            frame = frame.drop(columns={"missing_as_of": "as_of", "missing_available_at": "available_at", "missing_item": "item_value"}[fault])
+            if fault == "missing_item":
+                expected = "DATA_SCHEMA_INVALID"
+        elif fault == "naive":
+            frame["available_at"] = "2026-10-07T08:30:00"
+        elif fault == "reversed":
+            frame["as_of"] = "2026-10-08T08:30:00Z"
+        elif fault in {"null_time", "empty_time", "malformed_time"}:
+            frame["available_at"] = {"null_time": None, "empty_time": "", "malformed_time": "bad"}[fault]
+        elif fault == "duplicate":
+            import pandas as pd
+            frame = pd.concat([frame, frame.iloc[:1]], ignore_index=True)
+            expected = "DATA_SCHEMA_INVALID"
+        elif fault == "future":
+            frame["available_at"] = "2026-10-07T08:30:00.000001Z"
+            status = 404
+        elif fault == "empty":
+            frame = frame.iloc[:0]
+            status = 404
+        frame.to_parquet(path)
+    response = client.get("/api/v1/fundamental/corporate-graph/FPT")
+    assert response.status_code == status, response.text
+    if status == 424:
+        assert response.json() == {"detail": expected}
+    else:
+        assert response.json()["detail"] == "Symbol FPT not found in financials dataset"
+
+
+@pytest.mark.parametrize("value", [None, True, "bad", float("nan"), float("inf"), -float("inf"), 1e13, 0.0, -1.0])
+def test_corporate_graph_invalid_metrics(corporate_artifacts, value):
+    frame, path, _ = corporate_artifacts
+    frame["item_value"] = value
+    frame.to_parquet(path)
+    response = client.get("/api/v1/fundamental/corporate-graph/FPT")
+    assert response.status_code == (404 if value in (0.0, -1.0) and not isinstance(value, bool) else 424), response.text
+
+
+@pytest.mark.parametrize("fault", ["missing", "directory", "corrupt", "missing_column", "null", "empty", "duplicate"])
+def test_corporate_graph_sector_faults(corporate_artifacts, fault):
+    import pandas as pd
+    _, _, sector = corporate_artifacts
+    expected = "DATA_SCHEMA_INVALID"
+    if fault in {"missing", "directory", "corrupt"}:
+        sector.unlink()
+        if fault == "directory":
+            sector.mkdir()
+        elif fault == "corrupt":
+            sector.write_bytes(b"\xff")
+        expected = "SECTOR_MAPPING_UNAVAILABLE"
+    else:
+        data = {"symbol": ["FPT"], "sector": ["Technology"]}
+        if fault == "missing_column":
+            del data["sector"]
+        elif fault == "null":
+            data["sector"] = [None]
+        elif fault == "empty":
+            data["sector"] = [" "]
+        elif fault == "duplicate":
+            data = {"symbol": ["FPT", "fpt"], "sector": ["Technology", "Technology"]}
+        pd.DataFrame(data).to_csv(sector, index=False)
+    response = client.get("/api/v1/fundamental/corporate-graph/FPT")
+    assert response.status_code == 424, response.text
+    assert response.json() == {"detail": expected}
+
+
+@pytest.mark.parametrize("item", ["net_profit", "profit_after_tax_for_shareholders_of_parent_company", "revenue", "cost_of_goods_sold"])
+@pytest.mark.parametrize("value", [None, 0.0, -1.0])
+def test_corporate_graph_required_item_divisors(corporate_artifacts, item, value):
+    frame, path, _ = corporate_artifacts
+    selected = (frame["symbol"] == "FPT") & (frame["item_code"] == item)
+    if value is None:
+        frame = frame.loc[~selected]
+    else:
+        frame.loc[selected, "item_value"] = value
+    frame.to_parquet(path)
+    response = client.get("/api/v1/fundamental/corporate-graph/FPT")
+    assert response.status_code == 404, response.text
+    assert item in response.json()["detail"]
+
+
+def test_corporate_graph_timestamp_ordering(corporate_artifacts):
+    import pandas as pd
+    frame, path, _ = corporate_artifacts
+    older = frame.copy()
+    older["as_of"] = "2026-10-06T08:30:00Z"
+    older["available_at"] = "2026-10-06T15:30:00+07:00"
+    older.loc[older["item_code"] == "profit_after_tax_for_shareholders_of_parent_company", "item_value"] = 20.0
+    pd.concat([frame, older], ignore_index=True).to_parquet(path)
+    response = client.get("/api/v1/fundamental/corporate-graph/FPT")
+    assert response.status_code == 200, response.text
+    assert response.json()["edges"][0]["weight"] == 80.0
+
+
+def test_corporate_graph_read_isolation_future_invariance(corporate_artifacts):
+    import pandas as pd
+    from concurrent.futures import ThreadPoolExecutor
+
+    frame, path, sector = corporate_artifacts
+    before = (path.read_bytes(), sector.read_bytes())
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        results = list(pool.map(lambda _: client.get("/api/v1/fundamental/corporate-graph/FPT"), range(8)))
+    assert all(response.status_code == 200 for response in results)
+    assert len({response.json()["provenance"]["content_hash"] for response in results}) == 1
+    assert (path.read_bytes(), sector.read_bytes()) == before
+    future = frame.copy()
+    future["as_of"] = "2026-10-07T08:30:00.000001Z"
+    future["available_at"] = "2026-10-07T08:30:00.000001Z"
+    future["item_value"] = float("inf")
+    pd.concat([frame, future], ignore_index=True).to_parquet(path)
+    response = client.get("/api/v1/fundamental/corporate-graph/FPT")
+    assert response.status_code == 200, response.text
+    assert response.json()["provenance"]["content_hash"] == results[0].json()["provenance"]["content_hash"]
+    assert response.json()["provenance"]["excluded_future_rows"] == len(future)
 
 
 

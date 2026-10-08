@@ -134,6 +134,8 @@ def test_barra_risk_decomposition_post_endpoint(client):
     assert data["status"] == "success"
     assert "factor_exposures" in data
     assert "total_variance" in data
+    assert data["provenance_status"] == "caller_supplied_unverified"
+    assert data["pit_verified"] is False
 
 
 # ==============================================================================
@@ -175,16 +177,34 @@ def test_execution_routing_diagnostics_wired(client):
     assert resp.json()["routers"]
 
 
-def test_risk_barra_decomposition_get_endpoint(client):
-    resp = client.get("/api/v1/risk/barra/decomposition")
-    assert resp.status_code == 200
-    assert resp.json()["factors"]
+@pytest.mark.parametrize("artifact", ["missing", "corrupt", "no_pit", "eligible"])
+def test_risk_barra_decomposition_get_endpoint(client, monkeypatch, tmp_path, artifact):
+    _assert_risk_read_unavailable(client, monkeypatch, tmp_path, artifact,
+                                  "/api/v1/risk/barra/decomposition", "BARRA_FACTOR_MODEL_UNAVAILABLE")
 
 
-def test_risk_stress_scenarios_wired(client):
-    resp = client.get("/api/v1/risk/stress-scenarios")
-    assert resp.status_code == 200
-    assert resp.json()["scenarios"]
+@pytest.mark.parametrize("artifact", ["missing", "corrupt", "no_pit", "eligible"])
+def test_risk_stress_scenarios_wired(client, monkeypatch, tmp_path, artifact):
+    _assert_risk_read_unavailable(client, monkeypatch, tmp_path, artifact,
+                                  "/api/v1/risk/stress-scenarios", "STRESS_MODEL_UNAVAILABLE")
+
+
+def _assert_risk_read_unavailable(client, monkeypatch, tmp_path, artifact, endpoint, model_error):
+    from omega.api.routes import risk_tca
+
+    path = tmp_path / "hybrid.parquet"
+    monkeypatch.setattr(risk_tca, "HYBRID_EVAL_PATH", path)
+    if artifact == "corrupt":
+        path.write_bytes(b"not parquet")
+    elif artifact == "no_pit":
+        pd.DataFrame({"symbol": ["FPT"], "hybrid_score": [0.8]}).to_parquet(path)
+    elif artifact == "eligible":
+        pd.DataFrame({"as_of": ["2024-01-02T08:30:00Z"],
+                      "available_at": ["2024-01-02T08:30:00Z"]}).to_parquet(path)
+    resp = client.get(endpoint)
+    expected = model_error if artifact == "eligible" else "DATASET_PIT_INVALID" if artifact == "no_pit" else "DATA_DEPENDENCY_UNAVAILABLE"
+    assert resp.status_code == 424
+    assert resp.json() == {"detail": expected}
 
 
 def test_tca_post_trade_report_empty_fail_closed(client):
