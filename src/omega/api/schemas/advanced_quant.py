@@ -680,10 +680,37 @@ class WalkForwardCpcvResponse(StrictApiModel):
     provenance: ProvenanceEnvelope | None = None
 
 
+def _sample_float(value: Any) -> Any:
+    # Keep rejected non-finite inputs JSON-safe in FastAPI validation errors.
+    if isinstance(value, float) and not math.isfinite(value):
+        return str(value)
+    return value
+
+
 class AlphaEvaluationRequest(StrictApiModel):
+    as_of: AwareUtcDateTime | None = None
+    pit_cutoff: AwareUtcDateTime | None = None
     expression: Annotated[str, Field(min_length=1, max_length=4096)]
     universe: Annotated[str, Field(default="VN703", min_length=1, max_length=64)] = "VN703"
-    sample_data: dict[str, list[FiniteFloat]] | None = None
+    sample_data: Annotated[
+        dict[str, Annotated[
+            list[Annotated[FiniteFloat, BeforeValidator(_sample_float)]],
+            Field(min_length=1, max_length=10000),
+        ]],
+        Field(min_length=1, max_length=64),
+    ] | None = None
+
+
+class CallerSampleProvenance(ProvenanceEnvelope):
+    """Caller values have no verified market origin or observation availability."""
+
+    source: Literal["caller_sample"] = "caller_sample"
+    dataset_id: Literal["alpha_eval_caller_sample", "alpha_eval_caller_sample_rejected"]
+    input_timezone: Literal["UNVERIFIED"] = "UNVERIFIED"
+    max_included_available_at: None = None
+    excluded_future_rows: Literal[0] = 0
+    is_synthetic: Literal[True] = True
+    pit_verified: Literal[False] = False
 
 
 class AlphaEvaluationResponse(StrictApiModel):
@@ -697,7 +724,7 @@ class AlphaEvaluationResponse(StrictApiModel):
     complexity_score: Annotated[int, Field(ge=1)]
     sample_result: list[FiniteFloat] | None = None
     error: str | None = None
-    provenance: ProvenanceEnvelope | None = None
+    provenance: CallerSampleProvenance | ProvenanceEnvelope | None = None
 
 
 class GeneticDiscoveryRequest(StrictApiModel):
@@ -765,6 +792,20 @@ class AlphaArsenalResponse(StrictApiModel):
     total_available: Annotated[int, Field(ge=0)]
     count: Annotated[int, Field(ge=0)]
     signals: list[AlphaSignalItem]
+    provenance: ProvenanceEnvelope | None = None
+
+
+class ParetoPointDTO(StrictApiModel):
+    alpha_id: Annotated[str, Field(min_length=1, max_length=64)]
+    ic_mean: Annotated[FiniteFloat, Field(ge=-1.0, le=1.0)]
+    ir_annualized: FiniteFloat
+    turnover_pct: Annotated[FiniteFloat, Field(ge=0.0, le=100.0)]
+    complexity_score: Annotated[int, Field(ge=1)]
+
+
+class ParetoFrontierResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    points: list[ParetoPointDTO] = Field(default_factory=list)
     provenance: ProvenanceEnvelope | None = None
 
 
@@ -1053,5 +1094,4 @@ class ConformalCalibrationStatusResponse(StrictApiModel):
     mean_interval_width: FiniteFloat | None = None
     group_coverages: list[MondrianGroupCoverage] = Field(default_factory=list)
     provenance: ProvenanceEnvelope | None = None
-
 

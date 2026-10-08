@@ -57,7 +57,7 @@ DEFAULT_PROMOTION_THRESHOLDS = {
 
 BASE_FEATURE_COLUMNS = ["open", "high", "low", "close", "volume"]
 ALT_FEATURE_COUNT = 25
-ALT_DATA_FEATURE_COUNT = 10
+ALT_DATA_FEATURE_COUNT = 14
 ALT_DATA_FEATURE_COLUMNS = [
     "foreign_flow",
     "foreign_flow_ma5",
@@ -69,6 +69,10 @@ ALT_DATA_FEATURE_COLUMNS = [
     "liquidity_shock",
     "vsi_score",
     "focal_stress_score",
+    "interbank_on_spread",
+    "term_structure_slope",
+    "interbank_vol_5d",
+    "macro_monetary_regime",
 ]
 REQUIRED_FEATURE_COUNT = ALT_FEATURE_COUNT + ALT_DATA_FEATURE_COUNT
 ACTIVE_FEATURE_COLUMNS = list(BASE_FEATURE_COLUMNS)

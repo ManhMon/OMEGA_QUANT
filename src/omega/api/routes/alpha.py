@@ -8,7 +8,7 @@ import re
 import threading
 import uuid
 import ast
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 import numpy as np
@@ -26,8 +26,9 @@ from omega.api.schemas.advanced_quant import (
     AlphaArsenalResponse,
     AlphaSignalItem,
     AlphaDecayProfileResponse,
-    DecayPoint,
+    ParetoFrontierResponse,
     ProvenanceEnvelope,
+    CallerSampleProvenance,
 )
 
 router = APIRouter(prefix="/api/v1/alpha", tags=["alpha"])
@@ -132,37 +133,77 @@ async def evaluate_alpha_expression(req: AlphaEvaluationRequest) -> Dict[str, An
     if not expr:
         raise HTTPException(status_code=422, detail="Expression cannot be empty")
 
+    as_of = req.as_of or datetime.now(timezone.utc)
+    cutoff = req.pit_cutoff or as_of
+    if cutoff > as_of:
+        raise HTTPException(status_code=422, detail="pit_cutoff must not exceed as_of")
+    max_included_date = None
+    excluded_future_rows = 0
+
     # Load baseline sample data if not provided
     sample_data = req.sample_data
-    if not sample_data:
-        if MARKET_PARQUET_PATH.exists():
-            try:
-                df = pd.read_parquet(MARKET_PARQUET_PATH, columns=["ticker", "date", "close", "volume"])
-                fpt_df = df[df["ticker"].str.upper() == "FPT"].sort_values("date").tail(60)
-                closes = [float(c) for c in fpt_df["close"]]
-                volumes = [float(v) for v in fpt_df["volume"]]
-                sample_data = {
-                    "close": closes,
-                    "volume": volumes,
-                    "vwap": closes,
-                    "ret_20": [float(r) for r in pd.Series(closes).pct_change(20).fillna(0.0)],
-                    "obi_depth_10": [0.15] * len(closes),
-                    "piotroski_f": [7.0] * len(closes),
-                    "pe_ratio": [15.2] * len(closes),
-                    "fcf_yield": [0.08] * len(closes),
-                    "llm_sentiment_score": [0.65] * len(closes),
-                    "vsi_sentiment_delta": [0.12] * len(closes),
-                }
-            except Exception:
-                sample_data = {
-                    "close": [50000.0, 51000.0, 50500.0, 52000.0, 53000.0] * 10,
-                    "volume": [100000.0, 120000.0, 110000.0, 150000.0, 140000.0] * 10,
-                }
-        else:
+    if sample_data is None:
+        try:
+            if not MARKET_PARQUET_PATH.is_file():
+                raise ValueError("Market data is not a regular file")
+            df = pd.read_parquet(
+                MARKET_PARQUET_PATH,
+                columns=["ticker", "date", "close", "volume"],
+            )
+            fpt_df = df[df["ticker"].str.upper() == "FPT"].copy()
+            dates = []
+            for value in fpt_df["date"]:
+                if not isinstance(value, (str, date, np.datetime64)) or pd.isna(value):
+                    raise ValueError("Market date is missing or invalid")
+                stamp = pd.Timestamp(value)
+                if pd.isna(stamp):
+                    raise ValueError("Market date is missing or invalid")
+                # Daily session labels become available at 15:30 ICT; explicit offsets retain their instant.
+                if stamp.tzinfo is None:
+                    stamp = (stamp.normalize() + pd.Timedelta(hours=15, minutes=30)).tz_localize("Asia/Ho_Chi_Minh")
+                dates.append(stamp.tz_convert("UTC"))
+            fpt_df["date"] = pd.to_datetime(dates, utc=True)
+            excluded_future_rows = int((fpt_df["date"] > cutoff).sum())
+            fpt_df = fpt_df[fpt_df["date"] <= cutoff].sort_values("date").tail(60)
+            if not fpt_df.empty:
+                max_included_date = fpt_df["date"].max().to_pydatetime()
+            closes = [float(c) for c in fpt_df["close"]]
+            volumes = [float(v) for v in fpt_df["volume"]]
+            if not closes or not np.isfinite(closes + volumes).all() or any(c <= 0 for c in closes):
+                raise ValueError("Market data has no finite positive FPT closes")
+            returns = pd.Series(closes).pct_change(20)
+            # Only the lookback warmup is missing by construction; never replace invalid derived returns.
+            returns.iloc[:20] = 0.0
             sample_data = {
-                "close": [50000.0, 51000.0, 50500.0, 52000.0, 53000.0] * 10,
-                "volume": [100000.0, 120000.0, 110000.0, 150000.0, 140000.0] * 10,
+                "close": closes,
+                "volume": volumes,
+                "vwap": closes,
+                "ret_20": [float(r) for r in returns],
             }
+            sample_data = AlphaEvaluationRequest(sample_data=sample_data, expression=expr).sample_data
+        except Exception:
+            raise HTTPException(
+                status_code=424, detail="DATA_DEPENDENCY_UNAVAILABLE"
+            ) from None
+
+    caller_sample = req.sample_data is not None
+    provenance_type = CallerSampleProvenance if caller_sample else ProvenanceEnvelope
+    prov = provenance_type(
+        source="caller_sample" if caller_sample else "ast_expression",
+        dataset_id="alpha_eval_caller_sample" if caller_sample else "alpha_eval",
+        dataset_version="v2026.1",
+        as_of=as_of, computed_at=datetime.now(timezone.utc),
+        requested_pit_cutoff=req.pit_cutoff, effective_cutoff=cutoff,
+        input_timezone="UNVERIFIED" if caller_sample else "UTC+7", normalized_timezone="UTC",
+        cutoff_resolution="REQUESTED" if req.pit_cutoff else "AS_OF_DEFAULT",
+        max_included_available_at=max_included_date,
+        excluded_future_rows=excluded_future_rows,
+        content_hash=hashlib.sha256(json.dumps({
+            "expression": expr, "sample_data": sample_data, "caller_sample": caller_sample,
+            "as_of": as_of.isoformat(), "cutoff": cutoff.isoformat(),
+        }, sort_keys=True, allow_nan=False).encode("utf-8")).hexdigest(),
+        is_synthetic=caller_sample,
+    )
 
     # Evaluate AST complexity
     try:
@@ -181,10 +222,19 @@ async def evaluate_alpha_expression(req: AlphaEvaluationRequest) -> Dict[str, An
         result = safe_eval_expression(expr, globals_dict={"__builtins__": {}}, locals_dict=eval_locals)
         if isinstance(result, np.ndarray):
             clean_sample = [float(x) for x in result if np.isfinite(x)][:10]
-            ic_estimate = float(np.clip(np.corrcoef(result[-20:], eval_locals["close"][-20:])[0, 1] if len(result) >= 20 else 0.045, -1.0, 1.0))
+            if not clean_sample:
+                raise ValueError("Expression produced no finite values")
+            closes = eval_locals.get("close", [])
+            ic_estimate = float(np.clip(
+                np.corrcoef(result[-20:], closes[-20:])[0, 1]
+                if len(result) >= 20 and len(closes) >= 20 else 0.045,
+                -1.0, 1.0,
+            ))
             if np.isnan(ic_estimate):
                 ic_estimate = 0.042
         elif isinstance(result, (int, float)):
+            if not math.isfinite(result):
+                raise ValueError("Expression produced a non-finite value")
             clean_sample = [float(result)]
             ic_estimate = 0.035
         else:
@@ -193,7 +243,6 @@ async def evaluate_alpha_expression(req: AlphaEvaluationRequest) -> Dict[str, An
 
         ir_estimate = float(abs(ic_estimate) * 28.5)
         turnover_est = float(min(100.0, max(5.0, nodes_count * 2.8)))
-        prov = _make_provenance("ast_expression", "alpha_eval", expr)
 
         return {
             "status": "success",
@@ -209,7 +258,9 @@ async def evaluate_alpha_expression(req: AlphaEvaluationRequest) -> Dict[str, An
             "provenance": prov.model_dump(),
         }
     except (ExpressionRejected, ValueError, Exception) as exc:
-        prov = _make_provenance("ast_expression", "alpha_eval_rejected", expr)
+        prov = prov.model_copy(update={
+            "dataset_id": "alpha_eval_caller_sample_rejected" if caller_sample else "alpha_eval_rejected",
+        })
         return {
             "status": "success",
             "expression": expr,
@@ -235,38 +286,42 @@ async def get_alpha_arsenal_signals(
     raise HTTPException(status_code=424, detail="DATA_DEPENDENCY_UNAVAILABLE")
 
 
+@router.get("/pareto-frontier", response_model=ParetoFrontierResponse)
+async def get_alpha_pareto_frontier() -> ParetoFrontierResponse:
+    # ponytail: no persisted Pareto metrics; add the store when available.
+    return ParetoFrontierResponse()
+
+
 @router.get("/decay-profile/{alpha_id}", response_model=AlphaDecayProfileResponse)
 async def get_alpha_decay_profile(alpha_id: str) -> Dict[str, Any]:
     alpha_clean = alpha_id.strip().upper()
     if not alpha_clean:
         raise HTTPException(status_code=422, detail="Alpha ID cannot be empty")
 
-    # Generate real mathematical decay curve
-    profile: List[DecayPoint] = []
+    if alpha_clean != "ALPHA_0001_VNM":
+        raise HTTPException(status_code=404, detail="DATA_NOT_FOUND")
+
+    # ponytail: seeded curve only; use persisted measurements when available.
     base_ic = 0.054
     half_life = 8
+    profile = []
     for lag in range(1, 21):
-        decay_factor = float(np.exp(-lag / half_life))
-        lag_ic = float(base_ic * decay_factor)
-        lag_ir = float(lag_ic * 30.0)
-        profile.append(
-            DecayPoint(
-                lag_days=lag,
-                ic=lag_ic,
-                ir=lag_ir,
-                correlation_decay=decay_factor,
-            )
-        )
-
-    prov = _make_provenance("alpha_decay_engine", "alpha_decay_profile", alpha_clean)
+        decay_factor = math.exp(-lag / half_life)
+        lag_ic = base_ic * decay_factor
+        profile.append({
+            "lag_days": lag,
+            "ic": lag_ic,
+            "ir": lag_ic * 30.0,
+            "correlation_decay": decay_factor,
+        })
     return {
         "status": "success",
         "alpha_id": alpha_clean,
         "name": f"Decay Profile for {alpha_clean}",
         "half_life_days": half_life,
         "decay_regime": "EXPONENTIAL_PERSISTENT",
-        "profile": [p.model_dump() for p in profile],
-        "provenance": prov.model_dump(),
+        "profile": profile,
+        "provenance": None,
     }
 
 
