@@ -325,8 +325,8 @@ export interface WalkForwardFoldResult {
   fold: number;
   train_size: number;
   test_size: number;
-  in_sample_sharpe: number;
-  out_of_sample_sharpe: number;
+  in_sample_sharpe: number | null;
+  out_of_sample_sharpe: number | null;
   in_sample_return_pct: number;
   out_of_sample_return_pct: number;
   max_drawdown_pct: number;
@@ -340,13 +340,13 @@ export interface WalkForwardCpcvResponse {
   n_splits: number;
   n_test_splits: number;
   total_folds: number;
-  mean_oos_sharpe: number;
-  median_oos_sharpe: number;
-  std_oos_sharpe: number;
+  mean_oos_sharpe: number | null;
+  median_oos_sharpe: number | null;
+  std_oos_sharpe: number | null;
   mean_oos_return_pct: number;
   worst_drawdown_pct: number;
-  pbo: number;
-  deflated_sharpe_ratio: number;
+  pbo: number | null;
+  deflated_sharpe_ratio: number | null;
   folds: WalkForwardFoldResult[];
   provenance?: ProvenanceEnvelope | null;
 }
@@ -355,13 +355,13 @@ export interface OverfittingDiagnosticsResponse {
   status: string;
   strategy_id: string;
   trials_tested: number;
-  pbo: number;
-  deflated_sharpe_ratio: number;
-  observed_sharpe: number;
-  expected_max_sharpe: number;
-  variance_of_trials: number;
-  skewness: number;
-  kurtosis: number;
+  pbo: number | null;
+  deflated_sharpe_ratio: number | null;
+  observed_sharpe: number | null;
+  expected_max_sharpe: number | null;
+  variance_of_trials: number | null;
+  skewness: number | null;
+  kurtosis: number | null;
   fdr_q_values: number[];
   is_overfitted: boolean;
   verdict: string;
@@ -1368,6 +1368,194 @@ async function portfolioRequest<T>(path: string, request: PortfolioUniverseReque
   }
 }
 
+export interface StrategyWalkForwardRequest {
+  dataset_id?: string; universe?: string[]; start_date?: string; end_date?: string;
+  n_splits?: number; n_test_splits?: number; embargo_pct?: number; label_horizon?: number;
+  initial_capital?: number; slippage_bps?: number; commission_bps?: number;
+  as_of?: string; price_scale?: 'VND_FULL';
+  evaluation_method?: 'COMBINATORIAL_PURGED_K_FOLD' | 'CHRONOLOGICAL_WALK_FORWARD';
+}
+export interface StrategyReadRequest { strategy_id: string; as_of?: string; trials_tested?: number }
+export interface StrategyFold extends WalkForwardFoldResult {
+  train_start: string; train_end: string; train_label_end: string; test_start: string; test_end: string;
+  decision_time: string | null; train_indices: number[]; test_indices: number[];
+  purged_size: number; embargo_size: number; gross_oos_return_pct: number; oos_observations: number;
+}
+export interface StrategyWalkForward extends WalkForwardCpcvResponse {
+  folds: StrategyFold[]; evaluation_method: 'COMBINATORIAL_PURGED_K_FOLD' | 'CHRONOLOGICAL_WALK_FORWARD';
+  historical_pit_verified: boolean; historical_timing_validated: boolean; excluded_incomplete_sessions: number;
+  coverage_policy: 'FULL_REQUESTED_UNIVERSE' | 'COMPLETE_CASE_INTERSECTION'; strategy_definition: string;
+  price_scale: 'VND_FULL'; oos_return_pct: number; gross_oos_return_pct: number;
+  metric_unavailable_reason: string; cost_model: string; provenance_verification: string;
+}
+export interface StrategyDiagnostics extends OverfittingDiagnosticsResponse {
+  probabilistic_sharpe_ratio: number | null; trial_distribution: { trial_id: string; sharpe: number | null }[];
+  metric_unavailable_reason: string | null; pbo_method: string; sharpe_unit: string;
+  statistical_assumption: string; trial_distribution_sharpe_unit: string; provenance_verification: string;
+  diagnostic_basis: 'PERSISTED_STRATEGY_TRIALS' | 'EMPIRICAL_INSTRUMENT_PROXY'; requested_trials_tested: number | null;
+  input_integrity: { content_sha256: string; effective_cutoff: string; max_included_available_at?: string; selected_proxy?: string; excluded_incomplete_sessions?: number };
+}
+export interface StrategyEquity {
+  status: 'success'; strategy_id: string; price_scale: 'VND_FULL'; provenance_verification: string; cost_model: string;
+  benchmark_id: string; equity_curve: { date: string; gross_equity: number; net_equity: number; benchmark_equity: number; drawdown_pct: number; fees_vnd: number }[];
+  total_fees_vnd: number; gross_return_pct: number; net_return_pct: number; benchmark_return_pct: number;
+  max_drawdown_pct: number; provenance: null; input_integrity: { content_sha256: string; effective_cutoff: string };
+}
+
+export const formatStrategyMetric = formatAlphaMetric;
+export function strategyErrorMessage(error: unknown): string {
+  const code = (error as { errorCode?: unknown } | null)?.errorCode ?? (error instanceof Error ? error.message : undefined);
+  return typeof code === 'string' && ['STRATEGY_RESULT_UNAVAILABLE', 'STRATEGY_RESULT_INVALID', 'STRATEGY_MARKET_UNAVAILABLE', 'STRATEGY_MARKET_CONTRACT_INVALID', 'STRATEGY_NUMERIC_INVALID', 'STRATEGY_UNIVERSE_INCOMPLETE', 'STRATEGY_SESSION_GAP', 'TRIAL_COUNT_MISMATCH', 'INVALID_STRATEGY_AS_OF'].includes(code)
+    ? code : 'Strategy analytics unavailable. Check inputs and data; retry.';
+}
+function strategyFields(value: unknown, fields: string[]): Record<string, unknown> {
+  return portfolioFields(value, fields);
+}
+function strategyId(value: unknown): string {
+  const id = alphaText(value, 64);
+  if (!/^[A-Z0-9_]{1,64}$/.test(id)) throw new Error('INVALID_STRATEGY_INPUT');
+  return id;
+}
+function strategyDate(value: unknown): number {
+  const text = alphaText(value, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw new Error('INVALID_STRATEGY_INPUT');
+  return alphaTimestamp(`${text}T08:30:00Z`);
+}
+function strategyNullable(value: unknown, min = -1e12, max = 1e12): number | null {
+  return value === null ? null : alphaNumber(value, min, max);
+}
+function strategySession(value: unknown): number {
+  const time = alphaTimestamp(value), date = new Date(time);
+  if (date.getUTCHours() !== 8 || date.getUTCMinutes() !== 30 || date.getUTCSeconds() !== 0 || date.getUTCMilliseconds() !== 0 || [0, 6].includes(date.getUTCDay())) throw new Error('INVALID_STRATEGY_EVIDENCE');
+  return time;
+}
+function strategyCutoff(value: unknown): number {
+  const time = alphaTimestamp(value);
+  if (time > Date.now()) throw new Error('INVALID_STRATEGY_AS_OF');
+  return time;
+}
+export function validateStrategyRead(value: unknown): StrategyReadRequest {
+  const r = alphaRecord(value); alphaFields(r, ['strategy_id', 'as_of', 'trials_tested']); strategyId(r.strategy_id);
+  if (r.as_of !== undefined) strategyCutoff(r.as_of);
+  if (r.trials_tested !== undefined) alphaNumber(r.trials_tested, 2, 100, true);
+  return structuredClone(value) as StrategyReadRequest;
+}
+export function validateStrategyWalkRequest(value: unknown): StrategyWalkForwardRequest {
+  const r = alphaRecord(value);
+  alphaFields(r, ['dataset_id', 'universe', 'start_date', 'end_date', 'n_splits', 'n_test_splits', 'embargo_pct', 'label_horizon', 'initial_capital', 'slippage_bps', 'commission_bps', 'as_of', 'price_scale', 'evaluation_method']);
+  if ((r.dataset_id ?? 'market_2015_now') !== 'market_2015_now' || (r.price_scale ?? 'VND_FULL') !== 'VND_FULL' || !['COMBINATORIAL_PURGED_K_FOLD', 'CHRONOLOGICAL_WALK_FORWARD'].includes((r.evaluation_method ?? 'COMBINATORIAL_PURGED_K_FOLD') as string)) throw new Error('INVALID_STRATEGY_INPUT');
+  // Explicit nulls are not omitted/defaulted inputs.
+  if (Object.values(r).some((v) => v === null)) throw new Error('INVALID_STRATEGY_INPUT');
+  const splits = alphaNumber(r.n_splits ?? 10, 3, 20, true), tests = alphaNumber(r.n_test_splits ?? 2, 1, 5, true);
+  let combinations = 1; for (let i = 1; i <= tests; i++) combinations *= (splits - i + 1) / i;
+  if (tests >= splits || Math.round(combinations) > 500) throw new Error('INVALID_STRATEGY_INPUT');
+  alphaNumber(r.embargo_pct ?? .01, 0, .5 - Number.EPSILON); alphaNumber(r.label_horizon ?? 5, 1, 60, true);
+  alphaNumber(r.initial_capital ?? 1e9, Number.MIN_VALUE); alphaNumber(r.slippage_bps ?? 5, 0, 500); alphaNumber(r.commission_bps ?? 1.5, 0, 100);
+  const start = strategyDate(r.start_date ?? '2020-01-01'), end = strategyDate(r.end_date ?? '2023-12-31');
+  if (start > end || end > (r.as_of === undefined ? Date.now() : strategyCutoff(r.as_of))) throw new Error('INVALID_STRATEGY_INPUT');
+  if (r.universe !== undefined) {
+    const symbols = alphaArray(r.universe, 100);
+    if (!symbols.length || new Set(symbols).size !== symbols.length) throw new Error('INVALID_STRATEGY_INPUT');
+    symbols.forEach((s) => { if (!/^[A-Z0-9_]{1,18}$/.test(alphaText(s, 18))) throw new Error('INVALID_STRATEGY_INPUT'); });
+  }
+  return structuredClone(value) as StrategyWalkForwardRequest;
+}
+function strategyIntegrity(value: unknown, request: StrategyReadRequest, proxy = false): Record<string, unknown> {
+  const r = strategyFields(value, ['content_sha256', 'effective_cutoff', ...(proxy ? ['max_included_available_at', 'selected_proxy', 'excluded_incomplete_sessions'] : [])]);
+  if (!/^[0-9a-f]{64}$/.test(alphaText(r.content_sha256, 64))) throw new Error('INVALID_STRATEGY_EVIDENCE');
+  const cutoff = strategyCutoff(r.effective_cutoff);
+  if (request.as_of !== undefined && cutoff !== alphaTimestamp(request.as_of)) throw new Error('INVALID_STRATEGY_EVIDENCE');
+  if (proxy) {
+    if (alphaTimestamp(r.max_included_available_at) > cutoff) throw new Error('INVALID_STRATEGY_EVIDENCE');
+    strategyId(r.selected_proxy); alphaNumber(r.excluded_incomplete_sessions, 0, 10000, true);
+  }
+  return r;
+}
+export function validateStrategyDiagnostics(value: unknown, request: StrategyReadRequest): StrategyDiagnostics {
+  validateStrategyRead(request);
+  const r = strategyFields(value, ['status', 'strategy_id', 'trials_tested', 'pbo', 'deflated_sharpe_ratio', 'observed_sharpe', 'expected_max_sharpe', 'variance_of_trials', 'skewness', 'kurtosis', 'fdr_q_values', 'is_overfitted', 'verdict', 'provenance', 'probabilistic_sharpe_ratio', 'trial_distribution', 'metric_unavailable_reason', 'pbo_method', 'sharpe_unit', 'statistical_assumption', 'trial_distribution_sharpe_unit', 'provenance_verification', 'diagnostic_basis', 'requested_trials_tested', 'input_integrity']);
+  const proxy = r.diagnostic_basis === 'EMPIRICAL_INSTRUMENT_PROXY';
+  if (r.status !== 'success' || r.strategy_id !== request.strategy_id || (!proxy && r.diagnostic_basis !== 'PERSISTED_STRATEGY_TRIALS') || r.provenance !== null || r.pbo_method !== 'CSCV_8_BLOCKS_EMPIRICAL_RANK' || r.sharpe_unit !== 'PER_BAR' || r.trial_distribution_sharpe_unit !== 'ANNUALIZED_252' || r.statistical_assumption !== 'IID_APPROXIMATION_CORRELATED_TRIALS_NOT_INDEPENDENT' || r.provenance_verification !== (proxy ? 'EMPIRICAL_MARKET_PROXY_NOT_STRATEGY_EVIDENCE' : 'CONTENT_INTEGRITY_ONLY_NOT_AUTHENTICATED_LINEAGE')) throw new Error('INVALID_STRATEGY_RESPONSE');
+  strategyIntegrity(r.input_integrity, request, proxy);
+  const count = alphaNumber(r.trials_tested, 2, 100, true), rows = alphaArray(r.trial_distribution, 100);
+  if (rows.length !== count || (proxy ? r.requested_trials_tested !== (request.trials_tested ?? null) : r.requested_trials_tested !== null || (request.trials_tested !== undefined && count !== request.trials_tested))) throw new Error('INVALID_STRATEGY_RESPONSE');
+  const ids = new Set<string>(); rows.forEach((item) => { const t = strategyFields(item, ['trial_id', 'sharpe']); const id = strategyId(t.trial_id); if (ids.has(id)) throw new Error('INVALID_STRATEGY_RESPONSE'); ids.add(id); strategyNullable(t.sharpe); });
+  ['pbo', 'deflated_sharpe_ratio', 'probabilistic_sharpe_ratio'].forEach((k) => strategyNullable(r[k], 0, 1));
+  ['observed_sharpe', 'expected_max_sharpe', 'skewness', 'kurtosis'].forEach((k) => strategyNullable(r[k])); strategyNullable(r.variance_of_trials, 0);
+  alphaArray(r.fdr_q_values, 100).forEach((v) => alphaNumber(v, 0, 1));
+  const missing = ['pbo', 'deflated_sharpe_ratio', 'probabilistic_sharpe_ratio', 'observed_sharpe', 'expected_max_sharpe', 'variance_of_trials', 'skewness', 'kurtosis'].some((k) => r[k] === null);
+  if (r.metric_unavailable_reason !== null) alphaText(r.metric_unavailable_reason, 1024);
+  if (missing !== (r.metric_unavailable_reason !== null) || typeof r.is_overfitted !== 'boolean' || r.is_overfitted !== (missing || (r.pbo as number) > .5 || (r.deflated_sharpe_ratio as number) < .95)) throw new Error('INVALID_STRATEGY_RESPONSE');
+  const verdict = proxy ? 'EMPIRICAL_MARKET_PROXY_NOT_STRATEGY_VALIDATION' : missing ? 'INSUFFICIENT_STATISTICAL_EVIDENCE' : 'EMPIRICAL_DIAGNOSTICS_ONLY';
+  if (r.verdict !== verdict) throw new Error('INVALID_STRATEGY_RESPONSE');
+  return value as StrategyDiagnostics;
+}
+export function validateStrategyEquity(value: unknown, request: StrategyReadRequest): StrategyEquity {
+  validateStrategyRead(request);
+  const r = strategyFields(value, ['status', 'strategy_id', 'price_scale', 'provenance_verification', 'cost_model', 'benchmark_id', 'equity_curve', 'total_fees_vnd', 'gross_return_pct', 'net_return_pct', 'benchmark_return_pct', 'max_drawdown_pct', 'provenance', 'input_integrity']);
+  if (r.status !== 'success' || r.strategy_id !== request.strategy_id || r.price_scale !== 'VND_FULL' || r.provenance !== null || r.provenance_verification !== 'CONTENT_INTEGRITY_ONLY_NOT_AUTHENTICATED_LINEAGE' || r.cost_model !== 'PERSISTED_AGGREGATE_FEE_RETURNS_NO_ASSUMED_COSTS') throw new Error('INVALID_STRATEGY_RESPONSE');
+  strategyId(r.benchmark_id); const integrity = strategyIntegrity(r.input_integrity, request), cutoff = alphaTimestamp(integrity.effective_cutoff);
+  const rows = alphaArray(r.equity_curve, 10001); if (rows.length < 2) throw new Error('INVALID_STRATEGY_RESPONSE');
+  let previous = -Infinity, peak = 0, worst = 0, fees = 0;
+  rows.forEach((item, i) => {
+    const p = strategyFields(item, ['date', 'gross_equity', 'net_equity', 'benchmark_equity', 'drawdown_pct', 'fees_vnd']);
+    const time = strategySession(p.date);
+    if (time <= previous || time > cutoff) throw new Error('INVALID_STRATEGY_EVIDENCE');
+    previous = time; ['gross_equity', 'net_equity', 'benchmark_equity'].forEach((k) => alphaNumber(p[k], Number.MIN_VALUE));
+    if ((p.net_equity as number) > (p.gross_equity as number)) throw new Error('INVALID_STRATEGY_RESPONSE');
+    peak = Math.max(peak, p.net_equity as number); const dd = alphaNumber(p.drawdown_pct, -100, 0); riskClose(dd, ((p.net_equity as number) / peak - 1) * 100); worst = Math.min(worst, dd);
+    fees += alphaNumber(p.fees_vnd, 0);
+    if (i === 0) { riskClose(p.net_equity as number, p.gross_equity as number); riskClose(p.net_equity as number, p.benchmark_equity as number); if (p.fees_vnd !== 0) throw new Error('INVALID_STRATEGY_RESPONSE'); }
+  });
+  riskClose(alphaNumber(r.total_fees_vnd, 0), fees); riskClose(alphaNumber(r.max_drawdown_pct, 0, 100), -worst);
+  const first = rows[0] as StrategyEquity['equity_curve'][number], last = rows.at(-1) as StrategyEquity['equity_curve'][number];
+  for (const [metric, key] of [['gross_return_pct', 'gross_equity'], ['net_return_pct', 'net_equity'], ['benchmark_return_pct', 'benchmark_equity']] as const) riskClose(alphaNumber(r[metric], -100), (last[key] / first[key] - 1) * 100);
+  return value as StrategyEquity;
+}
+export function validateStrategyWalk(value: unknown, request: StrategyWalkForwardRequest): StrategyWalkForward {
+  validateStrategyWalkRequest(request);
+  const r = strategyFields(value, ['status', 'task_type', 'job_id', 'dataset_id', 'n_splits', 'n_test_splits', 'total_folds', 'mean_oos_sharpe', 'median_oos_sharpe', 'std_oos_sharpe', 'mean_oos_return_pct', 'worst_drawdown_pct', 'pbo', 'deflated_sharpe_ratio', 'folds', 'provenance', 'evaluation_method', 'historical_pit_verified', 'historical_timing_validated', 'excluded_incomplete_sessions', 'coverage_policy', 'strategy_definition', 'price_scale', 'oos_return_pct', 'gross_oos_return_pct', 'metric_unavailable_reason', 'cost_model', 'provenance_verification']);
+  const chronological = r.evaluation_method === 'CHRONOLOGICAL_WALK_FORWARD', splits = request.n_splits ?? 10, tests = request.n_test_splits ?? 2;
+  if (r.status !== 'success' || r.task_type !== 'WALK_FORWARD_CPCV' || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(alphaText(r.job_id, 36)) || r.dataset_id !== (request.dataset_id ?? 'market_2015_now') || r.n_splits !== splits || r.n_test_splits !== tests || r.evaluation_method !== (request.evaluation_method ?? 'COMBINATORIAL_PURGED_K_FOLD') || r.price_scale !== 'VND_FULL' || r.strategy_definition !== 'FIXED_EQUAL_WEIGHT_DAILY_REBALANCE' || r.cost_model !== 'DECLARED_DAILY_COMMISSION_PLUS_SLIPPAGE_BPS' || r.provenance_verification !== 'VALIDATED_MARKET_METADATA_NOT_AUTHENTICATED_LINEAGE' || r.historical_pit_verified !== false || r.historical_timing_validated !== chronological || r.coverage_policy !== (chronological ? 'FULL_REQUESTED_UNIVERSE' : 'COMPLETE_CASE_INTERSECTION') || r.pbo !== null || r.deflated_sharpe_ratio !== null) throw new Error('INVALID_STRATEGY_RESPONSE');
+  alphaText(r.metric_unavailable_reason, 1024); alphaNumber(r.excluded_incomplete_sessions, 0, 10000, true);
+  const cutoff = request.as_of === undefined ? Date.now() : alphaTimestamp(request.as_of);
+  if (chronological) {
+    riskHistorical(r.provenance, request.dataset_id ?? 'market_2015_now');
+    const proof = alphaRecord(r.provenance), effective = alphaTimestamp(proof.effective_cutoff);
+    if (effective > cutoff || (request.as_of !== undefined && effective !== cutoff) || alphaTimestamp(proof.as_of) !== effective || alphaTimestamp(proof.requested_pit_cutoff) !== effective || proof.cutoff_resolution !== 'REQUESTED') throw new Error('INVALID_STRATEGY_EVIDENCE');
+  } else if (r.provenance !== null) throw new Error('INVALID_STRATEGY_EVIDENCE');
+  let combinations = 1; for (let i = 1; i <= tests; i++) combinations *= (splits - i + 1) / i;
+  const rows = alphaArray(r.folds, 500), expected = chronological ? Math.ceil((splits - 1) / tests) : Math.round(combinations);
+  if (r.total_folds !== rows.length || rows.length !== expected) throw new Error('INVALID_STRATEGY_RESPONSE');
+  let work = 0, lastTest = -Infinity;
+  rows.forEach((item, i) => {
+    const f = strategyFields(item, ['fold', 'train_size', 'test_size', 'in_sample_sharpe', 'out_of_sample_sharpe', 'in_sample_return_pct', 'out_of_sample_return_pct', 'max_drawdown_pct', 'train_start', 'train_end', 'train_label_end', 'test_start', 'test_end', 'decision_time', 'train_indices', 'test_indices', 'purged_size', 'embargo_size', 'gross_oos_return_pct', 'oos_observations']);
+    if (f.fold !== i) throw new Error('INVALID_STRATEGY_RESPONSE');
+    const train = alphaNumber(f.train_size, 2, 10000, true), test = alphaNumber(f.test_size, 2, 10000, true);
+    work += train + test; if (work > 500000 || f.oos_observations !== test) throw new Error('INVALID_STRATEGY_RESPONSE');
+    const indices = (v: unknown, size: number) => { const a = alphaArray(v, 10000); if (a.length !== size) throw new Error('INVALID_STRATEGY_RESPONSE'); let prev = -1; a.forEach((n) => { prev = alphaNumber(n, prev + 1, 10000, true); }); return a as number[]; };
+    const a = indices(f.train_indices, chronological ? 0 : train), b = indices(f.test_indices, chronological ? 0 : test), seen = new Set(a);
+    if (b.some((n) => seen.has(n))) throw new Error('INVALID_STRATEGY_RESPONSE');
+    alphaNumber(f.purged_size, 0, 10000, true); alphaNumber(f.embargo_size, 0, 10000, true);
+    strategyNullable(f.in_sample_sharpe); strategyNullable(f.out_of_sample_sharpe);
+    ['in_sample_return_pct', 'out_of_sample_return_pct', 'gross_oos_return_pct'].forEach((k) => alphaNumber(f[k], -100)); alphaNumber(f.max_drawdown_pct, 0, 100);
+    const start = strategySession(f.train_start), end = strategySession(f.train_end), label = strategySession(f.train_label_end), testStart = strategySession(f.test_start), testEnd = strategySession(f.test_end);
+    if (start > end || end > label || testStart > testEnd || Math.max(label, testEnd) > cutoff || Math.min(start, testStart) < strategyDate(request.start_date ?? '2020-01-01') || Math.max(end, testEnd) > strategyDate(request.end_date ?? '2023-12-31')) throw new Error('INVALID_STRATEGY_EVIDENCE');
+    if (chronological ? f.decision_time === null || alphaTimestamp(f.decision_time) < label || alphaTimestamp(f.decision_time) >= testStart || label >= testStart || testStart <= lastTest : f.decision_time !== null) throw new Error('INVALID_STRATEGY_EVIDENCE');
+    lastTest = testEnd;
+  });
+  ['mean_oos_sharpe', 'median_oos_sharpe'].forEach((k) => strategyNullable(r[k])); strategyNullable(r.std_oos_sharpe, 0);
+  ['mean_oos_return_pct', 'oos_return_pct', 'gross_oos_return_pct'].forEach((k) => alphaNumber(r[k], -100)); alphaNumber(r.worst_drawdown_pct, 0, 100);
+  const folds = rows as StrategyFold[];
+  if (!chronological) riskClose(r.worst_drawdown_pct as number, Math.max(...folds.map((f) => f.max_drawdown_pct)));
+  riskClose(r.mean_oos_return_pct as number, folds.reduce((s, f) => s + f.out_of_sample_return_pct, 0) / folds.length);
+  return value as StrategyWalkForward;
+}
+async function strategyRequest<T>(path: string, validate: (value: unknown) => T, signal?: AbortSignal, payload?: unknown): Promise<T> {
+  try { return validate(await resilientApiRequest<unknown>(path, { signal, maxRetries: 0, ...(payload === undefined ? {} : { method: 'POST', body: JSON.stringify(payload), headers: { 'Content-Type': 'application/json' } }) })); }
+  catch (error) { if (signal?.aborted) throw new DOMException('Aborted', 'AbortError'); throw new Error(strategyErrorMessage(error)); }
+}
+
 export const advancedQuantApi = {
   getTargetPortfolioState: (request: PortfolioReadRequest = {}, signal?: AbortSignal) => portfolioRequest('/api/v1/portfolio/state', request, false, validateTargetPortfolio, signal),
   getPortfolioDynamicUniverse: (request: PortfolioUniverseRequest = {}, signal?: AbortSignal) => portfolioRequest('/api/v1/portfolio/dynamic-universe', request, true, validatePortfolioUniverse, signal),
@@ -1469,16 +1657,21 @@ export const advancedQuantApi = {
   },
 
   // Phase 3 Active Quant, Evolution & Smart Execution APIs
-  runWalkForwardCpcv: (payload: { dataset_id?: string; universe?: string[]; start_date?: string; end_date?: string; n_splits?: number; n_test_splits?: number; embargo_pct?: number; label_horizon?: number; initial_capital?: number; slippage_bps?: number; commission_bps?: number }, signal?: AbortSignal) =>
-    apiRequest<WalkForwardCpcvResponse>('/api/v1/quant/walk-forward', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-    }),
+  runWalkForwardCpcv: (payload: StrategyWalkForwardRequest, signal?: AbortSignal): Promise<WalkForwardCpcvResponse> => {
+    const snapshot = validateStrategyWalkRequest(payload);
+    return strategyRequest('/api/v1/quant/walk-forward', (v) => validateStrategyWalk(v, snapshot), signal, snapshot);
+  },
 
-  getOverfittingDiagnostics: (strategyId = 'ALPHA_HRP_V2', trialsTested = 20, signal?: AbortSignal) =>
-    apiRequest<OverfittingDiagnosticsResponse>(`/api/v1/quant/overfitting-diagnostics?strategy_id=${encodeURIComponent(strategyId)}&trials_tested=${trialsTested}`, { signal }),
+  getOverfittingDiagnostics: (strategyId = 'ALPHA_HRP_V2', trialsTested?: number, signal?: AbortSignal, asOf?: string): Promise<OverfittingDiagnosticsResponse> => {
+    const request = validateStrategyRead({ strategy_id: strategyId, ...(trialsTested === undefined ? {} : { trials_tested: trialsTested }), ...(asOf === undefined ? {} : { as_of: asOf }) });
+    const query = new URLSearchParams(Object.entries(request).map(([k, v]) => [k, String(v)]));
+    return strategyRequest(`/api/v1/quant/overfitting-diagnostics?${query}`, (v) => validateStrategyDiagnostics(v, request), signal);
+  },
+
+  getStrategyEquity: (request: StrategyReadRequest, signal?: AbortSignal) => {
+    const snapshot = validateStrategyRead(request), query = new URLSearchParams([['strategy_id', snapshot.strategy_id], ...(snapshot.as_of === undefined ? [] : [['as_of', snapshot.as_of]])]);
+    return strategyRequest(`/api/v1/quant/strategy-equity-curve?${query}`, (v) => validateStrategyEquity(v, snapshot), signal);
+  },
 
   predictConformal: (payload: { symbol: string; horizon_days?: number; confidence_levels?: number[]; features?: Record<string, number> }, signal?: AbortSignal) =>
     apiRequest<ConformalPredictResponse>('/api/v1/quant/conformal/predict', {
