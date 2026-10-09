@@ -1,6 +1,6 @@
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, focusManager, onlineManager } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import App from '../App';
 import { useUiStore } from '../store/uiStore';
@@ -9,6 +9,9 @@ import { useTranslation } from '../i18n';
 import { useLLMConfig } from '../hooks/useLLMConfig';
 import * as useLLMConfigModule from '../hooks/useLLMConfig';
 import { usePreTradeImpact } from '../hooks/useBarraRiskTca';
+import { useMarketOhlcv, validateCandles, validateOrderbook, aggregateCandles } from '../hooks/useMarketData';
+import * as useMarketDataModule from '../hooks/useMarketData';
+import { ChartStationView } from '../modules/chart_station/ChartStationView';
 import { useCopilot } from '../hooks/useCopilot';
 import * as useCopilotModule from '../hooks/useCopilot';
 import { unavailableMessage } from '../hooks/useUnavailableQuery';
@@ -184,6 +187,8 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   client.clear();
+  focusManager.setFocused(undefined);
+  onlineManager.setOnline(true);
   container.remove();
   document.body.innerHTML = '';
   useUiStore.setState(initialState, true);
@@ -203,6 +208,89 @@ afterEach(() => {
   }
 });
 const settle = async (ms = 50) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+
+it.each(['429', '503', 'network', 'timeout', 'malformed'])('bounds OHLCV %s failures until explicit retry, including cached-data failures', async (failure) => {
+  const payload = (symbol = 'FPT') => ({ status: 'success', symbol, exchange: 'HOSE', total_bars: 1,
+    bars: [{ time: '2026-10-09', open: 100000, high: 100100, low: 99900, close: 100000, volume: 1000 }] });
+  const fail = (_url: unknown, init: RequestInit) => {
+    if (failure === 'timeout') return new Promise<Response>((_resolve, reject) => {
+      init.signal!.addEventListener('abort', () => reject(new DOMException('Aborted', 'AbortError')), { once: true });
+    });
+    if (failure === 'network') return Promise.reject(new Error('Injected offline failure'));
+    return Promise.resolve(new Response(JSON.stringify(failure === 'malformed' ? null : { detail: 'Unavailable' }),
+      { status: failure === 'malformed' ? 200 : Number(failure) }));
+  };
+  for (const interval of ['1D', '1W', '1M']) {
+    for (const cached of [false, true]) {
+      client.clear();
+      const fetcher = vi.fn(fail);
+      if (cached) fetcher.mockImplementationOnce(() => Promise.resolve(new Response(JSON.stringify(payload()))));
+      vi.stubGlobal('fetch', fetcher);
+      let query!: ReturnType<typeof useMarketOhlcv>;
+      function Probe() { query = useMarketOhlcv('FPT', undefined, undefined, 500, interval); return <p>{query.status}</p>; }
+      const mount = () => root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>);
+      act(mount);
+      await settle();
+      if (cached) { expect(query.isSuccess).toBe(true); await settle(15000); }
+      await settle(10050);
+      expect(query.isError).toBe(true);
+      const failedCalls = cached ? 2 : 1;
+      expect(fetcher).toHaveBeenCalledTimes(failedCalls);
+      await settle(120000);
+      // App stream events invalidate all active queries. They must not revive failed OHLCV.
+      await act(async () => {
+        focusManager.setFocused(false); focusManager.setFocused(true);
+        onlineManager.setOnline(false); onlineManager.setOnline(true);
+        await client.invalidateQueries({ refetchType: 'active' });
+      });
+      act(() => root.render(null));
+      act(mount);
+      await settle(60000);
+      expect(fetcher).toHaveBeenCalledTimes(failedCalls);
+      // A failed manual attempt remains bounded too.
+      act(() => { void query.refetch(); });
+      await settle(10050);
+      expect(query.isError).toBe(true);
+      await settle(60000);
+      expect(fetcher).toHaveBeenCalledTimes(failedCalls + 1);
+      fetcher.mockImplementation(() => Promise.resolve(new Response(JSON.stringify(payload()))));
+      act(() => { void query.refetch(); });
+      await settle();
+      expect(query.isSuccess).toBe(true);
+      expect(query.data?.symbol).toBe('FPT');
+      expect(fetcher).toHaveBeenCalledTimes(failedCalls + 2);
+      await settle(15000);
+      expect(fetcher).toHaveBeenCalledTimes(failedCalls + 3);
+      act(() => root.render(null));
+    }
+  }
+  focusManager.setFocused(undefined);
+});
+
+it('isolates failed OHLCV keys and deduplicates concurrent manual recovery', async () => {
+  const fetcher = vi.fn().mockResolvedValue(new Response('{}', { status: 429 }));
+  vi.stubGlobal('fetch', fetcher);
+  let query!: ReturnType<typeof useMarketOhlcv>;
+  function Probe({ symbol }: { symbol: string }) { query = useMarketOhlcv(symbol); return <p>{query.status}</p>; }
+  const mount = (symbol: string) => root.render(<QueryClientProvider client={client}><Probe symbol={symbol} /></QueryClientProvider>);
+  act(() => mount('FPT'));
+  await settle();
+  act(() => mount('HPG'));
+  await settle();
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  act(() => mount('FPT'));
+  await settle(60000);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  let recover!: (response: Response) => void;
+  fetcher.mockImplementation(() => new Promise<Response>((resolve) => { recover = resolve; }));
+  act(() => { void query.refetch({ cancelRefetch: false }); void query.refetch({ cancelRefetch: false }); });
+  await settle();
+  expect(fetcher).toHaveBeenCalledTimes(3);
+  expect(query.isFetching).toBe(true);
+  recover(new Response(JSON.stringify({ status: 'success', symbol: 'FPT', exchange: 'HOSE', total_bars: 0, bars: [] })));
+  await settle();
+  expect(query.isSuccess).toBe(true);
+});
 
 it('mounts every real App route under network failure and closes streams', async () => {
   act(() => root.render(<App />));
@@ -332,13 +420,102 @@ it('blocks malformed and non-finite pre-trade inputs before transport', async ()
   expect(fetch).not.toHaveBeenCalled();
 });
 
-it('renders unavailable chart components without synthetic data claims', () => {
-  act(() => root.render(<>
-    <LightweightChartContainer symbol="FPT" candles={[]} showSMA showEMA showVolume alphaMarkers={[]} />
-    <OrderbookDepth isLoading={false} />
-  </>));
-  expect(container.querySelectorAll('[role="status"]')).toHaveLength(2);
-  expect(container.textContent).toBe(unavailableMessage.repeat(2));
+it('preserves chart fallback and observed L2 failure states without synthetic data claims', () => {
+  vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockImplementation(() => { throw new Error('Unsupported renderer'); });
+  const onRetry = vi.fn();
+  const renderCharts = (candles: Parameters<typeof LightweightChartContainer>[0]['candles'], isLoading = false, isError = false) => {
+    act(() => root.render(<>
+      <LightweightChartContainer symbol="FPT" candles={candles} showSMA showEMA showVolume alphaMarkers={[]} />
+      <OrderbookDepth isLoading={isLoading} isError={isError} onRetry={onRetry} />
+    </>));
+  };
+  renderCharts([]);
+  const chart = container.querySelector('section[aria-label="FPT chart"]')!;
+  const depth = container.querySelector('section[aria-label="Orderbook depth"]')!;
+  expect(chart.querySelector('[role="alert"]')?.textContent).toBe('Chart unavailable. Invalid data or unsupported renderer.');
+  expect(chart.querySelector('caption')?.textContent).toBe('FPT · VND full prices');
+  expect(chart.querySelectorAll('tbody tr')).toHaveLength(0);
+  expect(depth.querySelector('[role="status"]')?.textContent).toBe('Observed L2 feed unavailable. No synthetic depth displayed.');
+  expect(depth.querySelector('table')).toBeNull();
+  act(() => (depth.querySelector('button') as HTMLButtonElement).click());
+  expect(onRetry).toHaveBeenCalledTimes(1);
+
+  const bar = { time: '2026-10-09', open: 100000, high: 100100, low: 99900, close: 100000, volume: 1000 };
+  renderCharts([bar]);
+  expect(chart.querySelectorAll('tbody tr')).toHaveLength(1);
+  expect(chart.textContent).toContain('2026-10-09');
+  for (const close of [null, '', '100000', [], NaN, Infinity, -Infinity, 0, -1, 1e13]) {
+    renderCharts([{ ...bar, close } as unknown as typeof bar]);
+    expect(chart.querySelectorAll('tbody tr')).toHaveLength(0);
+    expect(chart.textContent).not.toContain('2026-10-09');
+  }
+  renderCharts([], true);
+  expect(depth.querySelector('[role="status"]')?.textContent).toBe('Loading orderbook…');
+  expect(depth.querySelector('button, table')).toBeNull();
+  renderCharts([], false, true);
+  expect(depth.querySelector('[role="status"]')?.textContent).toBe('Observed L2 feed unavailable. No synthetic depth displayed.');
+  expect(depth.querySelector('table')).toBeNull();
+  expect(container.textContent).not.toContain(unavailableMessage);
+});
+
+it('rejects tiny market prices and keeps OHLCV returns finite or explicitly unavailable', async () => {
+  const bar = (time: string, price: number) => ({ time, open: price, high: price, low: price, close: price, volume: 0 });
+  const prices = [null, '', '1', [], NaN, Infinity, -Infinity, 0, -1, Number.MIN_VALUE, 1e-310, 0.999999, 1e12 + 1];
+  const book = { status: 'success', symbol: 'FPT', exchange: 'HOSE', timestamp: '2026-01-01T08:30:00Z',
+    reference_price: 1, floor_price: 1, ceiling_price: 1, spread: 0, spread_bps: 0,
+    total_bid_depth: 0, total_ask_depth: 0,
+    bids: [{ level: 1, price: 1, volume: 0, orders: 0 }], asks: [{ level: 1, price: 1, volume: 0, orders: 0 }] };
+  expect(validateOrderbook(book, 'FPT', 10).reference_price).toBe(1);
+  for (const price of prices) {
+    for (const field of ['open', 'high', 'low', 'close']) {
+      expect(() => validateCandles([{ ...bar('2026-01-01', 1), [field]: price }])).toThrow();
+    }
+    for (const field of ['reference_price', 'floor_price', 'ceiling_price']) {
+      expect(() => validateOrderbook({ ...book, [field]: price }, 'FPT', 10)).toThrow();
+    }
+    for (const side of ['bids', 'asks']) {
+      expect(() => validateOrderbook({ ...book, [side]: [{ level: 1, price, volume: 0, orders: 0 }] }, 'FPT', 10)).toThrow();
+    }
+  }
+  for (const interval of ['1D', '1W', '1M']) {
+    const bars = validateCandles([bar('2026-01-01', 1), bar('2026-01-02', 1e12)]);
+    expect(aggregateCandles(bars, interval).every((item) => Number.isFinite(item.close))).toBe(true);
+  }
+  let market!: ReturnType<typeof useMarketOhlcv>;
+  function Probe() { market = useMarketOhlcv('FPT'); return null; }
+  const response = (price: number) => new Response(JSON.stringify({ status: 'success', symbol: 'FPT', exchange: 'HOSE',
+    bars: [bar('2026-01-01', price), bar('2026-01-02', 1e12)], total_bars: 2 }));
+  const fetcher = vi.fn().mockImplementation(() => Promise.resolve(response(1e-310)));
+  vi.stubGlobal('fetch', fetcher);
+  act(() => root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
+  await settle();
+  expect(market.isError).toBe(true);
+  expect(market.data).toBeUndefined();
+  await settle(60000);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  fetcher.mockImplementation(() => Promise.resolve(response(1)));
+  act(() => { void market.refetch(); });
+  await settle();
+  expect(market.isSuccess).toBe(true);
+  act(() => root.render(null));
+
+  const query = { isError: false, isLoading: false, isFetching: false, refetch: vi.fn() };
+  const ohlcv = vi.spyOn(useMarketDataModule, 'useMarketOhlcv');
+  vi.spyOn(useMarketDataModule, 'useMarketOrderbook').mockReturnValue({ ...query, data: undefined } as any);
+  for (const [previous, latest, expected] of [
+    [100, 110, '+10%'], [100, 90, '-10%'], [1, 1, '+0%'], [1, 1e12, '+99999999999900%'],
+    [1e12, 1, '-100%'], [undefined, 1, 'Return unavailable'],
+    ...prices.map((price) => [price, 1e12, 'Return unavailable']),
+    ...[NaN, Infinity, -Infinity, Number.MIN_VALUE, 0, -1, 1e12 + 1].map((price) => [1, price, 'Return unavailable']),
+  ]) {
+    const bars = previous === undefined ? [bar('2026-01-02', latest as number)] :
+      [bar('2026-01-01', previous as number), bar('2026-01-02', latest as number)];
+    ohlcv.mockReturnValue({ ...query, data: { bars } } as any);
+    act(() => root.render(<QueryClientProvider client={client}><ChartStationView /></QueryClientProvider>));
+    expect(container.textContent).toContain(expected);
+    expect(container.textContent).not.toMatch(/(?:Infinity|NaN)%/);
+    if (expected === 'Return unavailable') expect(container.querySelector('[role="status"][aria-label="Price return"]')?.textContent).toBe(expected);
+  }
 });
 
 it('manages native HTMLDialogElement lifecycle, showModal autofocus, cancel Escape forwarding and focus restoration in unavailable mode', async () => {

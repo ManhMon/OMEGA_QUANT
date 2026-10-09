@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   CandlestickChart,
   Layers,
@@ -7,12 +7,11 @@ import {
   AlertTriangle,
   TrendingUp,
   Sliders,
-  Maximize2,
   Cpu,
 } from 'lucide-react';
 import { useUiStore } from '../../store/uiStore';
-import { useMarketOhlcv, useMarketOrderbook } from '../../hooks/useMarketData';
-import { LightweightChartContainer, AlphaMarker } from './LightweightChartContainer';
+import { isMarketPrice, useMarketOhlcv, useMarketOrderbook } from '../../hooks/useMarketData';
+import { LightweightChartContainer } from './LightweightChartContainer';
 import { OrderbookDepth } from './OrderbookDepth';
 import { VpinToxicityPanel } from './VpinToxicityPanel';
 import { OrderbookDepthWaterfall } from './OrderbookDepthWaterfall';
@@ -25,13 +24,26 @@ export const ChartStationView: React.FC = () => {
   const setSelectedTicker = useUiStore((state) => state.setSelectedTicker);
   const chartInterval = useUiStore((state) => state.chartInterval);
   const setChartInterval = useUiStore((state) => state.setChartInterval);
+  const storeSubTab = useUiStore((state) => state.activeSubTabs['chart_station']);
+  const activeFeatureId = useUiStore((state) => state.activeFeatureId);
+  const setActiveSubTabInStore = useUiStore((state) => state.setActiveSubTab);
   const { t } = useTranslation();
 
   const [showSMA, setShowSMA] = useState(true);
   const [showEMA, setShowEMA] = useState(true);
   const [showVolume, setShowVolume] = useState(true);
   const [showAlphas, setShowAlphas] = useState(true);
-  const [activeSubTab, setActiveSubTab] = useState<'waterfall' | 'vpin' | 'impact' | 'fracdiff'>('waterfall');
+  const activeSubTab = (storeSubTab as 'waterfall' | 'vpin' | 'impact' | 'fracdiff') || 'waterfall';
+  const setActiveSubTab = (tab: 'waterfall' | 'vpin' | 'impact' | 'fracdiff') => setActiveSubTabInStore('chart_station', tab);
+
+  useEffect(() => {
+    if (activeFeatureId) {
+      if (activeFeatureId === 'F01') setActiveSubTabInStore('chart_station', 'vpin');
+      else if (activeFeatureId === 'F02') setActiveSubTabInStore('chart_station', 'waterfall');
+      else if (activeFeatureId === 'F03') setActiveSubTabInStore('chart_station', 'impact');
+      else if (activeFeatureId === 'F04') setActiveSubTabInStore('chart_station', 'fracdiff');
+    }
+  }, [activeFeatureId, setActiveSubTabInStore]);
 
   const {
     data: ohlcvData,
@@ -39,42 +51,28 @@ export const ChartStationView: React.FC = () => {
     isError: isOhlcvError,
     refetch: refetchOhlcv,
     isFetching: isOhlcvFetching,
-  } = useMarketOhlcv(selectedTicker, undefined, undefined, 300);
+  } = useMarketOhlcv(selectedTicker, undefined, undefined, 1000, chartInterval);
 
   const {
     data: orderbookData,
     isLoading: isOrderbookLoading,
+    isError: isOrderbookError,
     refetch: refetchOrderbook,
   } = useMarketOrderbook(selectedTicker, 10);
 
   const AVAILABLE_TICKERS = ['FPT', 'HPG', 'MBB', 'MWG', 'DGC', 'VNM', 'TCB', 'PNJ', 'VN30F1M'];
   const AVAILABLE_TIMEFRAMES = ['1D', '1W', '1M'];
 
-  const candles = ohlcvData?.bars || [];
+  const candles = isOhlcvError ? [] : ohlcvData?.bars || [];
   const latestCandle = candles[candles.length - 1];
   const prevCandle = candles[candles.length - 2];
-  const priceChange =
-    latestCandle && prevCandle
-      ? Number((((latestCandle.close - prevCandle.close) / prevCandle.close) * 100).toFixed(2))
-      : 0;
+  const rawPriceChange =
+    latestCandle && prevCandle && isMarketPrice(latestCandle.close) && isMarketPrice(prevCandle.close)
+      ? ((latestCandle.close - prevCandle.close) / prevCandle.close) * 100
+      : NaN;
+  const priceChange = Number.isFinite(rawPriceChange) ? Number(rawPriceChange.toFixed(2)) : null;
 
-  // Mock alpha markers aligned with price history
-  const mockAlphaMarkers: AlphaMarker[] = showAlphas && candles.length >= 10
-    ? [
-        {
-          time: candles[Math.max(0, candles.length - 25)].time,
-          side: 'BUY',
-          price: candles[Math.max(0, candles.length - 25)].low,
-          label: 'ALPHA BUY',
-        },
-        {
-          time: candles[Math.max(0, candles.length - 8)].time,
-          side: 'SELL',
-          price: candles[Math.max(0, candles.length - 8)].high,
-          label: 'TAKE PROFIT',
-        },
-      ]
-    : [];
+  // ponytail: Slice 8 has no alpha-marker source; never fabricate trading signals.
 
   return (
     <div className="flex flex-col gap-4 h-full pb-8">
@@ -89,6 +87,7 @@ export const ChartStationView: React.FC = () => {
                 <button
                   key={ticker}
                   onClick={() => setSelectedTicker(ticker)}
+                aria-pressed={selectedTicker === ticker}
                   className={`px-2 py-1 rounded font-bold transition-all ${
                     selectedTicker === ticker
                       ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
@@ -110,6 +109,7 @@ export const ChartStationView: React.FC = () => {
               <button
                 key={interval}
                 onClick={() => setChartInterval(interval)}
+                aria-pressed={chartInterval === interval}
                 className={`px-2.5 py-1 rounded font-semibold text-[11px] transition-all ${
                   chartInterval === interval
                     ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40'
@@ -128,6 +128,7 @@ export const ChartStationView: React.FC = () => {
 
           <button
             onClick={() => setShowSMA(!showSMA)}
+            aria-pressed={showSMA}
             className={`px-2 py-1 rounded border flex items-center gap-1.5 transition-all ${
               showSMA
                 ? 'bg-amber-500/15 text-amber-300 border-amber-500/30'
@@ -140,6 +141,7 @@ export const ChartStationView: React.FC = () => {
 
           <button
             onClick={() => setShowEMA(!showEMA)}
+            aria-pressed={showEMA}
             className={`px-2 py-1 rounded border flex items-center gap-1.5 transition-all ${
               showEMA
                 ? 'bg-purple-500/15 text-purple-300 border-purple-500/30'
@@ -152,6 +154,7 @@ export const ChartStationView: React.FC = () => {
 
           <button
             onClick={() => setShowVolume(!showVolume)}
+            aria-pressed={showVolume}
             className={`px-2 py-1 rounded border flex items-center gap-1.5 transition-all ${
               showVolume
                 ? 'bg-sky-500/15 text-sky-300 border-sky-500/30'
@@ -164,6 +167,7 @@ export const ChartStationView: React.FC = () => {
 
           <button
             onClick={() => setShowAlphas(!showAlphas)}
+            aria-pressed={showAlphas}
             className={`px-2 py-1 rounded border flex items-center gap-1.5 transition-all ${
               showAlphas
                 ? 'bg-emerald-500/15 text-emerald-300 border-emerald-500/30'
@@ -176,6 +180,10 @@ export const ChartStationView: React.FC = () => {
         </div>
       </div>
 
+      <p role="status" className="text-xs text-zinc-300">
+        Daily OHLCV refreshed every 15 seconds while healthy; failures pause refresh until explicit retry succeeds. Weekly/monthly bars aggregate available daily history, including incomplete periods.
+        {showAlphas && ' Alpha markers unavailable: no backend signal source.'}
+      </p>
       {/* Main Grid: TradingView Lightweight Chart (70%) + Orderbook Depth Ladder (30%) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 min-h-[480px]">
         {/* Chart Column (8 Cols) */}
@@ -187,10 +195,10 @@ export const ChartStationView: React.FC = () => {
                 <span className="text-xl font-bold text-zinc-100">{selectedTicker}</span>
                 <span
                   className={`font-bold text-sm ${
-                    priceChange >= 0 ? 'text-emerald-400' : 'text-rose-400'
+                    priceChange === null ? 'text-zinc-400' : priceChange >= 0 ? 'text-emerald-400' : 'text-rose-400'
                   }`}
                 >
-                  {latestCandle.close.toLocaleString()} VND ({priceChange >= 0 ? `+${priceChange}%` : `${priceChange}%`})
+                  {isMarketPrice(latestCandle.close) ? `${latestCandle.close.toLocaleString()} VND` : 'Price unavailable'} ({priceChange === null ? <span role="status" aria-label="Price return">Return unavailable</span> : priceChange >= 0 ? `+${priceChange}%` : `${priceChange}%`})
                 </span>
                 <span className="text-xs text-zinc-400 hidden sm:inline">
                   O: {latestCandle.open.toLocaleString()} | H: {latestCandle.high.toLocaleString()} | L: {latestCandle.low.toLocaleString()} | Vol: {(latestCandle.volume / 1000000).toFixed(2)}M
@@ -205,14 +213,9 @@ export const ChartStationView: React.FC = () => {
                   }}
                   className="p-1.5 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/5"
                   title="Refetch Market Data"
+                  aria-label="Refetch Market Data"
                 >
                   <RefreshCw className={`w-3.5 h-3.5 ${isOhlcvFetching ? 'animate-spin text-cyan-400' : ''}`} />
-                </button>
-                <button
-                  className="p-1.5 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-400 border border-white/5"
-                  title="Fullscreen"
-                >
-                  <Maximize2 className="w-3.5 h-3.5" />
                 </button>
               </div>
             </div>
@@ -245,7 +248,7 @@ export const ChartStationView: React.FC = () => {
                   showSMA={showSMA}
                   showEMA={showEMA}
                   showVolume={showVolume}
-                  alphaMarkers={mockAlphaMarkers}
+                  alphaMarkers={[]}
                 />
               </div>
             )}
@@ -267,7 +270,7 @@ export const ChartStationView: React.FC = () => {
 
         {/* Orderbook Depth Column (4 Cols) */}
         <div className="lg:col-span-4 flex flex-col">
-          <OrderbookDepth data={orderbookData} isLoading={isOrderbookLoading} />
+          <OrderbookDepth data={orderbookData} isLoading={isOrderbookLoading} isError={isOrderbookError} onRetry={() => { void refetchOrderbook(); }} />
         </div>
       </div>
 
