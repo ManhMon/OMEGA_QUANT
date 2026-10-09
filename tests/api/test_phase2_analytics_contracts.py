@@ -10,6 +10,106 @@ from fastapi.testclient import TestClient
 from omega.api.server import app
 
 client = TestClient(app)
+MICRO_CUTOFF = "2026-10-07T08:30:00Z"
+
+
+@pytest.fixture
+def micro_history(monkeypatch):
+    import pandas as pd
+    from omega.api.routes import market
+    from omega.data.calendar import VNTradingCalendar
+
+    days = [day for day in pd.date_range("2026-07-01", "2026-10-07")
+            if VNTradingCalendar.is_trading_day(day)]
+    frame = pd.DataFrame({
+        "ticker": "FPT", "date": days, "open": 50000.0, "high": 51000.0,
+        "low": 49000.0, "close": [50000.0 + i for i in range(len(days))],
+        "volume": 1000000.0, "exchange": "HOSE", "price_scale": "VND_FULL",
+        "source": "fixture",
+        "as_of": [day.tz_localize("UTC") + pd.Timedelta(hours=8, minutes=30) for day in days],
+    })
+    frame["available_at"] = frame["as_of"]
+    original = market._market_loader.load_market_dataset
+
+    def provider(**kwargs):
+        filters = kwargs.get("filters", [])
+        if filters and filters[0][0] == "ticker" and filters[0][2] in {
+            "FPT", "NONEXISTENT_999", "NONEXISTENT_TICKER_999", "DELISTED_TEST_ZZZ",
+        }:
+            return frame.loc[frame["ticker"].eq(filters[0][2])].copy(deep=True)
+        return original(**kwargs)
+
+    monkeypatch.setattr(market._market_loader, "load_market_dataset", provider)
+    return frame
+
+
+@pytest.mark.parametrize("route", ["vpin", "vpin-toxicity", "orderbook-depth", "market-impact"])
+@pytest.mark.parametrize("fault", [
+    "timeout", "none", "schema", "empty", "missing", "nan", "inf", "negative_inf",
+    "zero", "negative", "overflow", "naive", "future", "before_close",
+])
+def test_microstructure_dependency_error_contracts(micro_history, monkeypatch, route, fault):
+    import pandas as pd
+    from omega.api.routes import market
+
+    frame = micro_history.copy(deep=True)
+    if fault == "schema":
+        frame = pd.DataFrame()
+    elif fault == "empty":
+        frame = frame.iloc[:0]
+    elif fault == "missing":
+        frame = frame.drop(columns="price_scale")
+    elif fault in {"nan", "inf", "negative_inf", "zero", "negative", "overflow"}:
+        frame["low"] = {
+            "nan": float("nan"), "inf": float("inf"), "negative_inf": -float("inf"),
+            "zero": 0.0, "negative": -1.0, "overflow": 1e13,
+        }[fault]
+    elif fault == "naive":
+        frame["available_at"] = "2026-10-07T08:30:00"
+    elif fault == "future":
+        frame["available_at"] = "2026-10-07T08:30:00.000001Z"
+    elif fault == "before_close":
+        frame["as_of"] = frame["as_of"] - pd.Timedelta(microseconds=1)
+    before = frame.copy(deep=True)
+    calls = []
+
+    def provider(**kwargs):
+        calls.append(kwargs)
+        if fault == "timeout":
+            raise TimeoutError("https://user:secret@example.com?token=secret")
+        return None if fault == "none" else frame
+
+    monkeypatch.setattr(market._market_loader, "load_market_dataset", provider)
+    if route == "market-impact":
+        response = client.post("/api/v1/market/market-impact", json={
+            "symbol": "FPT", "order_size": 1000.0, "average_daily_volume": 1000000.0,
+            "volatility": 0.02, "arrival_price": 50000.0, "as_of": MICRO_CUTOFF,
+        })
+    else:
+        response = client.get(f"/api/v1/market/{route}/FPT", params={
+            "as_of": MICRO_CUTOFF, "mode": "estimated",
+        })
+    empty = fault in {"empty", "future"}
+    assert response.status_code == (404 if empty else 424), response.text
+    assert response.json() == {"detail": (
+        "MICROSTRUCTURE_HISTORY_NOT_FOUND" if empty
+        else "MICROSTRUCTURE_HISTORY_INVALID_OR_UNAVAILABLE"
+    )}
+    assert len(calls) == 1
+    pd.testing.assert_frame_equal(frame, before)
+
+
+@pytest.mark.parametrize("symbol", ["FPT", "NONEXISTENT_999"])
+def test_real_depth_unavailable_does_not_consult_history(monkeypatch, symbol):
+    from omega.api.routes import market
+
+    calls = []
+    monkeypatch.delattr(app.state, "market_depth_provider", raising=False)
+    monkeypatch.setattr(market._market_loader, "load_market_dataset", lambda **kwargs: calls.append(kwargs))
+    response = client.get(f"/api/v1/market/orderbook-depth/{symbol}", params={"as_of": MICRO_CUTOFF})
+    assert response.status_code == 424
+    assert response.json() == {"detail": "REAL_L2_FEED_UNAVAILABLE"}
+    assert calls == []
 
 
 # Dimension 1: Strict Types & Malformed Inputs (NaN, Inf, strings, lists)
@@ -60,10 +160,12 @@ def test_dim3_corrupted_duplicate_partial_payloads():
 
 
 # Dimension 4: Fail-Closed Exit Codes & Error States
-def test_dim4_fail_closed_error_states():
+def test_dim4_fail_closed_error_states(micro_history):
     # Missing symbol in dataset returns 404
     assert client.get("/api/v1/market/vpin/NONEXISTENT_TICKER_999").status_code == 404
-    assert client.get("/api/v1/market/orderbook-depth/NONEXISTENT_TICKER_999").status_code == 404
+    assert client.get("/api/v1/market/orderbook-depth/NONEXISTENT_TICKER_999", params={
+        "mode": "estimated", "as_of": MICRO_CUTOFF,
+    }).status_code == 404
     assert client.get("/api/v1/risk/circuit-breaker/status?symbol=NONEXISTENT_999").status_code == 404
     assert client.get("/api/v1/fundamental/corporate-graph/NONEXISTENT_999").status_code == 404
 
@@ -132,23 +234,27 @@ def test_dim8_zero_division_and_numeric_bounds():
 
 
 # Dimension 9: Concurrency & Race Condition Resistance
-def test_dim9_concurrency_race_condition_resistance():
+def test_dim9_concurrency_race_condition_resistance(monkeypatch):
     import concurrent.futures
+
+    monkeypatch.delattr(app.state, "market_depth_provider", raising=False)
+
     def fetch():
         return client.get("/api/v1/market/orderbook-depth/FPT?depth=5")
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-        futures = [executor.submit(fetch) for _ in range(16)]
-        results = [f.result() for f in futures]
+        results = list(executor.map(lambda _: fetch(), range(16)))
 
-    for r in results:
-        assert r.status_code == 200
-        assert r.json()["status"] == "success"
+    for response in results:
+        assert response.status_code == 424
+        assert response.json() == {"detail": "REAL_L2_FEED_UNAVAILABLE"}
 
 
 # Dimension 10: VND_FULL Price Scale & Unit Invariance
-def test_dim10_vnd_full_price_scale_maintained():
-    res = client.get("/api/v1/market/orderbook-depth/FPT")
+def test_dim10_vnd_full_price_scale_maintained(micro_history):
+    res = client.get("/api/v1/market/orderbook-depth/FPT", params={
+        "mode": "estimated", "as_of": MICRO_CUTOFF,
+    })
     assert res.status_code == 200
     data = res.json()
     assert data["mid_price"] > 1000.0
@@ -159,7 +265,7 @@ def test_dim10_vnd_full_price_scale_maintained():
 
 
 # Dimension 11: Survivorship & Delisting Anomalies
-def test_dim11_survivorship_and_delisted_symbol_handling():
+def test_dim11_survivorship_and_delisted_symbol_handling(micro_history):
     # Delisted or non-traded symbol fails closed cleanly with 404
     assert client.get("/api/v1/market/vpin/DELISTED_TEST_ZZZ").status_code == 404
     assert client.get("/api/v1/fundamental/corporate-graph/DELISTED_TEST_ZZZ").status_code == 404
@@ -197,11 +303,33 @@ def test_dim14_memory_bounds_on_window_size():
 
 
 # Dimension 15: Network Timeout & 429 Retry Exhaustion Resilience
-def test_dim15_network_retry_and_timeout_resilience():
-    # Endpoint handles high depth boundedly without timing out or breaking
-    res = client.get("/api/v1/market/orderbook-depth/FPT?depth=20")
+def test_dim15_network_retry_and_timeout_resilience(micro_history, monkeypatch):
+    from omega.api.routes import market
+
+    res = client.get("/api/v1/market/orderbook-depth/FPT", params={
+        "mode": "estimated", "depth": 20, "as_of": MICRO_CUTOFF,
+    })
     assert res.status_code == 200
     assert len(res.json()["bids"]) == 20
+    assert res.json()["is_synthetic"] is True
+    calls = []
+
+    def fail(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("https://user:secret@example.com?token=secret")
+
+    monkeypatch.setattr(market._market_loader, "load_market_dataset", fail)
+    monkeypatch.setattr(app.state, "market_depth_provider", fail, raising=False)
+    for mode, detail in (
+        ("real", "REAL_L2_SNAPSHOT_INVALID_OR_UNAVAILABLE"),
+        ("estimated", "MICROSTRUCTURE_HISTORY_INVALID_OR_UNAVAILABLE"),
+    ):
+        res = client.get("/api/v1/market/orderbook-depth/FPT", params={
+            "mode": mode, "as_of": MICRO_CUTOFF,
+        })
+        assert res.status_code == 424
+        assert res.json() == {"detail": detail}
+    assert len(calls) == 2  # One attempt per request; no retry or mode fallback.
 
 
 # Dimension 16: Secret Redaction & Credential Leak Prevention
@@ -221,16 +349,21 @@ def test_dim16_secret_redaction_in_all_responses():
 
 
 # Functional Verification of All Core Endpoints with Real Computation & Provenance
-def test_functional_phase2_endpoints_complete():
-    # 1. VPIN Toxicity
-    res_vpin = client.get("/api/v1/market/vpin/FPT?n_buckets=10&limit=50")
+def test_functional_phase2_endpoints_complete(micro_history):
+    # 1. VPIN Toxicity: historical OHLCV estimate, not observed trade flow.
+    res_vpin = client.get("/api/v1/market/vpin/FPT", params={
+        "n_buckets": 10, "limit": 50, "as_of": MICRO_CUTOFF,
+    })
     assert res_vpin.status_code == 200
     assert res_vpin.json()["status"] == "success"
     assert "provenance" in res_vpin.json()
     assert res_vpin.json()["provenance"]["is_synthetic"] is False
+    assert res_vpin.json()["metadata"]["source_kind"] == "estimated"
 
-    # 2. Depth Waterfall
-    res_depth = client.get("/api/v1/market/orderbook-depth/FPT?depth=5&spread_bps=12.5")
+    # 2. Depth Waterfall: synthetic ladder requires explicit estimated mode.
+    res_depth = client.get("/api/v1/market/orderbook-depth/FPT", params={
+        "depth": 5, "spread_bps": 12.5, "mode": "estimated", "as_of": MICRO_CUTOFF,
+    })
     assert res_depth.status_code == 200
     assert res_depth.json()["depth_levels"] == 5
     assert "provenance" in res_depth.json()
@@ -242,9 +375,10 @@ def test_functional_phase2_endpoints_complete():
     })
     assert res_impact.status_code == 200
     assert res_impact.json()["point_impact_bps"] > 0
-    assert "kyle_lambda" in res_impact.json()
-    assert res_impact.json()["kyle_lambda"] is not None
-    assert "provenance" in res_impact.json()
+    assert res_impact.json()["kyle_lambda"] is None
+    assert res_impact.json()["provenance"] is None
+    assert res_impact.json()["history_provenance"]["is_synthetic"] is False
+    assert res_impact.json()["caller_parameters_verified"] is False
 
     # 4. FracDiff Memory
     res_frac = client.post("/api/v1/market/fracdiff", json={

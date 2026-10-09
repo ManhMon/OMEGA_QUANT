@@ -615,19 +615,21 @@ def test_market_backed_provenance_uses_resolved_frame_source(module):
 
 
 @pytest.mark.parametrize(
-    ("module", "loader_name", "invoke"),
+    ("module", "loader_name", "invoke", "status", "detail"),
     [
-        ("market", "_market_loader", lambda route: route.get_vpin_toxicity("AAA")),
+        ("market", "_market_loader", lambda route: route.get_vpin_toxicity("AAA"),
+         424, "MICROSTRUCTURE_HISTORY_INVALID_OR_UNAVAILABLE"),
         ("portfolio", "load_market_dataset", lambda route: route.execute_portfolio_rebalance(
             route.PortfolioRebalanceExecuteRequest(totp_code="123456")
-        )),
+        ), 500, "MARKET_DATA_ERROR"),
         ("quant", "load_market_dataset", lambda route: route.post_walk_forward_cpcv(
             route.WalkForwardCpcvRequest(), MagicMock()
-        )),
-        ("risk_tca", "load_market_dataset", lambda route: route._compute_circuit_breaker_status("AAA")),
+        ), 500, "MARKET_DATA_ERROR"),
+        ("risk_tca", "load_market_dataset", lambda route: route._compute_circuit_breaker_status("AAA"),
+         500, "MARKET_DATA_ERROR"),
     ],
 )
-def test_market_read_errors_redact_secrets(monkeypatch, module, loader_name, invoke):
+def test_market_read_errors_redact_secrets(monkeypatch, module, loader_name, invoke, status, detail):
     route = __import__(f"omega.api.routes.{module}", fromlist=[module])
     if module == "portfolio":
         monkeypatch.setattr(route, "verify_totp", lambda code: True)
@@ -642,9 +644,10 @@ def test_market_read_errors_redact_secrets(monkeypatch, module, loader_name, inv
     with pytest.raises(HTTPException) as error:
         asyncio.run(invoke(route))
 
-    assert error.value.status_code == 500
-    assert error.value.detail == "MARKET_DATA_ERROR"
+    assert error.value.status_code == status
+    assert error.value.detail == detail
     assert "super-secret-token" not in error.value.detail
+    assert "hunter2" not in error.value.detail
 
 
 def _rebalance_request(target_portfolio):

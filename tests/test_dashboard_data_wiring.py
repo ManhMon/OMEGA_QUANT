@@ -152,11 +152,33 @@ def test_chart_station_data_wiring_real_ohlcv_and_indicators(client):
     assert all("open" in candle and "close" in candle for candle in data["candles"])
 
 
-def test_market_orderbook_synthetic_fallback(client):
-    resp = client.get("/api/v1/market/orderbook/VNM")
+def test_market_orderbook_synthetic_fallback(client, monkeypatch):
+    from omega.api.routes import market
+
+    frame = pd.DataFrame({
+        "ticker": ["VNM"], "date": ["2026-10-07"], "close": [75000.0],
+        "volume": [1000000.0], "exchange": ["HOSE"],
+        "as_of": ["2026-10-07T08:30:00Z"], "available_at": ["2026-10-07T08:30:00Z"],
+    })
+    calls = []
+
+    def provider(**kwargs):
+        calls.append(kwargs)
+        return frame.copy(deep=True)
+
+    monkeypatch.setattr(market._market_loader, "load_market_dataset", provider)
+    for symbol in ("VNM", "NONEXISTENT999"):
+        resp = client.get(f"/api/v1/market/orderbook/{symbol}")
+        assert resp.status_code == 503
+        assert resp.json() == {"detail": "REAL_L2_FEED_UNAVAILABLE"}
+    assert calls == []
+    resp = client.get("/api/v1/market/orderbook/VNM", params={
+        "fallback": True, "as_of": "2026-10-07T15:30:00+07:00",
+    })
     assert resp.status_code == 200
     assert resp.json()["is_synthetic"] is True
     assert resp.json()["bids"] and resp.json()["asks"]
+    assert len(calls) == 1
 
 
 def test_portfolio_state_genuine_lakehouse_wiring(client, tmp_path, monkeypatch):
@@ -688,10 +710,23 @@ def test_dim14_resource_exhaustion_memory_bounds(client):
 
 
 def test_dim15_network_timeout_and_dependency_exhaustion(client, monkeypatch):
-    # Synthetic fallback handles unavailable live dependency without crashing.
+    from omega.api.routes import market
+
+    calls = []
+
+    def history_timeout(**kwargs):
+        calls.append(kwargs)
+        raise TimeoutError("https://user:secret@example.com?token=secret")
+
+    monkeypatch.setattr(market._market_loader, "load_market_dataset", history_timeout)
     resp = client.get("/api/v1/market/orderbook/VNM")
-    assert resp.status_code == 200
-    assert resp.json()["is_synthetic"] is True
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "REAL_L2_FEED_UNAVAILABLE"}
+    assert calls == []
+    resp = client.get("/api/v1/market/orderbook/VNM?fallback=true")
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "MARKET_DATA_UNAVAILABLE"}
+    assert len(calls) == 1
 
     # Upstream routing network timeout fault injection fails closed with 503
     import omega.api.routes.portfolio as prt
@@ -844,7 +879,10 @@ def test_f002_fail_closed_empty_dependencies(client, tmp_path, monkeypatch):
     assert client.get("/api/v1/alpha/arsenal/signals").status_code == 424
 
     assert client.get("/api/v1/market/chart/NONEXISTENT999").status_code == 404
-    assert client.get("/api/v1/market/orderbook/NONEXISTENT999").status_code == 404
+    unavailable = client.get("/api/v1/market/orderbook/NONEXISTENT999")
+    assert unavailable.status_code == 503
+    assert unavailable.json() == {"detail": "REAL_L2_FEED_UNAVAILABLE"}
+    assert client.get("/api/v1/market/orderbook/NONEXISTENT999?fallback=true").status_code == 404
 
     tca_empty = client.get("/api/v1/tca/post-trade-report")
     assert tca_empty.status_code == 404
