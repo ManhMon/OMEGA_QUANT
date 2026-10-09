@@ -1556,7 +1556,203 @@ async function strategyRequest<T>(path: string, validate: (value: unknown) => T,
   catch (error) { if (signal?.aborted) throw new DOMException('Aborted', 'AbortError'); throw new Error(strategyErrorMessage(error)); }
 }
 
+export interface FundamentalRead { as_of?: string }
+export interface FundamentalSymbolRead extends FundamentalRead { symbol: string }
+export interface FundamentalScreenerRead extends FundamentalRead {
+  symbol?: string; sector?: string; exchange?: 'HOSE' | 'HNX' | 'UPCOM';
+  status?: 'QUALIFIED' | 'WATCH' | 'DISTRESS' | 'DISQUALIFIED';
+  min_piotroski?: number; min_roe?: number; min_altman_z?: number;
+  is_fallback?: boolean; is_veto?: boolean; page?: number; limit?: number;
+}
+export interface FundamentalEvidence {
+  historical_pit_verified: false;
+  provenance_verification: 'VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE';
+  provenance: ProvenanceEnvelope;
+}
+export interface FundamentalRow {
+  symbol: string; sector: string; exchange: 'HOSE' | 'HNX' | 'UPCOM';
+  status: 'ACTIVE' | 'QUALIFIED' | 'WATCH' | 'DISTRESS' | 'DISQUALIFIED' | 'DELISTED' | 'SUSPENDED' | 'FROZEN';
+  pe: number | null; pb: number | null; roe: number | null; piotroski_f: number | null; altman_z: number | null;
+  is_fallback: boolean; is_veto: boolean;
+}
+export interface FundamentalScreenerResponse extends FundamentalEvidence {
+  status: 'success'; total: number; page: number; limit: number; total_pages: number; data: FundamentalRow[];
+}
+export interface FundamentalValuationResponse extends FundamentalEvidence {
+  status: 'success'; total: number; excluded_not_meaningful: number; roe_unit: 'percent'; data: FundamentalRow[];
+}
+export interface FundamentalDuPontResponse extends FundamentalEvidence {
+  status: 'success' | 'not_meaningful' | 'unavailable'; symbol: string; fiscal_year: number | null;
+  net_margin: number | null; asset_turnover: number | null; equity_multiplier: number | null;
+  roe: number | null; roe_percent: number | null; reason: string | null; filing_dates: string[];
+}
+export const PIOTROSKI_CRITERIA = {
+  positive_roa: 'Positive return on assets', positive_operating_cash_flow: 'Positive operating cash flow',
+  improved_roa: 'Improved return on assets', cash_flow_exceeds_income: 'Cash flow exceeds income',
+  reduced_leverage: 'Reduced leverage', improved_liquidity: 'Improved liquidity',
+  no_share_dilution: 'No share dilution', improved_gross_margin: 'Improved gross margin',
+  improved_asset_turnover: 'Improved asset turnover',
+} as const;
+export interface FundamentalPiotroskiResponse extends FundamentalEvidence {
+  status: 'success'; symbol: string; fiscal_year: number | null; score: number | null;
+  known_passes: number; unknown_count: number;
+  criteria: { id: keyof typeof PIOTROSKI_CRITERIA; status: 'pass' | 'fail' | 'unknown'; reason: string | null; filing_dates: string[] }[];
+}
+const fundamentalEvidenceFields = ['historical_pit_verified', 'provenance_verification', 'provenance'];
+const fundamentalRowFields = ['symbol', 'sector', 'exchange', 'status', 'pe', 'pb', 'roe', 'piotroski_f', 'altman_z', 'is_fallback', 'is_veto'];
+function fundamentalText(value: unknown, max = 80): string {
+  const text = alphaText(value, max);
+  if (text !== text.trim() || /[\x00-\x1f\x7f﻿]/.test(text)) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+  return text;
+}
+function fundamentalSymbol(value: unknown): string {
+  const symbol = fundamentalText(value, 12);
+  if (!/^[A-Z0-9]{1,12}$/.test(symbol)) throw new Error('INVALID_FUNDAMENTAL_REQUEST');
+  return symbol;
+}
+export function validateFundamentalRead(value: unknown, kind: 'read' | 'symbol' | 'screener' = 'read'): FundamentalScreenerRead {
+  const r = alphaRecord(value);
+  alphaFields(r, kind === 'read' ? ['as_of'] : kind === 'symbol' ? ['symbol', 'as_of'] : ['as_of', 'symbol', 'sector', 'exchange', 'status', 'min_piotroski', 'min_roe', 'min_altman_z', 'is_fallback', 'is_veto', 'page', 'limit']);
+  if (Object.values(r).some(v => v == null)) throw new Error('INVALID_FUNDAMENTAL_REQUEST');
+  if (r.as_of !== undefined && alphaTimestamp(r.as_of) > Date.now()) throw new Error('PIT_CUTOFF_INVALID');
+  if (kind === 'symbol' || r.symbol !== undefined) fundamentalSymbol(r.symbol);
+  if (r.sector !== undefined) fundamentalText(r.sector);
+  if (r.exchange !== undefined && !['HOSE', 'HNX', 'UPCOM'].includes(r.exchange as string)) throw new Error('INVALID_FUNDAMENTAL_REQUEST');
+  if (r.status !== undefined && !['QUALIFIED', 'WATCH', 'DISTRESS', 'DISQUALIFIED'].includes(r.status as string)) throw new Error('INVALID_FUNDAMENTAL_REQUEST');
+  for (const key of ['min_roe', 'min_altman_z']) if (r[key] !== undefined) alphaNumber(r[key]);
+  if (r.min_piotroski !== undefined) alphaNumber(r.min_piotroski, 0, 9, true);
+  if (r.page !== undefined) alphaNumber(r.page, 1, 1e6, true);
+  if (r.limit !== undefined) alphaNumber(r.limit, 1, 703, true);
+  for (const key of ['is_fallback', 'is_veto']) if (r[key] !== undefined && typeof r[key] !== 'boolean') throw new Error('INVALID_FUNDAMENTAL_REQUEST');
+  return structuredClone(value) as FundamentalScreenerRead;
+}
+function fundamentalEvidence(r: Record<string, unknown>, request: FundamentalRead, dataset: string): number {
+  if (r.historical_pit_verified !== false || r.provenance_verification !== 'VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE') throw new Error('FUNDAMENTAL_PIT_INVALID');
+  const p = portfolioFields(r.provenance, ['source', 'dataset_id', 'dataset_version', 'as_of', 'computed_at', 'requested_pit_cutoff', 'effective_cutoff', 'input_timezone', 'normalized_timezone', 'cutoff_resolution', 'max_included_available_at', 'excluded_future_rows', 'content_hash', 'artifact_uri', 'is_synthetic']);
+  const cutoff = alphaTimestamp(p.effective_cutoff), computed = alphaTimestamp(p.computed_at);
+  if (p.source !== 'persisted_fundamental_inputs' || p.dataset_id !== dataset || p.dataset_version !== 'fundamental.v1' || p.input_timezone !== 'Asia/Ho_Chi_Minh' || p.normalized_timezone !== 'UTC' || p.is_synthetic !== false || p.artifact_uri !== null
+    || cutoff !== alphaTimestamp(p.as_of) || cutoff > Date.now() || computed < cutoff || computed > Date.now()
+    || typeof p.content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(p.content_hash)) throw new Error('FUNDAMENTAL_PIT_INVALID');
+  alphaNumber(p.excluded_future_rows, 0, 1e6, true);
+  if (p.max_included_available_at !== null && alphaTimestamp(p.max_included_available_at) > cutoff) throw new Error('FUNDAMENTAL_PIT_INVALID');
+  if (request.as_of === undefined ? p.requested_pit_cutoff !== null || p.cutoff_resolution !== 'AS_OF_DEFAULT'
+    : p.cutoff_resolution !== 'REQUESTED' || alphaTimestamp(p.requested_pit_cutoff) !== alphaTimestamp(request.as_of) || cutoff !== alphaTimestamp(request.as_of)) throw new Error('FUNDAMENTAL_PIT_INVALID');
+  // ponytail: filing availability is wall-clock, not exchange-close time; calendar resolution remains backend-owned.
+  return cutoff;
+}
+function fundamentalNullable(value: unknown, score = false): void {
+  if (value !== null) alphaNumber(value, score ? 0 : -1e12, score ? 9 : 1e12, score);
+}
+function fundamentalRows(value: unknown): FundamentalRow[] {
+  const rows = alphaArray(value, 703), seen = new Set<string>();
+  for (const row of rows) {
+    const r = portfolioFields(row, fundamentalRowFields), symbol = fundamentalSymbol(r.symbol);
+    if (seen.has(symbol)) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+    seen.add(symbol); fundamentalText(r.sector);
+    if (!['HOSE', 'HNX', 'UPCOM'].includes(r.exchange as string) || !['ACTIVE', 'QUALIFIED', 'WATCH', 'DISTRESS', 'DISQUALIFIED', 'DELISTED', 'SUSPENDED', 'FROZEN'].includes(r.status as string) || typeof r.is_fallback !== 'boolean' || typeof r.is_veto !== 'boolean') throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+    for (const key of ['pe', 'pb', 'roe', 'altman_z']) fundamentalNullable(r[key]);
+    fundamentalNullable(r.piotroski_f, true);
+  }
+  return rows as FundamentalRow[];
+}
+export function validateFundamentalScreener(value: unknown, request: FundamentalScreenerRead = {}): FundamentalScreenerResponse {
+  validateFundamentalRead(request, 'screener');
+  const r = portfolioFields(value, ['status', 'total', 'page', 'limit', 'total_pages', 'data', ...fundamentalEvidenceFields]);
+  fundamentalEvidence(r, request, 'hybrid_eval_full_703');
+  const total = alphaNumber(r.total, 0, 703, true), page = alphaNumber(r.page, 1, 1e6, true), limit = alphaNumber(r.limit, 1, 703, true);
+  const rows = fundamentalRows(r.data);
+  if (rows.length && alphaRecord(r.provenance).max_included_available_at === null) throw new Error('FUNDAMENTAL_PIT_INVALID');
+  if (r.status !== 'success' || page !== (request.page ?? 1) || limit !== (request.limit ?? 25) || r.total_pages !== Math.ceil(total / limit) || rows.length !== Math.min(limit, Math.max(0, total - (page - 1) * limit))) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+  for (const row of rows) {
+    for (const key of ['symbol', 'sector', 'exchange', 'status', 'is_fallback', 'is_veto'] as const) if (request[key] !== undefined && row[key] !== request[key]) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+    for (const [filter, key] of [['min_piotroski', 'piotroski_f'], ['min_roe', 'roe'], ['min_altman_z', 'altman_z']] as const) if (request[filter] !== undefined && (row[key] === null || row[key]! < request[filter]!)) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+    if (['DELISTED', 'SUSPENDED', 'FROZEN'].includes(row.status)) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+  }
+  return structuredClone(value) as FundamentalScreenerResponse;
+}
+export function validateFundamentalValuation(value: unknown, request: FundamentalRead = {}): FundamentalValuationResponse {
+  validateFundamentalRead(request);
+  const r = portfolioFields(value, ['status', 'total', 'excluded_not_meaningful', 'roe_unit', 'data', ...fundamentalEvidenceFields]);
+  fundamentalEvidence(r, request, 'hybrid_eval_full_703');
+  const rows = fundamentalRows(r.data), total = alphaNumber(r.total, 0, 703, true), excluded = alphaNumber(r.excluded_not_meaningful, 0, 703, true);
+  if (rows.length && alphaRecord(r.provenance).max_included_available_at === null) throw new Error('FUNDAMENTAL_PIT_INVALID');
+  if (r.status !== 'success' || r.roe_unit !== 'percent' || total !== rows.length || total + excluded > 703 || rows.some(row => row.pe === null || row.pe <= 0 || row.roe === null || ['DELISTED', 'SUSPENDED', 'FROZEN', 'DISQUALIFIED'].includes(row.status))) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+  return structuredClone(value) as FundamentalValuationResponse;
+}
+function fundamentalDates(value: unknown, cutoff: number): void {
+  const dates = alphaArray(value, 4096).map(alphaTimestamp);
+  if (dates.some((time, i) => time > cutoff || (i > 0 && time <= dates[i - 1]))) throw new Error('FUNDAMENTAL_PIT_INVALID');
+}
+function fundamentalFinancial(r: Record<string, unknown>, request: FundamentalSymbolRead): number {
+  if (r.symbol !== request.symbol) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+  fundamentalSymbol(r.symbol);
+  if (r.fiscal_year !== null) alphaNumber(r.fiscal_year, 1900, new Date().getUTCFullYear() + 1, true);
+  const cutoff = fundamentalEvidence(r, request, 'financial_statements_2015_now');
+  if (r.fiscal_year !== null && alphaRecord(r.provenance).max_included_available_at === null) throw new Error('FUNDAMENTAL_PIT_INVALID');
+  return cutoff;
+}
+export function validateFundamentalDuPont(value: unknown, request: FundamentalSymbolRead): FundamentalDuPontResponse {
+  validateFundamentalRead(request, 'symbol');
+  const r = portfolioFields(value, ['status', 'symbol', 'fiscal_year', 'net_margin', 'asset_turnover', 'equity_multiplier', 'roe', 'roe_percent', 'reason', 'filing_dates', ...fundamentalEvidenceFields]);
+  fundamentalDates(r.filing_dates, fundamentalFinancial(r, request));
+  for (const key of ['net_margin', 'asset_turnover', 'equity_multiplier', 'roe', 'roe_percent']) fundamentalNullable(r[key]);
+  if (r.status === 'success') {
+    if (r.reason !== null || r.fiscal_year === null || ['net_margin', 'asset_turnover', 'equity_multiplier', 'roe', 'roe_percent'].some(k => r[k] === null) || (r.asset_turnover as number) <= 0 || (r.equity_multiplier as number) <= 0) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+    const product = (r.net_margin as number) * (r.asset_turnover as number) * (r.equity_multiplier as number);
+    alphaNumber(product); alphaNumber(product * 100);
+    if (Math.abs(product - (r.roe as number)) > 1e-8 * Math.max(1, Math.abs(product)) || Math.abs((r.roe as number) * 100 - (r.roe_percent as number)) > 1e-8 * Math.max(1, Math.abs(r.roe_percent as number))) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+  } else if (!['unavailable', 'not_meaningful'].includes(r.status as string) || r.roe !== null || r.roe_percent !== null || r.reason !== (r.status === 'not_meaningful' ? 'NONPOSITIVE_EQUITY' : 'MISSING_OR_INVALID_FILING_INPUTS')) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+  return structuredClone(value) as FundamentalDuPontResponse;
+}
+export function validateFundamentalPiotroski(value: unknown, request: FundamentalSymbolRead): FundamentalPiotroskiResponse {
+  validateFundamentalRead(request, 'symbol');
+  const r = portfolioFields(value, ['status', 'symbol', 'fiscal_year', 'score', 'known_passes', 'unknown_count', 'criteria', ...fundamentalEvidenceFields]);
+  const cutoff = fundamentalFinancial(r, request), criteria = alphaArray(r.criteria, 9), ids = new Set();
+  let passes = 0, unknown = 0;
+  for (const item of criteria) {
+    const c = portfolioFields(item, ['id', 'status', 'reason', 'filing_dates']);
+    if (typeof c.id !== 'string' || !Object.hasOwn(PIOTROSKI_CRITERIA, c.id) || ids.has(c.id) || !['pass', 'fail', 'unknown'].includes(c.status as string) || c.reason !== (c.status === 'unknown' ? 'MISSING_OR_INVALID_FILING_INPUTS' : null)) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+    ids.add(c.id); fundamentalDates(c.filing_dates, cutoff);
+    passes += Number(c.status === 'pass'); unknown += Number(c.status === 'unknown');
+  }
+  if (r.status !== 'success' || criteria.length !== 9 || r.known_passes !== passes || r.unknown_count !== unknown || r.score !== (unknown ? null : passes)) throw new Error('FUNDAMENTAL_SCHEMA_INVALID');
+  return structuredClone(value) as FundamentalPiotroskiResponse;
+}
+export function fundamentalErrorMessage(error: unknown): string {
+  const code = (error as { errorCode?: unknown } | null)?.errorCode ?? (error instanceof Error ? error.message : undefined);
+  return typeof code === 'string' && ['FUNDAMENTAL_DATA_UNAVAILABLE', 'FUNDAMENTAL_SCHEMA_INVALID', 'FUNDAMENTAL_PIT_INVALID', 'INVALID_FUNDAMENTAL_REQUEST', 'PIT_CUTOFF_INVALID'].includes(code) ? code : 'Fundamental analytics unavailable. Check inputs and retry.';
+}
+async function fundamentalGet<T>(path: string, request: FundamentalRead, validate: (value: unknown) => T, signal?: AbortSignal): Promise<T> {
+  const query = new URLSearchParams(Object.entries(request).map(([key, value]) => [key, String(value)]));
+  try {
+    const result = await resilientApiRequest<unknown>(`${path}${query.size ? `?${query}` : ''}`, { signal, maxRetries: 0 });
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    return validate(result);
+  } catch (error) {
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
+    throw new Error(fundamentalErrorMessage(error));
+  }
+}
+
 export const advancedQuantApi = {
+  getFundamentalScreener: (params: FundamentalScreenerRead = {}, signal?: AbortSignal) => {
+    const request = validateFundamentalRead(params, 'screener');
+    return fundamentalGet('/api/v1/quant/screener', request, value => validateFundamentalScreener(value, request), signal);
+  },
+  getFundamentalValuation: (params: FundamentalRead = {}, signal?: AbortSignal) => {
+    const request = validateFundamentalRead(params);
+    return fundamentalGet('/api/v1/quant/fundamental/valuation-matrix', request, value => validateFundamentalValuation(value, request), signal);
+  },
+  getFundamentalDuPont: (params: FundamentalSymbolRead, signal?: AbortSignal) => {
+    const request = validateFundamentalRead(params, 'symbol') as FundamentalSymbolRead;
+    const { symbol, ...query } = request;
+    return fundamentalGet(`/api/v1/quant/fundamental/dupont/${encodeURIComponent(symbol)}`, query, value => validateFundamentalDuPont(value, request), signal);
+  },
+  getFundamentalPiotroski: (params: FundamentalSymbolRead, signal?: AbortSignal) => {
+    const request = validateFundamentalRead(params, 'symbol') as FundamentalSymbolRead;
+    const { symbol, ...query } = request;
+    return fundamentalGet(`/api/v1/quant/fundamental/piotroski/${encodeURIComponent(symbol)}`, query, value => validateFundamentalPiotroski(value, request), signal);
+  },
   getTargetPortfolioState: (request: PortfolioReadRequest = {}, signal?: AbortSignal) => portfolioRequest('/api/v1/portfolio/state', request, false, validateTargetPortfolio, signal),
   getPortfolioDynamicUniverse: (request: PortfolioUniverseRequest = {}, signal?: AbortSignal) => portfolioRequest('/api/v1/portfolio/dynamic-universe', request, true, validatePortfolioUniverse, signal),
   getBarraDecomposition: (signal?: AbortSignal) => riskRequest('/api/v1/risk/barra/decomposition', validateBarraResponse, signal),
