@@ -14,7 +14,13 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query, Depends
+from fastapi import APIRouter, HTTPException, Query, Depends, Request
+from pydantic import BaseModel, ConfigDict
+import math
+import re
+import os
+import pyarrow.parquet as pq
+from io import BytesIO
 from scipy.stats import norm, skew, kurtosis
 
 from omega.api.dependencies import job_service_dependency
@@ -807,94 +813,433 @@ async def get_conformal_calibration_status(
     })
 
 
-@router.get("/screener")
-async def get_quant_screener(
-    symbol: Optional[str] = Query(default=None, description="Ticker symbol filter (e.g. VNM, VIC)"),
-    min_piotroski: Optional[int] = Query(default=None, description="Minimum Piotroski F-score (0-9)"),
-    min_roe: Optional[float] = Query(default=None, description="Minimum ROE percentage"),
-    min_altman_z: Optional[float] = Query(default=None, description="Minimum Altman Z-Score"),
-    status: Optional[str] = Query(default=None, description="Health status (QUALIFIED, WATCH, DISTRESS, DISQUALIFIED)"),
-    sector: Optional[str] = Query(default=None, description="ICB sector filter"),
-    exchange: Optional[str] = Query(default=None, description="Exchange filter (HOSE, HNX, UPCOM)"),
-    is_fallback: Optional[bool] = Query(default=None, description="Filter by fallback flag"),
-    is_veto: Optional[bool] = Query(default=None, description="Filter by veto flag"),
-    page: int = Query(default=1, ge=1, description="Page number starting at 1"),
-    limit: int = Query(default=25, ge=0, le=1000, description="Items per page (0 or 703 returns all)"),
-) -> Dict[str, Any]:
-    if not QUANT_PARQUET_PATH.exists():
-        raise HTTPException(status_code=404, detail="Quant screener dataset not found")
+FINANCIAL_PARQUET_PATH = Path("data/financial_statements_2015_now.parquet")
+MAX_FUNDAMENTAL_BYTES = 128 * 1024 * 1024
+MAX_FUNDAMENTAL_ROWS = 1_000_000
+FUNDAMENTAL_SYMBOL = r"^[A-Z0-9]{1,12}$"
 
+
+class FundamentalQuery(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    as_of: AwareUtcDateTime | None = None
+
+
+class ScreenerQuery(FundamentalQuery):
+    symbol: Annotated[str, Field(pattern=FUNDAMENTAL_SYMBOL)] | None = None
+    min_piotroski: Annotated[int, Field(ge=0, le=9)] | None = None
+    min_roe: FiniteFloat | None = None
+    min_altman_z: FiniteFloat | None = None
+    status: Literal["QUALIFIED", "WATCH", "DISTRESS", "DISQUALIFIED"] | None = None
+    sector: Annotated[str, Field(min_length=1, max_length=80, pattern=r"^[^\x00-\x1f\x7f﻿]+$")] | None = None
+    exchange: Literal["HOSE", "HNX", "UPCOM"] | None = None
+    is_fallback: bool | None = None
+    is_veto: bool | None = None
+    page: Annotated[int, Field(ge=1, le=1_000_000)] = 1
+    limit: Annotated[int, Field(ge=1, le=703)] = 25
+
+
+def _fundamental_query(request: Request):
+    return _parse_fundamental_query(request, FundamentalQuery)
+
+
+def _screener_query(request: Request):
+    return _parse_fundamental_query(request, ScreenerQuery)
+
+
+def _parse_fundamental_query(request: Request, model):
     try:
-        df = pd.read_parquet(QUANT_PARQUET_PATH)
-    except Exception as e:
-        logger.error("quant dataset read failed: %s", redact_market_data_error(e))
-        raise HTTPException(status_code=500, detail="MARKET_DATA_ERROR") from e
+        pairs = list(request.query_params.multi_items())
+        if len(pairs) != len(dict(pairs)) or any(len(v) > 128 for _, v in pairs):
+            raise ValueError
+        return model.model_validate(dict(pairs))
+    except (ValueError, TypeError) as error:
+        raise HTTPException(status_code=422, detail="INVALID_FUNDAMENTAL_REQUEST") from error
 
-    if df.empty:
-        return {
-            "status": "success",
-            "total": 0,
-            "page": page,
-            "limit": limit,
-            "total_pages": 0,
-            "data": [],
-        }
 
-    # Case-insensitive substring search for symbol
-    if symbol:
-        canonical_symbol = symbol.strip().upper()
-        df = df[df["symbol"].astype(str).str.upper().str.contains(canonical_symbol, na=False)]
+def _fundamental_cutoff(query: FundamentalQuery) -> datetime:
+    cutoff = query.as_of or datetime.now(timezone.utc)
+    if cutoff > datetime.now(timezone.utc):
+        raise HTTPException(status_code=422, detail="PIT_CUTOFF_INVALID")
+    # Filing availability is wall-clock; exchange holidays do not delay public filings.
+    return cutoff
 
-    # Multi-factor filters
-    if min_piotroski is not None and "piotroski_f" in df.columns:
-        df = df[pd.to_numeric(df["piotroski_f"], errors="coerce") >= min_piotroski]
 
-    if min_roe is not None and "roe" in df.columns:
-        df = df[pd.to_numeric(df["roe"], errors="coerce") >= min_roe]
+def _fundamental_read(path: Path, columns: list[str], filters=None) -> pd.DataFrame:
+    try:
+        if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_FUNDAMENTAL_BYTES:
+            raise ValueError
+        with path.open("rb") as stream:
+            before = os.fstat(stream.fileno())
+            raw = stream.read(MAX_FUNDAMENTAL_BYTES + 1)
+            if len(raw) > MAX_FUNDAMENTAL_BYTES:
+                raise ValueError
+            snapshot = BytesIO(raw)
+            parquet = pq.ParquetFile(snapshot)
+            names = parquet.schema_arrow.names
+            uncompressed = sum(parquet.metadata.row_group(i).total_byte_size
+                               for i in range(parquet.metadata.num_row_groups))
+            if (len(names) != len(set(names)) or not set(columns).issubset(names)
+                    or parquet.metadata.num_rows > MAX_FUNDAMENTAL_ROWS
+                    or uncompressed > 4 * MAX_FUNDAMENTAL_BYTES):
+                raise ValueError
+            snapshot.seek(0)
+            frame = pd.read_parquet(snapshot, columns=columns, filters=filters)
+            after = os.fstat(stream.fileno())
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns):
+                raise ValueError
+        if len(frame) > MAX_FUNDAMENTAL_ROWS or frame.columns.duplicated().any():
+            raise ValueError
+        return frame.copy(deep=True)
+    except Exception as error:
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_DATA_UNAVAILABLE") from error
 
-    if min_altman_z is not None and "altman_z" in df.columns:
-        df = df[pd.to_numeric(df["altman_z"], errors="coerce") >= min_altman_z]
 
-    if status and "status" in df.columns:
-        df = df[df["status"].astype(str).str.upper() == status.strip().upper()]
+def _fundamental_clock(series: pd.Series, nullable=False) -> pd.Series:
+    try:
+        if any(not pd.isna(v) and (not isinstance(v, (str, datetime, pd.Timestamp))
+                or pd.Timestamp(v).tzinfo is None) for v in series):
+            raise ValueError
+        result = pd.to_datetime(series, utc=True, errors="raise", format="mixed")
+        if not nullable and result.isna().any():
+            raise ValueError
+        return result
+    except (ValueError, TypeError, OverflowError) as error:
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_PIT_INVALID") from error
 
-    if sector and "sector" in df.columns:
-        df = df[df["sector"].astype(str).str.upper() == sector.strip().upper()]
 
-    if exchange and "exchange" in df.columns:
-        df = df[df["exchange"].astype(str).str.upper() == exchange.strip().upper()]
+def _fundamental_numbers(frame: pd.DataFrame, column: str, bound=1e12):
+    values = frame[column].dropna()
+    if (not values.empty and (not pd.api.types.is_numeric_dtype(values)
+            or pd.api.types.is_bool_dtype(values) or not np.isfinite(values.to_numpy(dtype=float)).all()
+            or values.abs().gt(bound).any())):
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_SCHEMA_INVALID")
 
-    # Filter by fallback
-    if is_fallback is not None and "is_fallback" in df.columns:
-        df = df[df["is_fallback"] == is_fallback]
 
-    # Filter by veto
-    if is_veto is not None and "is_veto" in df.columns:
-        df = df[df["is_veto"] == is_veto]
+def _fundamental_text(frame: pd.DataFrame, column: str, pattern: str):
+    if not all(isinstance(v, str) and re.fullmatch(pattern, v) and v == v.strip()
+               for v in frame[column]):
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_SCHEMA_INVALID")
 
-    total_records = len(df)
-    if limit <= 0 or limit >= total_records:
-        total_pages = 1 if total_records > 0 else 0
-        page_df = df
-    else:
-        total_pages = (total_records + limit - 1) // limit if total_records > 0 else 0
-        start_idx = (page - 1) * limit
-        end_idx = start_idx + limit
-        page_df = df.iloc[start_idx:end_idx]
 
-    records: List[Dict[str, Any]] = []
-    for _, row in page_df.iterrows():
-        record = {str(col): sanitize_value(row[col]) for col in df.columns}
-        records.append(record)
+def _fundamental_provenance(frame: pd.DataFrame, cutoff: datetime, query: FundamentalQuery, dataset: str):
+    canonical = frame.sort_values(list(frame.columns)).reset_index(drop=True).to_json(
+        orient="records", date_format="iso", date_unit="ns", double_precision=15).encode("utf-8")
+    return ProvenanceEnvelope(
+        source="persisted_fundamental_inputs", dataset_id=dataset, dataset_version="fundamental.v1",
+        as_of=cutoff, computed_at=datetime.now(timezone.utc), effective_cutoff=cutoff,
+        requested_pit_cutoff=query.as_of, input_timezone="Asia/Ho_Chi_Minh",
+        cutoff_resolution="REQUESTED" if query.as_of else "AS_OF_DEFAULT",
+        max_included_available_at=frame.available_at.max().to_pydatetime() if not frame.empty else None,
+        content_hash=hashlib.sha256(canonical).hexdigest(),
+        excluded_future_rows=int(frame.attrs.get("excluded_future_rows", 0)), is_synthetic=False,
+    )
 
-    return {
-        "status": "success",
-        "total": total_records,
-        "page": page,
-        "limit": limit,
-        "total_pages": total_pages,
-        "data": records,
-    }
+
+class FundamentalRow(StrictApiModel):
+    symbol: Annotated[str, Field(pattern=FUNDAMENTAL_SYMBOL)]
+    sector: Annotated[str, Field(min_length=1, max_length=80)]
+    exchange: Literal["HOSE", "HNX", "UPCOM"]
+    status: Literal["ACTIVE", "QUALIFIED", "WATCH", "DISTRESS", "DISQUALIFIED", "DELISTED", "SUSPENDED", "FROZEN"]
+    pe: FiniteFloat | None
+    pb: FiniteFloat | None
+    roe: FiniteFloat | None
+    piotroski_f: Annotated[int, Field(ge=0, le=9)] | None
+    altman_z: FiniteFloat | None
+    is_fallback: bool
+    is_veto: bool
+
+
+class FundamentalScreenerResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    total: int
+    page: int
+    limit: int
+    total_pages: int
+    data: list[FundamentalRow]
+    historical_pit_verified: Literal[False] = False
+    provenance_verification: Literal["VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE"] = "VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE"
+    provenance: ProvenanceEnvelope
+
+
+def _fundamental_universe(cutoff: datetime) -> pd.DataFrame:
+    columns = ["symbol", "sector", "exchange", "status", "pe", "pb", "roe", "piotroski_f",
+               "altman_z", "is_fallback", "is_veto", "as_of", "available_at"]
+    frame = _fundamental_read(QUANT_PARQUET_PATH, columns)
+    _fundamental_text(frame, "symbol", r"[A-Z0-9]{1,12}")
+    _fundamental_text(frame, "sector", r"[^\x00-\x1f\x7f﻿]{1,80}")
+    for key in ("as_of", "available_at"):
+        frame[key] = _fundamental_clock(frame[key])
+    if frame.as_of.gt(frame.available_at).any() or frame.duplicated(["symbol", "as_of", "available_at"]).any():
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_PIT_INVALID")
+    for column in ("pe", "pb", "roe", "piotroski_f", "altman_z"):
+        _fundamental_numbers(frame, column)
+    if (not frame.exchange.isin({"HOSE", "HNX", "UPCOM"}).all()
+            or not frame.status.isin({"ACTIVE", "QUALIFIED", "WATCH", "DISTRESS", "DISQUALIFIED", "DELISTED", "SUSPENDED", "FROZEN"}).all()
+            or frame.piotroski_f.dropna().map(lambda v: not 0 <= v <= 9 or v != int(v)).any()
+            or any(not isinstance(v, (bool, np.bool_)) for c in ("is_fallback", "is_veto") for v in frame[c])):
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_SCHEMA_INVALID")
+    excluded = int(frame.available_at.gt(cutoff).sum())
+    frame = frame[frame.available_at.le(cutoff)].sort_values(["as_of", "available_at"])
+    frame = frame.drop_duplicates("symbol", keep="last").sort_values("symbol").reset_index(drop=True)
+    if len(frame) > 703:
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_UNIVERSE_TOO_LARGE")
+    frame.attrs["excluded_future_rows"] = excluded
+    return frame
+
+
+def _fundamental_row(row: dict) -> FundamentalRow:
+    values = {key: sanitize_value(row[key]) for key in FundamentalRow.model_fields}
+    if values["piotroski_f"] is not None:
+        values["piotroski_f"] = int(values["piotroski_f"])
+    return FundamentalRow(**values)
+
+
+@router.get("/screener", response_model=FundamentalScreenerResponse)
+def get_quant_screener(query: ScreenerQuery = Depends(_screener_query)):
+    cutoff = _fundamental_cutoff(query)
+    frame = _fundamental_universe(cutoff)
+    proof = _fundamental_provenance(frame, cutoff, query, "hybrid_eval_full_703")
+    filtered = frame
+    if query.symbol:
+        filtered = filtered[filtered.symbol.str.contains(query.symbol, regex=False)]
+    for column, value in (("piotroski_f", query.min_piotroski), ("roe", query.min_roe), ("altman_z", query.min_altman_z)):
+        if value is not None:
+            filtered = filtered[filtered[column].ge(value)]
+    for column in ("status", "sector", "exchange", "is_fallback", "is_veto"):
+        value = getattr(query, column)
+        if value is not None:
+            filtered = filtered[filtered[column] == value]
+    total = len(filtered)
+    page = filtered.iloc[(query.page - 1) * query.limit:query.page * query.limit]
+    return FundamentalScreenerResponse(total=total, page=query.page, limit=query.limit,
+        total_pages=(total + query.limit - 1) // query.limit,
+        data=[_fundamental_row(row) for row in page.to_dict("records")], provenance=proof)
+
+
+class ValuationResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    total: int
+    excluded_not_meaningful: int
+    roe_unit: Literal["percent"] = "percent"
+    data: list[FundamentalRow]
+    historical_pit_verified: Literal[False] = False
+    provenance_verification: Literal["VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE"] = "VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE"
+    provenance: ProvenanceEnvelope
+
+
+@router.get("/fundamental/valuation-matrix", response_model=ValuationResponse)
+def get_valuation_matrix(query: FundamentalQuery = Depends(_fundamental_query)):
+    cutoff = _fundamental_cutoff(query)
+    frame = _fundamental_universe(cutoff)
+    active = frame[~frame.status.isin({"DELISTED", "SUSPENDED", "FROZEN", "DISQUALIFIED"})]
+    meaningful = active[active.pe.gt(0) & active.roe.notna()]
+    return ValuationResponse(total=len(meaningful), excluded_not_meaningful=len(active) - len(meaningful),
+        data=[_fundamental_row(row) for row in meaningful.to_dict("records")],
+        provenance=_fundamental_provenance(frame, cutoff, query, "hybrid_eval_full_703"))
+
+
+def _financial_statements(symbol: str, cutoff: datetime) -> pd.DataFrame:
+    if not re.fullmatch(FUNDAMENTAL_SYMBOL, symbol):
+        raise HTTPException(status_code=422, detail="INVALID_FUNDAMENTAL_SYMBOL")
+    columns = ["symbol", "endpoint", "period_type", "fiscal_year", "fiscal_quarter", "item_code",
+               "item_value", "fiscal_period_end", "source_publish_at", "available_at"]
+    frame = _fundamental_read(FINANCIAL_PARQUET_PATH, columns, [("symbol", "=", symbol)])
+    _fundamental_text(frame, "symbol", r"[A-Z0-9]{1,12}")
+    _fundamental_text(frame, "item_code", r"[a-z][a-z0-9_]{0,159}")
+    for column in ("available_at", "source_publish_at"):
+        frame[column] = _fundamental_clock(frame[column], nullable=column == "source_publish_at")
+    try:
+        frame["fiscal_period_end"] = pd.to_datetime(frame.fiscal_period_end, errors="raise", utc=True)
+        if (frame.fiscal_period_end.isna().any() or frame.fiscal_period_end.gt(frame.available_at).any()
+                or frame.source_publish_at.gt(frame.available_at).any()
+                or frame.source_publish_at.lt(frame.fiscal_period_end).any()):
+            raise ValueError
+    except (ValueError, TypeError, OverflowError) as error:
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_PIT_INVALID") from error
+    for column in ("fiscal_year", "fiscal_quarter"):
+        _fundamental_numbers(frame, column)
+    _fundamental_numbers(frame, "item_value", bound=1e18)
+    keys = ["endpoint", "period_type", "fiscal_year", "fiscal_quarter", "item_code"]
+    if (not frame.symbol.eq(symbol).all()
+            or frame.fiscal_period_end.dt.year.ne(frame.fiscal_year).any()
+            or (frame.period_type.eq("year") & frame.fiscal_quarter.ne(0)).any()
+            or (frame.period_type.eq("quarter") & ~frame.fiscal_quarter.between(1, 4)).any()
+            or not frame.endpoint.isin({"income_statement", "balance_sheet", "cash_flow", "ratios"}).all()
+            or not frame.period_type.isin({"year", "quarter"}).all()
+            or frame.fiscal_year.isna().any() or frame.fiscal_year.mod(1).ne(0).any()
+            or not frame.fiscal_year.between(2015, datetime.now().year).all()
+            or frame.fiscal_quarter.isna().any() or frame.fiscal_quarter.mod(1).ne(0).any()
+            or not frame.fiscal_quarter.between(0, 4).all()
+            or frame.duplicated(keys + ["available_at"]).any()):
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_SCHEMA_INVALID")
+    excluded = int(frame.available_at.gt(cutoff).sum())
+    frame = frame[frame.available_at.le(cutoff)].sort_values("available_at").drop_duplicates(keys, keep="last")
+    annual = frame[frame.period_type.eq("year")].copy()
+    if annual.groupby("fiscal_year").fiscal_period_end.nunique().gt(1).any():
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_SCHEMA_INVALID")
+    for endpoint, codes in FINANCIAL_ITEMS.values():
+        selected = annual[annual.endpoint.eq(endpoint) & annual.item_code.isin(codes)]
+        if selected.groupby("fiscal_year").size().gt(1).any():
+            raise HTTPException(status_code=424, detail="FUNDAMENTAL_ITEM_AMBIGUOUS")
+    annual.attrs["excluded_future_rows"] = excluded
+    return annual
+
+
+# Explicit provider aliases only; never infer balances from reported ratios.
+FINANCIAL_ITEMS = {
+    "income": ("income_statement", ("net_profit",)),
+    "revenue": ("income_statement", ("revenue",)),
+    "gross_profit": ("income_statement", ("gross_profit",)),
+    "assets": ("balance_sheet", ("total_assets", "assets")),
+    "equity": ("balance_sheet", ("owners_equity", "equity", "total_equity")),
+    "debt": ("balance_sheet", ("long_term_debt",)),
+    "current_assets": ("balance_sheet", ("current_assets", "short_term_assets")),
+    "current_liabilities": ("balance_sheet", ("current_liabilities", "short_term_liabilities")),
+    "shares": ("balance_sheet", ("shares_outstanding",)),
+    "cash_flow": ("cash_flow", ("operating_cash_flow", "net_cash_from_operating_activities")),
+}
+
+
+def _financial_item(frame: pd.DataFrame, year: int, name: str):
+    endpoint, codes = FINANCIAL_ITEMS[name]
+    rows = frame[frame.fiscal_year.eq(year) & frame.endpoint.eq(endpoint) & frame.item_code.isin(codes)]
+    if len(rows) > 1:
+        raise HTTPException(status_code=424, detail="FUNDAMENTAL_ITEM_AMBIGUOUS")
+    if rows.empty or pd.isna(rows.iloc[0].item_value) or pd.isna(rows.iloc[0].source_publish_at):
+        return None
+    value = float(rows.iloc[0].item_value)
+    if name in {"debt", "current_assets"} and value < 0 or name == "shares" and value <= 0:
+        return None
+    return value
+
+
+def _financial_ratio(numerator, denominator):
+    if numerator is None or denominator is None or denominator <= 0:
+        return None
+    value = numerator / denominator
+    return value if math.isfinite(value) and abs(value) <= 1e12 else None
+
+
+def _financial_average(current, previous):
+    if current is None or previous is None or current <= 0 or previous <= 0:
+        return None
+    return current / 2 + previous / 2
+
+
+class DuPontResponse(StrictApiModel):
+    status: Literal["success", "not_meaningful", "unavailable"]
+    symbol: str
+    fiscal_year: int | None
+    net_margin: FiniteFloat | None
+    asset_turnover: FiniteFloat | None
+    equity_multiplier: FiniteFloat | None
+    roe: FiniteFloat | None
+    roe_percent: FiniteFloat | None
+    reason: str | None
+    filing_dates: list[AwareUtcDateTime]
+    historical_pit_verified: Literal[False] = False
+    provenance_verification: Literal["VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE"] = "VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE"
+    provenance: ProvenanceEnvelope
+
+
+@router.get("/fundamental/dupont/{symbol}", response_model=DuPontResponse)
+def get_dupont(symbol: str, query: FundamentalQuery = Depends(_fundamental_query)):
+    cutoff = _fundamental_cutoff(query)
+    frame = _financial_statements(symbol, cutoff)
+    year = int(frame.fiscal_year.max()) if not frame.empty else None
+    def value(offset, key):
+        return _financial_item(frame, year - offset, key) if year is not None else None
+    assets = _financial_average(value(0, "assets"), value(1, "assets"))
+    equities = [value(0, "equity"), value(1, "equity")]
+    equity = _financial_average(*equities)
+    margin = _financial_ratio(value(0, "income"), value(0, "revenue"))
+    turnover = _financial_ratio(value(0, "revenue"), assets)
+    multiplier = _financial_ratio(assets, equity)
+    roe = _financial_ratio(value(0, "income"), equity)
+    invalid = any(v is not None and v <= 0 for v in equities)
+    valid = all(v is not None for v in (margin, turnover, multiplier, roe))
+    percent = roe * 100 if roe is not None and abs(roe * 100) <= 1e12 else None
+    if percent is None:
+        valid = False
+    return DuPontResponse(status="not_meaningful" if invalid else "success" if valid else "unavailable",
+        symbol=symbol, fiscal_year=year, net_margin=margin, asset_turnover=turnover,
+        equity_multiplier=multiplier, roe=roe if valid else None, roe_percent=percent if valid else None,
+        reason="NONPOSITIVE_EQUITY" if invalid else None if valid else "MISSING_OR_INVALID_FILING_INPUTS",
+        filing_dates=sorted(set(frame.source_publish_at.dropna().tolist())),
+        provenance=_fundamental_provenance(frame, cutoff, query, "financial_statements_2015_now"))
+
+
+class PiotroskiCriterion(StrictApiModel):
+    id: str
+    status: Literal["pass", "fail", "unknown"]
+    reason: str | None
+    filing_dates: list[AwareUtcDateTime]
+
+
+class PiotroskiResponse(StrictApiModel):
+    status: Literal["success"] = "success"
+    symbol: str
+    fiscal_year: int | None
+    score: Annotated[int, Field(ge=0, le=9)] | None
+    known_passes: int
+    unknown_count: int
+    criteria: list[PiotroskiCriterion] = Field(min_length=9, max_length=9)
+    historical_pit_verified: Literal[False] = False
+    provenance_verification: Literal["VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE"] = "VALIDATED_METADATA_NOT_AUTHENTICATED_LINEAGE"
+    provenance: ProvenanceEnvelope
+
+
+@router.get("/fundamental/piotroski/{symbol}", response_model=PiotroskiResponse)
+def get_piotroski(symbol: str, query: FundamentalQuery = Depends(_fundamental_query)):
+    cutoff = _fundamental_cutoff(query)
+    frame = _financial_statements(symbol, cutoff)
+    year = int(frame.fiscal_year.max()) if not frame.empty else None
+    def value(offset, name):
+        return _financial_item(frame, year - offset, name) if year is not None else None
+    def ratio(offset, a, b):
+        return _financial_ratio(value(offset, a), value(offset, b))
+    roa = [ratio(i, "income", "assets") for i in (0, 1)]
+    leverage = [ratio(i, "debt", "assets") for i in (0, 1)]
+    liquidity = [ratio(i, "current_assets", "current_liabilities") for i in (0, 1)]
+    margins = [ratio(i, "gross_profit", "revenue") for i in (0, 1)]
+    turnover = [ratio(i, "revenue", "assets") for i in (0, 1)]
+    checks = [
+        ("positive_roa", [roa[0]], lambda a: a > 0),
+        ("positive_operating_cash_flow", [value(0, "cash_flow")], lambda a: a > 0),
+        ("improved_roa", roa, lambda a, b: a > b),
+        ("cash_flow_exceeds_income", [value(0, "cash_flow"), value(0, "income")], lambda a, b: a > b),
+        ("reduced_leverage", leverage, lambda a, b: a < b),
+        ("improved_liquidity", liquidity, lambda a, b: a > b),
+        ("no_share_dilution", [value(0, "shares"), value(1, "shares")], lambda a, b: a > 0 and b > 0 and a <= b),
+        ("improved_gross_margin", margins, lambda a, b: a > b),
+        ("improved_asset_turnover", turnover, lambda a, b: a > b),
+    ]
+    dependencies = [
+        [(0, "income"), (0, "assets")], [(0, "cash_flow")],
+        [(i, key) for i in (0, 1) for key in ("income", "assets")],
+        [(0, "cash_flow"), (0, "income")],
+        [(i, key) for i in (0, 1) for key in ("debt", "assets")],
+        [(i, key) for i in (0, 1) for key in ("current_assets", "current_liabilities")],
+        [(0, "shares"), (1, "shares")],
+        [(i, key) for i in (0, 1) for key in ("gross_profit", "revenue")],
+        [(i, key) for i in (0, 1) for key in ("revenue", "assets")],
+    ]
+    criteria = []
+    for (name, operands, check), required in zip(checks, dependencies):
+        dates = set()
+        for offset, key in required:
+            endpoint, codes = FINANCIAL_ITEMS[key]
+            used = frame[frame.fiscal_year.eq(year - offset if year else -1)
+                         & frame.endpoint.eq(endpoint) & frame.item_code.isin(codes)]
+            dates.update(used.source_publish_at.dropna().tolist())
+        criteria.append(PiotroskiCriterion(id=name,
+            status="unknown" if None in operands else "pass" if check(*operands) else "fail",
+            reason="MISSING_OR_INVALID_FILING_INPUTS" if None in operands else None, filing_dates=sorted(dates)))
+    unknown = sum(c.status == "unknown" for c in criteria)
+    passes = sum(c.status == "pass" for c in criteria)
+    return PiotroskiResponse(symbol=symbol, fiscal_year=year, score=None if unknown else passes,
+        known_passes=passes, unknown_count=unknown, criteria=criteria,
+        provenance=_fundamental_provenance(frame, cutoff, query, "financial_statements_2015_now"))
 
 
 # Phase 2 Multi-Ticker Interactive Network Graph Global Engine Instance
