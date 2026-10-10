@@ -10,6 +10,7 @@ import { useLLMConfig } from '../hooks/useLLMConfig';
 import * as useLLMConfigModule from '../hooks/useLLMConfig';
 import { usePreTradeImpact } from '../hooks/useBarraRiskTca';
 import { useMarketOhlcv, validateCandles, validateOrderbook, aggregateCandles } from '../hooks/useMarketData';
+import { LandingDatabaseHub, validateMacroData } from '../modules/macro_cockpit/LandingDatabaseHub';
 import * as useMarketDataModule from '../hooks/useMarketData';
 import { ChartStationView } from '../modules/chart_station/ChartStationView';
 import { useCopilot } from '../hooks/useCopilot';
@@ -208,6 +209,179 @@ afterEach(() => {
   }
 });
 const settle = async (ms = 50) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+
+const macroCutoff = '2026-01-30T08:30:00Z';
+const macroPayloads = (cutoff = macroCutoff) => {
+  const tuple = <T extends unknown[]>(...items: T) => items;
+  const envelope = { status: 'success', effective_cutoff: cutoff };
+  const observation = { as_of: '2026-01-30T01:00:00Z', available_at: '2026-01-30T01:00:00Z', source: 'fixture' };
+  return tuple(
+    { ...envelope, interbank: [{ ...observation, curve_type: 'INTERBANK', tenor: 'overnight', tenor_days: 1, rate: 4,
+      rate_unit: 'PERCENT_PER_ANNUM' }], sovereign: [] },
+    { ...envelope, regime: 'EXPANSION', coordinates: { growth: 0, inflation: -0.5, unit: 'DIMENSIONLESS' },
+      probability_method: 'DETERMINISTIC_RULE_ONE_HOT', coordinate_method: 'TANH_NATIVE_UNIT_ZSCORE',
+      state_probabilities: { expansion: 1, neutral_chop: 0, high_vol_bear: 0, crisis: 0 },
+      indicators: [{ name: 'stress', value: 0, unit: 'INDEX_0_100' }], omo_net_billion_vnd: -20 },
+    { ...envelope, bands: [{ ...observation, venue: 'HOSE', instrument: 'VCB', floor: 46500, reference: 50000,
+      ceiling: 53500, price_scale: 'VND_FULL', effective_from: '2026-01-30T02:00:00Z', effective_to: '2026-01-30T09:00:00Z' }] },
+  );
+};
+
+it('validates inclusive macro PIT cutoff, zero metrics and unscaled VND at 15:30 ICT', () => {
+  const [curve, regime, bands] = macroPayloads();
+  curve.interbank![0].available_at = macroCutoff;
+  const data = validateMacroData(curve, regime, bands, macroCutoff);
+  expect(data.growth).toBe(0);
+  expect(data.omo).toBe(-20);
+  expect(data.bands[0].reference).toBe(50000);
+  expect(data.interbank[0].rate).toBe(4);
+});
+
+it.each([null, '', '4', [], true, NaN, Infinity, -Infinity, -1, 1e13])('rejects malformed macro rates %s', (value) => {
+  const [curve, regime, bands] = macroPayloads();
+  (curve.interbank![0] as Record<string, unknown>).rate = value;
+  expect(() => validateMacroData(curve, regime, bands, macroCutoff)).toThrow('Invalid macro response');
+});
+
+it.each(['growth', 'inflation', 'omo', 'indicator', 'floor', 'reference', 'ceiling'])('rejects malformed macro numeric field %s', (field) => {
+  for (const value of [null, '', '1', [], true, NaN, Infinity, -Infinity, 1e13]) {
+    const [curve, regime, bands] = macroPayloads();
+    if (field === 'growth' || field === 'inflation') Object.assign(regime.coordinates, { [field]: value });
+    else if (field === 'omo') Object.assign(regime, { omo_net_billion_vnd: value });
+    else if (field === 'indicator') Object.assign(regime.indicators[0], { value });
+    else Object.assign(bands.bands[0], { [field]: value });
+    expect(() => validateMacroData(curve, regime, bands, macroCutoff)).toThrow('Invalid macro response');
+  }
+});
+
+it.each(['future', 'naive', 'invalid-day', 'invalid-hour', 'cutoff', 'mass', 'method', 'scale', 'order', 'expired', 'duplicate', 'oversized', 'schema'])('rejects macro %s boundary violations', (fault) => {
+  const [curve, regime, bands] = macroPayloads();
+  if (fault === 'future') curve.interbank![0].available_at = '2026-01-30T08:30:01Z';
+  if (fault === 'naive') curve.interbank![0].as_of = '2026-01-30T01:00:00';
+  if (fault === 'invalid-day') curve.interbank![0].as_of = '2026-02-30T01:00:00Z';
+  if (fault === 'invalid-hour') curve.interbank![0].as_of = '2026-01-29T24:00:00Z';
+  if (fault === 'cutoff') regime.effective_cutoff = '2026-01-30T08:29:59Z';
+  if (fault === 'mass') regime.state_probabilities!.expansion = 0.9;
+  if (fault === 'method') regime.probability_method = 'HMM';
+  if (fault === 'scale') bands.bands![0].price_scale = 'VND_THOUSAND';
+  if (fault === 'order') bands.bands![0].floor = 60000;
+  if (fault === 'expired') bands.bands![0].effective_to = macroCutoff;
+  if (fault === 'duplicate') curve.interbank!.push(curve.interbank![0]);
+  if (fault === 'oversized') curve.interbank = Array(101).fill(curve.interbank![0]);
+  if (fault === 'schema') regime.coordinates = null as any;
+  expect(() => validateMacroData(curve, regime, bands, macroCutoff)).toThrow('Invalid macro response');
+});
+
+it('deduplicates simultaneous macro consumers and isolates malformed cutoffs', async () => {
+  const { useMacroData } = await import('../modules/macro_cockpit/LandingDatabaseHub');
+  const Consumer = () => { useMacroData(); return null; };
+  vi.setSystemTime(new Date(macroCutoff));
+  const fetch = vi.fn(async (url: string) => {
+    const cutoff = new URL(url, 'http://localhost').searchParams.get('as_of')!;
+    const routes = ['yield-curve', 'regime-metrics', 'limit-bands'];
+    return { ok: true, json: async () => macroPayloads(cutoff)[routes.findIndex((route) => url.includes(route))] };
+  });
+  vi.stubGlobal('fetch', fetch);
+  act(() => root.render(<QueryClientProvider client={client}><Consumer /><Consumer /></QueryClientProvider>));
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(3);
+  const [curve, regime, bands] = macroPayloads();
+  for (const cutoff of ['', '2026-01-30', '2099-01-30T08:30:00Z']) {
+    expect(() => validateMacroData(curve, regime, bands, cutoff)).toThrow('Invalid macro response');
+  }
+});
+
+it('loads dedicated macro endpoints in parallel with a shared cutoff and renders honest empty states', async () => {
+  const cutoff = '2026-01-30T08:30:00.000Z';
+  vi.setSystemTime(new Date(cutoff));
+  const payloads = macroPayloads(cutoff);
+  const routes = ['yield-curve', 'regime-metrics', 'limit-bands'];
+  const fetch = vi.fn(async (url: string) => new Response(JSON.stringify(payloads[routes.findIndex((route) => url.includes(route))])));
+  vi.stubGlobal('fetch', fetch);
+  act(() => useUiStore.setState({ activeModule: 'macro_cockpit' }));
+  act(() => root.render(<QueryClientProvider client={client}><LandingDatabaseHub /></QueryClientProvider>));
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(fetch.mock.calls.every(([url]) => new URL(url, 'http://localhost').searchParams.get('as_of') === cutoff)).toBe(true);
+  expect(container.textContent).toContain('Rule-based classification, not HMM confidence');
+  expect(container.textContent).toContain('50,000');
+  expect(container.textContent).toContain('No observations at this cutoff');
+  expect(container.textContent).not.toContain('PIT VALIDATED');
+  expect(container.querySelectorAll('table')).toHaveLength(2);
+});
+
+it.each(['429', '503', 'network', 'timeout', 'malformed'])('fails closed for macro %s without automatic retry or secret echo', async (fault) => {
+  let signals: AbortSignal[] = [];
+  const fetch = vi.fn((_: string, init: RequestInit) => {
+    signals.push(init.signal as AbortSignal);
+    if (fault === 'network') return Promise.reject(new Error('https://user:SECRET@example.com'));
+    if (fault === 'timeout') return new Promise((_, reject) => init.signal!.addEventListener('abort', () => reject(new Error('SECRET timeout')), { once: true }));
+    return Promise.resolve({ ok: fault === 'malformed', status: Number(fault), json: async () => ({ detail: 'SECRET', status: 'success' }) });
+  });
+  vi.stubGlobal('fetch', fetch);
+  act(() => useUiStore.setState({ activeModule: 'macro_cockpit' }));
+  act(() => root.render(<QueryClientProvider client={client}><LandingDatabaseHub /></QueryClientProvider>));
+  await settle(10050);
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('Macro data unavailable');
+  expect(container.textContent).not.toContain('SECRET');
+  expect(container.querySelector('table')).toBeNull();
+  expect(signals.every((signal) => signal.aborted)).toBe(true);
+  await settle(120000);
+  act(() => { focusManager.setFocused(false); onlineManager.setOnline(false); });
+  act(() => { focusManager.setFocused(true); onlineManager.setOnline(true); });
+  await act(async () => { await client.invalidateQueries({ queryKey: ['macro-cockpit'] }); });
+  await settle();
+  expect(fetch).toHaveBeenCalledTimes(3);
+  const refresh = container.querySelector('button')!;
+  act(() => refresh.click());
+  await settle(10050);
+  expect(fetch).toHaveBeenCalledTimes(6);
+});
+
+it('hides prior macro success after refresh failure and recovers through explicit retry across locales', async () => {
+  vi.setSystemTime(new Date(macroCutoff));
+  let fail = false;
+  const routes = ['yield-curve', 'regime-metrics', 'limit-bands'];
+  const fetch = vi.fn(async (url: string) => {
+    const cutoff = new URL(url, 'http://localhost').searchParams.get('as_of')!;
+    return new Response(JSON.stringify(fail ? { detail: 'SECRET' } : macroPayloads(cutoff)[routes.findIndex((route) => url.includes(route))]), { status: fail ? 424 : 200 });
+  });
+  vi.stubGlobal('fetch', fetch);
+  act(() => useUiStore.setState({ activeModule: 'macro_cockpit' }));
+  act(() => root.render(<QueryClientProvider client={client}><LandingDatabaseHub /></QueryClientProvider>));
+  await settle();
+  expect(container.textContent).toContain('50,000');
+  fail = true;
+  act(() => container.querySelector('button')!.click());
+  await settle();
+  expect(container.querySelector('table')).toBeNull();
+  expect(container.textContent).not.toContain('50,000');
+  act(() => useUiStore.setState({ locale: 'vi' }));
+  expect(container.querySelector('[role="alert"]')?.textContent).toContain('Dữ liệu vĩ mô không khả dụng');
+  expect(fetch).toHaveBeenCalledTimes(6);
+  fail = false;
+  act(() => container.querySelector('button')!.click());
+  await settle();
+  expect(container.querySelector('[role="alert"]')).toBeNull();
+  expect(container.textContent).toContain('50.000');
+  expect(fetch).toHaveBeenCalledTimes(9);
+});
+
+it('aborts macro requests on module departure without fetching macro data in the news hub', async () => {
+  const signals: AbortSignal[] = [];
+  vi.stubGlobal('fetch', vi.fn((_: string, init: RequestInit) => {
+    signals.push(init.signal as AbortSignal);
+    return new Promise((_, reject) => init.signal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true }));
+  }));
+  act(() => useUiStore.setState({ activeModule: 'macro_cockpit' }));
+  act(() => root.render(<QueryClientProvider client={client}><LandingDatabaseHub /></QueryClientProvider>));
+  await settle();
+  expect(signals).toHaveLength(3);
+  act(() => useUiStore.setState({ activeModule: 'macro_news_hub' }));
+  await settle();
+  expect(signals.every((signal) => signal.aborted)).toBe(true);
+  expect(signals).toHaveLength(3);
+});
 
 it.each(['429', '503', 'network', 'timeout', 'malformed'])('bounds OHLCV %s failures until explicit retry, including cached-data failures', async (failure) => {
   const payload = (symbol = 'FPT') => ({ status: 'success', symbol, exchange: 'HOSE', total_bars: 1,

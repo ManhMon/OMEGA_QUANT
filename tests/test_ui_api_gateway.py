@@ -1,12 +1,53 @@
 import json
+import shutil
+import subprocess
+from datetime import datetime
+from pathlib import Path
+
+import pandas as pd
 import pytest
 from starlette.testclient import TestClient
 from omega.api.server import app
+from omega.api.routes import macro, portfolio, quant
+from omega.data.interbank_rate_snapshot import build_snapshot, save_snapshot
 
 
 @pytest.fixture
-def client():
-    return TestClient(app)
+def client(tmp_path, monkeypatch):
+    # Real, PIT-valid artifacts isolate gateway behavior from workstation datasets.
+    for name in ('MACRO_PARQUET_PATH', 'MACRO_DAILY_PARQUET_PATH', 'MARKET_PARQUET_PATH',
+                 'INTERBANK_PATH', 'SOVEREIGN_PATH', 'LIMIT_BANDS_PATH'):
+        monkeypatch.setattr(macro, name, tmp_path / name)
+    monkeypatch.setattr(quant, 'QUANT_PARQUET_PATH', tmp_path / 'universe.parquet')
+    monkeypatch.setattr(portfolio, 'HYBRID_EVAL_PATH', tmp_path / 'missing_portfolio.parquet')
+    clock = '2026-01-30T08:30:00Z'
+    pd.DataFrame([
+        dict(indicator=indicator, value=value, observation_date='2026-01-30', as_of=clock,
+             available_at=clock, source='fixture', unit=unit)
+        for indicator, value, unit in [('usd_vnd', 25000.0, 'VND_PER_USD'), ('cpi', 3.0, 'PERCENT_YOY')]
+    ]).to_parquet(macro.MACRO_PARQUET_PATH, index=False)
+    pd.DataFrame([
+        dict(ticker='VCB', date=day.date().isoformat(), close=50000.0 + index * 100,
+             as_of=day.isoformat(), available_at=day.isoformat())
+        for index, day in enumerate(pd.date_range('2025-10-01T08:30:00Z', clock))
+    ]).to_parquet(macro.MARKET_PARQUET_PATH, index=False)
+    save_snapshot(macro.INTERBANK_PATH, [build_snapshot(
+        datetime(2026, 1, 30).date(), 'overnight', 'SBV', 4.0,
+        vintage_at=datetime.fromisoformat(clock.replace('Z', '+00:00')),
+    )])
+    pd.DataFrame([dict(
+        curve_type='SOVEREIGN', tenor='2Y', tenor_days=730, rate=3.0,
+        rate_unit='PERCENT_PER_ANNUM', day_count='ACT/ACT', compounding='SEMI_ANNUAL',
+        effective_date='2026-01-30', source='HNX', as_of=clock, available_at=clock,
+    )]).to_parquet(macro.SOVEREIGN_PATH, index=False)
+    pd.DataFrame([
+        dict(symbol='AAA' if index == 0 else f'X{index:03}', sector='Technology', exchange='HOSE',
+             status='WATCH', pe=12.0, pb=2.0, roe=15.0, piotroski_f=8.0, altman_z=3.0,
+             is_fallback=index % 2 == 0, is_veto=index % 3 == 0, as_of=clock, available_at=clock)
+        for index in range(30)
+    ]).to_parquet(quant.QUANT_PARQUET_PATH, index=False)
+    with TestClient(app) as gateway:
+        yield gateway
 
 
 def test_health_check(client):
@@ -29,6 +70,42 @@ def test_macro_summary_endpoint(client):
     assert "usd_vnd" in data["indicators"]
 
 
+def test_macro_yield_curve_gateway(client):
+    response = client.get('/api/v1/macro/yield-curve', params={'as_of': '2026-01-30T08:30:00Z'})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data['status'] == 'success'
+    assert data['interbank'][0]['rate'] == 4.0
+    assert data['interbank'][0]['rate_unit'] == 'PERCENT_PER_ANNUM'
+    assert data['sovereign'][0]['rate'] == 3.0
+    assert data['sovereign'][0]['curve_type'] == 'SOVEREIGN'
+
+
+@pytest.mark.parametrize('route', ['yield-curve', 'regime-metrics', 'limit-bands'])
+@pytest.mark.parametrize('cutoff', ['bad', '2026-01-30T08:30:00', '2999-01-30T08:30:00Z'])
+def test_macro_gateway_rejects_invalid_cutoff(client, route, cutoff):
+    response = client.get(f'/api/v1/macro/{route}', params={'as_of': cutoff})
+    assert response.status_code == 422, response.text
+    assert 'SECRET' not in response.text
+
+
+@pytest.mark.parametrize('route', ['regime-metrics', 'limit-bands'])
+def test_macro_gateway_missing_dependency(client, route):
+    response = client.get(f'/api/v1/macro/{route}', params={'as_of': '2026-01-30T08:30:00Z'})
+    assert response.status_code == 424, response.text
+    assert response.json() == {'detail': 'MACRO_DATA_UNAVAILABLE'}
+
+
+@pytest.mark.parametrize('params', [
+    [('symbol', 'AAA'), ('symbol', 'ZZZ')], [('limit', '1'), ('limit', '2')],
+    {'unknown': 'SECRET'}, {'symbol': '../AAA'}, {'limit': 'NaN'},
+])
+def test_quant_gateway_rejects_parameter_ambiguity(client, params):
+    response = client.get('/api/v1/quant/screener', params=params)
+    assert response.status_code == 422, response.text
+    assert response.json() == {'detail': 'INVALID_FUNDAMENTAL_REQUEST'}
+
+
 def test_quant_screener_default(client):
     response = client.get("/api/v1/quant/screener")
     assert response.status_code == 200
@@ -36,7 +113,9 @@ def test_quant_screener_default(client):
     assert data["status"] == "success"
     assert data["total"] > 0
     assert data["page"] == 1
-    assert len(data["data"]) <= 50
+    assert data["limit"] == 25
+    assert len(data["data"]) == 25
+    assert data["historical_pit_verified"] is False
 
 
 def test_quant_screener_symbol_filter(client):
@@ -49,12 +128,10 @@ def test_quant_screener_symbol_filter(client):
 
 
 def test_quant_screener_case_insensitivity(client):
+    # Canonical identifiers are validated, never silently normalized at admission.
     response = client.get("/api/v1/quant/screener?symbol=aaa")
-    assert response.status_code == 200
-    data = response.json()
-    assert data["status"] == "success"
-    assert data["total"] == 1
-    assert data["data"][0]["symbol"] == "AAA"
+    assert response.status_code == 422
+    assert response.json() == {"detail": "INVALID_FUNDAMENTAL_REQUEST"}
 
 
 def test_quant_screener_fallback_filter(client):
@@ -77,7 +154,7 @@ def test_quant_screener_pagination(client):
 
 
 def test_portfolio_state_endpoint(client):
-    response = client.get("/api/v1/portfolio/state")
+    response = client.get("/api/v1/portfolio/state?as_of=2026-01-30T08:30:00Z")
     assert response.status_code == 424
     assert response.json()["detail"] == "DATA_DEPENDENCY_UNAVAILABLE"
 
@@ -113,7 +190,7 @@ def test_quant_screener_limit_bounds(client):
 
 def test_quant_screener_nonexistent_symbol(client):
     # Dimension 10: Canonical symbol lookups & empty sets
-    response = client.get("/api/v1/quant/screener?symbol=NONEXISTENT999")
+    response = client.get("/api/v1/quant/screener?symbol=ZZZ")
     assert response.status_code == 200
     data = response.json()
     assert data["total"] == 0
@@ -126,7 +203,7 @@ def test_macro_summary_missing_file(monkeypatch, client):
     monkeypatch.setattr(macro, "MACRO_PARQUET_PATH", macro.Path("nonexistent_path.parquet"))
     response = client.get("/api/v1/macro/summary")
     assert response.status_code == 404
-    assert "Macro indicators dataset not found" in response.json()["detail"]
+    assert response.json() == {"detail": "Macro indicators dataset not found"}
 
 
 def test_quant_screener_missing_file(monkeypatch, client):
@@ -134,7 +211,8 @@ def test_quant_screener_missing_file(monkeypatch, client):
     from omega.api.routes import quant
     monkeypatch.setattr(quant, "QUANT_PARQUET_PATH", quant.Path("nonexistent_path.parquet"))
     response = client.get("/api/v1/quant/screener")
-    assert response.status_code == 404
+    assert response.status_code == 424
+    assert response.json() == {"detail": "FUNDAMENTAL_DATA_UNAVAILABLE"}
 
 
 def test_quant_screener_veto_filter(client):
@@ -148,6 +226,202 @@ def test_quant_screener_veto_filter(client):
 
 def test_portfolio_state_structure_and_types(client):
     # Dimension 6 & 9: PIT ISO timestamps, fail-closed contracts
-    response = client.get("/api/v1/portfolio/state")
+    response = client.get("/api/v1/portfolio/state?as_of=2026-01-30T08:30:00Z")
     assert response.status_code == 424
     assert response.json()["detail"] == "DATA_DEPENDENCY_UNAVAILABLE"
+
+
+_MACRO_UI_RUNNER = r"""
+const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
+const Module = require('node:module');
+const [root, mode, scenario] = process.argv.slice(1);
+const uiRequire = Module.createRequire(path.join(root, 'omega-ui/package.json'));
+const ts = uiRequire('typescript');
+const file = path.join(root, 'omega-ui/src/modules/macro_cockpit/LandingDatabaseHub.tsx');
+const compiled = ts.transpileModule(fs.readFileSync(file, 'utf8'), {
+  compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, jsx: ts.JsxEmit.ReactJSX },
+}).outputText;
+const mod = new Module(file);
+mod.filename = file;
+mod.require = (name) => {
+  if (name === '@tanstack/react-query') return { useQuery: (options) => options };
+  if (name === '../../api/client') return { API_BASE: 'https://fixture.invalid' };
+  return name.startsWith('react') ? uiRequire(name) : {};
+};
+mod._compile(compiled + '\nexports.requestMacroData = requestMacroData;', file);
+const { requestMacroData, validateMacroData, useMacroData } = mod.exports;
+const cap = 1024 * 1024, encoder = new TextEncoder(), cutoff = '2026-01-30T08:30:00Z';
+function payload(state = 'expansion') {
+  const base = { status: 'success', effective_cutoff: cutoff };
+  return [{ ...base, interbank: [], sovereign: [] }, {
+    ...base, regime: state, probability_method: 'DETERMINISTIC_RULE_ONE_HOT',
+    coordinate_method: 'TANH_NATIVE_UNIT_ZSCORE', coordinates: { unit: 'DIMENSIONLESS', growth: 0, inflation: 0 },
+    state_probabilities: { expansion: 1, neutral_chop: 0, high_vol_bear: 0, crisis: 0 },
+    indicators: [], omo_net_billion_vnd: 0,
+  }, { ...base, bands: [] }];
+}
+async function responseBoundary() {
+  const controller = new AbortController();
+  let chunks = [encoder.encode('{}')], header = null, ok = true, body = true;
+  let valid = false, expected, reads = 0, cancels = 0, releases = 0, parses = 0;
+  switch (scenario) {
+    case 'exact-cap': chunks = [encoder.encode('{}' + ' '.repeat(cap - 2))]; valid = true; expected = {}; break;
+    case 'cap-plus-one': chunks = [encoder.encode('{}' + ' '.repeat(cap - 1))]; break;
+    case 'cumulative-overflow': chunks = [encoder.encode('{}'), new Uint8Array(cap - 2).fill(32), encoder.encode(' ')]; break;
+    case 'understated-length': header = '2'; chunks = [new Uint8Array(cap + 1)]; break;
+    case 'oversized-length': header = String(cap + 1); break;
+    case 'unknown-field': chunks = [encoder.encode('{"unknown":"' + 'x'.repeat(cap) + '"}')]; break;
+    case 'oversized-array': chunks = [encoder.encode('[' + '0,'.repeat(cap / 2) + '0]')]; break;
+    case 'multibyte-overflow': chunks = [encoder.encode('"' + 'é'.repeat(cap / 2) + '"')]; break;
+    case 'split-utf8': chunks = Array.from(encoder.encode('{"value":"đồng"}'), (b) => new Uint8Array([b])); valid = true; expected = { value: 'đồng' }; break;
+    case 'invalid-utf8': chunks = [new Uint8Array([0x22, 0xc3, 0x22])]; break;
+    case 'malformed-json': chunks = [encoder.encode('{SECRET')]; break;
+    case 'empty-body': chunks = []; break;
+    case 'missing-stream': body = false; break;
+    case 'http-error': ok = false; break;
+    case 'already-aborted': controller.abort(); break;
+    case 'cancel-error': chunks = [new Uint8Array(cap + 1)]; break;
+    case 'read-error': case 'abort-during-read': case 'fetch-error': break;
+    case 'native-response': valid = true; expected = {}; break;
+    default: assert.fail(scenario);
+  }
+  const reader = {
+    async read() {
+      reads++;
+      if (scenario === 'read-error' && reads === 2) throw Error('SECRET read error');
+      if (scenario === 'abort-during-read') controller.abort();
+      const value = chunks.shift();
+      return value === undefined ? { done: true } : { done: false, value };
+    },
+    async cancel() { cancels++; if (scenario === 'cancel-error') throw Error('SECRET cancel error'); },
+    releaseLock() { releases++; },
+  };
+  const headers = new Headers(header === null ? {} : { 'Content-Length': header });
+  const nativeResponse = new Response('{}');
+  global.fetch = async (url, init) => {
+    assert.equal(url, 'https://fixture.invalid/api/v1/macro/yield-curve');
+    assert.equal(init.signal, controller.signal); assert.equal(init.headers.Accept, 'application/json');
+    if (scenario === 'fetch-error') throw Error('SECRET fetch error');
+    if (scenario === 'native-response') return nativeResponse;
+    return { ok, headers,
+      body: body ? { getReader: () => reader } : null,
+      json() { assert.fail('unbounded JSON reader'); }, text() { assert.fail('unbounded text reader'); },
+    };
+  };
+  const originalParse = JSON.parse;
+  JSON.parse = (...args) => { parses++; return originalParse(...args); };
+  try {
+    const call = requestMacroData('/api/v1/macro/yield-curve', controller.signal);
+    if (valid) assert.deepEqual(await call, expected);
+    else await assert.rejects(call, (error) => scenario !== 'cancel-error' || error.message === 'Invalid macro response');
+  } finally { JSON.parse = originalParse; }
+  assert.equal(parses, valid || ['malformed-json', 'empty-body'].includes(scenario) ? 1 : 0);
+  if (!['native-response', 'fetch-error'].includes(scenario) && body) {
+    assert.equal(releases, 1); assert.equal(cancels, valid ? 0 : 1);
+  }
+  if (['oversized-length', 'http-error', 'already-aborted'].includes(scenario)) assert.equal(reads, 0);
+}
+function regimeBoundary() {
+  const invalid = { array: ['expansion'], empty_array: [], object: {}, boxed: new String('expansion'),
+    coercible: { toString() { assert.fail('must not coerce'); } }, number: 1, boolean: true,
+    null: null, undefined: undefined, empty: '', unknown: 'unknown', nan: NaN, inf: Infinity, neg_inf: -Infinity };
+  if (scenario in invalid) {
+    const data = payload(); data[1].regime = invalid[scenario];
+    assert.throws(() => validateMacroData(...data, cutoff), /Invalid macro response/); return;
+  }
+  const data = payload('ExPaNsIoN');
+  if (scenario === 'one-hot-mismatch') {
+    data[1].state_probabilities = { expansion: 0, neutral_chop: 1, high_vol_bear: 0, crisis: 0 };
+    assert.throws(() => validateMacroData(...data, cutoff), /Invalid macro response/);
+  } else {
+    assert.equal(validateMacroData(...data, cutoff).regime, 'expansion');
+    for (const state of ['expansion', 'neutral_chop', 'high_vol_bear', 'crisis']) {
+      const values = payload(state.toUpperCase());
+      for (const key of Object.keys(values[1].state_probabilities)) values[1].state_probabilities[key] = Number(key === state);
+      assert.equal(validateMacroData(...values, cutoff).regime, state);
+    }
+  }
+}
+async function queryBoundary() {
+  const [routeIndex, fault] = scenario.split(':'), selected = Number(routeIndex);
+  const outer = new AbortController(), requests = [], values = payload();
+  let removals = 0, cleared = 0, timeout;
+  const remove = outer.signal.removeEventListener.bind(outer.signal);
+  outer.signal.removeEventListener = (...args) => { removals++; return remove(...args); };
+  global.setTimeout = (callback, delay) => { assert.equal(delay, 10000); timeout = callback; return 1; };
+  global.clearTimeout = (id) => { assert.equal(id, 1); cleared++; };
+  global.fetch = async (url, { signal }) => {
+    const index = requests.length; requests.push({ url, signal });
+    if (fault === 'success') return new Response(JSON.stringify({ ...values[index], effective_cutoff: new URL(url).searchParams.get('as_of') }));
+    if (index === selected && !['timeout', 'external-abort'].includes(fault)) {
+      if (fault === 'http') return new Response('SECRET', { status: 500 });
+      if (fault === 'parse') return new Response('SECRET');
+      if (fault === 'missing-stream') return new Response(null);
+      if (fault === 'read') return new Response(new ReadableStream({ start(c) { c.error(Error('SECRET')); } }));
+      return new Response(new Uint8Array(cap + 1));
+    }
+    return new Response(new ReadableStream({ start(c) {
+      if (signal.aborted) c.error(Error('SECRET abort'));
+      else signal.addEventListener('abort', () => c.error(Error('SECRET abort')), { once: true });
+    } }));
+  };
+  const options = useMacroData();
+  assert.equal(options.retry, false); assert.equal(options.retryOnMount, false);
+  assert.equal(options.refetchOnWindowFocus, false); assert.equal(options.refetchOnReconnect, false);
+  assert.equal(options.enabled({ state: { status: 'error' } }), false);
+  const call = options.queryFn({ signal: outer.signal });
+  if (fault === 'timeout') timeout();
+  if (fault === 'external-abort') outer.abort();
+  if (fault === 'success') assert.equal((await call).regime, 'expansion');
+  else await assert.rejects(call, (error) => error.message === 'Macro data unavailable');
+  assert.equal(requests.length, 3);
+  assert.equal(new Set(requests.map(({ url }) => new URL(url).searchParams.get('as_of'))).size, 1);
+  assert.deepEqual(requests.map(({ url }) => new URL(url).pathname),
+    ['/api/v1/macro/yield-curve', '/api/v1/macro/regime-metrics', '/api/v1/macro/limit-bands']);
+  for (const request of requests) assert.equal(request.signal.aborted, fault !== 'success');
+  assert.equal(cleared, 1); assert.equal(removals, 1);
+}
+(async () => {
+  if (mode === 'response') await responseBoundary();
+  else if (mode === 'regime') regimeBoundary();
+  else await queryBoundary();
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+
+
+def _run_macro_ui(mode, scenario):
+    node = shutil.which('node')
+    assert node is not None, 'Node.js required for actual macro UI boundary checks'
+    root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [node, '-e', _MACRO_UI_RUNNER, str(root), mode, scenario], cwd=root,
+        capture_output=True, text=True, encoding='utf-8', timeout=30,
+    )
+    if result.returncode != 0:
+        pytest.fail(result.stdout + result.stderr)
+
+
+@pytest.mark.parametrize('scenario', [
+    'exact-cap', 'cap-plus-one', 'cumulative-overflow', 'understated-length', 'oversized-length',
+    'unknown-field', 'oversized-array', 'multibyte-overflow', 'split-utf8', 'invalid-utf8',
+    'malformed-json', 'empty-body', 'missing-stream', 'http-error', 'read-error', 'cancel-error',
+    'already-aborted', 'abort-during-read', 'fetch-error', 'native-response',
+])
+def test_macro_ui_response_boundary(scenario):
+    _run_macro_ui('response', scenario)
+
+
+@pytest.mark.parametrize('scenario', [
+    'array', 'empty_array', 'object', 'boxed', 'coercible', 'number', 'boolean', 'null', 'undefined',
+    'empty', 'unknown', 'nan', 'inf', 'neg_inf', 'one-hot-mismatch', 'valid',
+])
+def test_macro_ui_regime_type_boundary(scenario):
+    _run_macro_ui('regime', scenario)
+
+
+@pytest.mark.parametrize('route', range(3))
+@pytest.mark.parametrize('fault', ['overflow', 'http', 'parse', 'read', 'missing-stream', 'timeout', 'external-abort', 'success'])
+def test_macro_ui_query_fail_closed(route, fault):
+    _run_macro_ui('query', f'{route}:{fault}')

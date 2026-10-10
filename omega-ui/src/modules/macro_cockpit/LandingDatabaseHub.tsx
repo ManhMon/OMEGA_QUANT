@@ -15,6 +15,8 @@ import { useUiStore } from '../../store/uiStore';
 import { ModuleType } from '../../layout/SideDock';
 import { useTranslation } from '../../i18n';
 import { useControlOps } from '../../hooks/useControlOps';
+import { useQuery } from '@tanstack/react-query';
+import { API_BASE } from '../../api/client';
 
 export interface AdvancedFeature {
   id: string;
@@ -379,6 +381,201 @@ export const ADVANCED_28_FEATURES: AdvancedFeature[] = [
   }
 ];
 
+type MacroRate = { tenor: string; rate: number; source: string; available_at: string };
+type MacroBand = { instrument: string; venue: string; floor: number; reference: number; ceiling: number };
+type MacroData = {
+  cutoff: string;
+  interbank: MacroRate[];
+  sovereign: MacroRate[];
+  regime: string;
+  growth: number;
+  inflation: number;
+  indicators: { name: string; value: number }[];
+  omo: number;
+  bands: MacroBand[];
+};
+
+const invalidMacro = (): never => { throw new Error('Invalid macro response'); };
+const macroRecord = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : invalidMacro();
+const macroNumber = (value: unknown, min = -1e12, max = 1e12): number =>
+  typeof value === 'number' && Number.isFinite(value) && value >= min && value <= max ? value : invalidMacro();
+const macroText = (value: unknown): string =>
+  typeof value === 'string' && value.trim().length > 0 && value.length <= 128 ? value : invalidMacro();
+const macroClock = (value: unknown): number => {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(\.\d{1,6})?(Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value)) return invalidMacro();
+  const clock = Date.parse(value);
+  return Number.isFinite(clock) && new Date(`${value.slice(0, 10)}T00:00:00Z`).toISOString().slice(0, 10) === value.slice(0, 10) ? clock : invalidMacro();
+};
+const macroRows = (value: unknown, max: number): Record<string, unknown>[] =>
+  Array.isArray(value) && value.length <= max ? value.map(macroRecord) : invalidMacro();
+
+export function validateMacroData(curveValue: unknown, regimeValue: unknown, bandValue: unknown, cutoff: string): MacroData {
+  const clock = macroClock(cutoff);
+  if (clock > Date.now()) return invalidMacro();
+  const [curve, regime, bands] = [curveValue, regimeValue, bandValue].map(macroRecord);
+  for (const response of [curve, regime, bands]) {
+    if (response.status !== 'success' || macroClock(response.effective_cutoff) !== clock) return invalidMacro();
+  }
+  const observation = (row: Record<string, unknown>) => {
+    if (macroClock(row.as_of) > macroClock(row.available_at) || macroClock(row.available_at) > clock) return invalidMacro();
+    macroText(row.source);
+  };
+  const rates = (value: unknown, type: string) => {
+    const seen = new Set<string>();
+    return macroRows(value, 100).map((row) => {
+      observation(row);
+      const tenor = macroText(row.tenor);
+      const match = /^([1-9][0-9]?)([DWMY])$/.exec(tenor);
+      const days = tenor === 'overnight' ? 1 : match ? Number(match[1]) * ({ D: 1, W: 7, M: 30, Y: 365 }[match[2]]!) : invalidMacro();
+      if (row.curve_type !== type || row.rate_unit !== 'PERCENT_PER_ANNUM' || row.tenor_days !== days || seen.has(tenor)) return invalidMacro();
+      seen.add(tenor);
+      return { tenor, rate: macroNumber(row.rate, type === 'INTERBANK' ? 0 : -100, 100),
+        source: macroText(row.source), available_at: row.available_at as string };
+    });
+  };
+  const coordinates = macroRecord(regime.coordinates);
+  const probabilities = macroRecord(regime.state_probabilities);
+  const states = ['expansion', 'neutral_chop', 'high_vol_bear', 'crisis'];
+  if (typeof regime.regime !== 'string') return invalidMacro();
+  const state = regime.regime.toLowerCase();
+  if (!states.includes(state) || regime.probability_method !== 'DETERMINISTIC_RULE_ONE_HOT' ||
+      regime.coordinate_method !== 'TANH_NATIVE_UNIT_ZSCORE' || coordinates.unit !== 'DIMENSIONLESS' ||
+      Object.keys(probabilities).length !== states.length) return invalidMacro();
+  const mass = states.map((state) => macroNumber(probabilities[state], 0, 1));
+  if (mass.reduce((a, b) => a + b, 0) !== 1 || mass[states.indexOf(state)] !== 1) return invalidMacro();
+  const seen = new Set<string>();
+  const rows = macroRows(bands.bands, 703).map((row) => {
+    observation(row);
+    const instrument = macroText(row.instrument);
+    const venue = macroText(row.venue);
+    const floor = macroNumber(row.floor, 1, 1e12);
+    const reference = macroNumber(row.reference, 1, 1e12);
+    const ceiling = macroNumber(row.ceiling, 1, 1e12);
+    if (!/^[A-Z0-9]{1,12}$/.test(instrument) || !['HOSE', 'HNX', 'UPCOM'].includes(venue) ||
+        row.price_scale !== 'VND_FULL' || floor > reference || reference > ceiling ||
+        macroClock(row.available_at) > macroClock(row.effective_from) || macroClock(row.effective_from) > clock ||
+        clock >= macroClock(row.effective_to) || seen.has(`${venue}:${instrument}`)) return invalidMacro();
+    seen.add(`${venue}:${instrument}`);
+    return { instrument, venue, floor, reference, ceiling };
+  });
+  return { cutoff, interbank: rates(curve.interbank, 'INTERBANK'), sovereign: rates(curve.sovereign, 'SOVEREIGN'),
+    regime: state, growth: macroNumber(coordinates.growth, -1, 1),
+    inflation: macroNumber(coordinates.inflation, -1, 1),
+    indicators: macroRows(regime.indicators, 100).map((row) => {
+      if (row.unit !== 'INDEX_0_100') return invalidMacro();
+      return { name: macroText(row.name), value: macroNumber(row.value, 0, 100) };
+    }), omo: macroNumber(regime.omo_net_billion_vnd), bands: rows };
+}
+
+const MAX_MACRO_RESPONSE_BYTES = 1024 * 1024;
+
+async function requestMacroData(path: string, signal: AbortSignal): Promise<unknown> {
+  const response = await fetch(`${API_BASE}${path}`, { signal, headers: { Accept: 'application/json' } });
+  const reader = response.body?.getReader();
+  if (!reader) return invalidMacro();
+  try {
+    if (!response.ok || Number(response.headers.get('Content-Length')) > MAX_MACRO_RESPONSE_BYTES) return invalidMacro();
+    const bytes = new Uint8Array(MAX_MACRO_RESPONSE_BYTES);
+    let size = 0;
+    while (true) {
+      if (signal.aborted) return invalidMacro();
+      const { done, value } = await reader.read();
+      if (signal.aborted) return invalidMacro();
+      if (done) break;
+      if (value.byteLength > MAX_MACRO_RESPONSE_BYTES - size) return invalidMacro();
+      bytes.set(value, size);
+      size += value.byteLength;
+    }
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes.subarray(0, size)));
+  } catch (error) {
+    await reader.cancel().catch(() => undefined);
+    throw error;
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// ponytail: read-only tables; calendar, venue ticks and economic calculations remain backend-owned.
+export const useMacroData = () => useQuery({
+  queryKey: ['macro-cockpit'],
+  queryFn: async ({ signal }) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+    const timeout = setTimeout(abort, 10000);
+    const cutoff = new Date().toISOString();
+    const params = new URLSearchParams({ as_of: cutoff });
+    try {
+      const [curve, regime, bands] = await Promise.all(['yield-curve', 'regime-metrics', 'limit-bands'].map((route) =>
+        requestMacroData(`/api/v1/macro/${route}?${params}`, controller.signal)));
+      return validateMacroData(curve, regime, bands, cutoff);
+    } catch {
+      controller.abort();
+      throw new Error('Macro data unavailable');
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', abort);
+    }
+  },
+  retry: false,
+  retryOnMount: false,
+  enabled: (query) => query.state.status !== 'error',
+  refetchOnWindowFocus: false,
+  refetchOnReconnect: false,
+  staleTime: 60000,
+});
+
+const MacroCockpit: React.FC<{ isVi: boolean }> = ({ isVi }) => {
+  const query = useMacroData();
+  const data = query.isError || query.isFetching ? undefined : query.data;
+  const format = (value: number) => new Intl.NumberFormat(isVi ? 'vi-VN' : 'en-US', { maximumFractionDigits: 2 }).format(value);
+  return <section aria-labelledby="macro-title" className="flex flex-col gap-4 font-mono text-sm text-zinc-200 min-w-0 break-words">
+    <header className="flex flex-wrap items-center justify-between gap-3">
+      <h2 id="macro-title" className="font-bold text-lg">Macro Cockpit</h2>
+      <button type="button" disabled={query.isFetching} onClick={() => void query.refetch()}
+        className="min-h-11 max-w-full px-4 border border-white/20 rounded focus-visible:outline-2 hover:bg-white/10 disabled:opacity-50">
+        {isVi ? 'Làm mới dữ liệu vĩ mô' : 'Refresh macro data'}
+      </button>
+    </header>
+    {query.isFetching && <p role="status">{isVi ? 'Đang tải dữ liệu vĩ mô…' : 'Loading macro data…'}</p>}
+    {query.isError && <p role="alert">{isVi ? 'Dữ liệu vĩ mô không khả dụng. Hãy thử làm mới.' : 'Macro data unavailable. Try refreshing.'}</p>}
+    {data && <>
+      <p className="break-words">{isVi ? 'Mốc dữ liệu' : 'Data cutoff'}: <time dateTime={data.cutoff}>{data.cutoff}</time></p>
+      <section aria-labelledby="macro-regime" className="p-4 border border-white/10 rounded-lg bg-zinc-900">
+        <h3 id="macro-regime" className="font-bold">{isVi ? 'Trạng thái vĩ mô' : 'Macro regime'}: {data.regime}</h3>
+        <p>{isVi ? 'Phân loại theo quy tắc, không phải xác suất HMM.' : 'Rule-based classification, not HMM confidence.'}</p>
+        <dl className="grid grid-cols-1 sm:grid-cols-2 gap-2 mt-3">
+          {[[isVi ? 'Tăng trưởng (không đơn vị)' : 'Growth (dimensionless)', data.growth],
+            [isVi ? 'Lạm phát (không đơn vị)' : 'Inflation (dimensionless)', data.inflation],
+            ['OMO (billion VND)', data.omo], ...data.indicators.map((item) => [`${item.name} (0–100)`, item.value])].map(([name, value]) =>
+            <div key={String(name)}><dt>{name}</dt><dd>{format(Number(value))}</dd></div>)}
+        </dl>
+      </section>
+      {(['interbank', 'sovereign'] as const).map((kind) => <section key={kind} aria-label={kind === 'interbank' ? 'Interbank rates' : 'Sovereign rates'}>
+        <h3 className="font-bold mb-2">{kind === 'interbank' ? (isVi ? 'Lãi suất liên ngân hàng' : 'Interbank rates') : (isVi ? 'Lợi suất trái phiếu chính phủ' : 'Sovereign rates')} (% / year)</h3>
+        {data[kind].length === 0 ? <p>{isVi ? 'Không có quan sát tại mốc này.' : 'No observations at this cutoff.'}</p> :
+          <div className="overflow-x-auto"><table className="w-full text-left"><caption className="sr-only">{kind} rates, percent per annum</caption>
+            <thead><tr>{['Tenor', 'Rate (%)', 'Source', 'Available at'].map((label) => <th scope="col" key={label} className="p-2">{label}</th>)}</tr></thead>
+            <tbody>{data[kind].map((rate) => <tr key={rate.tenor} className="border-t border-white/10">
+              <th scope="row" className="p-2">{rate.tenor}</th><td className="p-2">{format(rate.rate)}</td><td className="p-2 break-all">{rate.source}</td><td className="p-2">{rate.available_at}</td>
+            </tr>)}</tbody></table></div>}
+      </section>)}
+      <section aria-label="Exchange limit bands">
+        <h3 className="font-bold mb-2">{isVi ? 'Biên độ giá sàn giao dịch (VND)' : 'Exchange limit bands (VND)'}</h3>
+        {data.bands.length === 0 ? <p>{isVi ? 'Không có biên độ giá hiệu lực tại mốc này.' : 'No effective limit bands at this cutoff.'}</p> :
+          <div className="overflow-x-auto"><table className="w-full text-left"><caption className="sr-only">Exchange limit bands, VND_FULL</caption>
+            <thead><tr>{['Instrument', 'Venue', 'Floor (VND)', 'Reference (VND)', 'Ceiling (VND)'].map((label) => <th scope="col" key={label} className="p-2">{label}</th>)}</tr></thead>
+            <tbody>{data.bands.map((band) => <tr key={`${band.venue}:${band.instrument}`} className="border-t border-white/10">
+              <th scope="row" className="p-2">{band.instrument}</th><td className="p-2">{band.venue}</td>
+              {[band.floor, band.reference, band.ceiling].map((price, index) => <td key={index} className="p-2">{format(price)}</td>)}
+            </tr>)}</tbody></table></div>}
+      </section>
+    </>}
+  </section>;
+};
+
 export const LandingDatabaseHub: React.FC = () => {
   const navigateToFeature = useUiStore((state) => state.navigateToFeature);
   const activeModule = useUiStore((state) => state.activeModule);
@@ -448,6 +645,8 @@ export const LandingDatabaseHub: React.FC = () => {
     { key: 'GOVERNANCE', label: isVi ? 'Quản trị MLOps & TOTP (5)' : 'Governance (5)' },
     { key: 'SYSTEM_SUPPLY', label: isVi ? 'Chuỗi Cung ứng & AI (6)' : 'Supply Chain & AI (6)' },
   ];
+
+  if (activeModule === 'macro_cockpit') return <MacroCockpit isVi={isVi} />;
 
   return (
     <div className="flex flex-col gap-4 font-mono select-none">
