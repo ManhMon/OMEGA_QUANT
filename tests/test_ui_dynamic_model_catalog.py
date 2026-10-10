@@ -90,6 +90,43 @@ def test_live_catalog_success_and_model_fields(client):
     assert "Authorization" not in request.await_args.kwargs["headers"]
 
 
+def test_slice15_registry_catalog_and_recorded_envelopes_are_read_only(client, monkeypatch, tmp_path):
+    import copy
+    from omega.api.routes import models
+    from omega.data.registry import ModelRegistry
+
+    registry = ModelRegistry(str(tmp_path / "registry"))
+    registry.registry_data = copy.deepcopy(models._model_registry.registry_data)
+    registry._save_registry()
+    monkeypatch.setattr(models, "_model_registry", registry)
+    before = registry.metadata_file.read_bytes()
+    catalog = client.get("/api/v1/models").json()
+    assert catalog["status"] == "success"
+    assert catalog["count"] == len(catalog["models"])
+    assert catalog["provenance"]
+    model = next(item for item in catalog["models"] if item["total_versions"] > 0)
+    name = model["model_name"]
+    versions = client.get(f"/api/v1/models/{name}/versions").json()
+    version = versions["versions"][0]["version"]
+    lineage = client.get(f"/api/v1/models/{name}/lineage", params={"version": version})
+    assert lineage.status_code == 200
+    body = lineage.json()
+    assert body["model_name"] == name and body["version"] == version
+    assert body["provenance_status"] == "registry_recorded_unverified"
+    assert body["automated_retrain"] is False and body["automated_deploy"] is False
+    drift = client.get(f"/api/v1/models/{name}/concept-drift", params={"version": version})
+    assert drift.status_code == 424  # Missing recorded windows is not healthy telemetry.
+    assert registry.metadata_file.read_bytes() == before
+
+
+@pytest.mark.parametrize("model,version", [("missing-model", "v1.0.0"), ("ALPHA_XGBOOST_V2", "v999.0.0"), ("ALPHA_XGBOOST_V2", "not-a-version")])
+def test_slice15_evidence_selection_fails_closed(client, model, version):
+    expected = 422 if version == "not-a-version" else 404
+    for route in ("lineage", "concept-drift"):
+        response = client.get(f"/api/v1/models/{model}/{route}", params={"version": version})
+        assert response.status_code == expected
+
+
 def test_timeout_and_invalid_json_are_sanitized(client):
     with patch.dict("os.environ", {"ALLOW_CUSTOM_LLM_PROXY": "true"}), patch("socket.getaddrinfo", return_value=PUBLIC_DNS), patch.object(httpx.AsyncClient, "get", new_callable=AsyncMock, side_effect=httpx.ReadTimeout("canary-secret https://user:pw@proxy.example.com")):
         timeout = client.post("/api/v1/copilot/config/models", json={"provider": "custom", "base_url": "https://proxy.example.com/v1"})

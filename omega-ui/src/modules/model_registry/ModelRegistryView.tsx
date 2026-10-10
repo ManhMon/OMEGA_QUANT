@@ -2,10 +2,7 @@
 import {
   Layers,
   RefreshCw,
-  CheckCircle2,
-  AlertTriangle,
   RotateCcw,
-  Activity,
   GitBranch,
   Lock,
   Cpu,
@@ -17,11 +14,10 @@ import {
   advancedQuantApi,
   ModelSummaryItem,
   ModelVersionItem,
-  ModelDriftResponse,
   ResourceGovernorStateResponse,
   ModelCategory
 } from '../../api/advancedQuant';
-import { DriftMonitorPanel } from './DriftMonitorPanel';
+import { DriftMonitorPanel, ConceptDriftPanel, getRegistryEvidence, registryIdentity, registryObject, registryNumber, registryTime } from './DriftMonitorPanel';
 import { TotpRebalanceModal } from '../execution_blotter/TotpRebalanceModal';
 import { useUiStore } from '../../store/uiStore';
 import { useTranslation } from '../../i18n';
@@ -35,6 +31,135 @@ const TAXONOMY_CATEGORIES: { id: 'ALL' | ModelCategory; label: string; labelVi: 
   { id: 'LLM', label: 'FINANCIAL LLM', labelVi: 'LLM TÀI CHÍNH' },
   { id: 'HYBRID', label: 'HYBRID ENSEMBLE', labelVi: 'LAI GHÉP ENSEMBLE' },
 ];
+
+const MODEL_ID = /^[A-Za-z0-9_-]{1,128}$/;
+const MODEL_VERSION = /^v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$/;
+const metricValue = (value: unknown) => typeof value === 'number' && Number.isFinite(value) && Math.abs(value) <= 1e12 ? value : '—';
+
+export function validateModelCatalog(value: unknown) {
+  const data = registryObject(value);
+  if (data.status !== 'success' || !Array.isArray(data.models) || data.models.length > 4096 || data.count !== data.models.length) throw new Error('Invalid model catalog');
+  const seen = new Set<string>();
+  data.models.forEach((raw: unknown) => {
+    const model = registryObject(raw);
+    if (typeof model.model_name !== 'string' || !MODEL_ID.test(model.model_name) || seen.has(model.model_name)) throw new Error('Invalid model identity');
+    seen.add(model.model_name);
+    if (model.category != null && !TAXONOMY_CATEGORIES.some((cat) => cat.id !== 'ALL' && cat.id === model.category)) throw new Error('Invalid model category');
+    ['framework', 'description', 'source_path', 'implementation_symbol'].forEach((field) => {
+      if (model[field] != null && (typeof model[field] !== 'string' || model[field].length > 4096)) throw new Error('Invalid model metadata');
+    });
+    if (!Number.isInteger(registryNumber(model.total_versions, 0, 4096))) throw new Error('Invalid version count');
+    Object.values(registryObject(model.active_versions)).forEach((version) => { if (version !== null && (typeof version !== 'string' || !MODEL_VERSION.test(version))) throw new Error('Invalid active version'); });
+    if (model.latest_version != null && (typeof model.latest_version !== 'string' || !MODEL_VERSION.test(model.latest_version))) throw new Error('Invalid latest version');
+    if (model.last_updated != null) registryTime(model.last_updated);
+  });
+  if (data.selected_category != null && !TAXONOMY_CATEGORIES.some((cat) => cat.id !== 'ALL' && cat.id === data.selected_category)) throw new Error('Invalid selected category');
+  if (data.categories != null && (!Array.isArray(data.categories) || new Set(data.categories).size !== data.categories.length || data.categories.some((category: unknown) => !TAXONOMY_CATEGORIES.some((cat) => cat.id !== 'ALL' && cat.id === category)))) throw new Error('Invalid taxonomy');
+  if (data.category_counts != null) Object.entries(registryObject(data.category_counts)).forEach(([category, count]) => {
+    if (!TAXONOMY_CATEGORIES.some((cat) => cat.id !== 'ALL' && cat.id === category) || !Number.isInteger(registryNumber(count, 0, 4096))) throw new Error('Invalid category count');
+  });
+  return data as unknown as { models: ModelSummaryItem[]; category_counts?: Record<string, number>; selected_category?: string | null };
+}
+
+export function validateModelVersions(value: unknown, model: string): ModelVersionItem[] {
+  const data = registryObject(value);
+  if (data.status !== 'success' || data.model_name !== model || !Array.isArray(data.versions) || data.versions.length > 4096) throw new Error('Invalid version response');
+  const seen = new Set<string>();
+  data.versions.forEach((raw: unknown) => {
+    const item = registryObject(raw);
+    if (typeof item.version !== 'string' || !MODEL_VERSION.test(item.version) || seen.has(item.version) || !['STAGING', 'VALIDATED', 'PRODUCTION', 'ARCHIVED', 'DEPRECATED'].includes(item.status)) throw new Error('Invalid version');
+    seen.add(item.version); registryTime(item.registered_at); registryObject(item.metadata);
+  });
+  return data.versions;
+}
+
+interface LineageNode {
+  version: string;
+  parent_versions: string[];
+  dataset_snapshot: { dataset_id: string; version: string; content_hash: string; as_of: string; available_at: string } | null;
+  training_run: { run_id: string; trained_at: string } | null;
+  git_commit: string | null;
+  deployment_receipt: { receipt_id: string; version: string; deployed_at: string } | null;
+}
+interface LineageEvidence { nodes: LineageNode[]; evidence_status: 'recorded' | 'incomplete' }
+
+export function validateModelLineage(value: unknown, model: string, version: string): LineageEvidence {
+  const data = registryIdentity(value, model, version);
+  if (!['recorded', 'incomplete'].includes(data.evidence_status) || !Array.isArray(data.nodes) || !data.nodes.length || data.nodes.length > 4096) throw new Error('Invalid lineage nodes');
+  const nodes = new Map<string, LineageNode>();
+  data.nodes.forEach((raw: unknown) => {
+    const node = registryObject(raw);
+    if (typeof node.version !== 'string' || !MODEL_VERSION.test(node.version) || nodes.has(node.version) || !Array.isArray(node.parent_versions) || node.parent_versions.length > 128 || new Set(node.parent_versions).size !== node.parent_versions.length || node.parent_versions.some((parent: unknown) => typeof parent !== 'string' || !MODEL_VERSION.test(parent) || parent === node.version)) throw new Error('Invalid lineage edges');
+    if (node.git_commit !== null && (typeof node.git_commit !== 'string' || !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(node.git_commit))) throw new Error('Invalid lineage commit');
+    if (node.dataset_snapshot !== null) {
+      const snapshot = registryObject(node.dataset_snapshot);
+      if (![snapshot.dataset_id, snapshot.version].every((id) => typeof id === 'string' && MODEL_ID.test(id)) || typeof snapshot.content_hash !== 'string' || !/^[0-9a-f]{64}$/.test(snapshot.content_hash) || registryTime(snapshot.as_of) > registryTime(snapshot.available_at)) throw new Error('Invalid dataset snapshot');
+    }
+    if (node.training_run !== null) {
+      const run = registryObject(node.training_run);
+      if (typeof run.run_id !== 'string' || !MODEL_ID.test(run.run_id)) throw new Error('Invalid training run');
+      const trained = registryTime(run.trained_at);
+      if (node.dataset_snapshot && registryTime(node.dataset_snapshot.available_at) > trained) throw new Error('Dataset unavailable at training');
+    }
+    if (node.deployment_receipt !== null) {
+      const receipt = registryObject(node.deployment_receipt);
+      if (typeof receipt.receipt_id !== 'string' || !MODEL_ID.test(receipt.receipt_id) || receipt.version !== node.version) throw new Error('Invalid deployment receipt');
+      const deployed = registryTime(receipt.deployed_at);
+      if (node.training_run && registryTime(node.training_run.trained_at) > deployed) throw new Error('Deployment precedes training');
+    }
+    [node.dataset_snapshot?.available_at, node.training_run?.trained_at, node.deployment_receipt?.deployed_at].forEach((time) => {
+      if (time != null && registryTime(time) > Date.now()) throw new Error('Future lineage evidence');
+    });
+    nodes.set(node.version, node as LineageNode);
+  });
+  const visited = new Set<string>(), active = new Set<string>();
+  // Iterative traversal bounds stack use for deep recorded lineage.
+  if (!nodes.has(version)) throw new Error('Missing selected lineage version');
+  const stack = [...nodes.keys()].map((nodeVersion) => ({ version: nodeVersion, exit: false }));
+  while (stack.length) {
+    const frame = stack.pop()!;
+    if (frame.exit) { active.delete(frame.version); visited.add(frame.version); continue; }
+    if (active.has(frame.version)) throw new Error('Cyclic lineage');
+    if (visited.has(frame.version)) continue;
+    const node = nodes.get(frame.version);
+    if (!node) throw new Error('Missing lineage parent');
+    active.add(frame.version); stack.push({ version: frame.version, exit: true });
+    node.parent_versions.forEach((parent) => stack.push({ version: parent, exit: false }));
+  }
+  const complete = data.nodes.every((node: LineageNode) => node.dataset_snapshot && node.training_run && node.git_commit && node.deployment_receipt);
+  if ((data.evidence_status === 'recorded') !== complete) throw new Error('Invalid lineage completeness');
+  return data as unknown as LineageEvidence;
+}
+
+const ModelLineagePanel: React.FC<{ modelName: string; version: string | null; refreshKey: number }> = ({ modelName, version, refreshKey }) => {
+  const key = `${modelName}/${version}/${refreshKey}`;
+  const [state, setState] = useState<{ key: string; data?: LineageEvidence; error?: string }>({ key: '' });
+  useEffect(() => {
+    const controller = new AbortController();
+    if (modelName && version) {
+      setState({ key });
+      getRegistryEvidence(modelName, version, 'lineage', controller.signal)
+        .then((raw) => validateModelLineage(raw, modelName, version))
+        .then((data) => { if (!controller.signal.aborted) setState({ key, data }); })
+        .catch((error) => { if (!controller.signal.aborted) setState({ key, error: error.message }); });
+    }
+    return () => controller.abort();
+  }, [modelName, version, refreshKey, key]);
+  const data = state.key === key ? state.data : undefined;
+  return <section aria-label="Model lineage tree" className="p-4 rounded-xl bg-zinc-900/60 border border-white/10 text-sm text-zinc-200 space-y-3">
+    <h2 className="font-bold">Model lineage tree • {version || 'No version selected'}</h2>
+    <p>Registry-recorded evidence, unverified. Automated retrain and deploy disabled.</p>
+    {!version ? <p role="status">Select a registered version to inspect lineage.</p> : !data ? <p role={state.error && state.key === key ? 'alert' : 'status'}>{state.key === key && state.error ? `Lineage unavailable: ${state.error}` : 'Loading lineage...'}</p> : <>
+      <p>Evidence: {data.evidence_status}</p>
+      <ul aria-label="Version ancestry" className="space-y-3">{data.nodes.map((node) => <li key={node.version} className="border-l-2 border-zinc-600 pl-3 break-words">
+        <strong>{node.version}</strong><p>Parents: {node.parent_versions.join(', ') || 'Root'}</p>
+        <details><summary className="cursor-pointer focus-visible:outline focus-visible:outline-2">Dataset, training, commit, deployment evidence</summary>
+          <dl className="space-y-1 pt-2"><dt>Dataset snapshot</dt><dd>{node.dataset_snapshot ? `${node.dataset_snapshot.dataset_id} / ${node.dataset_snapshot.version} • as of ${node.dataset_snapshot.as_of} • available ${node.dataset_snapshot.available_at} • SHA-256 ${node.dataset_snapshot.content_hash}` : 'Not recorded'}</dd><dt>Training run</dt><dd>{node.training_run ? `${node.training_run.run_id} • ${node.training_run.trained_at}` : 'Not recorded'}</dd><dt>Git commit</dt><dd>{node.git_commit || 'Not recorded'}</dd><dt>Deployment receipt</dt><dd>{node.deployment_receipt ? `${node.deployment_receipt.receipt_id} • ${node.deployment_receipt.deployed_at}` : 'Not recorded'}</dd></dl>
+        </details>
+      </li>)}</ul>
+    </>}
+  </section>;
+};
 
 export const ModelRegistryView: React.FC = () => {
   const { locale } = useTranslation();
@@ -57,10 +182,15 @@ export const ModelRegistryView: React.FC = () => {
 
   const [models, setModels] = useState<ModelSummaryItem[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<'ALL' | ModelCategory>('ALL');
-  const [selectedModel, setSelectedModel] = useState<string>('ALPHA_XGBOOST_V2');
-  const [versions, setVersions] = useState<ModelVersionItem[]>([]);
+  const [selectedModel, setSelectedModel] = useState<string>('');
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [detailError, setDetailError] = useState<string | null>(null);
+  const [evidenceRefresh, setEvidenceRefresh] = useState(0);
+  const [versionRecords, setVersions] = useState<ModelVersionItem[]>([]);
+  const [versionsModel, setVersionsModel] = useState('');
+  const versions = versionsModel === selectedModel ? versionRecords : [];
   const [selectedVersion, setSelectedVersion] = useState<string | null>(null);
-  const [driftData, setDriftData] = useState<ModelDriftResponse | null>(null);
+  const inspectionVersion = versions.some((record) => record.version === selectedVersion) ? selectedVersion : null;
   const [governorState, setGovernorState] = useState<ResourceGovernorStateResponse | null>(null);
   const [serverCategoryCounts, setServerCategoryCounts] = useState<Record<string, number> | null>(null);
 
@@ -72,7 +202,7 @@ export const ModelRegistryView: React.FC = () => {
   const [isPromoteModalOpen, setIsPromoteModalOpen] = useState<boolean>(false);
   const [isRollbackModalOpen, setIsRollbackModalOpen] = useState<boolean>(false);
   const [targetPromoteStatus, setTargetPromoteStatus] = useState<'VALIDATED' | 'PRODUCTION'>('VALIDATED');
-  const [targetRollbackVersion, setTargetRollbackVersion] = useState<string>('v1.0.0');
+  const [targetRollbackVersion, setTargetRollbackVersion] = useState<string>('');
 
   // Concurrency & debounce refs
   const detailAbortControllerRef = useRef<AbortController | null>(null);
@@ -93,30 +223,25 @@ export const ModelRegistryView: React.FC = () => {
     try {
       setIsLoadingModels(true);
       const queryCat = cat && cat !== 'ALL' ? cat : undefined;
-      const res = await advancedQuantApi.getModelList(queryCat, controller.signal);
+      setCatalogError(null);
+      setModels([]);
+      setServerCategoryCounts(null);
+      const res = validateModelCatalog(await advancedQuantApi.getModelList(queryCat, controller.signal));
+      if (queryCat && (res.selected_category != null && res.selected_category !== queryCat || res.models.some((model) => model.category !== queryCat))) throw new Error('Catalog category mismatch');
 
       // Eliminate race condition: only commit if this request is latest and not aborted
-      if (requestSeq === modelsRequestSeqRef.current && !controller.signal.aborted && res && res.models) {
+      if (requestSeq === modelsRequestSeqRef.current && !controller.signal.aborted) {
         setModels(res.models);
-        if (res.category_counts) {
-          setServerCategoryCounts(res.category_counts);
-        }
-        setSelectedModel((prev) => {
-          if (res.models.length > 0 && !res.models.some((m) => m.model_name === prev)) {
-            return res.models[0].model_name;
-          }
-          return prev;
-        });
+        setServerCategoryCounts(res.category_counts || null);
+        setSelectedModel((prev) => res.models.some((m) => m.model_name === prev) ? prev : res.models[0]?.model_name || '');
       }
     } catch (err: any) {
       if (controller.signal.aborted || requestSeq !== modelsRequestSeqRef.current) {
         return;
       }
-      addToast({
-        type: 'error',
-        title: 'Model Registry Fetch Failed',
-        message: err?.message || 'Unable to retrieve models list'
-      });
+      setCatalogError('Model catalog unavailable or invalid. Refresh to retry.');
+      setSelectedModel('');
+      addToast({ type: 'error', title: 'Model Registry Fetch Failed', message: 'Model catalog unavailable or invalid' });
     } finally {
       if (requestSeq === modelsRequestSeqRef.current) {
         setIsLoadingModels(false);
@@ -151,8 +276,12 @@ export const ModelRegistryView: React.FC = () => {
     // Reset data on model switch to avoid stale rendering
     setVersions([]);
     setSelectedVersion(null);
-    setDriftData(null);
-    setIsLoadingDetails(true);
+    setIsPromoteModalOpen(false);
+    setIsRollbackModalOpen(false);
+    setDetailError(null);
+    setEvidenceRefresh((value) => value + 1);
+    setIsLoadingDetails(Boolean(modelName));
+    if (!modelName) return;
 
     debounceTimerRef.current = setTimeout(() => {
       const controller = new AbortController();
@@ -160,29 +289,17 @@ export const ModelRegistryView: React.FC = () => {
 
       rafRef.current = requestAnimationFrame(async () => {
         try {
-          const [versRes, driftRes] = await Promise.all([
-            advancedQuantApi.getModelVersions(modelName, controller.signal),
-            advancedQuantApi.getModelDrift(modelName, controller.signal)
-          ]);
-
+          const versRes = await advancedQuantApi.getModelVersions(modelName, controller.signal);
+          const records = validateModelVersions(versRes, modelName);
           if (!controller.signal.aborted) {
-            if (versRes && versRes.versions) {
-              setVersions(versRes.versions);
-              if (versRes.versions.length > 0) {
-                setSelectedVersion(versRes.versions[0].version);
-              }
-            }
-            if (driftRes) {
-              setDriftData(driftRes);
-            }
+            setVersions(records);
+            setVersionsModel(modelName);
+            setSelectedVersion(records.find((record) => record.version === versRes.active_versions?.PRODUCTION)?.version || records[0]?.version || null);
           }
         } catch (err: any) {
           if (!controller.signal.aborted) {
-            addToast({
-              type: 'error',
-              title: 'Model Details Error',
-              message: err?.message || `Failed to fetch details for ${modelName}`
-            });
+            setDetailError('Model versions unavailable or invalid. Refresh to retry.');
+            addToast({ type: 'error', title: 'Model Details Error', message: 'Model versions unavailable or invalid' });
           }
         } finally {
           if (!controller.signal.aborted) {
@@ -205,9 +322,7 @@ export const ModelRegistryView: React.FC = () => {
   }, [fetchGovernor]);
 
   useEffect(() => {
-    if (selectedModel) {
-      fetchModelDetails(selectedModel);
-    }
+    fetchModelDetails(selectedModel);
     return () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
       if (rafRef.current) cancelAnimationFrame(rafRef.current);
@@ -241,9 +356,9 @@ export const ModelRegistryView: React.FC = () => {
 
   // Handle Model Promotion with TOTP
   const handlePromoteConfirm = async (totpCode: string) => {
-    if (!selectedModel || !selectedVersion) return;
+    if (!selectedModel || !inspectionVersion || isLoadingModels || isLoadingDetails) return;
     try {
-      const res = await advancedQuantApi.promoteModelVersion(selectedModel, selectedVersion, {
+      const res = await advancedQuantApi.promoteModelVersion(selectedModel, inspectionVersion, {
         totp_code: totpCode,
         target_status: targetPromoteStatus,
         rationale: 'Operator authorized institutional model status upgrade via 2FA'
@@ -267,7 +382,7 @@ export const ModelRegistryView: React.FC = () => {
 
   // Handle Model Rollback with TOTP
   const handleRollbackConfirm = async (totpCode: string) => {
-    if (!selectedModel || !targetRollbackVersion) return;
+    if (!selectedModel || !versions.some((record) => record.version === targetRollbackVersion) || isLoadingModels || isLoadingDetails) return;
     try {
       const res = await advancedQuantApi.rollbackModel(selectedModel, {
         totp_code: totpCode,
@@ -347,7 +462,7 @@ export const ModelRegistryView: React.FC = () => {
         setIsPromoteModalOpen(true);
       } else if (nextTab === 'rollback') {
         setActiveSubTab('rollback');
-        setTargetRollbackVersion(versions.find((v) => v.version !== selectedVersion)?.version || 'v1.0.0');
+        setTargetRollbackVersion(versions.find((v) => v.version !== selectedVersion)?.version || '');
         setIsRollbackModalOpen(true);
       } else {
         setActiveSubTab(nextTab);
@@ -379,7 +494,7 @@ export const ModelRegistryView: React.FC = () => {
   };
 
   return (
-    <div className="flex flex-col h-full w-full gap-4 font-mono select-none overflow-hidden p-1">
+    <div className="flex flex-col h-full min-w-0 w-full gap-4 font-mono select-none overflow-y-auto p-1">
       {/* Header Strip & Resource Governor Bar */}
       <div className="p-4 rounded-xl bg-zinc-900/80 border border-white/10 flex flex-wrap items-center justify-between gap-4">
         <div className="flex items-center gap-3">
@@ -387,12 +502,12 @@ export const ModelRegistryView: React.FC = () => {
             <Layers className="w-5 h-5 text-emerald-400" />
           </div>
           <div>
-            <div className="flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <h1 className="text-sm font-bold text-zinc-100 uppercase tracking-wider">
                 {locale === 'vi' ? 'Sổ Đăng Ký & Quản Trị Mô Hình' : 'Model Registry & Governance'}
               </h1>
               <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-950 text-emerald-300 border border-emerald-500/30 font-semibold">
-                PIT-SAFE GATED
+                UNVERIFIED REGISTRY EVIDENCE
               </span>
               <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-300 border border-cyan-500/30 font-semibold">
                 6 TAXONOMY CATEGORIES
@@ -400,14 +515,14 @@ export const ModelRegistryView: React.FC = () => {
             </div>
             <p className="text-xs text-zinc-400 mt-0.5">
               {locale === 'vi'
-                ? 'Kiểm soát phiên bản 28 mô hình định lượng, kiểm tra sai lệch (Drift), thăng cấp 2FA & điều phối tài nguyên'
-                : 'Semantic versioning for 28 quantitative models across 6 categories, drift monitoring, 2FA promotion & resource governor'}
+                ? 'Danh mục mô hình định lượng động, kiểm tra sai lệch (Drift), thăng cấp 2FA & điều phối tài nguyên'
+                : 'Dynamic model catalog, recorded lineage, concept drift, 2FA promotion & resource governor'}
             </p>
           </div>
         </div>
 
         {/* Dynamic Resource Governor Controls */}
-        <div className="flex items-center gap-3 bg-zinc-950/80 p-2.5 rounded-lg border border-white/10 text-xs">
+        <div className="flex flex-wrap items-center gap-3 bg-zinc-950/80 p-2.5 rounded-lg border border-white/10 text-xs">
           <div className="flex items-center gap-2 pr-3 border-r border-white/10">
             <Cpu className="w-4 h-4 text-cyan-400" />
             <div className="flex flex-col">
@@ -445,7 +560,7 @@ export const ModelRegistryView: React.FC = () => {
         role="tablist"
         aria-label="Model Registry Sub-Tabs"
         onKeyDown={handleSubTabKeyDown}
-        className="flex items-center gap-1.5 p-1 rounded-lg bg-zinc-950/80 border border-white/10 text-xs"
+        className="flex flex-wrap items-center gap-1.5 p-1 rounded-lg bg-zinc-950/80 border border-white/10 text-xs"
       >
         <button
           id="model-registry-tab-registry"
@@ -504,7 +619,7 @@ export const ModelRegistryView: React.FC = () => {
           tabIndex={activeSubTab === 'rollback' ? 0 : -1}
           onClick={() => {
             setActiveSubTab('rollback');
-            setTargetRollbackVersion(versions.find((v) => v.version !== selectedVersion)?.version || 'v1.0.0');
+            setTargetRollbackVersion(versions.find((v) => v.version !== selectedVersion)?.version || '');
             setIsRollbackModalOpen(true);
           }}
           className={`px-3 py-1.5 rounded font-bold transition-all ${
@@ -544,7 +659,7 @@ export const ModelRegistryView: React.FC = () => {
           return (
             <button
               key={cat.id}
-              onClick={() => setSelectedCategory(cat.id)}
+              onClick={() => { setSelectedCategory(cat.id); setSelectedModel(''); }}
               className={`px-2.5 py-1 rounded-md text-[11px] font-bold transition-all flex items-center gap-1.5 border ${
                 isSelected
                   ? 'bg-cyan-500/20 text-cyan-300 border-cyan-500/40 shadow-sm'
@@ -561,14 +676,14 @@ export const ModelRegistryView: React.FC = () => {
       </div>
 
       {/* Main Routed Sub-Tab Views */}
-      <div className="flex-1 overflow-hidden">
+      <div className="min-h-0 lg:flex-1 lg:overflow-hidden">
         {/* SUBTAB 1: REGISTRY (Default Lineage & Models Catalog) */}
         {activeSubTab === 'registry' && (
           <div
             id="model-registry-panel-registry"
             role="tabpanel"
             aria-labelledby="model-registry-tab-registry"
-            className="grid grid-cols-1 lg:grid-cols-12 gap-4 h-full overflow-hidden"
+            className="grid min-w-0 grid-cols-1 lg:grid-cols-12 gap-4 lg:h-full lg:overflow-hidden"
           >
             {/* Left Column: Model Catalog List (4 Cols) */}
             <div className="lg:col-span-4 rounded-xl bg-zinc-900/60 border border-white/10 flex flex-col overflow-hidden">
@@ -578,7 +693,7 @@ export const ModelRegistryView: React.FC = () => {
                   <span>{locale === 'vi' ? 'Mô Hình Định Lượng' : 'Registered Models'} ({filteredModels.length})</span>
                 </div>
                 <button
-                  onClick={() => fetchModels(selectedCategory)}
+                  onClick={() => { fetchModels(selectedCategory); fetchModelDetails(selectedModel); }}
                   className="p-1 rounded hover:bg-white/5 text-zinc-400 hover:text-zinc-200 transition-colors"
                   title="Refresh models"
                 >
@@ -587,7 +702,7 @@ export const ModelRegistryView: React.FC = () => {
               </div>
 
               <div className="flex-1 overflow-y-auto p-2 space-y-1.5">
-                {isLoadingModels ? (
+                {catalogError ? <p role="alert" className="p-4 text-sm text-zinc-200">{catalogError}</p> : isLoadingModels ? (
                   <div className="p-8 text-center text-xs text-zinc-500 flex flex-col items-center gap-2">
                     <RefreshCw className="w-4 h-4 animate-spin text-emerald-400" />
                     <span>Loading model catalog...</span>
@@ -603,6 +718,7 @@ export const ModelRegistryView: React.FC = () => {
                     return (
                       <button
                         key={m.model_name}
+                      aria-pressed={isSelected}
                         onClick={() => setSelectedModel(m.model_name)}
                         className={`w-full text-left p-3 rounded-lg border transition-all text-xs flex flex-col gap-1.5 ${
                           isSelected
@@ -613,7 +729,7 @@ export const ModelRegistryView: React.FC = () => {
                         <div className="flex items-center justify-between font-bold">
                           <span className="truncate">{m.model_name}</span>
                           <span className={`text-[9px] px-1.5 py-0.2 rounded border font-mono ${getCategoryBadge(m.category)}`}>
-                            {m.category || 'ML'}
+                            {m.category || 'Not recorded'}
                           </span>
                         </div>
                         {m.description && (
@@ -621,7 +737,7 @@ export const ModelRegistryView: React.FC = () => {
                         )}
                         <div className="flex items-center justify-between text-[11px] text-zinc-400 pt-1 border-t border-white/5">
                           <span>PROD: <strong className="text-emerald-400 font-bold">{prodVer}</strong></span>
-                          <span>LATEST: <strong className="text-cyan-400">{m.latest_version || 'v1.0.0'}</strong></span>
+                          <span>LATEST: <strong className="text-cyan-400">{m.latest_version || '—'}</strong></span>
                         </div>
                       </button>
                     );
@@ -631,10 +747,10 @@ export const ModelRegistryView: React.FC = () => {
             </div>
 
             {/* Right Column: Model Inspection & Lineage Table (8 Cols) */}
-            <div className="lg:col-span-8 flex flex-col gap-4 overflow-y-auto pr-1">
+            <div className="lg:col-span-8 min-w-0 flex flex-col gap-4 lg:overflow-y-auto pr-1">
               <div className="p-4 rounded-xl bg-zinc-900/60 border border-white/10 flex flex-col gap-3">
-                <div className="flex items-center justify-between pb-2 border-b border-white/5">
-                  <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-2 border-b border-white/5">
+                  <div className="flex min-w-0 items-center gap-2 break-words">
                     <GitBranch className="w-4 h-4 text-cyan-400" />
                     <h2 className="text-xs font-bold text-zinc-100 uppercase">
                       {selectedModel} • {locale === 'vi' ? 'Lịch Sử Phiên Bản' : 'Version Lineage'}
@@ -642,7 +758,7 @@ export const ModelRegistryView: React.FC = () => {
                   </div>
 
                   {/* 2FA Action Buttons */}
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
                     <button
                       onClick={() => {
                         setTargetPromoteStatus('PRODUCTION');
@@ -656,7 +772,7 @@ export const ModelRegistryView: React.FC = () => {
 
                     <button
                       onClick={() => {
-                        setTargetRollbackVersion(versions.find((v) => v.version !== selectedVersion)?.version || 'v1.0.0');
+                        setTargetRollbackVersion(versions.find((v) => v.version !== selectedVersion)?.version || '');
                         setIsRollbackModalOpen(true);
                       }}
                       className="px-3 py-1.5 rounded-lg bg-rose-600/20 hover:bg-rose-600/30 text-rose-400 border border-rose-500/30 font-bold text-xs flex items-center gap-1.5"
@@ -667,25 +783,26 @@ export const ModelRegistryView: React.FC = () => {
                   </div>
                 </div>
 
-                {/* Model Metadata Card */}
+              {detailError && <p role="alert" className="text-sm text-zinc-200">{detailError}</p>}
+              {/* Model Metadata Card */}
                 {models.find((m) => m.model_name === selectedModel) && (
                   <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/5 flex flex-wrap items-center justify-between gap-2 text-xs">
                     <div className="flex items-center gap-2">
                       <span className="text-zinc-400">Framework:</span>
                       <span className="font-bold text-cyan-300">
-                        {models.find((m) => m.model_name === selectedModel)?.framework || 'Scikit-Learn / PyTorch'}
+                        {models.find((m) => m.model_name === selectedModel)?.framework || 'Not recorded'}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-zinc-400">Category:</span>
                       <span className={`text-[10px] px-2 py-0.5 rounded border font-mono font-bold ${getCategoryBadge(models.find((m) => m.model_name === selectedModel)?.category)}`}>
-                        {models.find((m) => m.model_name === selectedModel)?.category || 'MACHINE_LEARNING'}
+                        {models.find((m) => m.model_name === selectedModel)?.category || 'Not recorded'}
                       </span>
                     </div>
                     <div className="flex items-center gap-2">
                       <span className="text-zinc-400">Total Versions:</span>
                       <span className="font-bold text-emerald-400 font-mono">
-                        {models.find((m) => m.model_name === selectedModel)?.total_versions || 1}
+                        {models.find((m) => m.model_name === selectedModel)?.total_versions ?? 'Not recorded'}
                       </span>
                     </div>
                   </div>
@@ -725,14 +842,13 @@ export const ModelRegistryView: React.FC = () => {
                           return (
                             <tr
                               key={v.version}
-                              onClick={() => setSelectedVersion(v.version)}
-                              className={`cursor-pointer transition-colors ${
+                                    className={`cursor-pointer transition-colors ${
                                 isSelected ? 'bg-emerald-500/10 text-emerald-300 font-semibold' : 'hover:bg-white/5 text-zinc-300'
                               }`}
                             >
                               <td className="py-2 px-2 font-bold flex items-center gap-1.5">
                                 {isSelected && <ChevronRight className="w-3 h-3 text-emerald-400" />}
-                                <span>{v.version}</span>
+                                <button type="button" aria-pressed={isSelected} onClick={() => setSelectedVersion(v.version)} className="min-h-11 px-2 focus-visible:outline focus-visible:outline-2">{v.version}</button>
                               </td>
                               <td className="py-2 px-2">
                                 <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${
@@ -745,11 +861,11 @@ export const ModelRegistryView: React.FC = () => {
                                   {v.status}
                                 </span>
                               </td>
-                              <td className="py-2 px-2 text-zinc-200">{metrics.sharpe || 1.85}</td>
-                              <td className="py-2 px-2 text-zinc-200">{metrics.ic || 0.052}</td>
-                              <td className="py-2 px-2 text-zinc-200">{metrics.turnover || 0.18}</td>
+                              <td className="py-2 px-2 text-zinc-200">{metricValue(metrics.sharpe)}</td>
+                              <td className="py-2 px-2 text-zinc-200">{metricValue(metrics.ic)}</td>
+                              <td className="py-2 px-2 text-zinc-200">{metricValue(metrics.turnover)}</td>
                               <td className="py-2 px-2 text-zinc-500 text-[11px]">
-                                {v.registered_at ? v.registered_at.split('T')[0] : '2026-01-01'}
+                                {v.registered_at.split('T')[0]}
                               </td>
                             </tr>
                           );
@@ -759,6 +875,8 @@ export const ModelRegistryView: React.FC = () => {
                   </table>
                 </div>
               </div>
+              <ModelLineagePanel modelName={selectedModel} version={inspectionVersion} refreshKey={evidenceRefresh} />
+              <ConceptDriftPanel modelName={selectedModel} version={inspectionVersion} refreshKey={evidenceRefresh} />
             </div>
           </div>
         )}
@@ -773,79 +891,7 @@ export const ModelRegistryView: React.FC = () => {
           >
             <DriftMonitorPanel onRefresh={() => fetchModelDetails(selectedModel)} />
 
-            <div className="p-4 rounded-xl bg-zinc-900/60 border border-white/10 flex flex-col gap-3">
-              <div className="flex items-center justify-between pb-2 border-b border-white/5">
-                <div className="flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-amber-400" />
-                  <h2 className="text-xs font-bold text-zinc-100 uppercase">
-                    {selectedModel} • {locale === 'vi' ? 'Giám Sát Sai Lệch Mô Hình (Drift Detector)' : 'Model Concept & Performance Drift'}
-                  </h2>
-                </div>
-                <span className={`text-[10px] px-2 py-0.5 rounded border font-bold ${
-                  driftData?.drift_detected
-                    ? 'bg-rose-950 text-rose-400 border-rose-500/40'
-                    : 'bg-emerald-950 text-emerald-400 border border-emerald-500/30'
-                }`}>
-                  {driftData?.drift_detected ? 'DRIFT ALERT DETECTED' : 'DRIFT NORMAL (STABLE)'}
-                </span>
-              </div>
-
-              {/* Drift Headline Summary */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/5 flex flex-col">
-                  <span className="text-[10px] text-zinc-400 uppercase">Drift Score</span>
-                  <span className={`text-base font-bold mt-0.5 ${driftData?.drift_score && driftData.drift_score > 0.4 ? 'text-rose-400' : 'text-emerald-400'}`}>
-                    {driftData?.drift_score || 0.12}
-                  </span>
-                  <span className="text-[9px] text-zinc-500">&lt; 0.30 Target Normal</span>
-                </div>
-                <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/5 flex flex-col">
-                  <span className="text-[10px] text-zinc-400 uppercase">Alert Level</span>
-                  <span className="text-base font-bold text-amber-400 mt-0.5">
-                    {driftData?.drift_level || 'LOW'}
-                  </span>
-                  <span className="text-[9px] text-zinc-500">Autonomous Sentinel</span>
-                </div>
-                <div className="p-3 rounded-lg bg-zinc-950/80 border border-white/5 flex flex-col">
-                  <span className="text-[10px] text-zinc-400 uppercase">Evaluated Model</span>
-                  <span className="text-base font-bold text-cyan-400 mt-0.5">
-                    {selectedModel}
-                  </span>
-                  <span className="text-[9px] text-zinc-500">{driftData?.active_version || 'v1.0.0'}</span>
-                </div>
-              </div>
-
-              {/* Drift Metric Breakdown Cards */}
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                {(driftData?.metrics || []).map((dm) => (
-                  <div
-                    key={dm.metric_name}
-                    className={`p-3 rounded-lg border flex flex-col gap-1.5 ${
-                      dm.drift_detected
-                        ? 'bg-rose-950/20 border-rose-500/40'
-                        : 'bg-zinc-950/60 border-white/5'
-                    }`}
-                  >
-                    <div className="flex items-center justify-between text-[11px] text-zinc-400">
-                      <span className="truncate">{dm.metric_name}</span>
-                      {dm.drift_detected ? (
-                        <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
-                      ) : (
-                        <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                      )}
-                    </div>
-                    <div className="flex items-baseline justify-between pt-1">
-                      <div className="text-base font-bold text-zinc-100">{dm.current_value}</div>
-                      <div className="text-[10px] text-zinc-500 font-mono">Base: {dm.baseline_value}</div>
-                    </div>
-                    <div className="text-[10px] text-zinc-500 flex justify-between pt-1 border-t border-white/5">
-                      <span>Threshold: {dm.threshold}</span>
-                      {dm.p_value !== null && <span>p-val: {dm.p_value}</span>}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <ConceptDriftPanel modelName={selectedModel} version={inspectionVersion} refreshKey={evidenceRefresh} />
           </div>
         )}
 
