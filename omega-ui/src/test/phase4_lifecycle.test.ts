@@ -7,6 +7,7 @@ import { ModelRegistryView, validateModelCatalog, validateModelVersions, validat
 import { ConceptDriftPanel, DriftMonitorPanel, getRegistryEvidence, validateConceptDrift, validateMonitorStatus, registryTime } from '../modules/model_registry/DriftMonitorPanel';
 import { useUiStore } from '../store/uiStore';
 import { QuantControlCenter } from '../modules/control_center/QuantControlCenter';
+import { PipelineOrchestrationConsole, PIPELINE_STAGES, pipelineRequest, validatePipelineTelemetry } from '../modules/pipeline_console/PipelineOrchestrationConsole';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -439,5 +440,185 @@ describe('Slice15 unknown envelope adversarial boundaries', () => {
     vi.stubGlobal('fetch', vi.fn());
     await expect(getRegistryEvidence('../bad', 'v1.0.0', 'lineage', new AbortController().signal)).rejects.toThrow();
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+const PIPE_JOB = 'job-pipe-1234abcd';
+const pipelineFrame = (revision = 1, status = 'RUNNING', stage = 'DATA_INGEST') => ({
+  schema_version: 'pipeline-telemetry/v1', revision, task_id: PIPE_JOB, job_id: PIPE_JOB,
+  event_type: status === 'COMPLETED' ? 'COMPLETE' : status === 'FAILED' ? 'ERROR' : status === 'CANCELLED' ? 'CANCELLED' : 'PROGRESS',
+  status, stage, progress: status === 'COMPLETED' ? 100 : 20, timestamp: '2026-10-11T08:30:00Z', message: 'Provider safe message', payload: {} as Record<string, unknown>,
+  dag: PIPELINE_STAGES.map((name, i) => ({ stage_id: name, depends_on: i ? [PIPELINE_STAGES[i - 1]] : [],
+    status: status === 'COMPLETED' || i < PIPELINE_STAGES.indexOf(stage as typeof PIPELINE_STAGES[number]) ? 'COMPLETED' : name === stage ? status : 'PENDING' })),
+});
+const pipelineReceipt = () => ({ schema_version: 1, task_id: PIPE_JOB, operation: 'PIPELINE_RUN', status: 'COMPLETED',
+  request_fingerprint: 'a'.repeat(64), output_sha256: 'b'.repeat(64), receipt_hmac: 'c'.repeat(64), artifact_id: 'receipts/task.json', published_at: '2026-10-11T08:30:00Z' });
+
+class PipelineSource {
+  static instances: PipelineSource[] = [];
+  onmessage: ((event: { data: string }) => void) | null = null;
+  onerror: (() => void) | null = null;
+  onopen: (() => void) | null = null;
+  close = vi.fn();
+  constructor(public url: string) { PipelineSource.instances.push(this); }
+  send(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) }); }
+}
+
+describe('Slice17 pipeline console lifecycle', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+  let unmounted: boolean;
+  const initial = useUiStore.getState();
+  const button = (name: string) => [...container.querySelectorAll('button')].find((item) => item.textContent === name)!;
+  const settle = async () => { await act(async () => { await Promise.resolve(); await Promise.resolve(); }); };
+  const dispatch = async () => { act(() => button('Run pipeline').click()); await settle(); return PipelineSource.instances.at(-1)!; };
+  beforeEach(() => {
+    vi.useFakeTimers();
+    useUiStore.setState({ ...initial, locale: 'en' }, true);
+    PipelineSource.instances = [];
+    vi.stubGlobal('EventSource', PipelineSource);
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ status: 'success', job_id: PIPE_JOB, task_id: PIPE_JOB, stream_url: `/sse/v1/pipeline/${PIPE_JOB}/stream` })));
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); unmounted = false;
+    act(() => root.render(React.createElement(PipelineOrchestrationConsole)));
+  });
+  afterEach(() => {
+    if (!unmounted) act(() => root.unmount());
+    container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); useUiStore.setState(initial, true);
+  });
+  it('dispatches exact contract once and renders real DAG; heartbeat never changes execution state', async () => {
+    expect(container.textContent).toContain('Awaiting server DAG telemetry');
+    act(() => { button('Run pipeline').click(); button('Run pipeline').click(); }); await settle();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(fetch).toHaveBeenCalledWith(expect.stringContaining('/api/v1/control/pipeline-run'), expect.objectContaining({ method: 'POST', body: expect.stringContaining('IN_PROCESS') }));
+    const stream = PipelineSource.instances[0];
+    act(() => stream.send(pipelineFrame()));
+    expect(container.querySelector('progress')?.value).toBe(20);
+    expect(container.querySelectorAll('ol[aria-label="Pipeline stages"] li')).toHaveLength(5);
+    act(() => stream.send({ ...pipelineFrame(), event_type: 'PING' }));
+    expect(container.querySelectorAll('ol[aria-label="Stage event history"] li')).toHaveLength(1);
+    expect(container.textContent).not.toContain('Provider safe message');
+  });
+  it('accepts receipt-bearing terminal snapshot and ignores closed-source callbacks', async () => {
+    const stream = await dispatch(); const done = pipelineFrame(5, 'COMPLETED', 'RESEARCH_EXECUTION'); done.event_type = 'SNAPSHOT'; done.payload.receipt = pipelineReceipt();
+    act(() => stream.send(done)); expect(stream.close).toHaveBeenCalled(); expect(container.textContent).toContain('not independently verified');
+    act(() => stream.send(pipelineFrame(6))); expect(container.querySelector('progress')?.value).toBe(100);
+    expect(button('Cancel task').disabled).toBe(true);
+  });
+  it.each(['malformed', 'wrong-job', 'receipt', 'nan', 'dag', 'large', 'regression'])('fails closed on %s without inferring terminal task failure', async (kind) => {
+    const stream = await dispatch(); act(() => stream.send(pipelineFrame()));
+    const bad = pipelineFrame(2);
+    if (kind === 'wrong-job') bad.task_id = 'other';
+    if (kind === 'receipt') Object.assign(bad, pipelineFrame(2, 'COMPLETED', 'RESEARCH_EXECUTION'));
+    if (kind === 'nan') bad.progress = NaN;
+    if (kind === 'dag') bad.dag[0].depends_on = ['DATA_INGEST'];
+    if (kind === 'large') bad.message = 'x'.repeat(65537);
+    if (kind === 'regression') bad.progress = 1;
+    act(() => kind === 'malformed' ? stream.onmessage?.({ data: '{' }) : stream.send(bad));
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Invalid pipeline telemetry');
+    expect(button('Run pipeline').disabled).toBe(true); expect(button('Reconnect telemetry').disabled).toBe(false);
+    expect(container.textContent).not.toContain('Pipeline failed.');
+  });
+  it('reconnects the same task without dispatch and bounds silence and stale callbacks', async () => {
+    const first = await dispatch(); act(() => first.send(pipelineFrame()));
+    act(() => first.onerror?.()); expect(first.close).toHaveBeenCalled();
+    act(() => button('Reconnect telemetry').click()); const second = PipelineSource.instances[1];
+    expect(second.url).toBe(first.url); expect(fetch).toHaveBeenCalledTimes(1);
+    act(() => first.send(pipelineFrame(99, 'FAILED'))); expect(container.textContent).not.toContain('Pipeline failed.');
+    await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(container.textContent).toContain('Telemetry timeout'); expect(second.close).toHaveBeenCalled();
+  });
+  it('cancel failures remain visible; cancellation requires authoritative snapshot', async () => {
+    await dispatch(); vi.mocked(fetch).mockResolvedValueOnce(new Response('', { status: 409 }));
+    act(() => button('Cancel task').click()); await settle(); expect(container.textContent).toContain('Cancellation not confirmed');
+    expect(button('Run pipeline').disabled).toBe(true);
+    vi.mocked(fetch).mockResolvedValueOnce(jsonResponse({ status: 'success', task_id: PIPE_JOB, job_id: PIPE_JOB, cancelled: true }));
+    act(() => { button('Cancel task').click(); button('Cancel task').click(); }); await settle();
+    expect(fetch).toHaveBeenCalledTimes(3); expect(button('Run pipeline').disabled).toBe(true);
+    act(() => PipelineSource.instances.at(-1)!.send(pipelineFrame(2, 'CANCELLED')));
+    expect(button('Run pipeline').disabled).toBe(false);
+  });
+  it('terminal execution wins a late cancel response; retries only explicit retryable failures', async () => {
+    const stream = await dispatch(); let resolve!: (response: Response) => void;
+    vi.mocked(fetch).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    act(() => button('Cancel task').click());
+    const done = pipelineFrame(2, 'COMPLETED', 'RESEARCH_EXECUTION'); done.payload.receipt = pipelineReceipt(); act(() => stream.send(done));
+    resolve(jsonResponse({ status: 'success', task_id: PIPE_JOB, job_id: PIPE_JOB, cancelled: true })); await settle();
+    expect(PipelineSource.instances).toHaveLength(1); expect(container.querySelector('progress')?.value).toBe(100);
+    expect(button('Retry as new task').disabled).toBe(true);
+  });
+  it('retry dispatches saved parameters only after server-reported retryable failure', async () => {
+    const stream = await dispatch(); const failed = pipelineFrame(2, 'FAILED'); failed.payload.retryable = true; act(() => stream.send(failed));
+    act(() => button('Retry as new task').click()); await settle(); expect(fetch).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(fetch).mock.calls[1][1]?.body).toBe(vi.mocked(fetch).mock.calls[0][1]?.body);
+  });
+  it.each([403, 422, 429, 500])('handles dispatch HTTP %s with bounded explicit error', async (status) => {
+    vi.mocked(fetch).mockResolvedValueOnce(new Response('https://user:secret@host/?key=secret', { status })); await dispatch();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull(); expect(container.textContent).not.toContain('secret');
+    expect(button('Run pipeline').disabled).toBe(status === 500);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60000); }); expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it('timeouts and malformed dispatch prevent duplicate work; unmount aborts in-flight requests', async () => {
+    let signal!: AbortSignal;
+    vi.mocked(fetch).mockImplementation((_input, init) => new Promise((_resolve, reject) => { signal = init!.signal as AbortSignal; signal.addEventListener('abort', () => reject(new Error('secret')), { once: true }); }));
+    act(() => button('Run pipeline').click()); await act(async () => { await vi.advanceTimersByTimeAsync(10000); });
+    expect(signal.aborted).toBe(true); expect(container.textContent).toContain('Dispatch outcome unknown'); expect(button('Run pipeline').disabled).toBe(true);
+    act(() => root.unmount()); unmounted = true;
+  });
+  it.each(['malformed', 'off-origin', 'oversized', 'invalid-utf8', 'offline'])('rejects %s dispatch without exposing response details or opening SSE', async (kind) => {
+    const reply = { status: 'success', job_id: PIPE_JOB, task_id: PIPE_JOB, stream_url: 'https://user:secret@other/stream' };
+    if (kind === 'offline') vi.mocked(fetch).mockRejectedValueOnce(new Error('https://user:secret@provider'));
+    else vi.mocked(fetch).mockResolvedValueOnce(kind === 'off-origin' ? jsonResponse(reply) : new Response(kind === 'oversized' ? 'x'.repeat(65537) : kind === 'invalid-utf8' ? new Uint8Array([255]) : '{'));
+    await dispatch(); expect(PipelineSource.instances).toHaveLength(0); expect(button('Run pipeline').disabled).toBe(true);
+    expect(container.textContent).toContain('Dispatch outcome unknown'); expect(container.textContent).not.toContain('secret');
+  });
+  it('unmount aborts dispatch and never opens a late stream', async () => {
+    let resolve!: (response: Response) => void; let signal!: AbortSignal;
+    vi.mocked(fetch).mockImplementationOnce((_url, init) => new Promise((done) => { resolve = done; signal = init!.signal as AbortSignal; }));
+    act(() => button('Run pipeline').click()); act(() => root.unmount()); unmounted = true;
+    expect(signal.aborted).toBe(true);
+    resolve(jsonResponse({ status: 'success', job_id: PIPE_JOB, task_id: PIPE_JOB, stream_url: `/sse/v1/pipeline/${PIPE_JOB}/stream` })); await settle();
+    expect(PipelineSource.instances).toHaveLength(0);
+  });
+  it('unmount closes stream, clears timers and ignores late callbacks', async () => {
+    const stream = await dispatch(); act(() => root.unmount()); unmounted = true;
+    expect(stream.close).toHaveBeenCalled(); act(() => stream.send(pipelineFrame())); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('bounds event history at 100 and ignores duplicate revisions', async () => {
+    const stream = await dispatch(); act(() => { for (let i = 1; i <= 110; i++) stream.send(pipelineFrame(i)); stream.send(pipelineFrame(1)); });
+    expect(container.querySelectorAll('ol[aria-label="Stage event history"] li')).toHaveLength(100);
+  });
+});
+
+describe('Slice17 pipeline boundary validation', () => {
+  it.each([null, [], '', NaN, Infinity, -Infinity, {}, { ...pipelineFrame(), progress: 1e12 }, { ...pipelineFrame(), revision: -1 }])('rejects malformed telemetry %j', (value) => {
+    expect(() => validatePipelineTelemetry(value, PIPE_JOB)).toThrow();
+  });
+  it.each(['', 'NaN', 'Infinity', '-Infinity', '0', '-1', '1000000000001'])('rejects capital %s', (capital) => {
+    expect(() => pipelineRequest('FPT', '2023-01-01', '2023-12-31', capital)).toThrow();
+  });
+  it('accepts 1e12 VND_FULL; rejects symbols, duplicate universe, invalid dates and future cutoffs', () => {
+    expect(pipelineRequest('fpt, hpg', '2023-01-01', '2023-12-31', '1e12').initial_capital).toBe(1e12);
+    for (const universe of ['', 'FPT;--', 'FPT,FPT', Array(101).fill('FPT').join(',')]) expect(() => pipelineRequest(universe, '2023-01-01', '2023-12-31', '1')).toThrow();
+    for (const date of ['', '2023-02-30', '2099-01-01']) expect(() => pipelineRequest('FPT', '2023-01-01', date, '1')).toThrow();
+  });
+  it.each(['2026-02-30T08:30:00Z', '2026-10-11T24:00:00Z', '2026-10-11T08:30:00', '', null])('rejects invalid event time %s', (timestamp) => {
+    expect(() => validatePipelineTelemetry({ ...pipelineFrame(), timestamp }, PIPE_JOB)).toThrow();
+  });
+  it('accepts inclusive ICT session-close boundary; rejects the following cutoff', () => {
+    vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2023-12-31T15:30:00+07:00'));
+    try {
+      expect(pipelineRequest('FPT', '2023-01-01', '2023-12-31', '1').end_date).toBe('2023-12-31');
+      expect(() => pipelineRequest('FPT', '2023-01-01', '2024-01-01', '1')).toThrow();
+    } finally { vi.restoreAllMocks(); }
+  });
+  it('accepts server snapshot without optional message; preserves terminal PING', () => {
+    const data = pipelineFrame(2, 'COMPLETED', 'RESEARCH_EXECUTION'); data.payload.receipt = pipelineReceipt(); data.event_type = 'PING';
+    delete (data as any).message;
+    expect(validatePipelineTelemetry(data, PIPE_JOB).status).toBe('COMPLETED');
+  });
+  it.each(['task_id', 'operation', 'status', 'schema_version', 'request_fingerprint', 'output_sha256', 'receipt_hmac', 'published_at', 'artifact_id'])('rejects receipt field %s', (field) => {
+    const data = pipelineFrame(1, 'COMPLETED', 'RESEARCH_EXECUTION'); const receipt = pipelineReceipt(); delete (receipt as any)[field]; data.payload.receipt = receipt;
+    expect(() => validatePipelineTelemetry(data, PIPE_JOB)).toThrow();
   });
 });

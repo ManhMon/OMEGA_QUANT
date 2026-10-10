@@ -22,12 +22,14 @@ def valid_result(success=True, metrics=None):
 
 @pytest.fixture(autouse=True)
 def isolated_state(tmp_path, monkeypatch):
-    control.TASKS.clear()
-    control.TASK_EVENT_QUEUES.clear()
-    control.CANCELLED_JOBS.clear()
-    control.KILL_SWITCH_ACTIVE = False
-    control.clear_totp_replay_cache()
+    monkeypatch.setattr(control, "TASKS", {})
+    monkeypatch.setattr(control, "TASK_EVENT_QUEUES", {})
+    monkeypatch.setattr(control, "CANCELLED_JOBS", set())
+    monkeypatch.setattr(control, "KILL_SWITCH_ACTIVE", False)
     monkeypatch.setattr(control, "CONTROL_ARTIFACT_ROOT", tmp_path)
+    monkeypatch.setattr(control, "_USED_TOTP_TOKENS", {})
+    monkeypatch.setattr(control, "TOTP_REPLAY_CACHE_PATH", tmp_path / "totp.json")
+    monkeypatch.setattr(control, "TOTP_REPLAY_CACHE_LOCK_PATH", tmp_path / "totp.lock")
 
 
 @pytest.mark.parametrize("payload", [
@@ -278,7 +280,11 @@ def test_static_fake_success_bans():
     ))
     for forbidden in ("_run_ingest_simulation", "_run_alphas_simulation", "_run_optimize_simulation", "_run_backtest_simulation", "EXECUTION_SIMULATION", "Simulated execution", "result.metrics or"):
         assert forbidden not in backend + frontend
-    assert "progress >= 100" not in frontend
+    # The console rejects non-terminal 100%; it never derives completion from progress.
+    hooks = "\n".join(open(path, encoding="utf-8").read() for path in (
+        "omega-ui/src/hooks/useControlOps.ts", "omega-ui/src/hooks/usePipelineRunner.ts",
+    ))
+    assert "progress >= 100" not in hooks
     assert "setInterval" not in open("omega-ui/src/hooks/useControlOps.ts", encoding="utf-8").read()
 
 
@@ -477,3 +483,50 @@ def test_loader_write_parquet_atomic_fsync(tmp_path):
     read_back = pd.read_parquet(target_path)
     assert len(read_back) == 1
     assert read_back["ticker"].iloc[0] == "VNM"
+
+
+def test_slice17_dispatch_snapshot_and_cancellation_contract():
+    from fastapi import BackgroundTasks
+
+    response = asyncio.run(control.trigger_pipeline_run(control.PipelineRunRequest(), BackgroundTasks()))
+    job_id = response["job_id"]
+    assert response["stream_url"] == f"/sse/v1/pipeline/{job_id}/stream"
+    snapshot = asyncio.run(control.get_pipeline_task(job_id))
+    assert snapshot["schema_version"] == "pipeline-telemetry/v1"
+    assert snapshot["status"] == "QUEUED" and snapshot["revision"] == 0
+    assert [node["stage_id"] for node in snapshot["dag"]] == list(control.PIPELINE_STAGES)
+    assert all(node["status"] == "PENDING" for node in snapshot["dag"])
+    cancelled = asyncio.run(control.cancel_pipeline_job(job_id))
+    assert cancelled["cancelled"] is True and cancelled["task_id"] == job_id
+    terminal = asyncio.run(control.get_pipeline_task(job_id))
+    assert terminal["status"] == "CANCELLED" and terminal["progress"] < 100
+    control._push_task_event(job_id, "PROGRESS", 90, "DATA_INGEST", "late")
+    assert asyncio.run(control.get_pipeline_task(job_id))["revision"] == terminal["revision"]
+
+
+@pytest.mark.parametrize("status", ["COMPLETED", "FAILED", "CANCELLED"])
+def test_slice17_terminal_sse_snapshot_is_authoritative(status):
+    job_id = "job-pipe-1234abcd"
+    request = control.PipelineRunRequest()
+    control._register_task_atomic(job_id, {"task_type": "REAL_PIPELINE_RUN", "status": "QUEUED", "stage": "INIT", "progress": 0, "events": [], "params": request.model_dump()})
+    control._push_task_event(job_id, "PROGRESS", 0, "DATA_INGEST", "start")
+    if status == "COMPLETED":
+        output = {"metrics": {"total_trades": 0.0}, "unit": "VND_FULL"}
+        receipt = control._publish_receipt(job_id, "PIPELINE_RUN", request, datetime(2023, 12, 31, tzinfo=timezone.utc), output)
+        control._push_task_event(job_id, "COMPLETE", 100, "DONE", "done", {**output, "receipt": receipt})
+    elif status == "CANCELLED":
+        asyncio.run(control.cancel_pipeline_job(job_id))
+    else:
+        control._push_task_event(job_id, "ERROR", 0, "FAILED", "failed", {"retryable": False})
+
+    async def frames():
+        response = await control.sse_pipeline_stream(job_id)
+        return [json.loads(frame["data"]) async for frame in response.body_iterator]
+
+    events = asyncio.run(frames())
+    assert len(events) == 1 and events[0]["event_type"] == "SNAPSHOT"
+    assert events[0]["status"] == status and events[0]["task_id"] == job_id
+    assert not control.TASK_EVENT_QUEUES[job_id]
+    if status == "COMPLETED":
+        assert events[0]["payload"]["receipt"]["operation"] == "PIPELINE_RUN"
+        assert all(node["status"] == "COMPLETED" for node in events[0]["dag"])

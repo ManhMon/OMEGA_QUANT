@@ -214,8 +214,15 @@ describe('App remediation', () => {
     const content = container.querySelector('main')!;
     if (['macro_cockpit', 'macro_news_hub'].includes(module)) {
       expect(content.textContent).toContain('LandingDatabaseHub mounted');
+      if (module === 'macro_cockpit') {
+        expect(content.textContent).toContain('PIT_CUTOFF');
+        expect(content.textContent).not.toContain('HMM');
+      }
     } else if (module === 'pipeline_console') {
-      expect(content.textContent).toContain('This module is unavailable in this build.');
+      expect(content.querySelector('section')?.getAttribute('aria-label')).toBe('VALIDATED RESEARCH PIPELINE');
+      expect(content.querySelector('section h2')?.textContent).toBe('VALIDATED RESEARCH PIPELINE');
+      expect(content.textContent).toContain('Awaiting server DAG telemetry.');
+      expect(content.querySelector('form')).not.toBeNull();
     } else {
       expect(content.textContent).toContain(`${module} mounted`);
     }

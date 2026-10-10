@@ -734,8 +734,14 @@ it('mounts every real App route under network failure and closes streams', async
     if (module === 'pipeline_console') {
       const section = container.querySelector('main section')!;
       expect(section.getAttribute('aria-label')).toBe('VALIDATED RESEARCH PIPELINE');
-      expect(section.querySelector('[role="status"]')?.textContent).toBe('This module is unavailable in this build.');
-      expect(section.querySelectorAll('button, form, progress')).toHaveLength(0);
+      expect(section.querySelector('[role="status"]')?.textContent).toBe('IDLE · SSE IDLE');
+      expect(section.textContent).toContain('Awaiting server DAG telemetry.');
+      expect(section.querySelector('form')).not.toBeNull();
+      expect(section.querySelector('progress')?.hasAttribute('value')).toBe(false);
+      const controls = Array.from(section.querySelectorAll('button'));
+      expect(controls.map((button) => button.textContent)).toEqual(['Run pipeline', 'Cancel task', 'Reconnect telemetry', 'Retry as new task']);
+      expect(controls[0].disabled).toBe(false);
+      expect(controls.slice(1).every((button) => button.disabled)).toBe(true);
       act(() => useUiStore.getState().setLocale('vi'));
       expect(section.getAttribute('aria-label')).toBe('PIPELINE NGHIÊN CỨU ĐÃ XÁC THỰC');
       act(() => useUiStore.getState().setLocale('en'));
