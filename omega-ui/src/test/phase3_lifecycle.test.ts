@@ -219,15 +219,55 @@ describe('Phase 3 UI Lifecycle & Adversarial Resistance Tests', () => {
     expect(advancedQuantApi.getAlphaDecayProfile).toHaveBeenCalledTimes(1);
   });
 
-  it('2. ExecutionBlotterView renders OMS blotter and handles TOTP rebalance modal lifecycle', async () => {
+  it('2. ExecutionBlotterView renders recorded OMS, slippage, and settlement from one cutoff', async () => {
+    vi.setSystemTime(new Date('2026-10-10T08:30:00Z'));
+    const routes = ['blotter', 'timeline', 'slippage-distribution', 'settlement-timeline'];
+    const order = { orderId: 'o1', parentOrderId: null, timestamp: '2026-10-05T03:00:00Z', availableAt: '2026-10-05T03:00:00Z',
+      symbol: 'VCB', side: 'BUY', orderType: 'LO', qty: 100, price: 10100, filledQty: 100, status: 'FILLED',
+      broker: 'PAPER', venue: 'HOSE', algoType: 'DIRECT', sequence: null };
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const url = new URL(String(input), 'http://localhost');
+      expect(init?.method).toBe('GET');
+      expect(init?.signal).toBeDefined();
+      if (url.pathname === '/api/v1/execution/status') {
+        return new Response(JSON.stringify({ state: 'STOPPED', active: false, mode: 'SHADOW', workers_available: false,
+          processed_orders_count: 0, active_orders_count: 0, active_workers: 0, last_heartbeat: null, uptime_seconds: 0, daily_pnl_vnd: 0 }));
+      }
+      const cutoff = url.searchParams.get('as_of');
+      expect(cutoff).toBe('2026-10-10T08:30:00.000Z');
+      const envelope = { status: 'success', timestamp: cutoff, effective_cutoff: cutoff, provenance: 'RECORDED', price_unit: 'VND_FULL' };
+      const payloads = [
+        { ...envelope, orders: [order], count: 1 },
+        { ...envelope, parents: [], standalone: [order] },
+        { ...envelope, benchmark: 'ARRIVAL_PRICE', sign_convention: 'POSITIVE_IS_COST', fees_included: true,
+          points: [{ order_id: 'o1', venue: 'HOSE', side: 'BUY', quantity: 100, arrival_price: 10000, executed_price: 10100, fee_vnd: 1000, slippage_bps: 110 }],
+          venues: [{ venue: 'HOSE', count: 1, arrival_notional_vnd: 1000000, average_slippage_bps: 110 }], excluded_missing_benchmark_or_fee: 0 },
+        { ...envelope, calendar_timezone: 'Asia/Ho_Chi_Minh', forecast_policy: 'T_PLUS_2_TRADING_DAYS_15_30_ICT_NOT_CONFIRMATION',
+          settlements: [{ order_id: 'o1', broker: 'PAPER', symbol: 'VCB', side: 'BUY', trade_at: order.timestamp,
+            expected_settlement_at: '2026-10-07T08:30:00Z', broker_effective_at: null, settlement_effective_at: null,
+            confirmation_available_at: null, confirmed: false, cash_available_vnd: null, shares_available: null, skipped_closed_dates: [] }] },
+      ];
+      const index = routes.findIndex((route) => url.pathname === `/api/v1/execution/${route}`);
+      expect(index).toBeGreaterThanOrEqual(0);
+      return new Response(JSON.stringify(payloads[index]));
+    });
     renderWithProviders(React.createElement(ExecutionBlotterView, null));
-    expect(container).not.toBeNull();
-
     await act(async () => {
       await vi.advanceTimersByTimeAsync(600);
     });
 
-    expect(apiClient.getExecutionBlotter).toHaveBeenCalledTimes(1);
+    for (const label of ['Smart Execution Timeline', 'Execution Slippage Distribution', 'VSDC Settlement Timeline']) {
+      expect(container?.querySelector(`section[aria-label="${label}"]`)).not.toBeNull();
+    }
+    expect(container?.textContent).toContain('VCB');
+    expect(container?.textContent).toContain('110.00');
+    expect(container?.textContent).toContain('Unconfirmed forecast');
+    expect(container?.textContent).toContain('Cash and share availability unknown. No broker confirmation.');
+    expect(fetchMock).toHaveBeenCalledTimes(5);
+    const historical = fetchMock.mock.calls.map(([input]) => new URL(String(input), 'http://localhost')).filter((url) => url.searchParams.has('as_of'));
+    expect(historical.map((url) => url.pathname).sort()).toEqual(routes.map((route) => `/api/v1/execution/${route}`).sort());
+    expect(new Set(historical.map((url) => url.searchParams.get('as_of'))).size).toBe(1);
+    expect(apiClient.getExecutionBlotter).not.toHaveBeenCalled();
   });
 
   it('3. TotpRebalanceModal validates 6-digit TOTP input, submits authorization, and clears state', async () => {

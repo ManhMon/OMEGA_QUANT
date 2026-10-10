@@ -1,312 +1,237 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { Play, Clock, ArrowUpRight, ArrowDownRight, RefreshCw, AlertTriangle, CheckCircle2, LineChart } from 'lucide-react';
-import { useExecutionBlotter } from '../../hooks/usePortfolioState';
+import React from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useUiStore } from '../../store/uiStore';
-import { useTranslation } from '../../i18n';
-import { TotpRebalanceModal } from './TotpRebalanceModal';
-import { PaperDaemonPanel } from './PaperDaemonPanel';
-import { advancedQuantApi, PortfolioRebalanceExecuteResponse } from '../../api/advancedQuant';
+import { PaperDaemonPanel, requestExecutionData, executionRecord, executionNumber, executionText, executionClock } from './PaperDaemonPanel';
+
+type Row = Record<string, unknown>;
+const invalid = (): never => { throw new Error('Execution data unavailable'); };
+const rows = (value: unknown): Row[] => Array.isArray(value) && value.length <= 5000 ? value.map(executionRecord) : invalid();
+const choice = (value: unknown, options: string[]): string => typeof value === 'string' && options.includes(value) ? value : invalid();
+const boolean = (value: unknown): boolean => typeof value === 'boolean' ? value : invalid();
+const count = (value: unknown): number => {
+  const number = executionNumber(value, 0, 5000);
+  return Number.isInteger(number) ? number : invalid();
+};
+const same = (left: number, right: number) => Math.abs(left - right) <= Math.max(1, Math.abs(right)) * 1e-9;
+const unique = (values: string[]) => { if (new Set(values).size !== values.length) invalid(); };
+
+export interface ExecutionOrder {
+  orderId: string; parentOrderId: string | null; timestamp: string; availableAt: string;
+  symbol: string; side: string; orderType: string; qty: number; price: number; filledQty: number;
+  status: string; broker: string; venue: string; algoType: string; sequence: number | null;
+}
+interface ExecutionParent {
+  id: string; symbol: string; side: string; algo: string; target: number; filled: number;
+  completion: number | null; complete: boolean; slices: ExecutionOrder[];
+}
+interface Slippage { id: string; venue: string; side: string; quantity: number; arrival: number; price: number; fee: number; bps: number }
+interface Settlement {
+  id: string; symbol: string; broker: string; side: string; trade: string; expected: string;
+  confirmed: boolean; brokerAt: string | null; settledAt: string | null; availableAt: string | null;
+  cash: number | null; shares: number | null; skipped: string[];
+}
+export interface ExecutionData {
+  cutoff: string; orders: ExecutionOrder[]; parents: ExecutionParent[]; standalone: ExecutionOrder[];
+  points: Slippage[]; venues: { venue: string; count: number; notional: number; bps: number }[];
+  excluded: number; settlements: Settlement[];
+}
+
+export function validateExecutionData(values: unknown[], cutoff: string): ExecutionData {
+  if (values.length !== 4) return invalid();
+  const clock = executionClock(cutoff);
+  if (clock > Date.now()) return invalid();
+  const [blotter, timeline, slippage, settlement] = values.map(executionRecord);
+  for (const response of [blotter, timeline, slippage, settlement]) {
+    if (response.status !== 'success' || response.price_unit !== 'VND_FULL' || response.provenance !== 'RECORDED' ||
+        executionClock(response.effective_cutoff) !== clock || executionClock(response.timestamp) < clock || executionClock(response.timestamp) > Date.now()) return invalid();
+  }
+  const order = (row: Row): ExecutionOrder => {
+    const event = executionClock(row.timestamp), available = executionClock(row.availableAt);
+    const qty = executionNumber(row.qty, 0, 1e8), filledQty = executionNumber(row.filledQty, 0, qty);
+    const status = choice(row.status, ['FILLED', 'PARTIALLY_FILLED', 'PENDING', 'ROUTING', 'CANCELLED', 'REJECTED']);
+    const price = executionNumber(row.price, 0, 1e8);
+    if (event > available || available > clock || price * qty > 1e12 ||
+        status === 'FILLED' && filledQty !== qty || status === 'PARTIALLY_FILLED' && !(filledQty > 0 && filledQty < qty) ||
+        ['PENDING', 'ROUTING', 'CANCELLED', 'REJECTED'].includes(status) && filledQty !== 0 || filledQty > 0 && price < 100 ||
+        typeof row.symbol !== 'string' || !/^[A-Z0-9]{1,16}$/.test(row.symbol)) return invalid();
+    return { orderId: executionText(row.orderId), parentOrderId: row.parentOrderId === null ? null : executionText(row.parentOrderId),
+      timestamp: row.timestamp as string, availableAt: row.availableAt as string, symbol: row.symbol,
+      side: choice(row.side, ['BUY', 'SELL']), orderType: choice(row.orderType, ['LO', 'ATO', 'ATC', 'MP']), qty, price, filledQty,
+      status, broker: executionText(row.broker), venue: choice(row.venue, ['HOSE', 'HNX', 'UPCOM', 'PAPER', 'UNKNOWN']),
+      algoType: choice(row.algoType, ['TWAP', 'VWAP', 'DIRECT']), sequence: row.sequence === null ? null : count(row.sequence) };
+  };
+  const orders = rows(blotter.orders).map(order);
+  if (count(blotter.count) !== orders.length) return invalid();
+  unique(orders.map((row) => row.orderId));
+  const parents = rows(timeline.parents).map((row): ExecutionParent => {
+    const id = executionText(row.parent_order_id), symbol = executionText(row.symbol);
+    const side = choice(row.side, ['BUY', 'SELL']), algo = choice(row.algo_type, ['TWAP', 'VWAP', 'DIRECT']);
+    const target = executionNumber(row.target_qty, 0, 1e8), filled = executionNumber(row.filled_qty, 0, target);
+    const completion = row.completion_pct === null ? null : executionNumber(row.completion_pct, 0, 100);
+    const complete = boolean(row.sequence_complete), slices = rows(row.slices).map(order);
+    if (!slices.length || slices.some((slice, index) => slice.parentOrderId !== id || slice.symbol !== symbol || slice.side !== side ||
+        slice.algoType !== algo || slice.sequence === null || index > 0 && slice.sequence! <= slices[index - 1].sequence!) ||
+        !same(slices.reduce((sum, slice) => sum + slice.filledQty, 0), filled) || slices.reduce((sum, slice) => sum + slice.qty, 0) > target ||
+        (target === 0 ? completion !== null : completion === null || !same(completion, filled / target * 100)) ||
+        complete !== slices.every((slice, index) => slice.sequence === index)) return invalid();
+    return { id, symbol, side, algo, target, filled, completion, complete, slices };
+  });
+  const standalone = rows(timeline.standalone).map(order);
+  const leaves = [...standalone, ...parents.flatMap((parent) => parent.slices)];
+  if (leaves.length + parents.length > 5000 || standalone.some((row) => row.parentOrderId !== null)) return invalid();
+  unique([...parents.map((row) => row.id), ...leaves.map((row) => row.orderId)]);
+  const indexed = new Map(leaves.map((row) => [row.orderId, row]));
+  for (const item of orders) {
+    const leaf = indexed.get(item.orderId);
+    if (leaf && JSON.stringify(leaf) !== JSON.stringify(item)) return invalid();
+    if (!leaf && !parents.some((parent) => parent.id === item.orderId)) return invalid();
+  }
+  if (slippage.benchmark !== 'ARRIVAL_PRICE' || slippage.sign_convention !== 'POSITIVE_IS_COST' || slippage.fees_included !== true) return invalid();
+  const points = rows(slippage.points).map((row): Slippage => {
+    const id = executionText(row.order_id), leaf = indexed.get(id);
+    const quantity = executionNumber(row.quantity, 1e-12, 1e8), arrival = executionNumber(row.arrival_price, 100, 1e8);
+    const price = executionNumber(row.executed_price, 100, 1e8), fee = executionNumber(row.fee_vnd);
+    const side = choice(row.side, ['BUY', 'SELL']), venue = executionText(row.venue), bps = executionNumber(row.slippage_bps, -1e12);
+    const notional = arrival * quantity;
+    if (!leaf || leaf.filledQty !== quantity || leaf.price !== price || leaf.side !== side || leaf.venue !== venue || notional > 1e12 ||
+        !same(bps, ((side === 'BUY' ? 1 : -1) * (price - arrival) / arrival + fee / notional) * 10000)) return invalid();
+    return { id, venue, side, quantity, arrival, price, fee, bps };
+  });
+  unique(points.map((row) => row.id));
+  const excluded = count(slippage.excluded_missing_benchmark_or_fee);
+  if (points.length + excluded !== leaves.filter((row) => row.filledQty > 0).length) return invalid();
+  const venues = rows(slippage.venues).map((row) => {
+    const venue = executionText(row.venue), selected = points.filter((point) => point.venue === venue);
+    const notional = selected.reduce((sum, point) => sum + point.arrival * point.quantity, 0);
+    const value = executionNumber(row.arrival_notional_vnd, 1e-12);
+    const bps = executionNumber(row.average_slippage_bps, -1e12);
+    if (!selected.length || count(row.count) !== selected.length || !same(value, notional) ||
+        !same(bps, selected.reduce((sum, point) => sum + point.bps * (point.arrival * point.quantity / notional), 0))) return invalid();
+    return { venue, count: selected.length, notional, bps };
+  });
+  unique(venues.map((row) => row.venue));
+  if (venues.length !== new Set(points.map((row) => row.venue)).size) return invalid();
+  if (settlement.calendar_timezone !== 'Asia/Ho_Chi_Minh' || settlement.forecast_policy !== 'T_PLUS_2_TRADING_DAYS_15_30_ICT_NOT_CONFIRMATION') return invalid();
+  const settlements = rows(settlement.settlements).map((row): Settlement => {
+    const id = executionText(row.order_id), leaf = indexed.get(id);
+    const trade = executionClock(row.trade_at), expected = executionClock(row.expected_settlement_at);
+    const confirmed = boolean(row.confirmed), side = choice(row.side, ['BUY', 'SELL']);
+    const expectedIct = new Date(expected + 7 * 3600000);
+    if (!leaf || !leaf.filledQty || trade !== executionClock(leaf.timestamp) || trade > clock || expected <= trade || side !== leaf.side ||
+        row.symbol !== leaf.symbol || row.broker !== leaf.broker || expectedIct.getUTCHours() !== 15 || expectedIct.getUTCMinutes() !== 30 ||
+        expectedIct.getUTCSeconds() !== 0 || expectedIct.getUTCMilliseconds() !== 0) return invalid();
+    const fields = ['broker_effective_at', 'settlement_effective_at', 'confirmation_available_at', 'cash_available_vnd', 'shares_available'];
+    if (confirmed) {
+      const broker = executionClock(row.broker_effective_at), settled = executionClock(row.settlement_effective_at), available = executionClock(row.confirmation_available_at);
+      if (broker < trade || broker > available || settled < expected || settled > available || available > clock ||
+          executionNumber(row.shares_available, 0, leaf.filledQty) > leaf.filledQty ||
+          side === 'BUY' && executionNumber(row.cash_available_vnd) !== 0 || side === 'SELL' && row.shares_available !== 0) return invalid();
+      executionNumber(row.cash_available_vnd);
+    } else if (fields.some((field) => row[field] !== null)) return invalid();
+    if (!Array.isArray(row.skipped_closed_dates) || row.skipped_closed_dates.length > 366 || row.skipped_closed_dates.some((day) => {
+      if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return true;
+      const date = executionClock(`${day}T00:00:00+07:00`);
+      return date <= trade - 86400000 || date >= expected;
+    })) return invalid();
+    unique(row.skipped_closed_dates as string[]);
+    return { id, symbol: executionText(row.symbol), broker: executionText(row.broker), side, trade: row.trade_at as string,
+      expected: row.expected_settlement_at as string, confirmed, brokerAt: row.broker_effective_at as string | null,
+      settledAt: row.settlement_effective_at as string | null, availableAt: row.confirmation_available_at as string | null,
+      cash: row.cash_available_vnd as number | null, shares: row.shares_available as number | null, skipped: row.skipped_closed_dates as string[] };
+  });
+  unique(settlements.map((row) => row.id));
+  if (settlements.length !== leaves.filter((row) => row.filledQty > 0).length) return invalid();
+  return { cutoff, orders, parents, standalone, points, venues, excluded, settlements };
+}
+
+export const useExecutionData = () => useQuery({
+  queryKey: ['execution-slice13'],
+  queryFn: async ({ signal }) => {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+    const timeout = setTimeout(abort, 10000);
+    const cutoff = new Date().toISOString();
+    try {
+      const values = await Promise.all(['blotter', 'timeline', 'slippage-distribution', 'settlement-timeline'].map((route) =>
+        requestExecutionData(`/api/v1/execution/${route}?${new URLSearchParams({ as_of: cutoff })}`, controller.signal)));
+      return validateExecutionData(values, cutoff);
+    } catch {
+      controller.abort();
+      return invalid();
+    } finally {
+      clearTimeout(timeout);
+      signal.removeEventListener('abort', abort);
+    }
+  },
+  retry: false, retryOnMount: false, refetchOnWindowFocus: false, refetchOnReconnect: false,
+  enabled: (query) => query.state.status !== 'error', staleTime: Infinity,
+});
+
+const clockLabel = (value: string) => new Date(value).toLocaleString('en-GB', { timeZone: 'Asia/Ho_Chi_Minh', hour12: false });
+const cell = 'p-2 text-left tabular-nums';
+const panel = 'rounded-xl border border-white/10 bg-zinc-950 p-4 text-sm text-zinc-200 overflow-x-auto';
+
+export const SmartExecutionTimeline: React.FC<{ data: ExecutionData }> = ({ data }) => <section aria-label="Smart Execution Timeline" className={panel}>
+  <h3 className="font-bold">Smart Execution Timeline</h3>
+  {!data.parents.length && !data.standalone.length && <p role="status">No recorded execution events.</p>}
+  {data.parents.map((parent) => <article key={parent.id} className="my-3 border-l-2 border-zinc-500 pl-3">
+    <h4>{parent.id} · {parent.symbol} · {parent.side} · {parent.algo}</h4>
+    <p>{parent.filled} / {parent.target} shares · {parent.completion === null ? 'Completion unavailable (zero target)' : `${parent.completion.toFixed(2)}% complete`} · {parent.complete ? 'Sequence complete' : 'Sequence gaps'}</p>
+    <ol>{parent.slices.map((slice) => <li key={slice.orderId}><time dateTime={slice.timestamp}>{clockLabel(slice.timestamp)} ICT</time> · Slice {slice.sequence} · {slice.orderId} · {slice.status} · {slice.filledQty} / {slice.qty} shares</li>)}</ol>
+  </article>)}
+  <ol>{data.standalone.map((row) => <li key={row.orderId}><time dateTime={row.timestamp}>{clockLabel(row.timestamp)} ICT</time> · {row.orderId} · {row.symbol} · {row.side} · {row.status} · {row.filledQty} / {row.qty} shares</li>)}</ol>
+</section>;
+
+// ponytail: exact per-fill distribution table, not fabricated histogram bins; charting can follow a measured readability need.
+export const ExecutionSlippageDistribution: React.FC<{ data: ExecutionData }> = ({ data }) => <section aria-label="Execution Slippage Distribution" className={panel}>
+  <h3 className="font-bold">Execution Slippage Distribution</h3>
+  <p>Arrival price benchmark · Fees included · Positive bps = cost · Negative bps = improvement</p>
+  <p>{data.excluded} filled orders excluded: benchmark or explicit fee unavailable.</p>
+  {!data.points.length ? <p role="status">No eligible slippage observations.</p> : <>
+    <table className="w-full"><caption>Per-fill slippage · VND full prices</caption><thead><tr>{['Order', 'Venue', 'Side', 'Quantity', 'Arrival VND', 'Execution VND', 'Fee VND', 'Slippage bps'].map((label) => <th scope="col" className={cell} key={label}>{label}</th>)}</tr></thead>
+      <tbody>{data.points.map((point) => <tr key={point.id}>{[point.id, point.venue, point.side, point.quantity, point.arrival, point.price, point.fee, point.bps.toFixed(2)].map((value, index) => <td className={cell} key={index}>{value}</td>)}</tr>)}</tbody></table>
+    <table className="w-full"><caption>Arrival-notional weighted venue summary</caption><thead><tr>{['Venue', 'Fills', 'Arrival notional VND', 'Weighted slippage bps'].map((label) => <th scope="col" className={cell} key={label}>{label}</th>)}</tr></thead>
+      <tbody>{data.venues.map((venue) => <tr key={venue.venue}>{[venue.venue, venue.count, venue.notional, venue.bps.toFixed(2)].map((value, index) => <td className={cell} key={index}>{value}</td>)}</tr>)}</tbody></table>
+  </>}
+</section>;
+
+export const VsdcSettlementTimelineWidget: React.FC<{ data: ExecutionData }> = ({ data }) => <section aria-label="VSDC Settlement Timeline" className={panel}>
+  <h3 className="font-bold">VSDC Settlement Timeline</h3>
+  <p>T+2 trading days · 15:30 ICT forecast is not settlement confirmation.</p>
+  {!data.settlements.length && <p role="status">No filled orders awaiting settlement evidence.</p>}
+  <ol>{data.settlements.map((row) => <li key={row.id} className="my-3 border-l-2 border-zinc-500 pl-3">
+    <h4>{row.id} · {row.symbol} · {row.broker} · {row.side}</h4>
+    <p>Trade: <time dateTime={row.trade}>{clockLabel(row.trade)} ICT</time></p>
+    <p>Expected: <time dateTime={row.expected}>{clockLabel(row.expected)} ICT</time> · {row.confirmed ? 'Confirmed settlement' : 'Unconfirmed forecast'}</p>
+    {row.skipped.length > 0 && <p>Closed dates skipped: {row.skipped.join(', ')}</p>}
+    {row.confirmed ? <><p>Broker effective: {clockLabel(row.brokerAt!)} ICT · Settlement effective: {clockLabel(row.settledAt!)} ICT · Confirmation available: {clockLabel(row.availableAt!)} ICT</p><p>Available cash: {row.cash} VND · Available shares: {row.shares}</p></> : <p>Cash and share availability unknown. No broker confirmation.</p>}
+  </li>)}</ol>
+</section>;
 
 export const ExecutionBlotterView: React.FC = () => {
-  const { data: orders, isLoading, isError, refetch } = useExecutionBlotter();
-  const selectedTicker = useUiStore((state) => state.selectedTicker);
-  const setSelectedTicker = useUiStore((state) => state.setSelectedTicker);
-  const setActiveModule = useUiStore((state) => state.setActiveModule);
-  const { t } = useTranslation();
-
-  const [isRebalanceModalOpen, setIsRebalanceModalOpen] = useState(false);
-  const [rebalanceExecuting, setRebalanceExecuting] = useState(false);
-  const [rebalanceStatus, setRebalanceStatus] = useState<string | null>(null);
-  const [rebalanceResult, setRebalanceResult] = useState<PortfolioRebalanceExecuteResponse | null>(null);
-
-  const abortControllerRef = useRef<AbortController | null>(null);
-  const rafIdRef = useRef<number | null>(null);
-
-  useEffect(() => {
-    return () => {
-      if (abortControllerRef.current) {
-        abortControllerRef.current.abort();
-      }
-      if (rafIdRef.current) {
-        cancelAnimationFrame(rafIdRef.current);
-      }
-    };
-  }, []);
-
-  const handleSelectSymbol = (symbol: string) => {
-    setSelectedTicker(symbol);
-  };
-
-  const handleOpenChartStation = (e: React.MouseEvent, symbol: string) => {
-    e.stopPropagation();
-    setSelectedTicker(symbol);
-    setActiveModule('chart_station');
-  };
-
-  const handleExecuteRebalance = () => {
-    setIsRebalanceModalOpen(true);
-  };
-
-  const handleConfirmRebalance = async (totpCode: string) => {
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    setRebalanceExecuting(true);
-    setRebalanceResult(null);
-    setRebalanceStatus(t.executionBlotter.calcOrdersViaRouter);
-
-    try {
-      const res = await advancedQuantApi.executePortfolioRebalance({
-        totp_code: totpCode,
-        strategy_id: 'ALPHA_HRP_V2',
-        target_portfolio: { FPT: 0.25, HPG: 0.25, MBB: 0.25, MWG: 0.25 },
-        portfolio_value: 1_000_000_000.0,
-        routing_algo: 'TWAP',
-        duration_minutes: 60,
-      }, controller.signal);
-
-      if (!controller.signal.aborted) {
-        if (rafIdRef.current) cancelAnimationFrame(rafIdRef.current);
-        rafIdRef.current = requestAnimationFrame(() => {
-          setRebalanceResult(res);
-          setRebalanceStatus(t.executionBlotter.batchSubmitted);
-          setRebalanceExecuting(false);
-          refetch();
-          setTimeout(() => setRebalanceStatus(null), 5000);
-        });
-      }
-    } catch (err: unknown) {
-      if (!controller.signal.aborted) {
-        setRebalanceExecuting(false);
-        const errMsg = err instanceof Error ? err.message : 'Rebalance authorization failed';
-        setRebalanceStatus(`Failed: ${errMsg}`);
-        throw err;
-      }
-    }
-  };
-
-  if (isLoading) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 text-zinc-500 font-mono text-xs gap-3">
-        <Clock className="w-8 h-8 text-cyan-400 animate-spin" />
-        <span>{t.executionBlotter.connectingOms}</span>
-      </div>
-    );
-  }
-
-  if (isError || !orders) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 text-rose-400 font-mono text-xs gap-3 border border-rose-500/20 bg-rose-950/10 rounded-xl p-6">
-        <AlertTriangle className="w-8 h-8 text-rose-400" />
-        <span>{t.executionBlotter.failedBlotter}</span>
-        <button
-          onClick={() => refetch()}
-          className="px-3 py-1.5 rounded bg-rose-900/60 hover:bg-rose-800 text-white flex items-center gap-1.5"
-        >
-          <RefreshCw className="w-3.5 h-3.5" />
-          <span>{t.executionBlotter.reconnectBtn}</span>
-        </button>
-      </div>
-    );
-  }
-
-  const totalExecutedVnd = orders
-    .filter((o) => o.status === 'FILLED')
-    .reduce((sum, o) => sum + o.filledQty * o.price, 0);
-
-  const pendingVnd = orders
-    .filter((o) => o.status === 'PENDING' || o.status === 'ROUTING')
-    .reduce((sum, o) => sum + (o.qty - o.filledQty) * o.price, 0);
-
-  return (
-    <div className="flex flex-col gap-4 font-mono select-none">
-      {/* Paper Trading Daemon & Execution Lifecycle Controls */}
-      <PaperDaemonPanel onRefresh={refetch} />
-
-      {/* OMS Quick Stats */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-        <div className="glass-card rounded-xl p-4 flex flex-col gap-1 border-emerald-500/20 bg-emerald-950/10">
-          <div className="text-xs font-mono text-zinc-400">{t.executionBlotter.totalExecutedValue}</div>
-          <div className="text-xl font-bold font-mono text-emerald-400">{totalExecutedVnd.toLocaleString()} VND</div>
-          <div className="text-[10px] font-mono text-zinc-500">
-            {t.executionBlotter.activeOrders}: {orders.length}
-          </div>
-        </div>
-
-        <div className="glass-card rounded-xl p-4 flex flex-col gap-1 border-cyan-500/20 bg-cyan-950/10">
-          <div className="text-xs font-mono text-zinc-400">{t.executionBlotter.estimatedSlippage}</div>
-          <div className="text-xl font-bold font-mono text-cyan-400">-0.04%</div>
-          <div className="text-[10px] font-mono text-zinc-500">{t.executionBlotter.vwapDeviation}</div>
-        </div>
-
-        <div className="glass-card rounded-xl p-4 flex flex-col gap-1 border-amber-500/20 bg-amber-950/10">
-          <div className="text-xs font-mono text-zinc-400">{t.executionBlotter.pendingRoutingValue}</div>
-          <div className="text-xl font-bold font-mono text-amber-400">{pendingVnd.toLocaleString()} VND</div>
-          <div className="text-[10px] font-mono text-zinc-500">{t.executionBlotter.smartSlicerActive}</div>
-        </div>
-
-        <div className="glass-card rounded-xl p-4 flex flex-col gap-1 border-purple-500/20 bg-purple-950/10">
-          <div className="text-xs font-mono text-zinc-400">{t.executionBlotter.brokerGateway}</div>
-          <div className="text-xl font-bold font-mono text-purple-300">VCI / SSI MULTI-ROUTE</div>
-          <div className="text-[10px] font-mono text-zinc-500">{t.executionBlotter.fixProtocol}</div>
-        </div>
-      </div>
-
-      {/* Rebalance Executed Banner (if recently submitted) */}
-      {rebalanceResult && (
-        <div className="p-4 rounded-xl bg-emerald-950/30 border border-emerald-500/40 flex flex-col gap-2">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-2">
-              <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-              <span className="font-bold text-xs text-emerald-300">
-                Institutional Rebalance Dispatched ({rebalanceResult.strategy_id})
-              </span>
-            </div>
-            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded font-bold">
-              TOTP Verified
-            </span>
-          </div>
-
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono">
-            <div className="bg-zinc-950/80 p-2 rounded border border-white/5">
-              <span className="text-[10px] text-zinc-400">Est. Turnover:</span>
-              <div className="font-bold text-emerald-400">{(rebalanceResult.estimated_turnover * 100).toFixed(1)}%</div>
-            </div>
-            <div className="bg-zinc-950/80 p-2 rounded border border-white/5">
-              <span className="text-[10px] text-zinc-400">Est. Cost:</span>
-              <div className="font-bold text-cyan-400">{rebalanceResult.estimated_cost_vnd.toLocaleString()} VND</div>
-            </div>
-            <div className="bg-zinc-950/80 p-2 rounded border border-white/5">
-              <span className="text-[10px] text-zinc-400">Orders Dispatched:</span>
-              <div className="font-bold text-zinc-200">{rebalanceResult.orders.length} child routes</div>
-            </div>
-            <div className="bg-zinc-950/80 p-2 rounded border border-white/5">
-              <span className="text-[10px] text-zinc-400">Liquidity Violations:</span>
-              <div className="font-bold text-emerald-400">{rebalanceResult.liquidity_violations.length === 0 ? 'None (Safe)' : rebalanceResult.liquidity_violations.length}</div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Execution Order Blotter Table */}
-      <div className="rounded-xl border border-white/10 bg-zinc-950/40 overflow-x-auto">
-        <div className="p-3 border-b border-white/10 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <Clock className="w-4 h-4 text-emerald-400" />
-            <span className="text-xs font-mono font-bold text-zinc-200 uppercase">
-              {t.executionBlotter.orderLogTitle}
-            </span>
-          </div>
-
-          <div className="flex items-center gap-3">
-            {rebalanceStatus && (
-              <span className="text-[11px] font-mono text-emerald-400 flex items-center gap-1.5 animate-pulse">
-                <CheckCircle2 className="w-3.5 h-3.5" />
-                {rebalanceStatus}
-              </span>
-            )}
-            <button
-              disabled={rebalanceExecuting}
-              onClick={handleExecuteRebalance}
-              className="px-3 py-1 rounded bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white font-mono text-xs flex items-center gap-1.5 shadow-sm shadow-emerald-500/20"
-            >
-              <Play className={`w-3 h-3 ${rebalanceExecuting ? 'animate-spin' : ''}`} />
-              <span>{rebalanceExecuting ? t.executionBlotter.executingStatus : t.executionBlotter.executeRebalance}</span>
-            </button>
-          </div>
-        </div>
-
-        <table className="w-full text-left text-xs font-mono">
-          <thead className="bg-zinc-900/80 text-zinc-400 uppercase text-[10px] tracking-wider border-b border-white/10">
-            <tr>
-              <th className="px-4 py-3">{t.executionBlotter.thOrderId}</th>
-              <th className="px-4 py-3">{t.executionBlotter.thTime}</th>
-              <th className="px-4 py-3">{t.executionBlotter.thSymbol}</th>
-              <th className="px-4 py-3">{t.executionBlotter.thSide}</th>
-              <th className="px-4 py-3">{t.executionBlotter.thType}</th>
-              <th className="px-4 py-3">{t.executionBlotter.thAlgo}</th>
-              <th className="px-4 py-3">{t.executionBlotter.thQty}</th>
-              <th className="px-4 py-3">{t.executionBlotter.thPrice}</th>
-              <th className="px-4 py-3">{t.executionBlotter.thFilled}</th>
-              <th className="px-4 py-3">{t.executionBlotter.thBroker}</th>
-              <th className="px-4 py-3 text-right">{t.executionBlotter.thStatus}</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-white/5">
-            {orders.map((order) => {
-              const isSelected = selectedTicker === order.symbol;
-              return (
-                <tr
-                  key={order.orderId}
-                  onClick={() => handleSelectSymbol(order.symbol)}
-                  className={`hover:bg-white/5 transition-colors cursor-pointer group ${
-                    isSelected ? 'bg-cyan-950/30' : ''
-                  }`}
-                >
-                  <td className="px-4 py-3 font-semibold text-zinc-300">{order.orderId}</td>
-                  <td className="px-4 py-3 text-zinc-500">{order.timestamp}</td>
-                  <td className="px-4 py-3 font-bold text-zinc-100 flex items-center justify-between">
-                    <span className="group-hover:text-cyan-300 transition-colors">
-                      {order.symbol}
-                    </span>
-                    <button
-                      type="button"
-                      onClick={(e) => handleOpenChartStation(e, order.symbol)}
-                      className="opacity-0 group-hover:opacity-100 p-1 rounded hover:bg-cyan-500/20 text-cyan-400 transition-opacity"
-                      title={`Open ${order.symbol} in Chart Station`}
-                    >
-                      <LineChart className="w-3.5 h-3.5" />
-                    </button>
-                  </td>
-                  <td className="px-4 py-3">
-                    <span className={`flex items-center gap-1 font-bold ${
-                      order.side === 'BUY' ? 'text-emerald-400' : 'text-rose-400'
-                    }`}>
-                      {order.side === 'BUY' ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
-                      {order.side}
-                    </span>
-                  </td>
-                  <td className="px-4 py-3 text-zinc-400">{order.orderType}</td>
-                  <td className="px-4 py-3 text-cyan-300">{order.algoType}</td>
-                  <td className="px-4 py-3 text-zinc-200">{order.qty.toLocaleString()}</td>
-                  <td className="px-4 py-3 text-zinc-200">{order.price.toLocaleString()}</td>
-                  <td className="px-4 py-3 text-zinc-300">
-                    {order.filledQty.toLocaleString()} ({((order.filledQty / order.qty) * 100).toFixed(0)}%)
-                  </td>
-                  <td className="px-4 py-3 text-zinc-400">{order.broker}</td>
-                  <td className="px-4 py-3 text-right">
-                    <span className={`px-2 py-0.5 rounded text-[10px] font-semibold ${
-                      order.status === 'FILLED'
-                        ? 'bg-emerald-950/80 text-emerald-400 border border-emerald-500/30'
-                        : order.status === 'ROUTING'
-                        ? 'bg-cyan-950/80 text-cyan-400 border border-cyan-500/30'
-                        : order.status === 'PENDING'
-                        ? 'bg-amber-950/80 text-amber-400 border border-amber-500/30'
-                        : 'bg-rose-950/80 text-rose-400 border border-rose-500/30'
-                    }`}>
-                      {order.status}
-                    </span>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-      {/* 2FA Rebalance Modal */}
-      <TotpRebalanceModal
-        isOpen={isRebalanceModalOpen}
-        onClose={() => setIsRebalanceModalOpen(false)}
-        onConfirm={handleConfirmRebalance}
-        title={t.executionBlotter.executeRebalance}
-        description={t.executionBlotter.calcOrdersViaRouter}
-        actionType="REBALANCE"
-      />
-    </div>
-  );
+  const query = useExecutionData();
+  const selected = useUiStore((state) => state.selectedTicker);
+  const setSelected = useUiStore((state) => state.setSelectedTicker);
+  const setModule = useUiStore((state) => state.setActiveModule);
+  const data = query.isError || query.isFetching ? undefined : query.data;
+  return <div className="flex min-w-0 flex-col gap-4 font-mono">
+    <PaperDaemonPanel onRefresh={() => { void query.refetch(); }} />
+    <section aria-label="OMS execution data" className={panel}>
+      <h2 className="font-bold">OMS Execution Blotter</h2>
+      <button disabled={query.isFetching} onClick={() => { void query.refetch(); }} className="min-h-11 rounded border border-zinc-500 px-3 focus-visible:outline-2 disabled:opacity-50">Refresh execution data</button>
+      {query.isFetching && <p role="status">Loading recorded execution data…</p>}
+      {query.isError && <p role="alert">Execution data unavailable. Retry explicitly; no synthetic data displayed.</p>}
+      {data && <><p>Paper execution · Recorded publication provenance · Cutoff {clockLabel(data.cutoff)} ICT</p><p>Most recent {data.orders.length} orders (maximum 100); timelines cover up to 5,000 records.</p>
+        {!data.orders.length ? <p role="status">No recorded OMS orders.</p> : <table className="w-full"><caption>OMS orders · VND full prices</caption><thead><tr>{['Order', 'Time ICT', 'Symbol', 'Side', 'Type / Algo', 'Quantity', 'Price VND', 'Filled', 'Status', 'Broker / Venue'].map((label) => <th className={cell} scope="col" key={label}>{label}</th>)}</tr></thead>
+          <tbody>{data.orders.map((row) => <tr key={row.orderId} aria-selected={selected === row.symbol}>
+            <td className={cell}>{row.orderId}</td><td className={cell}>{clockLabel(row.timestamp)}</td>
+            <td className={cell}><button onClick={() => setSelected(row.symbol)} className="min-h-11 px-2 underline focus-visible:outline-2">{row.symbol}</button><button aria-label={`Open ${row.symbol} in Chart Station`} onClick={() => { setSelected(row.symbol); setModule('chart_station'); }} className="min-h-11 px-2 underline focus-visible:outline-2">Chart</button></td>
+            {[row.side, `${row.orderType} / ${row.algoType}`, row.qty, row.price, `${row.filledQty} (${row.qty === 0 ? 'Unavailable' : `${(row.filledQty / row.qty * 100).toFixed(0)}%`})`, row.status, `${row.broker} / ${row.venue}`].map((value, index) => <td className={cell} key={index}>{value}</td>)}
+          </tr>)}</tbody></table>}
+      </>}
+    </section>
+    {data && <><SmartExecutionTimeline data={data} /><ExecutionSlippageDistribution data={data} /><VsdcSettlementTimelineWidget data={data} /></>}
+  </div>;
 };
-

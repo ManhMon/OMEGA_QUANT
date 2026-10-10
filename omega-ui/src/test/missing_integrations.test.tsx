@@ -1,4 +1,6 @@
 import { act } from 'react';
+import { ExecutionBlotterView, validateExecutionData, useExecutionData } from '../modules/execution_blotter/ExecutionBlotterView';
+import { PaperDaemonPanel, requestExecutionData, validateDaemonStatus } from '../modules/execution_blotter/PaperDaemonPanel';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider, focusManager, onlineManager } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
@@ -209,6 +211,260 @@ afterEach(() => {
   }
 });
 const settle = async (ms = 50) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+
+const executionCutoff = '2026-10-09T08:30:00Z';
+const executionPayloads = (cutoff = executionCutoff): any[] => {
+  const envelope = { status: 'success', timestamp: cutoff, effective_cutoff: cutoff, provenance: 'RECORDED', price_unit: 'VND_FULL' };
+  const order = { orderId: 'o1', parentOrderId: null, timestamp: '2026-10-05T03:00:00Z', availableAt: '2026-10-05T03:00:00Z',
+    symbol: 'VCB', side: 'BUY', orderType: 'LO', qty: 100, price: 10100, filledQty: 100, status: 'FILLED',
+    broker: 'PAPER', venue: 'HOSE', algoType: 'DIRECT', sequence: null };
+  return [{ ...envelope, orders: [order], count: 1 }, { ...envelope, parents: [], standalone: [order] },
+    { ...envelope, benchmark: 'ARRIVAL_PRICE', sign_convention: 'POSITIVE_IS_COST', fees_included: true,
+      points: [{ order_id: 'o1', venue: 'HOSE', side: 'BUY', quantity: 100, arrival_price: 10000, executed_price: 10100, fee_vnd: 1000, slippage_bps: 110 }],
+      venues: [{ venue: 'HOSE', count: 1, arrival_notional_vnd: 1000000, average_slippage_bps: 110 }], excluded_missing_benchmark_or_fee: 0 },
+    { ...envelope, calendar_timezone: 'Asia/Ho_Chi_Minh', forecast_policy: 'T_PLUS_2_TRADING_DAYS_15_30_ICT_NOT_CONFIRMATION',
+      settlements: [{ order_id: 'o1', broker: 'PAPER', symbol: 'VCB', side: 'BUY', trade_at: order.timestamp,
+        expected_settlement_at: '2026-10-07T08:30:00Z', broker_effective_at: null, settlement_effective_at: null,
+        confirmation_available_at: null, confirmed: false, cash_available_vnd: null, shares_available: null, skipped_closed_dates: [] }] }];
+};
+const daemonPayload = () => ({ state: 'STOPPED', active: false, mode: 'SHADOW', workers_available: false,
+  processed_orders_count: 0, active_orders_count: 0, active_workers: 0, last_heartbeat: null, uptime_seconds: 0, daily_pnl_vnd: 0 });
+
+it('accepts recorded execution at inclusive cutoff and separates forecasts from confirmed funds', () => {
+  vi.setSystemTime(new Date(executionCutoff));
+  const values = executionPayloads();
+  values[0].orders![0].availableAt = executionCutoff;
+  values[1].standalone![0].availableAt = executionCutoff;
+  const data = validateExecutionData(values, executionCutoff);
+  expect(data.points[0].bps).toBe(110);
+  expect(data.orders[0].price).toBe(10100);
+  expect(data.settlements[0].cash).toBeNull();
+  values[3].settlements![0] = { ...values[3].settlements![0], confirmed: true, broker_effective_at: '2026-10-05T03:00:00Z',
+    settlement_effective_at: '2026-10-07T08:30:00Z', confirmation_available_at: executionCutoff, cash_available_vnd: 0 as any, shares_available: 100 as any };
+  expect(validateExecutionData(values, executionCutoff).settlements[0].confirmed).toBe(true);
+});
+
+it.each([null, '', '1', [], {}, true, NaN, Infinity, -Infinity, -1, 1e13])('rejects malformed execution numeric value %s', (value) => {
+  vi.setSystemTime(new Date(executionCutoff));
+  for (const field of ['qty', 'price', 'filledQty']) {
+    const payload = executionPayloads();
+    Object.assign(payload[0].orders![0], { [field]: value });
+    expect(() => validateExecutionData(payload, executionCutoff)).toThrow('Execution data unavailable');
+  }
+  for (const field of ['quantity', 'arrival_price', 'executed_price', 'fee_vnd']) {
+    const payload = executionPayloads();
+    Object.assign(payload[2].points![0], { [field]: value });
+    expect(() => validateExecutionData(payload, executionCutoff)).toThrow('Execution data unavailable');
+  }
+});
+
+it.each(['cutoff', 'future', 'naive', 'invalid-day', 'unit', 'provenance', 'duplicates', 'oversized', 'count', 'sign', 'fee', 'weighted', 'overflow', 'confirmation', 'future-confirmation', 'false-funds', 'close', 'venue', 'status'])('rejects execution boundary %s', (fault) => {
+  vi.setSystemTime(new Date(executionCutoff));
+  const values = executionPayloads();
+  if (fault === 'cutoff') values[1].effective_cutoff = '2026-10-08T08:30:00Z';
+  if (fault === 'future') values[0].orders![0].availableAt = '2099-01-01T00:00:00Z';
+  if (fault === 'naive') values[0].orders![0].timestamp = '2026-10-05T03:00:00';
+  if (fault === 'invalid-day') values[0].orders![0].timestamp = '2026-02-30T03:00:00Z';
+  if (fault === 'unit') values[0].price_unit = 'VND_THOUSANDS';
+  if (fault === 'provenance') values[0].provenance = 'LIVE_UNVERIFIED';
+  if (fault === 'duplicates') { values[0].orders!.push(values[0].orders![0]); values[0].count = 2; }
+  if (fault === 'oversized') values[0].orders = Array(5001).fill(values[0].orders![0]);
+  if (fault === 'count') values[0].count = 0;
+  if (fault === 'sign') values[2].sign_convention = 'NEGATIVE_IS_COST';
+  if (fault === 'fee') values[2].fees_included = false;
+  if (fault === 'weighted') values[2].venues![0].average_slippage_bps = 111;
+  if (fault === 'overflow') Object.assign(values[0].orders![0], { qty: 1e8, filledQty: 1e8, price: 1e8 });
+  if (fault === 'confirmation') values[3].settlements![0].confirmed = true;
+  if (fault === 'future-confirmation') Object.assign(values[3].settlements![0], { confirmed: true, broker_effective_at: executionCutoff, settlement_effective_at: executionCutoff, confirmation_available_at: '2099-01-01T00:00:00Z', cash_available_vnd: 0, shares_available: 100 });
+  if (fault === 'false-funds') Object.assign(values[3].settlements![0], { cash_available_vnd: 0 });
+  if (fault === 'close') values[3].settlements![0].expected_settlement_at = '2026-10-07T08:29:59Z';
+  if (fault === 'venue') values[2].points![0].venue = 'HNX';
+  if (fault === 'status') values[0].orders![0].status = 'PENDING';
+  expect(() => validateExecutionData(values, executionCutoff)).toThrow('Execution data unavailable');
+});
+
+it('rejects sub-millisecond future publication and confirmation at the inclusive cutoff', () => {
+  vi.setSystemTime(new Date(executionCutoff));
+  const values = executionPayloads();
+  values[0].orders[0].availableAt = '2026-10-09T08:30:00.000001Z';
+  expect(() => validateExecutionData(values, executionCutoff)).toThrow();
+});
+
+it('handles zero quantity hierarchy without dividing or inventing completion', () => {
+  vi.setSystemTime(new Date(executionCutoff));
+  const values = executionPayloads() as any[];
+  const parent = { ...values[0].orders[0], orderId: 'parent', qty: 0, filledQty: 0, price: 0, status: 'PENDING' };
+  const child = { ...parent, orderId: 'child', parentOrderId: 'parent', sequence: 0 };
+  values[0].orders = [parent, child]; values[0].count = 2;
+  values[1].standalone = []; values[1].parents = [{ parent_order_id: 'parent', symbol: 'VCB', side: 'BUY', algo_type: 'DIRECT', target_qty: 0, filled_qty: 0, completion_pct: null, sequence_complete: true, slices: [child] }];
+  values[2].points = []; values[2].venues = []; values[3].settlements = [];
+  expect(validateExecutionData(values, executionCutoff).parents[0].completion).toBeNull();
+  for (const change of [{ completion_pct: 0 }, { sequence_complete: false }, { filled_qty: 1 }]) {
+    const broken = structuredClone(values); Object.assign(broken[1].parents[0], change);
+    expect(() => validateExecutionData(broken, executionCutoff)).toThrow();
+  }
+});
+
+it.each(['oversized', 'length', 'utf8', 'bom', 'json', 'http', 'stream', 'abort', 'read'])('bounds execution response and redacts %s failures', async (fault) => {
+  const controller = new AbortController();
+  let response: Response;
+  if (fault === 'oversized') response = new Response(new Uint8Array(1024 * 1024 + 1));
+  else if (fault === 'length') response = new Response('{}', { headers: { 'Content-Length': '1048577' } });
+  else if (fault === 'utf8') response = new Response(new Uint8Array([34, 195, 34]));
+  else if (fault === 'bom') response = new Response(new Uint8Array([239, 187, 191, 123, 125]));
+  else if (fault === 'json') response = new Response('SECRET malformed');
+  else if (fault === 'http') response = new Response('SECRET', { status: 429 });
+  else if (fault === 'stream') response = new Response(null);
+  else if (fault === 'read') response = new Response(new ReadableStream({ start(c) { c.error(Error('SECRET')); } }));
+  else { controller.abort(); response = new Response('{}'); }
+  vi.stubGlobal('fetch', vi.fn(async () => response));
+  await expect(requestExecutionData('/api/v1/execution/status', controller.signal)).rejects.toThrow('Execution data unavailable');
+});
+
+it('accepts exact 1 MiB, split UTF-8 and CRLF payloads but rejects accumulated overflow', async () => {
+  const controller = new AbortController();
+  for (const content of ['{}' + ' '.repeat(1024 * 1024 - 2), '{\r\n"value":"đồng"\r\n}']) {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(content)));
+    expect(await requestExecutionData('/api/v1/execution/status', controller.signal)).toEqual(JSON.parse(content));
+  }
+  const bytes = new TextEncoder().encode('{"value":"đồng"}');
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream({ start(c) { for (const byte of bytes) c.enqueue(new Uint8Array([byte])); c.close(); } }))));
+  expect(await requestExecutionData('/api/v1/execution/status', controller.signal)).toEqual({ value: 'đồng' });
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(new ReadableStream({ start(c) { c.enqueue(new Uint8Array(1024 * 1024)); c.enqueue(new Uint8Array([32])); c.close(); } }), { headers: { 'Content-Length': '2' } })));
+  await expect(requestExecutionData('/api/v1/execution/status', controller.signal)).rejects.toThrow('Execution data unavailable');
+});
+
+it('preserves unequal venue weighting, sell sign, missing fee exclusion and closed-date evidence', () => {
+  vi.setSystemTime(new Date(executionCutoff));
+  const values = executionPayloads();
+  const sell = { ...values[0].orders[0], orderId: 'sell', side: 'SELL', qty: 200, filledQty: 200, price: 9900 };
+  values[0].orders.push(sell); values[0].count = 2; values[1].standalone.push(sell);
+  values[2].points.push({ ...values[2].points[0], order_id: 'sell', side: 'SELL', quantity: 200, executed_price: 9900, slippage_bps: 105 });
+  Object.assign(values[2].venues[0], { count: 2, arrival_notional_vnd: 3000000, average_slippage_bps: 320 / 3 });
+  values[3].settlements.push({ ...values[3].settlements[0], order_id: 'sell', side: 'SELL' });
+  expect(validateExecutionData(values, executionCutoff).venues[0].bps).toBeCloseTo(320 / 3);
+  values[2].points.pop(); values[2].excluded_missing_benchmark_or_fee = 1;
+  Object.assign(values[2].venues[0], { count: 1, arrival_notional_vnd: 1000000, average_slippage_bps: 110 });
+  expect(validateExecutionData(values, executionCutoff).excluded).toBe(1);
+  const closed = executionPayloads();
+  closed[0].orders[0].timestamp = '2026-10-02T03:00:00Z'; closed[0].orders[0].availableAt = closed[0].orders[0].timestamp;
+  closed[3].settlements[0].trade_at = closed[0].orders[0].timestamp;
+  closed[3].settlements[0].expected_settlement_at = '2026-10-06T08:30:00Z'; closed[3].settlements[0].skipped_closed_dates = ['2026-10-03', '2026-10-04'];
+  expect(validateExecutionData(closed, executionCutoff).settlements[0].skipped).toHaveLength(2);
+});
+
+it('serializes rapid confirmed daemon actions and suppresses post-unmount callbacks', async () => {
+  vi.spyOn(window, 'confirm').mockReturnValue(true);
+  let resolve!: (response: Response) => void;
+  let signal!: AbortSignal;
+  const changed = vi.fn(), refresh = vi.fn();
+  const fetcher = vi.fn(async (_url: string, init: RequestInit) => {
+    if (init.method === 'GET') return new Response(JSON.stringify(daemonPayload()));
+    signal = init.signal as AbortSignal;
+    return new Promise<Response>((done) => { resolve = done; });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  act(() => root.render(<QueryClientProvider client={client}><PaperDaemonPanel onStateChange={changed} onRefresh={refresh} /></QueryClientProvider>));
+  await settle();
+  const start = Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'start')!;
+  act(() => { start.click(); start.click(); }); await settle();
+  expect(fetcher.mock.calls.filter(([, init]) => init.method === 'POST')).toHaveLength(1);
+  act(() => root.render(null));
+  expect(signal.aborted).toBe(true);
+  resolve(new Response(JSON.stringify({ ...daemonPayload(), state: 'RUNNING', active: true }))); await settle();
+  expect(changed).not.toHaveBeenCalled(); expect(refresh).not.toHaveBeenCalled();
+});
+
+it('renders all execution widgets from four real endpoint envelopes with one cutoff', async () => {
+  vi.setSystemTime(new Date(executionCutoff));
+  const routes = ['blotter', 'timeline', 'slippage-distribution', 'settlement-timeline'];
+  const fetcher = vi.fn(async (url: string) => {
+    const route = new URL(url, 'http://localhost').pathname.split('/').pop()!;
+    const cutoff = new URL(url, 'http://localhost').searchParams.get('as_of')!;
+    return new Response(JSON.stringify(route === 'status' ? daemonPayload() : executionPayloads(cutoff)[routes.indexOf(route)]));
+  });
+  vi.stubGlobal('fetch', fetcher);
+  act(() => root.render(<QueryClientProvider client={client}><ExecutionBlotterView /></QueryClientProvider>));
+  await settle();
+  expect(container.querySelectorAll('section')).toHaveLength(5);
+  expect(container.textContent).toContain('110.00');
+  expect(container.textContent).toContain('Unconfirmed forecast');
+  expect(container.textContent).not.toContain('VCI / SSI');
+  expect(container.textContent).not.toContain('-0.04%');
+  expect(container.innerHTML).not.toMatch(/purple|violet|fuchsia/i);
+  const calls = fetcher.mock.calls.filter(([url]) => url.includes('as_of='));
+  expect(calls).toHaveLength(4);
+  expect(new Set(calls.map(([url]) => new URL(url, 'http://localhost').searchParams.get('as_of'))).size).toBe(1);
+  act(() => (container.querySelector('button[aria-label="Open VCB in Chart Station"]') as HTMLButtonElement).click());
+  expect(useUiStore.getState().selectedTicker).toBe('VCB');
+  expect(useUiStore.getState().activeModule).toBe('chart_station');
+});
+
+it('fails closed on refresh then recovers explicitly without retries or stale success', async () => {
+  vi.setSystemTime(new Date(executionCutoff));
+  let failure = false;
+  const routes = ['blotter', 'timeline', 'slippage-distribution', 'settlement-timeline'];
+  const fetcher = vi.fn(async (url: string) => {
+    const parsed = new URL(url, 'http://localhost'), route = parsed.pathname.split('/').pop()!;
+    return new Response(JSON.stringify(route === 'status' ? daemonPayload() : failure ? { detail: 'SECRET' } : executionPayloads(parsed.searchParams.get('as_of')!)[routes.indexOf(route)]), { status: route === 'status' || !failure ? 200 : 424 });
+  });
+  vi.stubGlobal('fetch', fetcher);
+  act(() => root.render(<QueryClientProvider client={client}><ExecutionBlotterView /></QueryClientProvider>));
+  await settle();
+  const refresh = () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'Refresh execution data')!.click();
+  failure = true; act(refresh); await settle();
+  expect(container.querySelector('table')).toBeNull();
+  expect(container.textContent).not.toContain('SECRET');
+  expect(container.textContent).toContain('Execution data unavailable');
+  const executionAttempts = () => fetcher.mock.calls.filter(([url]) => url.includes('as_of=')).length;
+  const attempts = executionAttempts();
+  await settle(120000);
+  await act(async () => { focusManager.setFocused(false); focusManager.setFocused(true); onlineManager.setOnline(false); onlineManager.setOnline(true); await client.invalidateQueries(); });
+  expect(executionAttempts()).toBe(attempts);
+  failure = false; act(refresh); await settle();
+  expect(container.textContent).toContain('110.00');
+});
+
+it('deduplicates execution reads and aborts siblings at deadline or module departure', async () => {
+  const signals: AbortSignal[] = [];
+  vi.stubGlobal('fetch', vi.fn((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+    signals.push(init.signal as AbortSignal);
+    init.signal!.addEventListener('abort', () => reject(Error('SECRET aborted')), { once: true });
+  })));
+  function Probe() { useExecutionData(); return null; }
+  act(() => root.render(<QueryClientProvider client={client}><Probe /><Probe /></QueryClientProvider>));
+  await settle(); expect(signals).toHaveLength(4);
+  act(() => root.render(null)); await settle();
+  expect(signals.every((signal) => signal.aborted)).toBe(true);
+  client.clear(); signals.length = 0;
+  act(() => root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
+  await settle(10050);
+  expect(signals).toHaveLength(4); expect(signals.every((signal) => signal.aborted)).toBe(true);
+});
+
+it('daemon remains unknown offline and requires confirmed mutation with no repeated action', async () => {
+  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+  vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(daemonPayload()))));
+  act(() => root.render(<QueryClientProvider client={client}><PaperDaemonPanel /></QueryClientProvider>));
+  await settle();
+  const start = () => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === 'start')!.click();
+  act(start); expect(confirm).toHaveBeenCalledTimes(1); expect(fetch).toHaveBeenCalledTimes(1);
+  confirm.mockReturnValue(true);
+  vi.stubGlobal('fetch', vi.fn(async () => { throw Error('https://user:SECRET@private.invalid'); }));
+  act(start); await settle();
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(container.textContent).toContain('Daemon unavailable');
+  expect(container.textContent).not.toContain('SECRET');
+  expect(container.textContent).not.toContain('worker(s)');
+  expect(container.querySelector('dl')).toBeNull();
+  await settle(60000); expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it.each([null, '', '0', [], true, NaN, Infinity, -Infinity, -1, 1e13])('validates daemon metrics %s without mock fallback', (value) => {
+  for (const field of ['uptime_seconds', 'processed_orders_count', 'active_workers']) {
+    expect(() => validateDaemonStatus({ ...daemonPayload(), [field]: value })).toThrow();
+  }
+});
 
 const macroCutoff = '2026-01-30T08:30:00Z';
 const macroPayloads = (cutoff = macroCutoff) => {

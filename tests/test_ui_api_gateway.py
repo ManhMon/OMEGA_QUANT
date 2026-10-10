@@ -6,9 +6,10 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from fastapi import FastAPI
 from starlette.testclient import TestClient
 from omega.api.server import app
-from omega.api.routes import macro, portfolio, quant
+from omega.api.routes import execution, macro, portfolio, quant
 from omega.data.interbank_rate_snapshot import build_snapshot, save_snapshot
 
 
@@ -229,6 +230,91 @@ def test_portfolio_state_structure_and_types(client):
     response = client.get("/api/v1/portfolio/state?as_of=2026-01-30T08:30:00Z")
     assert response.status_code == 424
     assert response.json()["detail"] == "DATA_DEPENDENCY_UNAVAILABLE"
+
+
+_EXECUTION_CUTOFF = '2026-10-09T08:30:00Z'
+
+
+def _execution_record(**changes):
+    row = dict(order_id='o1', execution_ts='2026-10-05T03:00:00Z',
+               recorded_at='2026-10-05T03:00:00Z', feature_ts='2026-10-05T02:00:00Z',
+               available_at='2026-10-05T02:00:00Z', decision_ts='2026-10-05T02:30:00Z',
+               symbol='VCB', side='BUY', quantity=100.0, intended_price=10000.0,
+               executed_price=10100.0, execution_status='FILLED', arrival_price=10000.0,
+               fee_vnd=1000.0, venue='HOSE')
+    row.update(changes)
+    return row
+
+
+@pytest.fixture
+def execution_gateway(monkeypatch):
+    class Engine:
+        rows = []
+
+        def get_orders(self, limit):
+            assert limit == 5000
+            return self.rows
+
+    engine = Engine()
+    test_app = FastAPI()
+    test_app.include_router(execution.router)
+    monkeypatch.setattr(execution, '_get_engine', lambda: engine)
+    with TestClient(test_app) as gateway:
+        yield gateway, engine
+
+
+@pytest.mark.parametrize('endpoint', ['blotter', 'timeline', 'slippage-distribution', 'settlement-timeline'])
+def test_execution_gateway_read_contracts(execution_gateway, endpoint):
+    gateway, engine = execution_gateway
+    engine.rows = [_execution_record(recorded_at=_EXECUTION_CUTOFF),
+                   _execution_record(order_id='future', recorded_at='2026-10-09T08:30:00.000001Z')]
+    response = gateway.get(f'/api/v1/execution/{endpoint}', params={'as_of': _EXECUTION_CUTOFF})
+    assert response.status_code == 200, response.text
+    result = response.json()
+    assert result['effective_cutoff'] == _EXECUTION_CUTOFF
+    assert result['provenance'] == 'RECORDED'
+    assert result['price_unit'] == 'VND_FULL'
+    assert 'future' not in response.text
+    engine.rows[0].pop('recorded_at')
+    assert gateway.get(f'/api/v1/execution/{endpoint}', params={'as_of': _EXECUTION_CUTOFF}).status_code == 424
+
+
+@pytest.mark.parametrize('endpoint', ['blotter', 'timeline', 'slippage-distribution', 'settlement-timeline'])
+@pytest.mark.parametrize('params', [
+    {'as_of': 'bad'}, {'as_of': '2026-10-09T08:30:00'}, {'as_of': '2999-01-01T00:00:00Z'},
+    {'unknown': 'SECRET'}, [('as_of', _EXECUTION_CUTOFF), ('as_of', _EXECUTION_CUTOFF)],
+])
+def test_execution_gateway_rejects_ambiguous_or_invalid_query(execution_gateway, endpoint, params):
+    gateway, _ = execution_gateway
+    response = gateway.get(f'/api/v1/execution/{endpoint}', params=params)
+    assert response.status_code == 422, response.text
+    assert 'SECRET' not in response.text
+
+
+@pytest.mark.parametrize('endpoint', ['blotter', 'timeline', 'slippage-distribution', 'settlement-timeline'])
+@pytest.mark.parametrize('value', [None, '', '100', [], True, float('nan'), float('inf'), float('-inf'), -1, 1e13])
+def test_execution_gateway_invalid_rows_fail_closed(execution_gateway, endpoint, value):
+    gateway, engine = execution_gateway
+    engine.rows = [_execution_record(quantity=value)]
+    response = gateway.get(f'/api/v1/execution/{endpoint}')
+    assert response.status_code == 424, response.text
+    assert response.json() == {'detail': 'EXECUTION_DATA_INVALID'}
+
+
+def test_execution_gateway_slippage_and_unconfirmed_settlement(execution_gateway):
+    gateway, engine = execution_gateway
+    engine.rows = [_execution_record(), _execution_record(order_id='sell', side='SELL', executed_price=9900.0, quantity=200.0)]
+    result = gateway.get('/api/v1/execution/slippage-distribution').json()
+    assert [point['slippage_bps'] for point in result['points']] == pytest.approx([110, 105])
+    assert result['venues'][0]['average_slippage_bps'] == pytest.approx(320 / 3)
+    engine.rows = [_execution_record(execution_ts='2026-04-29T03:00:00Z', recorded_at='2026-04-29T03:00:00Z',
+                                    feature_ts=None, available_at=None, decision_ts=None,
+                                    cash_available_vnd=999999.0, shares_available=100.0)]
+    settlement = gateway.get('/api/v1/execution/settlement-timeline').json()['settlements'][0]
+    assert settlement['confirmed'] is False
+    assert settlement['cash_available_vnd'] is None
+    assert settlement['shares_available'] is None
+    assert settlement['expected_settlement_at'] == '2026-05-05T08:30:00Z'
 
 
 _MACRO_UI_RUNNER = r"""
