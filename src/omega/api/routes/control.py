@@ -9,6 +9,7 @@ import base64
 import os
 import math
 import tempfile
+import stat
 import shutil
 import logging
 import threading
@@ -16,7 +17,7 @@ import pandas as pd
 from collections import deque
 from datetime import datetime, timezone, timedelta, time as dt_time
 from pathlib import Path
-from typing import Any, AsyncGenerator, Dict, List, Literal, Optional, Set
+from typing import Annotated, Any, AsyncGenerator, Dict, List, Literal, Optional, Set
 from fastapi import APIRouter, HTTPException, Query, BackgroundTasks
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sse_starlette.sse import EventSourceResponse
@@ -287,7 +288,36 @@ TASK_EVENT_QUEUES: Dict[str, List[asyncio.Queue]] = {}
 CANCELLED_JOBS: Set[str] = set()
 KILL_SWITCH_ACTIVE: bool = False
 CONTROL_ARTIFACT_ROOT = Path(".ly_state/session/control_artifacts")
-_TASK_STATE_LOCK = threading.Lock()
+_TASK_STATE_LOCK = threading.RLock()
+TERMINAL_TASK_STATUSES = frozenset({"COMPLETED", "FAILED", "CANCELLED"})
+PIPELINE_STAGES = ("DATA_INGEST", "FEATURE_ENGINEERING", "ALPHA_DISCOVERY", "RISK_OPTIMIZATION", "RESEARCH_EXECUTION")
+MAX_TELEMETRY_BYTES = 65_536
+
+
+def _pipeline_dag(stage: str, status: str) -> List[Dict[str, Any]]:
+    index = PIPELINE_STAGES.index(stage) if stage in PIPELINE_STAGES else -1
+    return [
+        {"stage_id": name, "depends_on": [PIPELINE_STAGES[i - 1]] if i else [],
+         "status": "COMPLETED" if status == "COMPLETED" or i < index else
+         status if i == index else "PENDING"}
+        for i, name in enumerate(PIPELINE_STAGES)
+    ]
+
+
+def _offer_task_event(queue: asyncio.Queue, event: Dict[str, Any]) -> None:
+    loop = getattr(queue, "_control_loop", None)
+    if loop is not None:
+        try:
+            current_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            current_loop = None
+        if current_loop is not loop:
+            if not loop.is_closed():
+                loop.call_soon_threadsafe(_offer_task_event, queue, event)
+            return
+    if queue.full():
+        queue.get_nowait()
+    queue.put_nowait(event)
 STRATEGY_REGISTRY: Dict[str, Dict[str, Any]] = {
     "ALPHA_HRP_V2": {
         "strategy_id": "ALPHA_HRP_V2",
@@ -643,11 +673,26 @@ class RebalanceRequest(BaseModel):
 class IngestDataRequest(StrictRequest):
     symbols: List[str] = Field(default_factory=lambda: ["ALL"], description="Explicit stock symbols, or ['ALL'], ['VN703'], ['VN30']")
     sources: List[Literal["vci", "kbs", "tcbs", "macro", "news"]] = Field(default_factory=lambda: ["vci"], description="Supported real providers")
-    start_date: str = Field(default="2023-01-01", description="Start date YYYY-MM-DD")
+    mode: Optional[Literal["incremental", "full_history", "custom_range"]] = Field(default="incremental", description="Ingestion mode")
+    start_date: Optional[str] = Field(default=None, description="Start date YYYY-MM-DD")
     end_date: str = Field(default="2023-12-31", description="End date YYYY-MM-DD")
     as_of_time: Optional[str] = Field(default=None, description="UTC PIT cutoff")
+    dry_run: bool = Field(default=False, description="Dry run mode")
+    no_refetch: bool = Field(default=False, description="Do not refetch existing data")
     force_refresh: bool = Field(default=False, description="Force overwrite cache")
     max_concurrency: Optional[int] = Field(default=None, ge=1, le=10, description="Concurrency limit for symbol ingestion")
+
+    @model_validator(mode="before")
+    @classmethod
+    def resolve_ingestion_dates(cls, values):
+        if not isinstance(values, dict):
+            return values
+        values = dict(values)
+        if values.get("mode", "incremental") == "full_history" and values.get("start_date") is None:
+            values["start_date"] = "2015-01-01"
+        if values.get("mode") == "custom_range" and not values.get("start_date"):
+            raise ValueError("start_date is required when mode is 'custom_range'")
+        return values
 
     @model_validator(mode="after")
     def validate_request(self):
@@ -659,7 +704,12 @@ class IngestDataRequest(StrictRequest):
         for sym in self.symbols:
             if any(ch in sym for ch in [";", "&", "|", "`", "$", "<", ">", "\n", "\r"]):
                 raise ValueError(f"symbol contains invalid CLI or control characters: {sym}")
-        _validate_dates(self.start_date, self.end_date, self.as_of_time)
+        if self.mode == "custom_range" and not self.start_date:
+            raise ValueError("start_date is required when mode is 'custom_range'")
+        if self.start_date is not None:
+            _validate_dates(self.start_date, self.end_date, self.as_of_time)
+        else:
+            _validate_dates("2015-01-01", self.end_date, self.as_of_time)
         return self
 
 
@@ -734,7 +784,7 @@ class PipelineRunRequest(StrictRequest):
     end_date: str = Field(default="2023-12-31")
     as_of_time: Optional[str] = Field(default=None, description="ISO format UTC timestamp")
     rebalance_frequency: Literal["daily", "weekly", "monthly"] = Field(default="weekly")
-    initial_capital: float = Field(default=1_000_000_000.0, ge=10_000_000.0)
+    initial_capital: float = Field(default=1_000_000_000.0, ge=10_000_000.0, le=1e12)
     slippage_bps: float = Field(default=15.0, ge=0.0, le=1000.0)
     commission_bps: float = Field(default=10.0, ge=0.0, le=1000.0)
     max_single_weight: float = Field(default=0.15, ge=0.01, le=1.0)
@@ -931,57 +981,99 @@ def _register_task_atomic(task_id: str, task_record: Dict[str, Any]) -> None:
     """
     with _TASK_STATE_LOCK:
         _enforce_active_task_limit()
+        if KILL_SWITCH_ACTIVE:
+            raise HTTPException(status_code=403, detail="Trading engine halted by Kill Switch")
+        if task_id in TASKS:
+            raise HTTPException(status_code=409, detail="Task already exists")
+        task_record = dict(task_record)
+        task_record.update(schema_version="pipeline-telemetry/v1", revision=0)
+        if task_record.get("task_type") == "REAL_PIPELINE_RUN":
+            task_record["dag"] = _pipeline_dag("INIT", "QUEUED")
         TASKS[task_id] = task_record
         TASK_EVENT_QUEUES[task_id] = []
 
 
 def _push_task_event(task_id: str, event_type: str, progress: Optional[float], stage: str, message: str, payload: Optional[Dict[str, Any]] = None):
-    now_iso = datetime.now(timezone.utc).isoformat()
-    status = "CANCELLED" if task_id in CANCELLED_JOBS else "RUNNING"
-    if event_type == "ERROR":
-        status = "FAILED"
-    elif event_type == "CANCELLED":
-        status = "CANCELLED"
-    elif event_type == "COMPLETE":
-        if payload and _valid_receipt(payload.get("receipt"), task_id):
-            status = "COMPLETED"
-        else:
-            status = "FAILED"
-            event_type = "ERROR"
-            message = "Task completion failed validation: missing or malformed receipt"
-            payload = {**(payload or {}), "error_code": "INVALID_RECEIPT", "retryable": False}
-
-    event_data = {
-        "task_id": task_id,
-        "job_id": task_id,
-        "event_type": event_type,
-        "progress": round(progress, 1) if progress is not None else None,
-        "stage": stage,
-        "status": status,
-        "message": message,
-        "payload": payload or {},
-        "timestamp": now_iso,
-    }
     with _TASK_STATE_LOCK:
-        if task_id in TASKS:
-            if progress is not None:
-                TASKS[task_id]["progress"] = round(progress, 1)
-            TASKS[task_id]["stage"] = stage
-            TASKS[task_id]["status"] = status
-            TASKS[task_id]["updated_at"] = now_iso
-            if payload:
-                TASKS[task_id]["result"] = payload
-            if "events" not in TASKS[task_id] or not isinstance(TASKS[task_id]["events"], deque):
-                existing_events = list(TASKS[task_id].get("events", []))
-                TASKS[task_id]["events"] = deque(existing_events, maxlen=1000)
-            TASKS[task_id]["events"].append(event_data)
-
-        queues = list(TASK_EVENT_QUEUES.get(task_id, []))
-    for q in queues:
+        task = TASKS.get(task_id)
+        if task is None or task.get("status") in TERMINAL_TASK_STATUSES:
+            return
+        status = {"ERROR": "FAILED", "CANCELLED": "CANCELLED", "COMPLETE": "COMPLETED"}.get(event_type, "RUNNING")
+        error_code = None
         try:
-            q.put_nowait(event_data)
-        except asyncio.QueueFull:
-            pass
+            if event_type not in ("PROGRESS", "ERROR", "CANCELLED", "COMPLETE"):
+                raise ValueError("unknown event type")
+            if progress is not None and (type(progress) not in (int, float) or not math.isfinite(progress) or not 0 <= progress <= 100):
+                raise ValueError("invalid progress")
+            if not isinstance(stage, str) or len(stage) > 100 or not isinstance(message, str) or len(message) > 4096:
+                raise ValueError("invalid event text")
+            if payload is not None and not isinstance(payload, dict):
+                raise ValueError("invalid event payload")
+            encoded = json.dumps(payload or {}, allow_nan=False)
+            if len(encoded.encode("utf-8")) > MAX_TELEMETRY_BYTES:
+                raise ValueError("event payload too large")
+            safe_payload = _deep_redact_object(json.loads(encoded))
+        except (ValueError, TypeError, OverflowError, RecursionError):
+            error_code = "INVALID_TELEMETRY"
+            safe_payload = {}
+        if task_id in CANCELLED_JOBS:
+            status, event_type = "CANCELLED", "CANCELLED"
+        elif status == "COMPLETED" and error_code is None:
+            receipt = (payload or {}).get("receipt")
+            destination = CONTROL_ARTIFACT_ROOT / f"{task_id}.json"
+            try:
+                valid = _valid_receipt(receipt, task_id, destination)
+                if valid:
+                    with destination.open("rb") as handle:
+                        metadata = os.fstat(handle.fileno())
+                        valid = stat.S_ISREG(metadata.st_mode) and metadata.st_size <= MAX_TELEMETRY_BYTES
+                        raw = handle.read(MAX_TELEMETRY_BYTES + 1) if valid else b""
+                    valid = valid and len(raw) <= MAX_TELEMETRY_BYTES and json.loads(raw.decode("utf-8")) == receipt
+                if "params" in task:
+                    expected = hashlib.sha256(json.dumps(task["params"], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                    valid = valid and receipt["request_fingerprint"] == expected
+                output = {key: value for key, value in (payload or {}).items() if key != "receipt"}
+                digest = hashlib.sha256(json.dumps(output, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str).encode()).hexdigest()
+                valid = valid and receipt["output_sha256"] == digest
+            except (OSError, ValueError, TypeError, OverflowError):
+                valid = False
+            if not valid:
+                error_code = "INVALID_RECEIPT"
+            else:
+                # A signature is public integrity evidence, not the signing key.
+                safe_payload["receipt"]["receipt_hmac"] = receipt["receipt_hmac"]
+        if status == "RUNNING" and task.get("task_type") == "REAL_PIPELINE_RUN":
+            previous = task.get("stage", "INIT")
+            expected = PIPELINE_STAGES.index(previous) if previous in PIPELINE_STAGES else -1
+            if stage not in PIPELINE_STAGES or PIPELINE_STAGES.index(stage) not in (expected, expected + 1):
+                error_code = "INVALID_STAGE_TRANSITION"
+        if error_code and status != "CANCELLED":
+            status, event_type = "FAILED", "ERROR"
+            message = "Task event failed validation"
+            safe_payload = {"error_code": error_code, "retryable": False}
+        if status == "CANCELLED":
+            message, safe_payload = "Task cancelled by operator", {}
+        current_progress = task.get("progress", 0.0)
+        progress = 100.0 if status == "COMPLETED" else max(current_progress, min(progress, 99.9)) if type(progress) in (int, float) and math.isfinite(progress) and 0 <= progress <= 100 else current_progress
+        stage = _redact_text(stage) if status == "RUNNING" else task.get("stage", "INIT")
+        now_iso = datetime.now(timezone.utc).isoformat()
+        revision = task.get("revision", 0) + 1
+        event_data = {
+            "schema_version": "pipeline-telemetry/v1", "revision": revision,
+            "task_id": task_id, "job_id": task_id, "event_type": event_type,
+            "progress": round(progress, 1), "stage": stage, "status": status,
+            "message": _redact_text(message), "payload": safe_payload, "timestamp": now_iso,
+        }
+        if task.get("task_type") == "REAL_PIPELINE_RUN":
+            event_data["dag"] = _pipeline_dag(stage, status)
+            task["dag"] = event_data["dag"]
+        task.update(progress=event_data["progress"], stage=stage, status=status, updated_at=now_iso, revision=revision)
+        if safe_payload or status in TERMINAL_TASK_STATUSES:
+            task["result"] = safe_payload
+        task["events"] = deque(task.get("events", []), maxlen=1000)
+        task["events"].append(event_data)
+        for queue in TASK_EVENT_QUEUES.get(task_id, []):
+            _offer_task_event(queue, event_data)
 
 
 def _request_fingerprint(request: BaseModel) -> str:
@@ -1033,6 +1125,15 @@ def _valid_receipt(receipt: Any, task_id: str, expected_path: Optional[Path] = N
 
 
 def _publish_receipt(task_id: str, operation: str, request: BaseModel, as_of: datetime, output: Dict[str, Any]) -> Dict[str, Any]:
+    with _TASK_STATE_LOCK:
+        if task_id in CANCELLED_JOBS or TASKS.get(task_id, {}).get("status") in TERMINAL_TASK_STATUSES:
+            raise RuntimeError("terminal task cannot publish a receipt")
+        return _publish_receipt_unlocked(task_id, operation, request, as_of, output)
+
+
+def _publish_receipt_unlocked(task_id: str, operation: str, request: BaseModel, as_of: datetime, output: Dict[str, Any]) -> Dict[str, Any]:
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", task_id):
+        raise ValueError("invalid task identifier")
     CONTROL_ARTIFACT_ROOT.mkdir(parents=True, exist_ok=True)
     destination = CONTROL_ARTIFACT_ROOT / f"{task_id}.json"
     output_json = json.dumps(output, sort_keys=True, separators=(",", ":"), allow_nan=False, default=str)
@@ -1128,13 +1229,17 @@ def _validate_pipeline_result(result: PipelineResult) -> Dict[str, Any]:
 
 async def _run_pipeline_task(task_id: str, req: Any, operation: str) -> PipelineResult:
     as_of = _validate_dates(req.start_date, req.end_date, getattr(req, "as_of_time", None))
-    loop = asyncio.get_running_loop()
+    with _TASK_STATE_LOCK:
+        if task_id in CANCELLED_JOBS or TASKS.get(task_id, {}).get("status") in TERMINAL_TASK_STATUSES:
+            raise asyncio.CancelledError
 
     def progress(stage: str, completed: int, total: int) -> None:
-        loop.call_soon_threadsafe(
-            _push_task_event, task_id, "PROGRESS", completed / total * 100.0, stage,
-            f"Completed {completed} of {total} validated pipeline stages", None,
-        )
+        if type(completed) is not int or type(total) is not int or total != len(PIPELINE_STAGES) or not 0 <= completed < total or stage != PIPELINE_STAGES[completed]:
+            _push_task_event(task_id, "ERROR", None, "FAILED", "Invalid engine progress", {"error_code": "INVALID_ENGINE_PROGRESS"})
+            raise RuntimeError("invalid engine progress")
+        # Worker callbacks update locked state; only queue delivery uses the subscriber loop.
+        _push_task_event(task_id, "PROGRESS", completed / total * 100.0, stage,
+                         f"Completed {completed} of {total} validated pipeline stages")
 
     result = await asyncio.to_thread(
         OmegaPipeline(_pipeline_config(req, as_of)).run,
@@ -1142,7 +1247,7 @@ async def _run_pipeline_task(task_id: str, req: Any, operation: str) -> Pipeline
         lambda: task_id in CANCELLED_JOBS,
     )
     if task_id in CANCELLED_JOBS or "CANCELLED" in result.errors:
-        _push_task_event(task_id, "CANCELLED", TASKS[task_id].get("progress"), "CANCELLED", "Task cancelled by operator")
+        _push_task_event(task_id, "CANCELLED", TASKS.get(task_id, {}).get("progress"), "CANCELLED", "Task cancelled by operator")
         raise asyncio.CancelledError
     return result
 
@@ -1166,10 +1271,11 @@ async def _execute_real_pipeline(job_id: str, req: PipelineRunRequest):
         receipt = await asyncio.to_thread(_publish_receipt, job_id, "PIPELINE_RUN", req, as_of, output)
         _push_task_event(job_id, "COMPLETE", 100.0, "VALIDATED_OUTPUT", "Validated research pipeline artifact published", {**output, "receipt": receipt})
     except asyncio.CancelledError:
+        _push_task_event(job_id, "CANCELLED", None, "CANCELLED", "Execution cancelled")
         return
     except Exception as exc:
         _push_task_event(
-            job_id, "ERROR", TASKS[job_id].get("progress"), "FAILED",
+            job_id, "ERROR", TASKS.get(job_id, {}).get("progress"), "FAILED",
             "Pipeline failed. Inspect provider data, request bounds, and engine output.",
             {"error_code": "PIPELINE_EXECUTION_FAILED", "retryable": False, "error": type(exc).__name__}
         )
@@ -1548,7 +1654,8 @@ def _save_ingest_checkpoint(checkpoint_data: Dict[str, Any], checkpoint_path: Op
 
 async def _run_ingest(task_id: str, req: IngestDataRequest):
     try:
-        as_of = _validate_dates(req.start_date, req.end_date, req.as_of_time)
+        start_date = req.start_date or "2015-01-01"
+        as_of = _validate_dates(start_date, req.end_date, req.as_of_time)
         loader = DataLoader(cache_dir="data/cache")
         frames = []
         raw_symbols = list(req.symbols)
@@ -1621,7 +1728,7 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
                         extra_kwargs = {"source": provider} if supports_source_kwarg else {}
                         try:
                             frm = await asyncio.wait_for(
-                                asyncio.to_thread(loader.load_prices, sym, req.start_date, req.end_date, as_of, req.force_refresh, **extra_kwargs),
+                                asyncio.to_thread(loader.load_prices, sym, start_date, req.end_date, as_of, req.force_refresh, **extra_kwargs),
                                 timeout=15.0,
                             )
                         except (asyncio.TimeoutError, TimeoutError) as t_err:
@@ -1635,7 +1742,7 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
 
         for batch_idx in range(total_batches):
             if task_id in CANCELLED_JOBS:
-                _push_task_event(task_id, "CANCELLED", TASKS[task_id].get("progress"), "CANCELLED", "Task cancelled by operator; checkpoint preserved.")
+                _push_task_event(task_id, "CANCELLED", TASKS.get(task_id, {}).get("progress"), "CANCELLED", "Task cancelled by operator; checkpoint preserved.")
                 return
 
             batch_symbols = target_symbols[batch_idx * batch_size : (batch_idx + 1) * batch_size]
@@ -1643,7 +1750,7 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
 
             for sym, frame, provider, failures in batch_results:
                 if task_id in CANCELLED_JOBS:
-                    _push_task_event(task_id, "CANCELLED", TASKS[task_id].get("progress"), "CANCELLED", "Task cancelled by operator; checkpoint preserved.")
+                    _push_task_event(task_id, "CANCELLED", TASKS.get(task_id, {}).get("progress"), "CANCELLED", "Task cancelled by operator; checkpoint preserved.")
                     return
                 for failed_provider, exc in failures:
                     feed_health[failed_provider] = "DEGRADED"
@@ -1750,8 +1857,11 @@ async def _run_ingest(task_id: str, req: IngestDataRequest):
         }
         receipt = await asyncio.to_thread(_publish_receipt, task_id, "DATA_INGESTION", req, as_of, output)
         _push_task_event(task_id, "COMPLETE", 100.0, "VALIDATED_OUTPUT", f"Provider ({primary_provider.upper()}) data validated for {len(frames)}/{len(target_symbols)} symbols; checkpoint saved.", {**output, "receipt": receipt})
+    except asyncio.CancelledError:
+        _push_task_event(task_id, "CANCELLED", None, "CANCELLED", "Execution cancelled")
+        return
     except Exception as exc:
-        _push_task_event(task_id, "ERROR", TASKS[task_id].get("progress"), "FAILED", f"Data ingestion failed: {_redact_text(exc)}", {"error_code": "INGEST_FAILED", "retryable": True, "error": type(exc).__name__})
+        _push_task_event(task_id, "ERROR", TASKS.get(task_id, {}).get("progress"), "FAILED", f"Data ingestion failed: {_redact_text(exc)}", {"error_code": "INGEST_FAILED", "retryable": True, "error": type(exc).__name__})
 
 
 async def _run_alphas(task_id: str, req: ComputeAlphasRequest):
@@ -1763,9 +1873,10 @@ async def _run_alphas(task_id: str, req: ComputeAlphasRequest):
         receipt = await asyncio.to_thread(_publish_receipt, task_id, "ALPHA_COMPUTATION", req, as_of, output)
         _push_task_event(task_id, "COMPLETE", 100.0, "VALIDATED_OUTPUT", "PIT-safe momentum alpha artifact published", {**output, "receipt": receipt})
     except asyncio.CancelledError:
+        _push_task_event(task_id, "CANCELLED", None, "CANCELLED", "Execution cancelled")
         return
     except Exception as exc:
-        _push_task_event(task_id, "ERROR", TASKS[task_id].get("progress"), "FAILED", "Alpha computation failed. Verify market data coverage.", {"error_code": "ALPHA_FAILED", "retryable": False, "error": type(exc).__name__})
+        _push_task_event(task_id, "ERROR", TASKS.get(task_id, {}).get("progress"), "FAILED", "Alpha computation failed. Verify market data coverage.", {"error_code": "ALPHA_FAILED", "retryable": False, "error": type(exc).__name__})
 
 
 async def _run_optimize(task_id: str, req: OptimizePortfolioRequest):
@@ -1799,9 +1910,10 @@ async def _run_optimize(task_id: str, req: OptimizePortfolioRequest):
         receipt = await asyncio.to_thread(_publish_receipt, task_id, "PORTFOLIO_OPTIMIZATION", req, as_of, output)
         _push_task_event(task_id, "COMPLETE", 100.0, "VALIDATED_OUTPUT", f"Risk-capped portfolio artifact published ({req.objective})", {**output, "receipt": receipt})
     except asyncio.CancelledError:
+        _push_task_event(task_id, "CANCELLED", None, "CANCELLED", "Execution cancelled")
         return
     except Exception as exc:
-        _push_task_event(task_id, "ERROR", TASKS[task_id].get("progress"), "FAILED", f"Portfolio optimization failed: {_redact_text(exc)}", {"error_code": "OPTIMIZATION_FAILED", "retryable": False, "error": type(exc).__name__})
+        _push_task_event(task_id, "ERROR", TASKS.get(task_id, {}).get("progress"), "FAILED", f"Portfolio optimization failed: {_redact_text(exc)}", {"error_code": "OPTIMIZATION_FAILED", "retryable": False, "error": type(exc).__name__})
 
 
 async def _run_backtest(task_id: str, req: RunBacktestRequest):
@@ -1818,9 +1930,10 @@ async def _run_backtest(task_id: str, req: RunBacktestRequest):
         receipt = await asyncio.to_thread(_publish_receipt, task_id, "STRATEGY_BACKTEST", req, as_of, output)
         _push_task_event(task_id, "COMPLETE", 100.0, "VALIDATED_OUTPUT", "PIT-safe backtest artifact published", {**output, "receipt": receipt})
     except asyncio.CancelledError:
+        _push_task_event(task_id, "CANCELLED", None, "CANCELLED", "Execution cancelled")
         return
     except Exception as exc:
-        _push_task_event(task_id, "ERROR", TASKS[task_id].get("progress"), "FAILED", "Backtest failed. Verify strategy inputs and data coverage.", {"error_code": "BACKTEST_FAILED", "retryable": False, "error": type(exc).__name__})
+        _push_task_event(task_id, "ERROR", TASKS.get(task_id, {}).get("progress"), "FAILED", "Backtest failed. Verify strategy inputs and data coverage.", {"error_code": "BACKTEST_FAILED", "retryable": False, "error": type(exc).__name__})
 
 
 @router.post("/pipeline-run")
@@ -1859,17 +1972,14 @@ async def cancel_pipeline_job(job_id: str) -> Dict[str, Any]:
         if job_id not in TASKS:
             raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
 
+        if TASKS[job_id].get("status") in ("COMPLETED", "FAILED"):
+            raise HTTPException(status_code=409, detail="Terminal job cannot be cancelled")
         CANCELLED_JOBS.add(job_id)
-        TASKS[job_id]["status"] = "CANCELLED"
         now_iso = datetime.now(timezone.utc).isoformat()
-        TASKS[job_id]["updated_at"] = now_iso
-    _push_task_event(
-        job_id,
-        "CANCELLED",
-        TASKS[job_id].get("progress", 0.0),
-        TASKS[job_id].get("stage", "CANCELLED"),
-        f"Pipeline execution for job {job_id} was cancelled by user"
-    )
+        _push_task_event(
+            job_id, "CANCELLED", TASKS[job_id].get("progress", 0.0),
+            TASKS[job_id].get("stage", "INIT"), "Task cancelled by operator"
+        )
 
     return {
         "status": "success",
@@ -2000,7 +2110,13 @@ async def trigger_kill_switch(req: KillSwitchRequest) -> Dict[str, Any]:
     if not verify_totp(req.totp_code):
         raise HTTPException(status_code=401, detail="TOTP authentication failed: invalid or expired token.")
 
-    KILL_SWITCH_ACTIVE = True
+    with _TASK_STATE_LOCK:
+        KILL_SWITCH_ACTIVE = True
+        if req.freeze_engines:
+            for task_id, task in TASKS.items():
+                if task.get("status") not in TERMINAL_TASK_STATUSES:
+                    CANCELLED_JOBS.add(task_id)
+                    _push_task_event(task_id, "CANCELLED", None, task.get("stage", "INIT"), "Kill switch engaged")
     now_iso = datetime.now(timezone.utc).isoformat()
     return {
         "status": "EMERGENCY_HALT_TRIGGERED",
@@ -2140,6 +2256,56 @@ async def trigger_rebalance(req: RebalanceRequest) -> Dict[str, Any]:
         "target_changes": decision.target_changes,
         "liquidity_violations": decision.liquidity_violations,
     }
+
+
+class PipelineStageTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    stage_id: Literal["DATA_INGEST", "FEATURE_ENGINEERING", "ALPHA_DISCOVERY", "RISK_OPTIMIZATION", "RESEARCH_EXECUTION"]
+    depends_on: List[str]
+    status: Literal["PENDING", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]
+
+
+class PipelineTelemetry(BaseModel):
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+    schema_version: Literal["pipeline-telemetry/v1"] = "pipeline-telemetry/v1"
+    revision: int = Field(ge=0)
+    task_id: str
+    job_id: str
+    event_type: Literal["SNAPSHOT", "PING", "PROGRESS", "COMPLETE", "ERROR", "CANCELLED"]
+    progress: float = Field(ge=0, le=100)
+    stage: str
+    status: Literal["QUEUED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]
+    timestamp: str
+    message: str = ""
+    payload: Dict[str, Any] = Field(default_factory=dict)
+    dag: List[PipelineStageTelemetry] = Field(default_factory=list)
+
+
+@router.get("/tasks/{job_id}", response_model=PipelineTelemetry)
+async def get_pipeline_task(job_id: str) -> Dict[str, Any]:
+    with _TASK_STATE_LOCK:
+        if job_id not in TASKS:
+            raise HTTPException(status_code=404, detail="Job or task not found")
+        return _task_snapshot(job_id)
+
+
+@router.get("/pipeline/dag", response_model=List[PipelineStageTelemetry])
+def get_pipeline_dag() -> List[Dict[str, Any]]:
+    return _pipeline_dag("INIT", "QUEUED")
+
+
+def _task_snapshot(task_id: str, event_type: str = "SNAPSHOT") -> Dict[str, Any]:
+    task = TASKS[task_id]
+    snapshot = {
+        "schema_version": "pipeline-telemetry/v1", "revision": task.get("revision", 0),
+        "task_id": task_id, "job_id": task_id, "event_type": event_type,
+        "progress": task.get("progress", 0.0), "stage": task.get("stage", "INIT"),
+        "status": task.get("status", "QUEUED"), "payload": task.get("result", {}),
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+    if "dag" in task:
+        snapshot["dag"] = task["dag"]
+    return json.loads(json.dumps(snapshot, allow_nan=False))
 
 
 @router.get("/status")
@@ -2606,112 +2772,57 @@ async def get_control_dynamic_universe(
 
 @sse_control_router.get("/sse/v1/pipeline/{job_id}/stream")
 @sse_control_router.get("/sse/v1/tasks/{job_id}/progress")
-async def sse_pipeline_stream(job_id: str, limit: int = 0) -> EventSourceResponse:
-    if job_id not in TASKS:
-        raise HTTPException(status_code=404, detail=f"Job or task '{job_id}' not found")
-
+async def sse_pipeline_stream(job_id: str, limit: Annotated[int, Query(ge=0, le=1000)] = 0) -> EventSourceResponse:
+    # Direct callers share the HTTP validation boundary.
+    if type(limit) is not int or not 0 <= limit <= 1000:
+        raise HTTPException(status_code=422, detail="limit must be an integer from 0 to 1000")
     q: asyncio.Queue = asyncio.Queue(maxsize=50)
-    if job_id not in TASK_EVENT_QUEUES:
-        TASK_EVENT_QUEUES[job_id] = []
-    # Cap subscriber queues per task to prevent memory leak/resource exhaustion
-    MAX_SUBSCRIBERS_PER_TASK = 20
-    if len(TASK_EVENT_QUEUES[job_id]) >= MAX_SUBSCRIBERS_PER_TASK:
-        oldest = TASK_EVENT_QUEUES[job_id].pop(0)
-        # Put cancellation sentinel to terminate evicted generator immediately
-        # Ensure full queue delivers eviction termination signal by draining an item first if needed
-        sentinel_event = {
-            "event_type": "CANCELLED",
-            "stage": "EVICTED",
-            "message": "Subscriber evicted: subscriber limit reached",
-        }
-        try:
-            oldest.put_nowait(sentinel_event)
-        except asyncio.QueueFull:
-            try:
-                oldest.get_nowait()
-            except Exception:
-                pass
-            try:
-                oldest.put_nowait(sentinel_event)
-            except Exception:
-                pass
-        except Exception:
-            pass
-    TASK_EVENT_QUEUES[job_id].append(q)
+    q._control_loop = asyncio.get_running_loop()
+    with _TASK_STATE_LOCK:
+        if job_id not in TASKS:
+            raise HTTPException(status_code=404, detail="Job or task not found")
+        queues = TASK_EVENT_QUEUES.setdefault(job_id, [])
+        if len(queues) >= 20:
+            oldest = queues.pop(0)
+            _offer_task_event(oldest, {"event_type": "CANCELLED", "stage": "EVICTED"})
+        snapshot = _task_snapshot(job_id)
+        queues.append(q)
 
     async def event_generator() -> AsyncGenerator[Dict[str, Any], None]:
         count = 0
         try:
-            # Emit current snapshot first
-            initial_snap = {
-                "task_id": job_id,
-                "job_id": job_id,
-                "event_type": "SNAPSHOT",
-                "progress": TASKS[job_id].get("progress", 0.0),
-                "stage": TASKS[job_id].get("stage", "INIT"),
-                "status": TASKS[job_id].get("status", "QUEUED"),
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "payload": TASKS[job_id].get("result", {}),
-            }
-            yield {"data": json.dumps(initial_snap)}
+            yield {"data": json.dumps(snapshot, allow_nan=False)}
             count += 1
-
-            while True:
-                # Fast check for out-of-band eviction before consuming or yielding further data
-                if job_id not in TASK_EVENT_QUEUES or q not in TASK_EVENT_QUEUES[job_id]:
-                    # Queue was evicted: yield terminal cancellation event and exit
-                    evict_msg = {
-                        "task_id": job_id,
-                        "job_id": job_id,
-                        "event_type": "CANCELLED",
-                        "stage": "EVICTED",
-                        "message": "Subscriber evicted: subscriber limit reached",
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
-                    yield {"data": json.dumps(evict_msg)}
-                    break
-
-                if limit > 0 and count >= limit:
+            if snapshot["status"] in TERMINAL_TASK_STATUSES:
+                return
+            while not limit or count < limit:
+                with _TASK_STATE_LOCK:
+                    subscribed = q in TASK_EVENT_QUEUES.get(job_id, [])
+                if not subscribed:
+                    yield {"data": json.dumps({**snapshot, "event_type": "CANCELLED", "stage": "EVICTED", "message": "Subscriber evicted"})}
                     break
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=2.0)
-                    # Re-check eviction immediately after wakeup before yielding
-                    if job_id not in TASK_EVENT_QUEUES or q not in TASK_EVENT_QUEUES[job_id]:
-                        evict_msg = {
-                            "task_id": job_id,
-                            "job_id": job_id,
-                            "event_type": "CANCELLED",
-                            "stage": "EVICTED",
-                            "message": "Subscriber evicted: subscriber limit reached",
-                            "timestamp": datetime.now(timezone.utc).isoformat(),
-                        }
-                        yield {"data": json.dumps(evict_msg)}
-                        break
-                    yield {"data": json.dumps(event)}
-                    count += 1
-                    if event.get("stage") == "EVICTED" or event.get("progress", 0) >= 100.0 or event.get("event_type") in ("COMPLETE", "ERROR", "CANCELLED"):
-                        break
                 except asyncio.TimeoutError:
-                    # Check if this queue was evicted from active subscriber queues
-                    if job_id not in TASK_EVENT_QUEUES or q not in TASK_EVENT_QUEUES[job_id]:
-                        break
-                    ping = {
-                        "task_id": job_id,
-                        "job_id": job_id,
-                        "event_type": "PING",
-                        "progress": TASKS[job_id].get("progress", 0.0),
-                        "status": TASKS[job_id].get("status", "RUNNING"),
-                        "timestamp": datetime.now(timezone.utc).isoformat(),
-                    }
-                    yield {"data": json.dumps(ping)}
-                    count += 1
-                    if TASKS[job_id].get("status") in ("COMPLETED", "FAILED", "CANCELLED"):
-                        break
+                    with _TASK_STATE_LOCK:
+                        if job_id not in TASKS or q not in TASK_EVENT_QUEUES.get(job_id, []):
+                            break
+                        event = _task_snapshot(job_id, "PING")
+                with _TASK_STATE_LOCK:
+                    subscribed = q in TASK_EVENT_QUEUES.get(job_id, [])
+                if not subscribed or event.get("stage") == "EVICTED":
+                    event = {**snapshot, "event_type": "CANCELLED", "stage": "EVICTED", "message": "Subscriber evicted"}
+                yield {"data": json.dumps(event, allow_nan=False)}
+                count += 1
+                if event.get("stage") == "EVICTED" or event.get("status") in TERMINAL_TASK_STATUSES:
+                    break
         finally:
-            if job_id in TASK_EVENT_QUEUES and q in TASK_EVENT_QUEUES[job_id]:
-                TASK_EVENT_QUEUES[job_id].remove(q)
+            with _TASK_STATE_LOCK:
+                queues = TASK_EVENT_QUEUES.get(job_id, [])
+                if q in queues:
+                    queues.remove(q)
 
-    return EventSourceResponse(event_generator())
+    return EventSourceResponse(event_generator(), headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @router.get("/optimization-bounds-preview", response_model=OptimizationBoundsPreviewResponse)
