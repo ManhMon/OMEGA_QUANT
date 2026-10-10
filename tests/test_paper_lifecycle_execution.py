@@ -430,38 +430,85 @@ class TestAdversarial16Dimensions:
         # Cash must remain exactly initial_capital
         assert engine.cash == 500_000_000.0
 
-    def test_dim6_pit_and_look_ahead_safety(self, client: TestClient):
-        """Dim 6: Rejects future timestamps (2099), malformed timestamps, and look-ahead."""
-        client.post("/api/v1/execution/start", json={})
+    @pytest.mark.parametrize("side", ["BUY", "SELL"])
+    def test_dim6_pit_and_look_ahead_safety(self, client: TestClient, monkeypatch, side):
+        """Dim 6: Invalid temporal inputs fail validation before engine mutation."""
+        from omega.api.routes import execution
+
+        monkeypatch.setattr(execution, "datetime", datetime.datetime)
+        assert client.post("/api/v1/execution/start", json={}).status_code == 200
         now = datetime.datetime.now(timezone.utc)
-
-        # 1. Look-ahead: feature_ts > decision_ts
-        resp1 = client.post("/api/v1/execution/orders", json={
+        order = {
             "symbol": "VNM", "side": "BUY", "size": 100, "price": 80000,
-            "feature_ts": (now + timedelta(hours=2)).isoformat(),
-            "decision_ts": now.isoformat(),
-        })
-        assert resp1.status_code == 201
-        assert resp1.json()["status"] == "REJECTED_PIT_LOOKAHEAD"
+            "feature_ts": now.isoformat(), "decision_ts": now.isoformat(),
+        }
+        seeded = client.post("/api/v1/execution/orders", json=order)
+        assert seeded.status_code == 201
+        assert seeded.json()["status"] == "FILLED"
+        engine = get_paper_engine()
+        orders_before = json.loads(json.dumps(engine.get_orders()))
 
-        # 2. Absolute future: year 2099
-        resp2 = client.post("/api/v1/execution/orders", json={
-            "symbol": "VNM", "side": "BUY", "size": 100, "price": 80000,
-            "feature_ts": "2099-01-01T08:00:00+00:00",
-            "decision_ts": "2099-01-01T08:00:00+00:00",
-        })
-        assert resp2.status_code == 201
-        assert resp2.json()["status"] == "REJECTED_FUTURE_TIMESTAMP"
+        def unexpected_submission(*args, **kwargs):
+            pytest.fail("invalid temporal input reached engine execution")
 
-        # 3. Available_at constraint: available_at > decision_ts
-        resp3 = client.post("/api/v1/execution/orders", json={
+        monkeypatch.setattr(engine, "execute_virtual_order", unexpected_submission)
+        invalid_timestamps = [
+            {"feature_ts": (now + timedelta(hours=2)).isoformat()},
+            {"feature_ts": "2099-01-01T08:00:00+00:00",
+             "decision_ts": "2099-01-01T08:00:00+00:00"},
+            {"feature_ts": (now - timedelta(minutes=10)).isoformat(),
+             "available_at": (now + timedelta(minutes=5)).isoformat()},
+            {"available_at": (now - timedelta(microseconds=1)).isoformat()},
+            {"decision_ts": "2099-01-01T08:00:00+00:00"},
+        ]
+        for field in ("feature_ts", "available_at", "decision_ts"):
+            invalid_timestamps.extend(
+                {field: value} for value in (
+                    "", " ", "not-a-timestamp", "NaN", "2026-09-09T03:00:00", [], {},
+                    True, 0, -1, 1e13, float("nan"), float("inf"), float("-inf"),
+                )
+            )
+        invalid_timestamps.extend({field: None} for field in ("feature_ts", "decision_ts"))
+        invalid_orders = [{**order, "side": side, **timestamps} for timestamps in invalid_timestamps]
+        invalid_orders.extend(
+            {key: value for key, value in {**order, "side": side}.items() if key != field}
+            for field in ("feature_ts", "decision_ts")
+        )
+        for payload in invalid_orders:
+            response = client.post(
+                "/api/v1/execution/orders",
+                content=json.dumps(payload),
+                headers={"Content-Type": "application/json"},
+            )
+            assert response.status_code == 422, (payload, response.text)
+            assert response.json() == {"detail": "INVALID_REQUEST"}
+            assert engine.get_orders() == orders_before
+
+    @pytest.mark.parametrize("timestamp", [
+        "2026-09-09T03:00:00Z", "2026-09-09T10:00:00+07:00", "2026-09-08T15:30:00+07:00",
+    ])
+    @pytest.mark.parametrize("available", [None, "equal"])
+    def test_dim6_inclusive_temporal_boundaries(self, client: TestClient, monkeypatch, timestamp, available):
+        """Equal PIT clocks and optional availability reach submission in UTC and ICT."""
+        from omega.api.routes import execution
+
+        monkeypatch.setattr(execution, "datetime", datetime.datetime)
+        submitted = []
+
+        def submit(payload, **kwargs):
+            submitted.append(payload)
+            return []
+
+        monkeypatch.setattr(get_paper_engine(), "execute_virtual_order", submit)
+        response = client.post("/api/v1/execution/orders", json={
             "symbol": "VNM", "side": "BUY", "size": 100, "price": 80000,
-            "feature_ts": (now - timedelta(minutes=10)).isoformat(),
-            "available_at": (now + timedelta(minutes=5)).isoformat(),
-            "decision_ts": now.isoformat(),
+            "feature_ts": timestamp, "decision_ts": timestamp,
+            "available_at": timestamp if available == "equal" else None,
         })
-        assert resp3.status_code == 201
-        assert resp3.json()["status"] == "REJECTED_PIT_LOOKAHEAD"
+        assert response.status_code == 201, response.text
+        assert len(submitted) == 1
+        assert submitted[0]["feature_ts"] == submitted[0]["decision_ts"] == timestamp
+        assert submitted[0]["available_at"] == timestamp
 
     def test_dim7_trading_calendar_and_holiday_boundaries(self, tmp_path: Path):
         """Dim 7: Tet holiday 2026-02-17 and weekend orders are rejected."""
