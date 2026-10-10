@@ -9,7 +9,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import pandas as pd
-from fastapi import APIRouter, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
+from pydantic import ValidationError
+from omega.core.model_registry import (
+    ConceptDriftMonitor, ConceptDriftRequest, ModelLineageTree,
+    concept_drift_monitor, model_lineage_tree, read_registry_metadata,
+    validate_registry_metadata, _timestamp_input,
+)
 from filelock import FileLock, Timeout as FileLockTimeout
 
 from omega.api.routes.control import verify_totp
@@ -36,7 +45,51 @@ from omega.api.schemas.advanced_quant import (
 from omega.data.registry import ModelRegistry
 from omega.quant.drift_detector import DriftDetectorEnsemble, DriftThresholds
 
-router = APIRouter(prefix="/api/v1/models", tags=["models"])
+def _validate_governance_registry():
+    try:
+        read_registry_metadata(_model_registry.metadata_file)
+        validate_registry_metadata(_model_registry.registry_data)
+    except ValueError as exc:
+        raise HTTPException(status_code=424, detail="Model registry metadata unavailable or corrupted") from exc
+
+
+def _reject_duplicate_request_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError("Duplicate request key")
+        result[key] = value
+    return result
+
+
+class GovernanceRoute(APIRoute):
+    def get_route_handler(self):
+        handler = super().get_route_handler()
+
+        async def validated_handler(request):
+            if request.method in ("POST", "PATCH"):
+                body = bytearray()
+                async for chunk in request.stream():
+                    body.extend(chunk)
+                    if len(body) > 1024 * 1024:
+                        return JSONResponse(status_code=413, content={"detail": "Model governance request too large"})
+                request._body = bytes(body)
+                if body:
+                    try:
+                        json.loads(body.decode("utf-8"), object_pairs_hook=_reject_duplicate_request_keys)
+                    except (ValueError, UnicodeError, RecursionError):
+                        return JSONResponse(status_code=422, content={"detail": "Invalid model governance request"})
+            try:
+                return await handler(request)
+            except RequestValidationError:
+                # Never echo caller feature samples, credentials or non-finite values.
+                return JSONResponse(status_code=422, content={"detail": "Invalid model governance request"})
+
+        return validated_handler
+
+
+router = APIRouter(prefix="/api/v1/models", tags=["models"], route_class=GovernanceRoute,
+                   dependencies=[Depends(_validate_governance_registry)])
 
 MODEL_TAXONOMY_CATEGORIES = [
     "DEEP_LEARNING",
@@ -288,6 +341,9 @@ MODEL_CATALOG_DEFINITIONS: Dict[str, Dict[str, Any]] = {
 
 # Canonical model registry instance
 _MODEL_REGISTRY_PATH = os.getenv("OMEGA_MODEL_REGISTRY_PATH", ".models")
+_metadata_path = Path(_MODEL_REGISTRY_PATH) / "registry_metadata.json"
+if _metadata_path.exists():
+    read_registry_metadata(_metadata_path)
 _model_registry = ModelRegistry(registry_path=_MODEL_REGISTRY_PATH)
 
 # Seed default institutional models if registry is empty
@@ -350,36 +406,10 @@ def _make_provenance(source: str, dataset_id: str, payload_summary: Any) -> Prov
 
 
 def _parse_aware_utc(timestamp_str: Any) -> datetime:
-    if timestamp_str is None:
-        raise HTTPException(status_code=422, detail="Missing PIT timestamp: timestamp cannot be null")
-    if isinstance(timestamp_str, (int, float)):
-        import math
-        if math.isnan(timestamp_str) or math.isinf(timestamp_str):
-            raise HTTPException(status_code=422, detail="Invalid PIT timestamp: NaN/Inf is not a valid timestamp")
-        raise HTTPException(status_code=422, detail="Invalid PIT timestamp: numeric values are not supported")
-    if isinstance(timestamp_str, datetime):
-        if timestamp_str.tzinfo is None:
-            raise HTTPException(status_code=422, detail="Invalid PIT timestamp: naive datetime without timezone is rejected")
-        return timestamp_str.astimezone(timezone.utc)
-    if isinstance(timestamp_str, str):
-        clean_str = timestamp_str.strip()
-        if not clean_str or clean_str.lower() in ("nan", "inf", "-inf", "+inf"):
-            raise HTTPException(status_code=422, detail="Invalid PIT timestamp: empty or NaN/Inf string is rejected")
-        try:
-            iso_str = clean_str.replace("Z", "+00:00")
-            dt = datetime.fromisoformat(iso_str)
-            # Must contain explicit time component and explicit timezone offset
-            if dt.tzinfo is None:
-                raise HTTPException(status_code=422, detail=f"Invalid PIT timestamp '{clean_str}': timezone offset is required")
-            # Reject date-only partial timestamps like '2026-01-01+00:00' or '2026-01'
-            if "T" not in clean_str and " " not in clean_str:
-                raise HTTPException(status_code=422, detail=f"Invalid PIT timestamp '{clean_str}': full timestamp with time component required")
-            return dt.astimezone(timezone.utc)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=422, detail=f"Invalid PIT timestamp format '{clean_str}': {str(e)}") from e
-    raise HTTPException(status_code=422, detail=f"Invalid PIT timestamp type: {type(timestamp_str).__name__} is not supported")
+    try:
+        return _timestamp_input(timestamp_str).astimezone(timezone.utc)
+    except (ValueError, TypeError, OverflowError) as exc:
+        raise HTTPException(status_code=422, detail="Invalid PIT timestamp: explicit ISO datetime with timezone required") from exc
 
 
 # Rate limit and failure simulator hooks for testing resilience
@@ -638,6 +668,55 @@ def update_drift_monitor_schedule(req: DriftScheduleRequest) -> DriftMonitorStat
         )
 
     return get_drift_monitor_status()
+
+
+def _governance_version(model_name: str, version: str | None):
+    import re
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", model_name):
+        raise HTTPException(status_code=422, detail="Invalid model identifier")
+    if version is not None and not re.fullmatch(r"v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}", version):
+        raise HTTPException(status_code=422, detail="Invalid model version")
+    entry = _model_registry.registry_data["models"].get(model_name)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Model not found")
+    versions = entry["versions"]
+    selected = version or entry["active_versions"].get("PRODUCTION")
+    if selected is None and versions:
+        selected = max(versions, key=lambda value: tuple(map(int, value[1:].split("."))))
+    if selected not in versions:
+        raise HTTPException(status_code=404, detail="Model version not found")
+    return selected, versions[selected].get("metadata", versions[selected])
+
+
+@router.get("/{model_name}/lineage", response_model=ModelLineageTree)
+def get_model_lineage(model_name: str, version: str | None = Query(default=None)):
+    selected, _ = _governance_version(model_name, version)
+    try:
+        return model_lineage_tree(_model_registry.registry_data, model_name, selected)
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=424, detail="Model lineage metadata corrupted") from exc
+
+
+@router.get("/{model_name}/concept-drift", response_model=ConceptDriftMonitor)
+def get_concept_drift(model_name: str, version: str | None = Query(default=None)):
+    selected, metadata = _governance_version(model_name, version)
+    if "drift_windows" not in metadata:
+        raise HTTPException(status_code=424, detail="Recorded drift windows unavailable")
+    try:
+        request = ConceptDriftRequest.model_validate_json(json.dumps(metadata["drift_windows"], allow_nan=False))
+        return concept_drift_monitor(model_name, selected, request, "registry_recorded_unverified")
+    except (ValueError, ValidationError) as exc:
+        raise HTTPException(status_code=424, detail="Recorded drift windows corrupted") from exc
+
+
+@router.post("/{model_name}/concept-drift", response_model=ConceptDriftMonitor)
+def evaluate_concept_drift(model_name: str, req: ConceptDriftRequest,
+                           version: str | None = Query(default=None)):
+    selected, _ = _governance_version(model_name, version)
+    try:
+        return concept_drift_monitor(model_name, selected, req, "caller_supplied_unverified")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid drift windows") from exc
 
 
 @router.get("/{model_name}/versions", response_model=ModelVersionsResponse)
@@ -903,7 +982,7 @@ def promote_model_version(model_name: str, version: str, req: ModelPromoteReques
     if req.pit_evidence:
         as_of_ev = req.pit_evidence.get("as_of")
         avail_ev = req.pit_evidence.get("available_at")
-        if as_of_ev is not None or avail_ev is not None:
+        if "as_of" in req.pit_evidence or "available_at" in req.pit_evidence:
             if as_of_ev is None or avail_ev is None:
                 raise HTTPException(status_code=422, detail="PIT trust boundary violation: both as_of and available_at are required if either is provided")
             dt_as_of = _parse_aware_utc(as_of_ev)

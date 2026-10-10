@@ -19,6 +19,233 @@ from datetime import datetime, timedelta
 from omega.data.registry import ModelRegistry
 
 
+@pytest.fixture(autouse=True)
+def isolate_registry_contract_state(monkeypatch, tmp_path):
+    import copy
+    from omega.api.routes import models
+    registry = ModelRegistry(str(tmp_path / "isolated_catalog"))
+    registry.registry_data = copy.deepcopy(models._model_registry.registry_data)
+    registry._save_registry()
+    monkeypatch.setattr(models, "_model_registry", registry)
+
+
+@pytest.mark.parametrize("raw", [b"", b"{}", b"[]", b'{"models":[],"audit_logs":[]}',
+                                    b'{"models":{},"audit_logs":{},"x":1}',
+                                    b'{"models":{},"models":{},"audit_logs":[]}',
+                                    b'{"models":{},"audit_logs":[],"bad":NaN}',
+                                    b'\xef\xbb\xbf{"models":{},"audit_logs":[]}', b'\xff'])
+def test_slice14_core_corruption_preserves_bytes(tmp_path, raw):
+    from omega.core.model_registry import ModelRegistry as CoreRegistry
+    path = tmp_path / "registry_metadata.json"
+    path.write_bytes(raw)
+    with pytest.raises(ValueError, match="Corrupted metadata file"):
+        CoreRegistry(str(tmp_path))
+    assert path.read_bytes() == raw
+    assert not (tmp_path / "artifacts").exists()
+
+
+def test_slice14_metadata_directory_and_size(tmp_path):
+    from omega.core.model_registry import read_registry_metadata, MAX_METADATA_BYTES
+    with pytest.raises(ValueError, match="Corrupted metadata file"):
+        read_registry_metadata(tmp_path)
+    path = tmp_path / "large.json"
+    path.write_bytes(b" " * (MAX_METADATA_BYTES + 1))
+    with pytest.raises(ValueError, match="Corrupted metadata file"):
+        read_registry_metadata(path)
+    path.write_bytes(b'{\r\n"models": {},\r\n"audit_logs": []\r\n}')
+    assert read_registry_metadata(path) == {"models": {}, "audit_logs": []}
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf"), None, True, "1", 1e13])
+def test_slice14_nonfinite_core_drift(bad):
+    from omega.core.model_registry import ConceptDriftRequest
+    payload = _slice14_core_windows()
+    payload["current_window"]["features"]["value"][0] = bad
+    with pytest.raises(ValueError):
+        ConceptDriftRequest.model_validate(payload)
+
+
+def _slice14_core_windows(reference=None, current=None):
+    return {"reference_window": {"window_id": "ref", "start": "2026-01-01T00:00:00Z",
+                                 "end": "2026-01-02T00:00:00Z", "available_at": "2026-01-02T00:00:00Z",
+                                 "features": {"value": [0, 0] if reference is None else reference}},
+            "current_window": {"window_id": "cur", "start": "2026-01-02T00:00:00Z",
+                               "end": "2026-01-03T00:00:00Z", "available_at": "2026-01-03T00:00:00Z",
+                               "features": {"value": [0, 0] if current is None else current}}, "bins": 2}
+
+
+@pytest.mark.parametrize("reference,current,expected_ks", [([0, 0], [0, 0], 0.0), ([0, 0], [1, 1], 1.0),
+                                                           ([0, 0], [-1, -1], 1.0), ([0, 1], [0, 2], 0.5),
+                                                           ([-1e12, 1e12], [-1e12, 1e12], 0.0)])
+def test_slice14_known_psi_ks(reference, current, expected_ks):
+    import math
+    from omega.core.model_registry import ConceptDriftRequest, concept_drift_monitor
+    request = ConceptDriftRequest.model_validate(_slice14_core_windows(reference, current))
+    result = concept_drift_monitor("model", "v1.0.0", request, "caller_supplied_unverified")
+    metric = result.metrics[0]
+    assert metric.ks == expected_ks
+    assert math.isfinite(metric.psi)
+    if reference == current or (reference == [0, 1] and current == [0, 2]):
+        assert metric.psi == 0  # Same reference bins, possibly different within-bin ECDF.
+    else:
+        assert metric.psi > 0.2
+
+
+@pytest.mark.parametrize("mutation", ["dangling", "cycle", "duplicate", "version", "future", "chronology", "partial", "metric"])
+def test_slice14_registry_schema_and_lineage(mutation):
+    from omega.core.model_registry import validate_registry_metadata
+    record = {"version": "v1.0.0", "status": "STAGING", "metadata": {"lineage": {}}}
+    data = {"models": {"model": {"versions": {"v1.0.0": record}, "active_versions": {"STAGING": "v1.0.0"}}}, "audit_logs": []}
+    lineage = record["metadata"]["lineage"]
+    if mutation == "dangling":
+        data["models"]["model"]["active_versions"]["PRODUCTION"] = "v9.0.0"
+    elif mutation == "cycle":
+        lineage["parent_versions"] = ["v1.0.0"]
+    elif mutation == "duplicate":
+        lineage["parent_versions"] = ["v2.0.0", "v2.0.0"]
+    elif mutation == "version":
+        lineage["version"] = "v9.0.0"
+    elif mutation == "future":
+        lineage["training_run"] = {"run_id": "future", "trained_at": "2099-01-01T00:00:00Z"}
+    elif mutation == "chronology":
+        lineage["training_run"] = {"run_id": "train", "trained_at": "2026-01-02T00:00:00Z"}
+        lineage["deployment_receipt"] = {"receipt_id": "deploy", "version": "v1.0.0", "deployed_at": "2026-01-01T00:00:00Z"}
+    elif mutation == "partial":
+        lineage["dataset_snapshot"] = {"dataset_id": "partial"}
+    else:
+        record["metadata"]["metrics"] = {"sharpe": "NaN"}
+    with pytest.raises(ValueError, match="Corrupted metadata file"):
+        validate_registry_metadata(data)
+
+
+def test_slice14_indirect_cycle_and_version_limits():
+    import copy
+    from omega.core.model_registry import validate_registry_metadata
+    versions = {f"v1.0.{i}": {"status": "STAGING", "metadata": {"lineage": {}}} for i in range(128)}
+    data = {"models": {"model": {"versions": versions, "active_versions": {}}}, "audit_logs": []}
+    validate_registry_metadata(data)
+    cyclic = copy.deepcopy(data)
+    cyclic["models"]["model"]["versions"]["v1.0.1"]["metadata"]["lineage"] = {"parent_versions": ["v1.0.2"]}
+    cyclic["models"]["model"]["versions"]["v1.0.2"]["metadata"]["lineage"] = {"parent_versions": ["v1.0.1"]}
+    with pytest.raises(ValueError):
+        validate_registry_metadata(cyclic)
+    versions["v1.0.128"] = {"status": "STAGING", "metadata": {}}
+    with pytest.raises(ValueError):
+        validate_registry_metadata(data)
+
+
+def test_slice14_adjacent_float_bins():
+    import math
+    from omega.core.model_registry import ConceptDriftRequest, concept_drift_monitor
+    request = ConceptDriftRequest.model_validate(_slice14_core_windows([1e12, math.nextafter(1e12, -math.inf)], [1e12, 1e12]))
+    request.bins = 50
+    metric = concept_drift_monitor("model", "v1.0.0", request, "caller_supplied_unverified").metrics[0]
+    assert math.isfinite(metric.psi)
+    assert metric.ks == 0.5
+
+
+def test_slice14_reference_bins_numeric_oracle():
+    import math
+    from omega.core.model_registry import ConceptDriftRequest, concept_drift_monitor
+    request = ConceptDriftRequest.model_validate(_slice14_core_windows([0, 1], [0, 0]))
+    metric = concept_drift_monitor("model", "v1.0.0", request, "caller_supplied_unverified").metrics[0]
+    r = [(0.5 + 1e-6) / (1 + 2e-6)] * 2
+    c = [(1 + 1e-6) / (1 + 2e-6), 1e-6 / (1 + 2e-6)]
+    assert metric.psi == pytest.approx(sum((y - x) * math.log(y / x) for x, y in zip(r, c)))
+    assert metric.ks == 0.5
+
+
+def test_slice14_metadata_exponent_and_nested_duplicate(tmp_path):
+    from omega.core.model_registry import read_registry_metadata
+    path = tmp_path / "registry.json"
+    for raw in (b'{"models":{},"audit_logs":[],"value":1e400}',
+                b'{"models":{},"audit_logs":[],"nested":{"a":1,"a":2}}',
+                b'[' * 2000):
+        path.write_bytes(raw)
+        with pytest.raises(ValueError, match="Corrupted metadata file"):
+            read_registry_metadata(path)
+
+
+@pytest.mark.parametrize("bad", [
+    None, "", "1700000000", "1700000000.5", "-1700000000", "1e12",
+    1700000000, 1700000000.5, True, [], {}, float("nan"), float("inf"), float("-inf"),
+    "NaN", "Inf", "-Inf", "2026-01-01", "2026-01-01+00:00", "2026-01-01T00:00:00",
+    "20260101T000000Z", "2026-01-01X00:00:00Z", "2026-01-01T00:00:00+0000",
+    "2026-01-01T00:00:00+00:60", "2026-01-01T00:00:00+24:00",
+    "2026-02-30T00:00:00Z", "2026-01-01T24:00:00Z", "2026-01-01T00:00:60Z",
+    " 2026-01-01T00:00:00Z", "2026-01-01T00:00:00Z\n",
+    "0001-01-01T00:00:00+23:59", "9999-12-31T23:59:59-23:59",
+])
+def test_slice14_explicit_iso_all_timestamp_fields(bad):
+    import json
+    from pydantic import ValidationError
+    from omega.core.model_registry import (
+        ConceptDriftRequest, DatasetSnapshot, DeploymentReceipt, TrainingRun,
+        concept_drift_monitor,
+    )
+    request = ConceptDriftRequest.model_validate(_slice14_core_windows())
+    monitor = concept_drift_monitor("model", "v1.0.0", request, "caller_supplied_unverified")
+    contracts = [
+        DatasetSnapshot(dataset_id="data", version="v1", content_hash="a" * 64,
+                        as_of="2026-01-01T00:00:00Z", available_at="2026-01-01T00:00:00Z"),
+        TrainingRun(run_id="run", trained_at="2026-01-01T00:00:00Z"),
+        DeploymentReceipt(receipt_id="receipt", version="v1.0.0", deployed_at="2026-01-01T00:00:00Z"),
+        request.reference_window, monitor.reference_window, monitor,
+    ]
+    for contract in contracts:
+        for field in ("as_of", "available_at", "trained_at", "deployed_at", "start", "end", "evaluated_at"):
+            if field not in type(contract).model_fields:
+                continue
+            payload = contract.model_dump(mode="json")
+            payload[field] = bad
+            for validate, value in ((type(contract).model_validate, payload),
+                                    (type(contract).model_validate_json, json.dumps(payload))):
+                with pytest.raises(ValidationError) as exc:
+                    validate(value)
+                assert any(error["loc"] == (field,) for error in exc.value.errors())
+
+
+@pytest.mark.parametrize("text", ["2026-01-02T08:30:00Z", "2026-01-02T15:30:00+07:00",
+                                 "2026-01-02 03:30:00-05:00", "2026-01-02T08:30:00.123456+00:00"])
+def test_slice14_explicit_iso_internal_roundtrip(text):
+    from datetime import timezone, tzinfo
+    from pydantic import TypeAdapter
+    from omega.core.model_registry import Timestamp, DatasetSnapshot
+    adapter = TypeAdapter(Timestamp)
+    parsed = adapter.validate_python(text)
+    assert adapter.validate_json('"' + text + '"') == parsed
+    assert adapter.validate_python(parsed) == parsed
+    snapshot = DatasetSnapshot(dataset_id="data", version="v1", content_hash="a" * 64,
+                               as_of=parsed, available_at=parsed)
+    assert DatasetSnapshot.model_validate_json(snapshot.model_dump_json()) == snapshot
+    assert parsed.astimezone(timezone.utc).hour == 8
+
+    class NoOffset(tzinfo):
+        def utcoffset(self, dt):
+            return None
+
+    for invalid in (parsed.replace(tzinfo=None), parsed.replace(tzinfo=NoOffset())):
+        with pytest.raises(ValueError):
+            adapter.validate_python(invalid)
+
+
+@pytest.mark.parametrize("source", ["lineage", "drift_windows"])
+def test_slice14_recorded_epoch_metadata_fails_closed(tmp_path, source):
+    import json
+    from omega.core.model_registry import read_registry_metadata
+    metadata = {"lineage": {"training_run": {"run_id": "run", "trained_at": "1700000000"}}} if source == "lineage" else {"drift_windows": _slice14_core_windows()}
+    if source == "drift_windows":
+        metadata[source]["reference_window"]["start"] = "1700000000.5"
+    data = {"models": {"model": {"versions": {"v1.0.0": {"status": "STAGING", "metadata": metadata}},
+                                 "active_versions": {"STAGING": "v1.0.0"}}}, "audit_logs": []}
+    path = tmp_path / "metadata.json"
+    raw = json.dumps(data).encode()
+    path.write_bytes(raw)
+    with pytest.raises(ValueError, match="Corrupted metadata file"):
+        read_registry_metadata(path)
+    assert path.read_bytes() == raw
+
+
 class DummyModel:
     """Simple model class for testing."""
     

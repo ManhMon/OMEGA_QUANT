@@ -13,6 +13,285 @@ from omega.api.schemas.advanced_quant import GovernorMode
 client = TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def isolate_phase4_state(monkeypatch, tmp_path):
+    import copy
+    from omega.api.routes import models, operations
+    from omega.data.registry import ModelRegistry
+    registry = ModelRegistry(str(tmp_path / "models"))
+    registry.registry_data = copy.deepcopy(models._model_registry.registry_data)
+    registry._save_registry()
+    monkeypatch.setattr(models, "_model_registry", registry)
+    # Existing governor tests exercise mutations; restore their file bytes exactly.
+    paths = [value for key, value in vars(operations).items()
+             if key.endswith("PATH") and hasattr(value, "is_file") and value.is_file()]
+    snapshots = {path: path.read_bytes() for path in paths}
+    yield
+    for path, raw in snapshots.items():
+        path.write_bytes(raw)
+
+
+@pytest.fixture
+def governance_payload():
+    return {
+        "reference_window": {
+            "window_id": "reference", "start": "2026-01-01T00:00:00Z",
+            "end": "2026-01-02T08:30:00Z", "available_at": "2026-01-02T15:30:00+07:00",
+            "unit": "VND_FULL", "features": {"price": [10000, 20000, 30000, 40000]},
+        },
+        "current_window": {
+            "window_id": "current", "start": "2026-01-02T15:30:00+07:00",
+            "end": "2026-01-03T00:00:00Z", "available_at": "2026-01-03T00:00:00Z",
+            "unit": "VND_FULL", "features": {"price": [10000, 20000, 30000, 40000]},
+        },
+        "bins": 4,
+    }
+
+
+def test_slice14_lineage_and_drift_read_only(governance_payload, monkeypatch):
+    import copy
+    from omega.api.routes import models
+    registry = models._model_registry
+    metadata = registry.registry_data["models"]["ALPHA_XGBOOST_V2"]["versions"]["v1.0.0"]["metadata"]
+    metadata["lineage"] = {
+        "dataset_snapshot": {"dataset_id": "prices", "version": "snapshot1", "content_hash": "a" * 64,
+                             "as_of": "2025-12-01T00:00:00Z", "available_at": "2025-12-02T00:00:00Z"},
+        "training_run": {"run_id": "train1", "trained_at": "2026-01-01T00:00:00Z"},
+        "git_commit": "b" * 40,
+        "deployment_receipt": {"receipt_id": "deploy1", "version": "v1.0.0", "deployed_at": "2026-01-02T00:00:00Z"},
+    }
+    metadata["drift_windows"] = governance_payload
+    registry._save_registry()
+    before = copy.deepcopy(registry.registry_data)
+    disk = registry.metadata_file.read_bytes()
+    monkeypatch.setattr(registry, "_save_registry", lambda: pytest.fail("Read-only endpoint wrote registry"))
+    lineage = client.get("/api/v1/models/ALPHA_XGBOOST_V2/lineage")
+    assert lineage.status_code == 200
+    assert lineage.json()["nodes"][0]["git_commit"] == "b" * 40
+    for response in (client.get("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift"),
+                     client.post("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift", json=governance_payload)):
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["metrics"][0]["psi"] == data["metrics"][0]["ks"] == 0
+        assert data["automated_retrain"] is data["automated_deploy"] is False
+        assert "unverified" in data["provenance_status"]
+        assert "features" not in data["reference_window"]
+    assert registry.registry_data == before
+    assert registry.metadata_file.read_bytes() == disk
+
+
+@pytest.mark.parametrize("bad", [None, "", "1700000000", "1700000000.5", "-1", "1e12", True, [], {},
+                                 "NaN", "Inf", "-Inf", "2026-01-01", "2026-01-01T00:00:00",
+                                 "2026-01-01T00:00:00+00:60", "2026-02-30T00:00:00Z"])
+def test_slice14_explicit_iso_request_rejection(governance_payload, bad, monkeypatch):
+    import copy
+    from omega.api.routes import models
+    registry = models._model_registry
+    before, disk = copy.deepcopy(registry.registry_data), registry.metadata_file.read_bytes()
+
+    def forbidden_write(*args, **kwargs):
+        pytest.fail("Invalid timestamp reached persistence")
+
+    monkeypatch.setattr(registry, "_save_registry", forbidden_write)
+    monkeypatch.setattr(registry, "promote_model", forbidden_write)
+    monkeypatch.setattr(models, "verify_totp", lambda code: True)
+    for window in ("reference_window", "current_window"):
+        for field in ("start", "end", "available_at"):
+            payload = copy.deepcopy(governance_payload)
+            payload[window][field] = bad
+            response = client.post("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift", json=payload)
+            assert response.status_code == 422
+    for field in ("as_of", "available_at"):
+        evidence = {"as_of": "2026-01-01T00:00:00Z", "available_at": "2026-01-01T00:00:00Z"}
+        evidence[field] = bad
+        response = client.post("/api/v1/models/ALPHA_XGBOOST_V2/versions/v1.0.0/promote",
+                               json={"totp_code": "123456", "target_status": "VALIDATED", "pit_evidence": evidence})
+        assert response.status_code == 422
+    response = client.post("/api/v1/models/ALPHA_XGBOOST_V2/versions/v1.0.0/promote",
+                           json={"totp_code": "123456", "target_status": "VALIDATED",
+                                 "pit_evidence": {"as_of": None, "available_at": None}})
+    assert response.status_code == 422
+    assert registry.registry_data == before
+    assert registry.metadata_file.read_bytes() == disk
+
+
+def test_slice14_explicit_iso_parser_and_concurrency(governance_payload):
+    import copy
+    from concurrent.futures import ThreadPoolExecutor
+    from datetime import tzinfo
+    from fastapi import HTTPException
+    from omega.api.routes import models
+
+    class NoOffset(tzinfo):
+        def utcoffset(self, dt):
+            return None
+
+    for bad in (float("nan"), float("inf"), float("-inf"), 1e13, -1e13,
+                datetime(2026, 1, 1), datetime(2026, 1, 1, tzinfo=NoOffset()),
+                "0001-01-01T00:00:00+23:59"):
+        with pytest.raises(HTTPException) as exc:
+            models._parse_aware_utc(bad)
+        assert exc.value.status_code == 422
+    assert models._parse_aware_utc("2026-01-02T15:30:00+07:00") == datetime(2026, 1, 2, 8, 30, tzinfo=timezone.utc)
+    registry = models._model_registry
+    before, disk = copy.deepcopy(registry.registry_data), registry.metadata_file.read_bytes()
+    governance_payload["current_window"]["end"] = "1700000000.5"
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        responses = list(pool.map(lambda _: client.post("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift",
+                                                       json=governance_payload), range(8)))
+    assert all(response.status_code == 422 for response in responses)
+    assert registry.registry_data == before
+    assert registry.metadata_file.read_bytes() == disk
+
+
+@pytest.mark.parametrize("source", ["memory", "disk"])
+@pytest.mark.parametrize("metadata_field", ["lineage", "drift_windows"])
+def test_slice14_recorded_epoch_route_matrix(governance_payload, source, metadata_field, monkeypatch):
+    import copy
+    import json
+    from omega.api.routes import models
+    registry = models._model_registry
+    data = copy.deepcopy(registry.registry_data)
+    metadata = data["models"]["ALPHA_XGBOOST_V2"]["versions"]["v1.0.0"]["metadata"]
+    if metadata_field == "lineage":
+        metadata[metadata_field] = {"training_run": {"run_id": "run", "trained_at": "1700000000"}}
+    else:
+        metadata[metadata_field] = copy.deepcopy(governance_payload)
+        metadata[metadata_field]["reference_window"]["start"] = "1700000000.5"
+    if source == "memory":
+        registry.registry_data = data
+    else:
+        registry.metadata_file.write_text(json.dumps(data), encoding="utf-8")
+    before, disk = copy.deepcopy(registry.registry_data), registry.metadata_file.read_bytes()
+
+    def forbidden_write(*args, **kwargs):
+        pytest.fail("Corrupted timestamp reached persistence")
+
+    monkeypatch.setattr(registry, "_save_registry", forbidden_write)
+    for method, path in [
+        ("GET", ""), ("GET", "/drift-monitor/status"), ("PATCH", "/drift-monitor/schedule"),
+        ("GET", "/ALPHA_XGBOOST_V2/versions"), ("GET", "/ALPHA_XGBOOST_V2/versions/v1.0.0"),
+        ("GET", "/ALPHA_XGBOOST_V2/drift"), ("POST", "/ALPHA_XGBOOST_V2/versions/v1.0.0/promote"),
+        ("POST", "/ALPHA_XGBOOST_V2/rollback"), ("POST", "/ALPHA_XGBOOST_V2/calibrate"),
+        ("GET", "/ALPHA_XGBOOST_V2/calibration"), ("GET", "/ALPHA_XGBOOST_V2/lineage"),
+        ("GET", "/ALPHA_XGBOOST_V2/concept-drift"), ("POST", "/ALPHA_XGBOOST_V2/concept-drift"),
+    ]:
+        response = client.request(method, "/api/v1/models" + path, json={} if method != "GET" else None)
+        assert response.status_code == 424
+    assert registry.registry_data == before
+    assert registry.metadata_file.read_bytes() == disk
+
+
+@pytest.mark.parametrize("bad", [None, [], "1", True, "NaN", "Infinity", -1e13, 1e13])
+def test_slice14_invalid_samples(governance_payload, bad):
+    governance_payload["current_window"]["features"]["price"][0] = bad
+    response = client.post("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift", json=governance_payload)
+    assert response.status_code == 422
+
+
+@pytest.mark.parametrize("mutation", ["empty", "single", "overlap", "future", "naive", "numeric_time", "unit", "feature", "extra", "bins_zero", "bins_negative", "bins_bool", "budget"])
+def test_slice14_window_boundaries(governance_payload, mutation):
+    current = governance_payload["current_window"]
+    if mutation == "empty":
+        current["features"]["price"] = []
+    elif mutation == "single":
+        current["features"]["price"] = [1]
+    elif mutation == "overlap":
+        current["start"] = "2026-01-01T00:00:00Z"
+    elif mutation == "future":
+        current["available_at"] = "2099-01-01T00:00:00Z"
+    elif mutation == "naive":
+        current["end"] = "2026-01-03T00:00:00"
+    elif mutation == "numeric_time":
+        current["end"] = 1700000000
+    elif mutation == "unit":
+        current["unit"] = "UNITLESS"
+    elif mutation == "feature":
+        current["features"] = {"other": [1, 2]}
+    elif mutation == "extra":
+        governance_payload["automated_retrain"] = True
+    elif mutation == "budget":
+        current["features"]["price"] = [1] * 10001
+    else:
+        governance_payload["bins"] = {"bins_zero": 0, "bins_negative": -1, "bins_bool": True}[mutation]
+    assert client.post("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift", json=governance_payload).status_code == 422
+
+
+@pytest.mark.parametrize("path", ["", "/ALPHA_XGBOOST_V2/versions", "/ALPHA_XGBOOST_V2/lineage", "/ALPHA_XGBOOST_V2/concept-drift"])
+def test_slice14_corrupt_disk_fails_closed(path):
+    from omega.api.routes import models
+    models._model_registry.metadata_file.write_bytes(b'{"models":{},"models":{},"audit_logs":[]}')
+    raw = models._model_registry.metadata_file.read_bytes()
+    response = client.get("/api/v1/models" + path)
+    assert response.status_code == 424
+    assert models._model_registry.metadata_file.read_bytes() == raw
+
+
+def test_slice14_missing_and_corrupt_evidence():
+    from omega.api.routes import models
+    assert client.get("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift").status_code == 424
+    assert client.get("/api/v1/models/UNKNOWN/lineage").status_code == 404
+    assert client.get("/api/v1/models/ALPHA_XGBOOST_V2/lineage?version=v9.0.0").status_code == 404
+    assert client.get("/api/v1/models/ALPHA_XGBOOST_V2/lineage?version=invalid").status_code == 422
+    metadata = models._model_registry.registry_data["models"]["ALPHA_XGBOOST_V2"]["versions"]["v1.0.0"]["metadata"]
+    metadata["lineage"] = {"parent_versions": ["v9.0.0"], "git_commit": "https://user:password@example.com"}
+    response = client.get("/api/v1/models/ALPHA_XGBOOST_V2/lineage")
+    assert response.status_code == 424
+    assert "password" not in response.text
+
+
+@pytest.mark.parametrize("bad", ["NaN", "Infinity", "-Infinity", "1e999"])
+def test_slice14_raw_nonfinite_request_redacted(governance_payload, bad):
+    import json
+    raw = json.dumps(governance_payload).replace("[10000,", "[" + bad + ",", 1)
+    response = client.post("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift", content=raw,
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    assert bad not in response.text
+
+
+def test_slice14_invalid_request_secret_redaction(governance_payload):
+    governance_payload["current_window"]["features"]["price"][0] = "https://user:password@example.com"
+    response = client.post("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift", json=governance_payload)
+    assert response.status_code == 422
+    assert "password" not in response.text
+
+
+@pytest.mark.parametrize("raw,code", [(b'{"bins":2,"bins":3}', 422),
+                                     (b'\xff', 422), (b'[' * 2000, 422),
+                                     (b' ' * (1024 * 1024 + 1), 413)],
+                         ids=["duplicate", "utf8", "depth", "size"])
+def test_slice14_request_encoding_duplicate_and_size(raw, code):
+    response = client.post("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift", content=raw,
+                           headers={"Content-Type": "application/json"})
+    assert response.status_code == code
+
+
+@pytest.mark.parametrize("method,path", [
+    ("GET", ""), ("GET", "/drift-monitor/status"), ("PATCH", "/drift-monitor/schedule"),
+    ("GET", "/ALPHA_XGBOOST_V2/versions"), ("GET", "/ALPHA_XGBOOST_V2/versions/v1.0.0"),
+    ("GET", "/ALPHA_XGBOOST_V2/drift"), ("POST", "/ALPHA_XGBOOST_V2/versions/v1.0.0/promote"),
+    ("POST", "/ALPHA_XGBOOST_V2/rollback"), ("POST", "/ALPHA_XGBOOST_V2/calibrate"),
+    ("GET", "/ALPHA_XGBOOST_V2/calibration"), ("GET", "/ALPHA_XGBOOST_V2/lineage"),
+    ("GET", "/ALPHA_XGBOOST_V2/concept-drift"), ("POST", "/ALPHA_XGBOOST_V2/concept-drift"),
+])
+def test_slice14_corrupt_memory_route_matrix(method, path):
+    from omega.api.routes import models
+    models._model_registry.registry_data["models"] = []
+    response = client.request(method, "/api/v1/models" + path, json={} if method != "GET" else None)
+    assert response.status_code == 424
+
+
+def test_slice14_drift_concurrent_no_mutation(governance_payload):
+    from concurrent.futures import ThreadPoolExecutor
+    from omega.api.routes import models
+    before = models._model_registry.metadata_file.read_bytes()
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        responses = list(pool.map(lambda _: client.post("/api/v1/models/ALPHA_XGBOOST_V2/concept-drift", json=governance_payload), range(8)))
+    assert all(response.status_code == 200 for response in responses)
+    assert models._model_registry.metadata_file.read_bytes() == before
+
+
 # Dimension 1: Strict Types & Malformed Inputs (NaN, Inf, strings, lists)
 def test_dim1_malformed_and_out_of_bounds_types():
     # Invalid model promote status
