@@ -758,14 +758,16 @@ it('mounts every real App route under network failure and closes streams', async
     act(() => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === label)!.click());
     await settle();
     const dialog = container.querySelector('[aria-modal="true"]')!;
-    expect(dialog.querySelector('[role="alert"]')?.textContent).toBe(en.common.integrationUnavailable);
+    const error = label === 'Copilot' ? 'Copilot request failed. Retry manually.' : en.common.integrationUnavailable;
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toBe(error);
     expect(dialog).toBeInstanceOf(HTMLDialogElement);
     expect((dialog as HTMLDialogElement).open).toBe(true);
     act(() => useUiStore.getState().setLocale('vi'));
-    expect(dialog.querySelector('[role="alert"]')?.textContent).toBe(vietnamese.common.integrationUnavailable);
+    expect(dialog.querySelector('[role="alert"]')?.textContent).toBe(label === 'Copilot' ? error : vietnamese.common.integrationUnavailable);
     expect(dialog.getAttribute('aria-label')).toBe(label === 'Configuration'
       ? vietnamese.copilot.configModalTitle : vietnamese.copilot.drawerTitle);
     act(() => dialog.dispatchEvent(new Event('cancel', { cancelable: true })));
+    expect((dialog as HTMLDialogElement).open).toBe(false);
     act(() => useUiStore.getState().setLocale('en'));
     expect(container.querySelector('[aria-modal="true"]')).toBeNull();
   }
@@ -774,10 +776,12 @@ it('mounts every real App route under network failure and closes streams', async
   expect(closed).toHaveBeenCalled();
 });
 
-it('rejects unavailable actions and invalid risk inputs without network calls, success data or secret echo', async () => {
+it('rejects unavailable config and invalid risk actions while recording user chat on Copilot transport failure', async () => {
   let config!: ReturnType<typeof useLLMConfig>;
   let impact!: ReturnType<typeof usePreTradeImpact>;
   let copilot!: ReturnType<typeof useCopilot>;
+  const fetcher = vi.fn().mockRejectedValue(new Error('https://user:SECRET_PASSWORD@example.com?token=SECRET_TOKEN'));
+  vi.stubGlobal('fetch', fetcher);
   function Probe() {
     config = useLLMConfig();
     impact = usePreTradeImpact();
@@ -788,6 +792,8 @@ it('rejects unavailable actions and invalid risk inputs without network calls, s
   act(() => root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>));
   await settle();
   expect(config.isError).toBe(true);
+  expect(fetcher).toHaveBeenCalledTimes(2);
+  fetcher.mockClear();
   const profile = { provider: 'custom', model: 'test', api_key: 'DO_NOT_ECHO', base_url: 'https://user:password@example.com',
     temperature: 0, max_tokens: 1, timeout_seconds: 1, enabled: true };
   await act(async () => {
@@ -795,16 +801,29 @@ it('rejects unavailable actions and invalid risk inputs without network calls, s
     await expect(config.testProbe({ ...profile, profile_key: 'global_profile' })).rejects.toThrow(unavailableMessage);
     await expect(config.fetchModels(profile)).rejects.toThrow(unavailableMessage);
     await expect(impact.mutateAsync({ symbol: '', order_size: 0, average_daily_volume: 0, arrival_price: 0 })).rejects.toThrow('INVALID_ALPHA_TEXT');
-    copilot.sendQuery('DO_NOT_ECHO');
+    expect(fetcher).not.toHaveBeenCalled();
+    copilot.sendQuery('  User-authored question  ');
     copilot.dispatchAction({ id: 'invalid' } as Parameters<typeof copilot.dispatchAction>[0]);
   });
   await settle();
   expect(impact.data).toBeUndefined();
   expect(config.config).toBeUndefined();
   expect(copilot.recommendations).toEqual([]);
-  expect(copilot.chatHistory[0].textEn).toBe(unavailableMessage);
-  expect(JSON.stringify(copilot.chatHistory)).not.toContain('DO_NOT_ECHO');
-  expect(fetch).not.toHaveBeenCalled();
+  expect(copilot.chatHistory).toHaveLength(1);
+  expect(copilot.chatHistory[0]).toMatchObject({ sender: 'user', textEn: 'User-authored question', textVi: 'User-authored question' });
+  expect(copilot.isUnavailable).toBe(false);
+  expect(copilot.isAsking).toBe(false);
+  expect(copilot.synthesis).toBeUndefined();
+  expect(copilot.synthesisError).toBe('Copilot request failed. Retry manually.');
+  expect(copilot.chatError).toBe('Copilot request failed. Retry manually.');
+  expect(copilot.actionError).toBe('Copilot returned an invalid response.');
+  expect(JSON.stringify(copilot)).not.toMatch(/SECRET_PASSWORD|SECRET_TOKEN|DO_NOT_ECHO|user:password/);
+  expect(fetcher).toHaveBeenCalledTimes(1);
+  expect(fetcher).toHaveBeenCalledWith(expect.stringContaining('/api/v1/copilot/ask'), expect.objectContaining({
+    method: 'POST', body: JSON.stringify({ query: 'User-authored question', context_ticker: useUiStore.getState().selectedTicker, active_module: 'pipeline_console' }),
+  }));
+  await settle(60000);
+  expect(fetcher).toHaveBeenCalledTimes(1);
   act(() => useUiStore.getState().setLocale('vi'));
   expect(container.textContent).not.toBe('Retry');
 });
@@ -954,7 +973,7 @@ it('rejects tiny market prices and keeps OHLCV returns finite or explicitly unav
   }
 });
 
-it('manages native HTMLDialogElement lifecycle, showModal autofocus, cancel Escape forwarding and focus restoration in unavailable mode', async () => {
+it('manages native HTMLDialogElement lifecycle, showModal autofocus, cancel Escape forwarding and focus restoration under transport failure', async () => {
   const onClose = vi.fn();
   function Harness({ isOpen, isDrawer }: { isOpen: boolean; isDrawer: boolean }) {
     return (
@@ -971,7 +990,7 @@ it('manages native HTMLDialogElement lifecycle, showModal autofocus, cancel Esca
     );
   }
 
-  // 1. Copilot Drawer unavailable lifecycle
+  // 1. Copilot Drawer transport failure lifecycle
   act(() => root.render(<Harness isOpen={false} isDrawer={true} />));
   const trigger = container.querySelector('#trigger-btn') as HTMLButtonElement;
   trigger.focus();
@@ -984,9 +1003,8 @@ it('manages native HTMLDialogElement lifecycle, showModal autofocus, cancel Esca
   expect(copilotDialog.open).toBe(true);
 
   // Initial focus modeled via showModal autofocus
-  const cancelBtn = Array.from(copilotDialog.querySelectorAll('button')).find(
-    (b) => (b as any).autofocus || b.hasAttribute('autofocus') || b.textContent === en.common.cancel
-  ) as HTMLButtonElement;
+  expect(copilotDialog.querySelector('[role="alert"]')?.textContent).toBe('Copilot request failed. Retry manually.');
+  const cancelBtn = copilotDialog.querySelector('button[aria-label="Close"]') as HTMLButtonElement;
   expect(cancelBtn).not.toBeNull();
   expect(document.activeElement).toBe(cancelBtn);
 
@@ -999,6 +1017,8 @@ it('manages native HTMLDialogElement lifecycle, showModal autofocus, cancel Esca
   // Focus restoration after close
   act(() => root.render(<Harness isOpen={false} isDrawer={true} />));
   await settle();
+  expect(copilotDialog.open).toBe(false);
+  expect(onClose).toHaveBeenCalledTimes(1);
   expect(document.activeElement).toBe(trigger);
   expect(container.querySelector('dialog')).toBeNull();
 
@@ -1241,7 +1261,7 @@ it('handles branch transitions without leaving stranded open dialogs', async () 
 it('cleans up dialogs and timers properly on unmount', async () => {
   const closeSpy = vi.spyOn(HTMLDialogElement.prototype, 'close');
   function UnmountHarness() {
-    return <OmniQuantCopilotDrawer isOpen={true} onClose={vi.fn()} />;
+    return <QueryClientProvider client={client}><OmniQuantCopilotDrawer isOpen={true} onClose={vi.fn()} /></QueryClientProvider>;
   }
   act(() => root.render(<UnmountHarness />));
   await settle();
@@ -1249,8 +1269,11 @@ it('cleans up dialogs and timers properly on unmount', async () => {
   expect(dialog).not.toBeNull();
   expect(dialog.open).toBe(true);
 
-  act(() => root.unmount());
-  expect(closeSpy).toHaveBeenCalled();
+  act(() => root.render(null));
+  expect(closeSpy).toHaveBeenCalledTimes(1);
+  expect(dialog.open).toBe(false);
+  expect(closed).toHaveBeenCalled();
+  expect(vi.getTimerCount()).toBe(0);
   expect(container.querySelector('dialog')).toBeNull();
 });
 

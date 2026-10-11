@@ -58,11 +58,11 @@ const ChatMessageList = memo(({
           <div
             className={`max-w-[85%] rounded-xl p-3 text-xs leading-relaxed ${
               msg.sender === 'user'
-                ? 'bg-emerald-600 text-white rounded-br-none shadow-md'
+                ? 'bg-emerald-700 text-white rounded-br-none shadow-md'
                 : 'bg-zinc-900 border border-white/10 text-zinc-200 rounded-bl-none'
             }`}
           >
-            <div className="flex items-center gap-1.5 mb-1 font-mono text-[10px] text-zinc-400 opacity-70">
+            <div className={`flex items-center gap-1.5 mb-1 font-mono text-[10px] ${msg.sender === 'user' ? 'text-white' : 'text-zinc-400'}`}>
               {msg.sender === 'user' ? (
                 <span>OPERATOR</span>
               ) : (
@@ -136,6 +136,7 @@ const ChatMessageList = memo(({
                   <button
                     key={aIdx}
                     onClick={() => onSendAction(action)}
+                  disabled={isAsking}
                     className="text-[10px] font-mono px-2 py-0.5 rounded bg-zinc-800 hover:bg-zinc-700 text-cyan-300 border border-cyan-500/30 transition-colors"
                   >
                     {action}
@@ -165,11 +166,11 @@ const SseTelemetryFeed = memo(({ streamEvents }: { streamEvents: CopilotStreamEv
         <Terminal className="w-3.5 h-3.5 text-cyan-400" />
         LIVE SSE STREAM EVENTS
       </span>
-      <span className="text-[10px] text-zinc-500">{streamEvents.length} events received</span>
+      <span className="text-[10px] text-zinc-400">{streamEvents.length} events received</span>
     </div>
     <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
       {streamEvents.length === 0 ? (
-        <p className="text-xs text-zinc-500 font-mono italic">Waiting for real-time telemetry stream...</p>
+        <p className="text-xs text-zinc-400 font-mono italic">Waiting for real-time telemetry stream...</p>
       ) : (
         streamEvents.map((ev, i) => (
           <div key={i} className="p-2 rounded bg-zinc-950/60 border border-white/5 flex items-start gap-2 text-xs font-mono">
@@ -183,7 +184,7 @@ const SseTelemetryFeed = memo(({ streamEvents }: { streamEvents: CopilotStreamEv
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between">
                 <span className="font-semibold text-zinc-200 truncate">{ev.title}</span>
-                <span className="text-[10px] text-zinc-500">{ev.timestamp ? ev.timestamp.split('T')[1]?.slice(0, 8) : ''}</span>
+                <span className="text-[10px] text-zinc-400">{ev.timestamp ? ev.timestamp.split('T')[1]?.slice(0, 8) : ''}</span>
               </div>
             </div>
           </div>
@@ -214,28 +215,26 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
     streamEvents,
     isSseConnected,
     isUnavailable,
+    synthesisError, isRecommendationsLoading, recommendationsError,
+    chatError, actionError, streamError,
   } = useCopilot(isOpen);
 
   const dialogRef = useRef<HTMLDialogElement>(null);
+  const openerRef = useRef<Element | null>(null);
+  const wasOpen = useRef(false);
+  if (isOpen && !wasOpen.current) openerRef.current = document.activeElement;
+  wasOpen.current = isOpen;
   useEffect(() => {
     const dialog = dialogRef.current;
-    const previousFocus = document.activeElement;
+    const previousFocus = openerRef.current;
     if (isOpen) dialog?.showModal();
     return () => {
       if (dialog?.open) dialog.close();
       if (isOpen && previousFocus instanceof HTMLElement && previousFocus.isConnected) previousFocus.focus();
     };
-  }, [isOpen, isUnavailable]);
+  }, [isOpen]);
 
   if (!isOpen) return null;
-  if (isUnavailable) return (
-    <dialog ref={dialogRef} onKeyDown={containModalFocus} aria-modal="true" aria-label={t.copilot.drawerTitle} data-drawer
-      onCancel={(event) => { event.preventDefault(); onClose(); }}
-      className="bg-zinc-950 text-zinc-100 p-4 backdrop:bg-black/60">
-      <p role="alert">{t.common.integrationUnavailable}</p>
-      <button type="button" autoFocus onClick={onClose}>{t.common.cancel}</button>
-    </dialog>
-  );
 
   const quickPrompts = [
     locale === 'vi' ? '🔍 Chuyển sang Sàng lọc và lọc cổ phiếu ROE > 20%' : '🔍 Switch to Screener and filter ROE > 20%',
@@ -272,7 +271,8 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
   return (
     <dialog ref={dialogRef} onKeyDown={containModalFocus} aria-modal="true" aria-label={t.copilot.drawerTitle} data-drawer
       onCancel={(event) => { event.preventDefault(); onClose(); }}
-      className="fixed inset-0 m-0 h-screen max-h-screen w-screen max-w-none z-50 flex justify-end bg-transparent text-zinc-100 backdrop:bg-black/60 backdrop:backdrop-blur-sm transition-all duration-300">
+      tabIndex={-1}
+      className="fixed inset-0 m-0 h-dvh max-h-dvh w-screen max-w-none z-50 flex justify-end bg-transparent text-zinc-100 backdrop:bg-black/60 [&_button]:focus-visible:outline-2 [&_button]:focus-visible:outline-emerald-300 [&_button]:focus-visible:outline-offset-2 [&_input]:focus-visible:outline-2 [&_input]:focus-visible:outline-emerald-300">
       {/* Backdrop click to close */}
       <div className="flex-1" onClick={onClose} />
 
@@ -317,6 +317,8 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
               onClick={() => refetchSynthesis()}
               className="p-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-zinc-300 transition-colors"
               title={t.common.refresh}
+              aria-label={t.common.refresh}
+              disabled={isSynthesisLoading || isRecommendationsLoading}
             >
               <RefreshCw className={`w-4 h-4 ${isSynthesisLoading ? 'animate-spin' : ''}`} />
             </button>
@@ -375,9 +377,13 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
         </div>
 
         {/* Tab Content Body */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 font-sans text-sm">
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 font-sans text-sm break-words">
+          {streamError && <p role="status" className="text-amber-300">{streamError}</p>}
+          {isUnavailable && <p role="alert" className="text-amber-300">{t.common.integrationUnavailable}</p>}
+          {activeTab === 'synthesis' && isSynthesisLoading && <p role="status">Loading system synthesis…</p>}
+          {activeTab === 'synthesis' && synthesisError && !isUnavailable && <p role="alert" className="text-red-300">{synthesisError}</p>}
           {/* TAB 1: SYSTEM SYNTHESIS */}
-          {activeTab === 'synthesis' && (
+          {activeTab === 'synthesis' && synthesis && !isSynthesisLoading && (
             <div className="space-y-4">
               {/* Executive Quant Verdict Banner */}
               <div className="p-3.5 rounded-xl bg-gradient-to-r from-emerald-950/60 to-cyan-950/40 border border-emerald-500/30 relative overflow-hidden">
@@ -387,15 +393,15 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
                     {t.copilot.systemVerdict}
                   </span>
                   <span className="px-2 py-0.5 rounded text-xs font-bold font-mono bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                    {synthesis?.holistic_verdict || 'ACCUMULATE_BULLISH'}
+                    {synthesis?.holistic_verdict}
                   </span>
                 </div>
                 <p className="text-xs text-zinc-200 leading-relaxed font-sans">
                   {locale === 'vi' ? synthesis?.verdict_reasoning_vi : synthesis?.verdict_reasoning_en}
                 </p>
                 <div className="mt-3 pt-2 border-t border-white/10 flex items-center justify-between text-[11px] font-mono text-zinc-400">
-                  <span>SCORE: <strong className="text-emerald-400">{synthesis?.executive_quant_score || 88.5}/100</strong></span>
-                  <span>FOCUS: <strong className="text-cyan-400">{synthesis?.focus_symbol || 'FPT'}</strong></span>
+                  <span>SCORE: <strong className="text-emerald-400">{synthesis.executive_quant_score}/100</strong></span>
+                  <span>FOCUS: <strong className="text-cyan-400">{synthesis?.focus_symbol}</strong></span>
                 </div>
               </div>
 
@@ -408,16 +414,16 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
                       <TrendingUp className="w-3.5 h-3.5" />
                       {t.copilot.macroVsiCii}
                     </span>
-                    <span className="text-[10px] text-zinc-400">{synthesis?.macro?.regime || 'EXPANSION'}</span>
+                    <span className="text-[10px] text-zinc-400">{synthesis?.macro?.regime}</span>
                   </div>
                   <div className="text-xs text-zinc-300 font-mono space-y-0.5">
                     <div className="flex justify-between">
-                      <span className="text-zinc-500">VSI Sentiment:</span>
-                      <span className="text-emerald-400 font-bold">{synthesis?.macro?.vsi_sentiment_score || 64.5} ({synthesis?.macro?.vsi_sentiment_level || 'GREED'})</span>
+                      <span className="text-zinc-400">VSI Sentiment:</span>
+                      <span className="text-emerald-400 font-bold">{synthesis?.macro?.vsi_sentiment_score} ({synthesis?.macro?.vsi_sentiment_level})</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-zinc-500">SBV OMO Net:</span>
-                      <span className="text-zinc-200">+{synthesis?.macro?.sbv_omo_injection_billion_vnd || 4500}B VND</span>
+                      <span className="text-zinc-400">SBV OMO Net:</span>
+                      <span className="text-zinc-200">+{synthesis?.macro?.sbv_omo_injection_billion_vnd}B VND</span>
                     </div>
                   </div>
                 </div>
@@ -429,16 +435,16 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
                       <Cpu className="w-3.5 h-3.5" />
                       {t.copilot.alphaArsenal}
                     </span>
-                    <span className="text-[10px] text-zinc-400">{synthesis?.alpha?.active_alphas_count || 52}/703 ACTIVE</span>
+                    <span className="text-[10px] text-zinc-400">{synthesis?.alpha?.active_alphas_count}/{synthesis?.alpha?.total_alpha_universe} ACTIVE</span>
                   </div>
                   <div className="text-xs text-zinc-300 font-mono space-y-0.5">
                     <div className="flex justify-between">
-                      <span className="text-zinc-500">Mean IC (t-stat):</span>
-                      <span className="text-emerald-400 font-bold">{synthesis?.alpha?.mean_ic || 0.084} ({synthesis?.alpha?.ic_tstat || 4.82})</span>
+                      <span className="text-zinc-400">Mean IC (t-stat):</span>
+                      <span className="text-emerald-400 font-bold">{synthesis?.alpha?.mean_ic} ({synthesis?.alpha?.ic_tstat})</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-zinc-500">Top Signal:</span>
-                      <span className="text-zinc-200 truncate max-w-[140px]">{synthesis?.alpha?.top_active_signal?.name || 'OBI Trend'}</span>
+                      <span className="text-zinc-400">Top Signal:</span>
+                      <span className="text-zinc-200 truncate max-w-[140px]">{synthesis?.alpha?.top_active_signal?.name}</span>
                     </div>
                   </div>
                 </div>
@@ -450,16 +456,16 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
                       <DollarSign className="w-3.5 h-3.5" />
                       {t.copilot.fundamentalScreener}
                     </span>
-                    <span className="text-[10px] text-zinc-400">{synthesis?.screener?.qualified_count || 48} QUALIFIED</span>
+                    <span className="text-[10px] text-zinc-400">{synthesis?.screener?.qualified_count} QUALIFIED</span>
                   </div>
                   <div className="text-xs text-zinc-300 font-mono space-y-0.5">
                     <div className="flex justify-between">
-                      <span className="text-zinc-500">Piotroski F / Altman Z:</span>
-                      <span className="text-zinc-200">{synthesis?.screener?.target_ticker_profile?.piotroski_f || 8}/9 | {synthesis?.screener?.target_ticker_profile?.altman_z || 3.42}</span>
+                      <span className="text-zinc-400">Piotroski F / Altman Z:</span>
+                      <span className="text-zinc-200">{synthesis?.screener?.target_ticker_profile?.piotroski_f}/9 | {synthesis?.screener?.target_ticker_profile?.altman_z}</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-zinc-500">ROE:</span>
-                      <span className="text-emerald-400 font-bold">{synthesis?.screener?.target_ticker_profile?.roe_pct || 26.5}%</span>
+                      <span className="text-zinc-400">ROE:</span>
+                      <span className="text-emerald-400 font-bold">{synthesis?.screener?.target_ticker_profile?.roe_pct}%</span>
                     </div>
                   </div>
                 </div>
@@ -471,16 +477,16 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
                       <Activity className="w-3.5 h-3.5" />
                       {t.copilot.riskTcaDecomp}
                     </span>
-                    <span className="text-[10px] text-zinc-400">CVaR99: {synthesis?.risk_tca?.cvar_99_pct || 2.68}%</span>
+                    <span className="text-[10px] text-zinc-400">CVaR99: {synthesis?.risk_tca?.cvar_99_pct}%</span>
                   </div>
                   <div className="text-xs text-zinc-300 font-mono space-y-0.5">
                     <div className="flex justify-between">
-                      <span className="text-zinc-500">Factor / Spec Risk:</span>
-                      <span className="text-zinc-200">{synthesis?.risk_tca?.factor_risk_pct || 11.25}% / {synthesis?.risk_tca?.specific_risk_pct || 3.57}%</span>
+                      <span className="text-zinc-400">Factor / Spec Risk:</span>
+                      <span className="text-zinc-200">{synthesis?.risk_tca?.factor_risk_pct}% / {synthesis?.risk_tca?.specific_risk_pct}%</span>
                     </div>
                     <div className="flex justify-between">
-                      <span className="text-zinc-500">Fastest Gateway:</span>
-                      <span className="text-zinc-200 truncate max-w-[140px]">{synthesis?.risk_tca?.fastest_gateway || 'VCI DMA 4.2ms'}</span>
+                      <span className="text-zinc-400">Fastest Gateway:</span>
+                      <span className="text-zinc-200 truncate max-w-[140px]">{synthesis?.risk_tca?.fastest_gateway}</span>
                     </div>
                   </div>
                 </div>
@@ -499,8 +505,9 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
                 <span>{recommendations.length} PENDING</span>
               </div>
 
-              {recommendations.length === 0 ? (
-                <div className="p-8 text-center text-zinc-500 font-mono text-xs">
+              {actionError && <p role="alert" className="text-red-300">{actionError}</p>}
+              {isRecommendationsLoading ? <p role="status">Loading recommendations…</p> : recommendationsError ? <p role="alert" className="text-red-300">{recommendationsError}</p> : recommendations.length === 0 ? (
+                <div className="p-8 text-center text-zinc-400 font-mono text-xs">
                   {t.copilot.noRecommendations}
                 </div>
               ) : (
@@ -537,8 +544,8 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
 
                         <button
                           onClick={() => dispatchAction(rec)}
-                          disabled={isExecuting}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-mono font-semibold transition-all shadow-md shadow-emerald-600/20 disabled:opacity-50"
+                          disabled={executingActionId !== null}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-700 hover:bg-emerald-800 text-white text-xs font-mono font-semibold transition-all shadow-md shadow-emerald-600/20 disabled:opacity-50"
                         >
                           {isExecuting ? (
                             <>
@@ -575,7 +582,7 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
               <div className="space-y-1.5 pt-2 border-t border-white/10">
                 <div className="flex items-center justify-between text-[11px] font-mono text-zinc-400">
                   <span>{t.copilot.quickChips}:</span>
-                  <button onClick={clearChat} className="text-zinc-500 hover:text-zinc-300 underline text-[10px]">
+                  <button onClick={clearChat} className="text-zinc-400 hover:text-zinc-300 underline text-[10px]">
                     {t.copilot.clearChat}
                   </button>
                 </div>
@@ -584,6 +591,7 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
                     <button
                       key={idx}
                       onClick={() => sendQuery(chip)}
+                    disabled={isAsking}
                       className="text-[11px] px-2 py-1 rounded bg-zinc-900 hover:bg-zinc-800 text-zinc-300 border border-white/10 hover:border-emerald-500/40 transition-colors text-left font-sans"
                     >
                       {chip}
@@ -592,20 +600,23 @@ export const OmniQuantCopilotDrawer: React.FC<OmniQuantCopilotDrawerProps> = ({ 
                 </div>
               </div>
 
+              {chatError && <p role="alert" className="text-red-300">{chatError}</p>}
               {/* Input Form Box */}
               <form onSubmit={handleSend} className="flex gap-2 pt-2">
                 <input
                   ref={inputRef}
                   type="text"
+                  aria-label={t.copilot.askPlaceholder}
+                  maxLength={4000}
                   value={inputPrompt}
                   onChange={(e) => setInputPrompt(e.target.value)}
                   placeholder={t.copilot.askPlaceholder}
-                  className="flex-1 bg-zinc-900 border border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-100 placeholder-zinc-500 focus:outline-none focus:border-emerald-500 font-sans"
+                  className="flex-1 bg-zinc-900 border border-white/10 rounded-lg px-3 py-2 text-xs text-zinc-100 placeholder-zinc-400 focus:outline-none focus:border-emerald-500 font-sans"
                 />
                 <button
                   type="submit"
                   disabled={isAsking || !inputPrompt.trim()}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg text-xs font-mono font-bold flex items-center gap-1.5 transition-colors"
+                  className="px-4 py-2 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-50 text-white rounded-lg text-xs font-mono font-bold flex items-center gap-1.5 transition-colors"
                 >
                   <Send className="w-3.5 h-3.5" />
                   <span>{t.copilot.sendBtn}</span>
