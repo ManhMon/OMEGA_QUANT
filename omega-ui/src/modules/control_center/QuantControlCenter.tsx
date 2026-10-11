@@ -1,6 +1,7 @@
 import React, { useRef, useState } from 'react';
 import { Activity, Bot, BrainCircuit, Database, FileCheck2, FlaskConical, Layers3, WalletCards } from 'lucide-react';
 import { apiClient } from '../../api/client';
+import type { OperationsCircuitBreakerResponse } from '../../api/advancedQuant';
 import { useControlOps } from '../../hooks/useControlOps';
 import { useTranslation } from '../../i18n';
 import { useUiStore } from '../../store/uiStore';
@@ -31,6 +32,8 @@ export const QuantControlCenter: React.FC = () => {
   const addToast = useUiStore((state) => state.addToast);
   const lockedOperations = useRef(new Set<string>());
   const { activeTaskList, isTotpModalOpen, setIsTotpModalOpen, isKillSwitchEngaged, setIsDrawerOpen, stopIngestTask, triggerIngestData, triggerComputeAlphas, triggerOptimizePortfolio, triggerRunBacktest, triggerKillSwitch } = useControlOps();
+  const [breakerObservation, setBreakerObservation] = useState<OperationsCircuitBreakerResponse | null>(null);
+  const halted = isKillSwitchEngaged || breakerObservation?.circuit_broken === true;
   const [totpAction, setTotpAction] = useState<'REBALANCE' | 'KILL_SWITCH'>('REBALANCE');
   const [sources, setSources] = useState(['vci']); const [forceRefresh, setForceRefresh] = useState(false);
   const [alphaUniverse, setAlphaUniverse] = useState('FPT,HPG,MBB,MWG');
@@ -53,11 +56,11 @@ export const QuantControlCenter: React.FC = () => {
       case 'receipts': return <ReceiptsTab onOpenOps={() => setIsDrawerOpen(true)} />;
       case 'copilot': return <CopilotTab />;
       case 'llm_bridge': return <LlmBridgeTab />;
-      default: return <OverviewTab activeTasks={activeTaskList} isKillSwitchEngaged={isKillSwitchEngaged} onOpenOps={() => setIsDrawerOpen(true)} onKillSwitch={() => { setTotpAction('KILL_SWITCH'); setIsTotpModalOpen(true); }} />;
+      default: return <OverviewTab onBreakerObservation={setBreakerObservation} activeTasks={activeTaskList} isKillSwitchEngaged={isKillSwitchEngaged} onOpenOps={() => setIsDrawerOpen(true)} onKillSwitch={() => { setTotpAction('KILL_SWITCH'); setIsTotpModalOpen(true); }} />;
     }
   };
   return <div className="flex h-full flex-col gap-4 font-mono">
-    <header className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-zinc-900/90 p-4"><div><h1 className="text-sm font-bold text-zinc-100">{t.controlCenter.title}</h1><p className="mt-1 text-xs text-zinc-500">Operations, research, execution governance.</p></div><span className={`rounded border px-2 py-1 text-[10px] font-bold ${isKillSwitchEngaged ? 'border-rose-500/30 bg-rose-950/50 text-rose-300' : 'border-emerald-500/30 bg-emerald-950/50 text-emerald-300'}`}>{isKillSwitchEngaged ? 'SYSTEM HALTED' : 'STANDBY ARMED'}</span></header>
+    <header className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-white/10 bg-zinc-900/90 p-4"><div><h1 className="text-sm font-bold text-zinc-100">{t.controlCenter.title}</h1><p className="mt-1 text-xs text-zinc-500">Operations, research, execution governance.</p></div><span role="status" className={`rounded border px-2 py-1 text-[10px] font-bold ${halted ? 'border-rose-500/30 bg-rose-950/50 text-rose-300' : breakerObservation ? 'border-emerald-500/30 bg-emerald-950/50 text-emerald-300' : 'border-white/20 text-zinc-300'}`}>{halted ? 'SYSTEM HALTED' : breakerObservation ? 'BREAKER NORMAL (OBSERVED)' : 'BREAKER UNAVAILABLE'}</span></header>
     <nav aria-label="Quant Control Center sections" className="flex flex-wrap gap-1 rounded-xl border border-white/10 bg-zinc-950 p-1.5">{CONTROL_CENTER_TABS.map((tab) => { const { label, icon: Icon } = TAB_META[tab]; return <button key={tab} type="button" aria-current={activeTab === tab ? 'page' : undefined} onClick={() => setActiveSubTab('control_center', tab)} className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold transition-colors ${activeTab === tab ? 'bg-cyan-400 text-zinc-950' : 'text-zinc-400 hover:bg-zinc-900 hover:text-zinc-100'}`}><Icon className="h-4 w-4" />{label}</button>; })}</nav>
     <main className="min-h-0 flex-1 overflow-y-auto rounded-xl border border-white/10 bg-zinc-950/60 p-4">{renderTab()}</main>
     <TotpRebalanceModal isOpen={isTotpModalOpen} onClose={() => setIsTotpModalOpen(false)} actionType={totpAction} title={totpAction === 'KILL_SWITCH' ? 'AUTHORIZE EMERGENCY HALT' : undefined} description={totpAction === 'KILL_SWITCH' ? 'Enter a 6-digit TOTP code to halt OMS gateways and cancel active orders.' : undefined} onConfirm={async (totp_code) => {

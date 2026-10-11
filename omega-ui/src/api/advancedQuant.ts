@@ -637,6 +637,26 @@ export interface ModelRollbackResponse {
   provenance?: ProvenanceEnvelope | null;
 }
 
+export interface OperationsSnapshot {
+  schema_version: 'operations/v1';
+  as_of: string;
+  available_at: string;
+  provenance: { source: 'PSUTIL_AND_DURABLE_JOB_QUEUE' | 'OMEGA_RISK_CIRCUIT_BREAKER'; sha256: string; normalized_timezone: 'UTC'; observation_mode: 'CURRENT_ONLY'; is_synthetic: false };
+}
+export interface SystemTelemetryResponse extends OperationsSnapshot {
+  cpu_usage_pct: number | null; memory_usage_mb: number | null; memory_usage_pct: number | null; memory_unit: 'MiB';
+  io_read_bytes: number | null; io_write_bytes: number | null; io_unit: 'bytes_cumulative_since_boot';
+  ipc_queue_depth: number | null; ipc_unit: 'queued_jobs';
+  gpu_telemetry: { usage_pct: number; memory_usage_mb: number; memory_unit: 'MiB' } | null;
+}
+export interface OperationsCircuitBreakerResponse extends OperationsSnapshot {
+  state: 'NORMAL' | 'TRIGGERED'; circuit_broken: boolean; reasons: ('Risk circuit breaker activated')[];
+  triggered_at: string | null; daily_pnl: null; drawdown_pct: null; max_drawdown_limit: null;
+}
+export interface ResourceGovernorUpdate {
+  mode?: 'MANUAL' | 'COPILOT'; target_concurrency?: number; thread_pool_size?: number; batch_size?: number;
+}
+
 export interface ResourceGovernorStateResponse {
   status: string;
   mode: 'MANUAL' | 'COPILOT';
@@ -800,6 +820,91 @@ export async function resilientApiRequest<T>(
       }
     }
   }
+}
+
+export function operationsTime(value: unknown): number {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,6})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value)) throw new Error('Invalid operations timestamp');
+  const parsed = alphaTimestamp(value), fraction = /\.(\d{1,6})/.exec(value)?.[1] || '';
+  return parsed + Number(fraction.padEnd(6, '0').slice(3)) / 1000;
+}
+function operationsSnapshot(value: unknown, source: OperationsSnapshot['provenance']['source'], fields: string[]) {
+  alphaFields(value, ['schema_version', 'as_of', 'available_at', 'provenance', ...fields]);
+  const r = alphaRecord(value), p = alphaRecord(r.provenance);
+  alphaFields(p, ['source', 'sha256', 'normalized_timezone', 'observation_mode', 'is_synthetic']);
+  if (r.schema_version !== 'operations/v1' || p.source !== source || typeof p.sha256 !== 'string' || !/^[0-9a-f]{64}$/.test(p.sha256) || p.normalized_timezone !== 'UTC' || p.observation_mode !== 'CURRENT_ONLY' || p.is_synthetic !== false || operationsTime(r.as_of) > operationsTime(r.available_at) || operationsTime(r.available_at) > Date.now()) throw new Error('Invalid current operations snapshot');
+  return r;
+}
+export function validateSystemTelemetry(value: unknown): SystemTelemetryResponse {
+  const r = operationsSnapshot(value, 'PSUTIL_AND_DURABLE_JOB_QUEUE', ['cpu_usage_pct', 'memory_usage_mb', 'memory_usage_pct', 'memory_unit', 'io_read_bytes', 'io_write_bytes', 'io_unit', 'ipc_queue_depth', 'ipc_unit', 'gpu_telemetry']);
+  if (r.memory_unit !== 'MiB' || r.io_unit !== 'bytes_cumulative_since_boot' || r.ipc_unit !== 'queued_jobs') throw new Error('Invalid operations units');
+  for (const key of ['cpu_usage_pct', 'memory_usage_pct']) if (r[key] !== null) alphaNumber(r[key], 0, 100);
+  if (r.memory_usage_mb !== null) alphaNumber(r.memory_usage_mb, 0, 1e12);
+  for (const key of ['io_read_bytes', 'io_write_bytes', 'ipc_queue_depth']) if (r[key] !== null) alphaNumber(r[key], 0, key === 'ipc_queue_depth' ? 1e9 : Number.MAX_SAFE_INTEGER, true);
+  if (r.gpu_telemetry !== null) {
+    alphaFields(r.gpu_telemetry, ['usage_pct', 'memory_usage_mb', 'memory_unit']);
+    const gpu = alphaRecord(r.gpu_telemetry);
+    alphaNumber(gpu.usage_pct, 0, 100); alphaNumber(gpu.memory_usage_mb, 0, 1e12);
+    if (gpu.memory_unit !== 'MiB') throw new Error('Invalid GPU unit');
+  }
+  return r as unknown as SystemTelemetryResponse;
+}
+export function validateOperationsBreaker(value: unknown): OperationsCircuitBreakerResponse {
+  const r = operationsSnapshot(value, 'OMEGA_RISK_CIRCUIT_BREAKER', ['state', 'circuit_broken', 'reasons', 'triggered_at', 'daily_pnl', 'drawdown_pct', 'max_drawdown_limit']);
+  const triggered = r.state === 'TRIGGERED', reasons = alphaArray(r.reasons, 1);
+  if (!['NORMAL', 'TRIGGERED'].includes(r.state as string) || r.circuit_broken !== triggered || reasons.length !== Number(triggered) || reasons.some((reason) => reason !== 'Risk circuit breaker activated') || (triggered ? operationsTime(r.triggered_at) > operationsTime(r.as_of) : r.triggered_at !== null) || r.daily_pnl !== null || r.drawdown_pct !== null || r.max_drawdown_limit !== null) throw new Error('Invalid operations breaker');
+  return r as unknown as OperationsCircuitBreakerResponse;
+}
+export function validateResourceGovernor(value: unknown): ResourceGovernorStateResponse {
+  alphaFields(value, ['status', 'mode', 'target_concurrency', 'thread_pool_size', 'batch_size', 'version', 'active_workers', 'queue_depth', 'system_load_pct', 'memory_usage_mb', 'mode_description', 'updated_at', 'provenance']);
+  const r = alphaRecord(value);
+  if (r.status !== 'success' || !['MANUAL', 'COPILOT'].includes(r.mode as string) || operationsTime(r.updated_at) > Date.now()) throw new Error('Invalid governor state');
+  for (const key of ['target_concurrency', 'thread_pool_size', 'batch_size', 'version', 'active_workers', 'queue_depth']) alphaNumber(r[key], ['active_workers', 'queue_depth'].includes(key) ? 0 : 1, Number.MAX_SAFE_INTEGER, true);
+  alphaNumber(r.system_load_pct, 0, 100); alphaNumber(r.memory_usage_mb, 0, 1e12); alphaText(r.mode_description, 512);
+  // ponytail: governor summary provenance is not measured system telemetry or authenticated lineage.
+  if (r.provenance != null) {
+    const p = alphaRecord(r.provenance);
+    validateAlphaProvenance(p);
+    if (p.source !== 'OMEGA_RESOURCE_GOVERNOR' || p.dataset_id !== 'governor_telemetry') throw new Error('Invalid governor provenance');
+  }
+  return r as unknown as ResourceGovernorStateResponse;
+}
+export function validateGovernorUpdate(value: unknown): ResourceGovernorUpdate {
+  alphaFields(value, ['mode', 'target_concurrency', 'thread_pool_size', 'batch_size']);
+  const r = alphaRecord(value);
+  if (!Object.keys(r).length || ('mode' in r && !['MANUAL', 'COPILOT'].includes(r.mode as string))) throw new Error('Invalid governor update');
+  for (const [key, max] of [['target_concurrency', 128], ['thread_pool_size', 256], ['batch_size', 10000]] as const) if (key in r) alphaNumber(r[key], 1, max, true);
+  return r as ResourceGovernorUpdate;
+}
+
+// ponytail: current operations JSON only, 64 KiB/10 seconds, no retries; share bounded transport when other APIs migrate.
+async function operationsRequest<T>(route: string, validate: (value: unknown) => T, signal?: AbortSignal, payload?: ResourceGovernorUpdate): Promise<T> {
+  const controller = new AbortController(), abort = () => controller.abort();
+  signal?.addEventListener('abort', abort, { once: true });
+  if (signal?.aborted) abort();
+  const timer = setTimeout(abort, 10000);
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  try {
+    if (controller.signal.aborted) throw new Error();
+    const response = await fetch(`${API_BASE}/api/v1/operations/${route}`, {
+      signal: controller.signal, headers: { Accept: 'application/json', ...(payload ? { 'Content-Type': 'application/json' } : {}) },
+      ...(payload ? { method: 'PATCH', body: JSON.stringify(payload) } : {}),
+    });
+    if (!response.ok || !response.body) throw new Error();
+    reader = response.body.getReader();
+    const decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
+    let raw = '', size = 0;
+    while (true) {
+      const chunk = await reader.read();
+      if (controller.signal.aborted) throw new Error();
+      if (chunk.done) break;
+      size += chunk.value.byteLength;
+      if (size > 65536) throw new Error();
+      raw += decoder.decode(chunk.value, { stream: true });
+    }
+    raw += decoder.decode();
+    return validate(JSON.parse(raw));
+  } catch { throw new Error(payload ? 'Governor update outcome unknown. Refresh operations before another update.' : 'Operations observation unavailable or invalid.'); }
+  finally { clearTimeout(timer); signal?.removeEventListener('abort', abort); try { await reader?.cancel(); } catch { /* Stream may already be aborted. */ } reader?.releaseLock(); }
 }
 
 export function formatAlphaMetric(value: unknown, digits = 2): string {
@@ -1985,17 +2090,12 @@ export const advancedQuantApi = {
       ...options,
     }),
 
-  getResourceGovernor: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
-    resilientApiRequest<ResourceGovernorStateResponse>('/api/v1/operations/resource-governor', { ...options, signal }),
+  getSystemTelemetry: (signal?: AbortSignal) => operationsRequest('system-telemetry', validateSystemTelemetry, signal),
+  getOperationsCircuitBreaker: (signal?: AbortSignal) => operationsRequest('circuit-breaker-status', validateOperationsBreaker, signal),
+  getResourceGovernor: (signal?: AbortSignal) => operationsRequest('resource-governor', validateResourceGovernor, signal),
 
-  updateResourceGovernor: (payload: { mode?: 'MANUAL' | 'COPILOT'; target_concurrency?: number; thread_pool_size?: number; batch_size?: number }, signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>
-    resilientApiRequest<ResourceGovernorStateResponse>('/api/v1/operations/resource-governor', {
-      method: 'PATCH',
-      body: JSON.stringify(payload),
-      headers: { 'Content-Type': 'application/json' },
-      signal,
-      ...options,
-    }),
+  updateResourceGovernor: async (payload: ResourceGovernorUpdate, signal?: AbortSignal) =>
+    operationsRequest('resource-governor', validateResourceGovernor, signal, validateGovernorUpdate(payload)),
 
   // Paper Trading Lifecycle & Execution Controls
   getPaperDaemonStatus: (signal?: AbortSignal, options?: AdvancedQuantRequestOptions) =>

@@ -2,7 +2,9 @@
 import React, { act } from 'react';
 import { createRoot, Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { advancedQuantApi } from '../api/advancedQuant';
+import { advancedQuantApi, validateSystemTelemetry, validateOperationsBreaker, validateResourceGovernor, validateGovernorUpdate, operationsTime } from '../api/advancedQuant';
+import { OverviewTab } from '../modules/control_center/tabs/OverviewTab';
+import { apiClient } from '../api/client';
 import { ModelRegistryView, validateModelCatalog, validateModelVersions, validateModelLineage } from '../modules/model_registry/ModelRegistryView';
 import { ConceptDriftPanel, DriftMonitorPanel, getRegistryEvidence, validateConceptDrift, validateMonitorStatus, registryTime } from '../modules/model_registry/DriftMonitorPanel';
 import { useUiStore } from '../store/uiStore';
@@ -10,6 +12,11 @@ import { QuantControlCenter } from '../modules/control_center/QuantControlCenter
 import { PipelineOrchestrationConsole, PIPELINE_STAGES, pipelineRequest, validatePipelineTelemetry } from '../modules/pipeline_console/PipelineOrchestrationConsole';
 
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+const operationsBase = (source: 'PSUTIL_AND_DURABLE_JOB_QUEUE' | 'OMEGA_RISK_CIRCUIT_BREAKER') => ({ schema_version: 'operations/v1' as const, as_of: '2026-10-10T08:30:00Z', available_at: '2026-10-10T08:30:00Z', provenance: { source, sha256: 'a'.repeat(64), normalized_timezone: 'UTC' as const, observation_mode: 'CURRENT_ONLY' as const, is_synthetic: false as const } });
+const systemFrame = () => ({ ...operationsBase('PSUTIL_AND_DURABLE_JOB_QUEUE'), cpu_usage_pct: 0, memory_usage_mb: 512, memory_usage_pct: 50, memory_unit: 'MiB' as const, io_read_bytes: 0, io_write_bytes: 1024, io_unit: 'bytes_cumulative_since_boot' as const, ipc_queue_depth: 0, ipc_unit: 'queued_jobs' as const, gpu_telemetry: null });
+const breakerFrame = (triggered = false) => ({ ...operationsBase('OMEGA_RISK_CIRCUIT_BREAKER'), state: triggered ? 'TRIGGERED' as const : 'NORMAL' as const, circuit_broken: triggered, reasons: triggered ? ['Risk circuit breaker activated' as const] : [], triggered_at: triggered ? '2026-10-10T08:30:00Z' : null, daily_pnl: null, drawdown_pct: null, max_drawdown_limit: null });
+const governorFrame = () => ({ status: 'success', mode: 'MANUAL' as const, target_concurrency: 8, thread_pool_size: 16, batch_size: 256, version: 1, active_workers: 0, queue_depth: 0, system_load_pct: 0, memory_usage_mb: 0, mode_description: 'Manual policy summary', updated_at: '2026-10-10T08:30:00Z' });
 
 const MODEL = 'ALPHA_XGBOOST_V2';
 const lineage = () => ({ status: 'success', model_name: MODEL, version: 'v1.0.0', evidence_status: 'incomplete', provenance_status: 'registry_recorded_unverified', automated_retrain: false, automated_deploy: false,
@@ -50,7 +57,9 @@ describe('Phase 4 Model Governance & Resource Governor UI Lifecycle Tests', () =
       },
     });
 
-    // Mock advancedQuantApi Phase 4 methods
+    vi.spyOn(advancedQuantApi, 'getSystemTelemetry').mockResolvedValue(systemFrame());
+  vi.spyOn(advancedQuantApi, 'getOperationsCircuitBreaker').mockResolvedValue(breakerFrame());
+  // Mock advancedQuantApi Phase 4 methods
     vi.spyOn(advancedQuantApi, 'getModelList').mockResolvedValue({
       status: 'success',
       count: 2,
@@ -440,6 +449,171 @@ describe('Slice15 unknown envelope adversarial boundaries', () => {
     vi.stubGlobal('fetch', vi.fn());
     await expect(getRegistryEvidence('../bad', 'v1.0.0', 'lineage', new AbortController().signal)).rejects.toThrow();
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+describe('Slice19 operations boundaries', () => {
+  it('accepts zero, null, inclusive ICT close and microsecond ordering', () => {
+    expect(validateSystemTelemetry(systemFrame()).cpu_usage_pct).toBe(0);
+    const frame = systemFrame(); frame.memory_usage_mb = null as any;
+    expect(validateSystemTelemetry(frame).memory_usage_mb).toBeNull();
+    expect(operationsTime('2026-10-10T15:30:00+07:00')).toBe(operationsTime(frame.as_of));
+    expect(operationsTime('2026-10-10T08:30:00.000002Z')).toBeGreaterThan(operationsTime('2026-10-10T08:30:00.000001Z'));
+    expect(validateOperationsBreaker(breakerFrame(true)).triggered_at).toBe(frame.as_of);
+    expect(validateResourceGovernor(governorFrame()).active_workers).toBe(0);
+  });
+  it.each([undefined, NaN, Infinity, -Infinity, -1, 101, 1e13, '', '10', [], {}])('rejects malformed measurements %s', (bad) => {
+    expect(() => validateSystemTelemetry({ ...systemFrame(), cpu_usage_pct: bad })).toThrow();
+    expect(() => validateResourceGovernor({ ...governorFrame(), system_load_pct: bad })).toThrow();
+    if (bad !== 101) expect(() => validateGovernorUpdate({ target_concurrency: bad })).toThrow();
+    else expect(validateGovernorUpdate({ target_concurrency: bad }).target_concurrency).toBe(101);
+  });
+  it.each([null, [], '', {}, { mode: undefined }, { mode: null }, { mode: 'AUTO' }, { mode: 'MANUAL', unexpected: true }, { batch_size: 10001 }, { thread_pool_size: 257 }, { target_concurrency: 129 }])('rejects malformed update before network %s', async (bad) => {
+    vi.stubGlobal('fetch', vi.fn());
+    await expect(advancedQuantApi.updateResourceGovernor(bad as any)).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+  it.each(['schema', 'source', 'digest', 'synthetic', 'future', 'order', 'microseconds', 'unit', 'missing', 'extra', 'gpu', 'counter', 'queue'])('rejects telemetry contract drift %s', (kind) => {
+    const r: any = systemFrame();
+    if (kind === 'schema') r.schema_version = 'operations/v2';
+    if (kind === 'source') r.provenance.source = 'caller_sample';
+    if (kind === 'digest') r.provenance.sha256 = 'x';
+    if (kind === 'synthetic') r.provenance.is_synthetic = true;
+    if (kind === 'future') r.available_at = '2099-01-01T00:00:00Z';
+    if (kind === 'order') r.as_of = '2026-10-11T00:00:00Z';
+    if (kind === 'microseconds') { r.as_of = '2026-10-10T08:30:00.000002Z'; r.available_at = '2026-10-10T08:30:00.000001Z'; }
+    if (kind === 'unit') r.memory_unit = 'GB';
+    if (kind === 'missing') delete r.cpu_usage_pct;
+    if (kind === 'extra') r.verified_pit = true;
+    if (kind === 'gpu') r.gpu_telemetry = { usage_pct: 0, memory_usage_mb: 0, memory_unit: 'GB' };
+    if (kind === 'counter') r.io_read_bytes = Number.MAX_SAFE_INTEGER + 1;
+    if (kind === 'queue') r.ipc_queue_depth = 1e9 + 1;
+    expect(() => validateSystemTelemetry(r)).toThrow();
+  });
+  it.each(['state', 'flag', 'reason', 'time', 'future', 'pnl', 'missing'])('rejects unsafe breaker contract %s', (kind) => {
+    const r: any = breakerFrame(true);
+    if (kind === 'state') r.state = 'normal';
+    if (kind === 'flag') r.circuit_broken = false;
+    if (kind === 'reason') r.reasons = ['https://user:secret@provider'];
+    if (kind === 'time') r.triggered_at = null;
+    if (kind === 'future') r.triggered_at = '2026-10-10T08:30:00.000001Z';
+    if (kind === 'pnl') r.daily_pnl = 0;
+    if (kind === 'missing') delete r.provenance;
+    expect(() => validateOperationsBreaker(r)).toThrow();
+  });
+  it.each(['2026-02-30T00:00:00Z', '2026-10-10', '2026-10-10T00:00:00', '2026-10-10T24:00:00Z', 'NaN'])('rejects malformed time %s', (time) => expect(() => operationsTime(time)).toThrow());
+});
+
+describe('Slice19 Control Center lifecycle', () => {
+  let container: HTMLDivElement, root: Root, initial: ReturnType<typeof useUiStore.getState>, unmounted: boolean;
+  const settle = async () => { await act(async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); }); };
+  const button = (text: string) => [...container.querySelectorAll('button')].find((item) => item.textContent === text)!;
+  beforeEach(() => {
+    initial = useUiStore.getState(); useUiStore.setState({ activeSubTabs: { ...initial.activeSubTabs, control_center: 'overview' }, isKillSwitchEngaged: false, toasts: [] });
+    vi.spyOn(apiClient, 'getControlReceipts').mockResolvedValue({ status: 'success', receipts: [] } as any);
+    vi.spyOn(advancedQuantApi, 'getSystemTelemetry').mockResolvedValue(systemFrame());
+    vi.spyOn(advancedQuantApi, 'getOperationsCircuitBreaker').mockResolvedValue(breakerFrame());
+    vi.spyOn(advancedQuantApi, 'getResourceGovernor').mockResolvedValue(governorFrame());
+    vi.spyOn(advancedQuantApi, 'updateResourceGovernor').mockResolvedValue({ ...governorFrame(), mode: 'COPILOT', version: 2 });
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); unmounted = false;
+  });
+  afterEach(() => { if (!unmounted) act(() => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); useUiStore.setState(initial, true); });
+  const render = () => act(() => root.render(React.createElement(QuantControlCenter)));
+  it('renders authoritative halt, measured zero, unavailable GPU and no purple; keeps ops drawer', async () => {
+    vi.mocked(advancedQuantApi.getOperationsCircuitBreaker).mockResolvedValue(breakerFrame(true));
+    render(); await settle();
+    expect(container.textContent).toContain('SYSTEM HALTED'); expect(button('SYSTEM HALTED').disabled).toBe(true);
+    expect(container.textContent).toContain('CPU usage (%)0.00'); expect(container.textContent).toContain('GPU usage (%)--');
+    expect(container.textContent).toContain('bytes since boot'); expect(container.textContent).not.toContain('STANDBY ARMED');
+    expect(container.innerHTML).not.toMatch(/purple|violet|fuchsia/i);
+    act(() => button('OPEN OPS DRAWER').click()); expect(useUiStore.getState().isOpsDrawerOpen).toBe(true);
+    expect(useUiStore.getState().isKillSwitchEngaged).toBe(false);
+  });
+  it('partial failure keeps independent telemetry; no false normal or raw secrets', async () => {
+    vi.mocked(advancedQuantApi.getOperationsCircuitBreaker).mockRejectedValue(new Error('https://user:secret@provider'));
+    render(); await settle();
+    expect(container.textContent).toContain('BREAKER UNAVAILABLE'); expect(container.textContent).toContain('CPU usage (%)0.00');
+    expect(container.textContent).not.toContain('secret'); expect(container.textContent).not.toContain('NORMAL');
+  });
+  it('serializes write, passes abort signal, reconciles unknown outcome before another write', async () => {
+    let reject!: (error: Error) => void;
+    vi.mocked(advancedQuantApi.updateResourceGovernor).mockImplementation(() => new Promise((_resolve, fail) => { reject = fail; }));
+    render(); await settle(); act(() => { button('SWITCH TO COPILOT').click(); button('SWITCH TO COPILOT').click(); });
+    expect(advancedQuantApi.updateResourceGovernor).toHaveBeenCalledTimes(1);
+    expect(advancedQuantApi.updateResourceGovernor).toHaveBeenCalledWith({ mode: 'COPILOT' }, expect.any(AbortSignal));
+    await act(async () => { reject(new Error('secret')); });
+    expect(container.textContent).toContain('outcome unknown'); expect(button('SWITCH TO COPILOT').disabled).toBe(true);
+    expect(container.textContent).not.toContain('secret');
+    act(() => button('REFRESH OPERATIONS').click()); await settle(); expect(button('SWITCH TO COPILOT').disabled).toBe(false);
+  });
+  it.each(['read', 'write'])('tab exit aborts %s; late failure stays silent and reentry gets fresh state', async (kind) => {
+    let reject!: (error: Error) => void, signal!: AbortSignal;
+    if (kind === 'read') vi.mocked(advancedQuantApi.getSystemTelemetry).mockImplementationOnce((s) => { signal = s!; return new Promise((_resolve, fail) => { reject = fail; }); });
+    render(); await settle();
+    if (kind === 'write') { vi.mocked(advancedQuantApi.updateResourceGovernor).mockImplementationOnce((_p, s) => { signal = s!; return new Promise((_resolve, fail) => { reject = fail; }); }); act(() => button('SWITCH TO COPILOT').click()); }
+    act(() => button('Receipts').click()); expect(signal.aborted).toBe(true);
+    await act(async () => reject(new Error('secret'))); expect(useUiStore.getState().toasts).toHaveLength(0);
+    expect(container.textContent).toContain('BREAKER UNAVAILABLE');
+    act(() => button('Overview').click()); await settle(); expect(container.textContent).toContain('BREAKER NORMAL (OBSERVED)');
+  });
+  it('StrictMode ignores obsolete reads, serializes refresh and accepts confirmed mode updates', async () => {
+    let stale!: (value: ReturnType<typeof systemFrame>) => void;
+    vi.mocked(advancedQuantApi.getSystemTelemetry).mockImplementationOnce(() => new Promise((done) => { stale = done; }));
+    act(() => root.render(React.createElement(React.StrictMode, null, React.createElement(QuantControlCenter)))); await settle();
+    await act(async () => stale({ ...systemFrame(), cpu_usage_pct: 99 }));
+    expect(container.textContent).toContain('CPU usage (%)0.00'); expect(container.textContent).not.toContain('99.00');
+    act(() => { button('REFRESH OPERATIONS').click(); button('REFRESH OPERATIONS').click(); }); await settle();
+    expect(advancedQuantApi.getSystemTelemetry).toHaveBeenCalledTimes(3);
+    act(() => button('SWITCH TO COPILOT').click()); await settle();
+    expect(button('SWITCH TO MANUAL').disabled).toBe(false);
+  });
+  it('write success after unmount is ignored; local authorized halt survives a normal observation', async () => {
+    let resolve!: (value: ReturnType<typeof governorFrame>) => void, signal!: AbortSignal;
+    useUiStore.setState({ isKillSwitchEngaged: true }); render(); await settle();
+    expect(container.textContent).toContain('SYSTEM HALTED');
+    vi.mocked(advancedQuantApi.updateResourceGovernor).mockImplementationOnce((_payload, s) => { signal = s!; return new Promise((done) => { resolve = done; }); });
+    act(() => button('SWITCH TO COPILOT').click()); act(() => root.unmount()); unmounted = true;
+    expect(signal.aborted).toBe(true); await act(async () => resolve(governorFrame())); expect(useUiStore.getState().toasts).toHaveLength(0);
+  });
+  it('late read success after unmount never publishes a breaker state', async () => {
+    let resolve!: (value: ReturnType<typeof breakerFrame>) => void;
+    vi.mocked(advancedQuantApi.getOperationsCircuitBreaker).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+    const observed = vi.fn(); act(() => root.render(React.createElement(OverviewTab, { activeTasks: [], isKillSwitchEngaged: false, onOpenOps: vi.fn(), onKillSwitch: vi.fn(), onBreakerObservation: observed })));
+    act(() => root.unmount()); unmounted = true;
+    await act(async () => resolve(breakerFrame(true))); expect(observed).not.toHaveBeenCalledWith(expect.objectContaining({ state: 'TRIGGERED' }));
+  });
+});
+
+describe('Slice19 operations transport', () => {
+  afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
+  it.each([424, 422, 429, 500])('does not retry HTTP %s or disclose body', async (status) => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('https://user:secret@provider', { status })));
+    await expect(advancedQuantApi.getSystemTelemetry()).rejects.toThrow('Operations observation unavailable or invalid.');
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+  it.each(['oversized', 'utf8', 'bom', 'malformed'])('rejects bounded JSON %s', async (kind) => {
+    const body = kind === 'oversized' ? 'x'.repeat(65537) : kind === 'utf8' ? new Uint8Array([255]) : kind === 'bom' ? '﻿' + JSON.stringify(systemFrame()) : '{';
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(body)));
+    await expect(advancedQuantApi.getSystemTelemetry()).rejects.toThrow('Operations observation unavailable or invalid.');
+  });
+  it('accepts CRLF JSON and validated PATCH; fixed route and no caller query', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(systemFrame(), null, 2).replace(/\n/g, '\r\n'))));
+    expect((await advancedQuantApi.getSystemTelemetry()).cpu_usage_pct).toBe(0);
+    vi.mocked(fetch).mockResolvedValueOnce(new Response(JSON.stringify(governorFrame())));
+    await advancedQuantApi.updateResourceGovernor({ mode: 'MANUAL' });
+    expect(fetch).toHaveBeenLastCalledWith(expect.stringContaining('/api/v1/operations/resource-governor'), expect.objectContaining({ method: 'PATCH', body: '{"mode":"MANUAL"}' }));
+  });
+  it.each(['read', 'write'])('bounds %s timeout and leaves no timers', async (kind) => {
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', vi.fn((_url, init) => new Promise((_resolve, reject) => init!.signal!.addEventListener('abort', () => reject(new Error('secret'))))));
+    const result = kind === 'read' ? advancedQuantApi.getSystemTelemetry() : advancedQuantApi.updateResourceGovernor({ mode: 'MANUAL' });
+    const assertion = expect(result).rejects.toThrow(kind === 'read' ? 'Operations observation unavailable or invalid.' : 'outcome unknown');
+    await vi.advanceTimersByTimeAsync(10000); await assertion; expect(fetch).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('pre-aborted reads do not fetch', async () => {
+    vi.stubGlobal('fetch', vi.fn()); const controller = new AbortController(); controller.abort();
+    await expect(advancedQuantApi.getSystemTelemetry(controller.signal)).rejects.toThrow(); expect(fetch).not.toHaveBeenCalled();
   });
 });
 

@@ -370,7 +370,7 @@ describe('Phase 3 UI Lifecycle & Adversarial Resistance Tests', () => {
     renderWithProviders(React.createElement(QuantControlCenter, null));
     await act(async () => { await Promise.resolve(); });
     await act(async () => { Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent === 'SWITCH TO COPILOT')?.click(); await Promise.resolve(); });
-    expect(governorUpdate).toHaveBeenCalledWith({ mode: 'COPILOT' });
+    expect(governorUpdate).toHaveBeenCalledWith({ mode: 'COPILOT' }, expect.any(AbortSignal));
     await act(async () => { Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent?.includes('Portfolio'))?.click(); });
     expect((container?.querySelector('select[aria-label="Optimization objective"]') as HTMLSelectElement).value).toBe('ALPHA_RANK_RISK_CAPPED');
     await act(async () => { Array.from(container?.querySelectorAll('button') ?? []).find((button) => button.textContent?.includes('Ingest'))?.click(); });
@@ -394,7 +394,7 @@ describe('Phase 3 UI Lifecycle & Adversarial Resistance Tests', () => {
     const button = Array.from(container?.querySelectorAll('button') ?? []).find((item) => item.textContent === 'SWITCH TO COPILOT') as HTMLButtonElement;
     await act(async () => { button.click(); button.click(); await Promise.resolve(); });
     expect(governorUpdate).toHaveBeenCalledTimes(1);
-    expect(useUiStore.getState().toasts.some((toast) => toast.title === 'Governor update failed' && toast.message === 'governor offline')).toBe(true);
+    expect(useUiStore.getState().toasts.some((toast) => toast.title === 'Governor update failed' && toast.message === 'Governor update outcome unknown. Refresh operations before another update.')).toBe(true);
   });
 
   it('7d. preserves lakehouse datasets when independent scheduler telemetry fails', async () => {
