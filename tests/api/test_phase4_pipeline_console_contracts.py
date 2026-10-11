@@ -348,7 +348,8 @@ def test_worker_cancellation_is_terminal(runner, request_class, monkeypatch):
     async def cancelled(*_):
         raise asyncio.CancelledError
     monkeypatch.setattr(control, "_run_pipeline_task", cancelled)
-    asyncio.run(getattr(control, runner)("job-test", getattr(control, request_class)()))
+    values = {"end_date": "2023-12-31"} if request_class == "RunBacktestRequest" else {}
+    asyncio.run(getattr(control, runner)("job-test", getattr(control, request_class)(**values)))
     assert control.TASKS["job-test"]["status"] == "CANCELLED"
     assert control.TASKS["job-test"]["result"] == {}
 

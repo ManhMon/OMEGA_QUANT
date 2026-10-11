@@ -193,13 +193,21 @@ def test_vsi_rejects_sentiment_parquet_without_availability(tmp_path, monkeypatc
     import omega.api.routes.sentiment as sentiment_mod
 
     source = tmp_path / "sentiment.parquet"
-    pd.DataFrame([{"title": "Early", "publish_time": "2026-08-20T10:00:00Z",
-                   "available_at": "2026-08-20T13:00:00Z", "sentiment_score": 0.9}]).to_parquet(source)
+    pd.DataFrame([
+        {"title": "Early", "publish_time": "2026-08-20T10:00:00Z",
+         "available_at": "2026-08-20T13:00:00Z", "sentiment_score": 0.9},
+        {"title": "Missing availability", "publish_time": "2026-08-20T10:00:00Z",
+         "available_at": None, "sentiment_score": 0.9},
+    ]).to_parquet(source)
     monkeypatch.setattr(sentiment_mod, "MACRO_NEWS_PATH", tmp_path / "absent.parquet")
     monkeypatch.setattr(sentiment_mod, "NEWS_SENTIMENT_PATH", source)
     response = client.get("/api/v1/sentiment/vsi?as_of=2026-08-20T12:00:00Z")
     assert response.status_code == 200
-    assert response.json()["is_synthetic"] is True
+    data = response.json()
+    assert data["article_count"] == 0
+    assert data["score"] == 50.0
+    assert data["is_synthetic"] is False
+    assert data["source"] == "vsi_engine"
 
 
 def test_latest_news_compares_both_stores_with_limit_one(tmp_path, monkeypatch, client):
