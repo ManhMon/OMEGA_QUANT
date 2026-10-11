@@ -1,5 +1,6 @@
 import React, { useEffect, useRef } from 'react';
 import { LandingDatabaseHub } from './modules/macro_cockpit/LandingDatabaseHub';
+import { MacroNewsHubView } from './modules/macro_news/MacroNewsHubView';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { CheckCircle2, AlertCircle, Info, AlertTriangle, X } from 'lucide-react';
 import { SideDock, type ModuleType } from './layout/SideDock';
@@ -45,7 +46,7 @@ const getModuleTitle = (module: ModuleType, t: typeof en): { title: string; tag:
     case 'strategy_lab':
       return { title: t.strategyLab.title, tag: 'STRATEGY_LAB' };
     case 'macro_cockpit':
-      return { title: t.macroCockpit.title, tag: 'MACRO_REGIME' };
+      return { title: t.nav.macroCockpit, tag: 'MACRO_REGIME' };
     case 'macro_news_hub':
       return { title: t.macroNews.title, tag: 'LLM_SENTIMENT' };
     case 'fundamental_matrix':
@@ -146,7 +147,7 @@ const DashboardContent: React.FC = () => {
       case 'macro_cockpit':
         return <LandingDatabaseHub />;
       case 'macro_news_hub':
-        return <LandingDatabaseHub />;
+        return <MacroNewsHubView />;
       case 'fundamental_matrix':
         return <FundamentalMatrixView />;
       case 'alpha_portfolio':
@@ -190,7 +191,7 @@ const DashboardContent: React.FC = () => {
               <span className="hidden sm:inline text-zinc-500">|</span>
               <span className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                <span className="text-zinc-300 font-bold">PIT_SAFE</span>
+                <span className="text-zinc-300 font-bold">{activeModule === 'macro_cockpit' ? 'PIT_CUTOFF' : activeModule === 'macro_news_hub' ? 'PROVENANCE_UNVERIFIED' : 'PIT_SAFE'}</span>
               </span>
             </div>
           </div>

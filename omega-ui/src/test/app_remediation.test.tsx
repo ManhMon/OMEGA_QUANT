@@ -212,7 +212,13 @@ describe('App remediation', () => {
   it.each([...modules, 'barra_risk_tca', 'chart_station', 'execution_blotter'] as ModuleType[])('mounts App branch %s', (module) => {
     act(() => useUiStore.getState().setActiveModule(module));
     const content = container.querySelector('main')!;
-    if (['macro_cockpit', 'macro_news_hub'].includes(module)) {
+    if (module === 'macro_news_hub') {
+      expect(content.querySelector('[data-testid="macro-news-hub-view"]')).not.toBeNull();
+      expect(content.textContent).toContain('PROVENANCE_UNVERIFIED');
+      expect(content.textContent).not.toContain('LandingDatabaseHub mounted');
+      expect(content.textContent).not.toContain('PIT_SAFE');
+      expect(content.innerHTML).not.toMatch(/purple|violet|fuchsia/i);
+    } else if (module === 'macro_cockpit') {
       expect(content.textContent).toContain('LandingDatabaseHub mounted');
       if (module === 'macro_cockpit') {
         expect(content.textContent).toContain('PIT_CUTOFF');

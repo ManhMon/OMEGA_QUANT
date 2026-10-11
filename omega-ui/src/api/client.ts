@@ -719,29 +719,35 @@ export interface BacktestResultData {
   monthly_returns: { year: number; months: number[] }[];
 }
 
+export interface MacroObservation {
+  is_synthetic: boolean;
+  source: string;
+}
+
 export interface MacroNewsItem {
   news_id: string;
   title: string;
-  summary?: string;
+  summary?: string | null;
   source: string;
-  symbol?: string;
-  sector?: string;
+  symbol?: string | null;
+  sector?: string | null;
   sentiment_score: number;
   polarity: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   macro_tags: string[];
   entities: string[];
   published_at: string;
-  url?: string;
+  available_at: string;
+  url?: string | null;
 }
 
-export interface MacroNewsLatestResponse {
+export interface MacroNewsLatestResponse extends MacroObservation {
   status: string;
   total_count: number;
   as_of: string;
   items: MacroNewsItem[];
 }
 
-export interface VSIGreedFearResponse {
+export interface VSIGreedFearResponse extends MacroObservation {
   status: string;
   score: number;
   level: string;
@@ -751,7 +757,7 @@ export interface VSIGreedFearResponse {
   bearish_ratio: number;
   neutral_ratio: number;
   sub_indices: Record<string, number>;
-  history_7d: { date: string; vsi_score: number; level: string }[];
+  history_7d: { date: string; as_of: string; vsi_score: number; level: string; article_count: number }[];
   as_of: string;
 }
 
@@ -765,7 +771,7 @@ export interface SectorContagionNode {
   correlated_sectors: { sector: string; correlation_weight: number }[];
 }
 
-export interface SectorContagionResponse {
+export interface SectorContagionResponse extends MacroObservation {
   status: string;
   overall_contagion_index: number;
   systemic_risk_level: string;
@@ -773,7 +779,7 @@ export interface SectorContagionResponse {
   nodes: SectorContagionNode[];
 }
 
-export interface LLMMacroIntelligenceResponse {
+export interface LLMMacroIntelligenceResponse extends MacroObservation {
   status: string;
   as_of: string;
   model: string;
@@ -786,6 +792,140 @@ export interface LLMMacroIntelligenceResponse {
   key_entities: string[];
   sentiment_confidence: number;
   executive_verdict: string;
+}
+
+function macroRecord(value: unknown): Record<string, any> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid macro observation');
+  return value as Record<string, any>;
+}
+function macroText(value: unknown, max = 65536): string {
+  if (typeof value !== 'string' || !value.trim() || value.length > max) throw new Error('Invalid macro text');
+  return value;
+}
+function macroNumber(value: unknown, min: number, max: number, integer = false): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < min || value > max || (integer && !Number.isInteger(value))) throw new Error('Invalid macro number');
+  return value;
+}
+function macroList(value: unknown, max: number): any[] {
+  if (!Array.isArray(value) || value.length > max) throw new Error('Invalid macro list');
+  return value;
+}
+function macroStrings(value: unknown) { macroList(value, 100).forEach((item) => macroText(item, 1024)); }
+
+export function macroTime(value: unknown): bigint {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d{1,9})?(?:Z|[+-](?:[01]\d|2[0-3]):[0-5]\d)$/.test(value)) throw new Error('Invalid macro timestamp');
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed) || new Date(`${value.slice(0, 10)}T00:00:00Z`).toISOString().slice(0, 10) !== value.slice(0, 10)) throw new Error('Invalid macro timestamp');
+  const fraction = /\.(\d{1,9})/.exec(value)?.[1] || '';
+  return BigInt(parsed) * 1000000n + BigInt(fraction.padEnd(9, '0').slice(3));
+}
+function macroSnapshot(value: unknown) {
+  const r = macroRecord(value);
+  if (r.status !== 'success' || typeof r.is_synthetic !== 'boolean' || macroTime(r.as_of) > BigInt(Date.now()) * 1000000n) throw new Error('Invalid macro snapshot');
+  macroText(r.source, 128);
+  if ((r.source === 'synthetic_simulation') !== r.is_synthetic) throw new Error('Invalid macro provenance');
+  return r;
+}
+export function validateMacroNews(value: unknown): MacroNewsLatestResponse {
+  const r = macroSnapshot(value), ids = new Set<string>();
+  const items = macroList(r.items, 100);
+  macroNumber(r.total_count, items.length, 1e12, true);
+  for (const raw of items) {
+    const item = macroRecord(raw), id = macroText(item.news_id, 256);
+    if (ids.has(id)) throw new Error('Duplicate macro news');
+    ids.add(id); macroText(item.title, 8192); macroText(item.source, 256);
+    for (const key of ['summary', 'symbol', 'sector', 'url']) if (item[key] != null) macroText(item[key], key === 'summary' ? 65536 : 8192);
+    macroNumber(item.sentiment_score, -1, 1);
+    if (!['BULLISH', 'BEARISH', 'NEUTRAL'].includes(item.polarity)) throw new Error('Invalid macro polarity');
+    macroStrings(item.macro_tags); macroStrings(item.entities);
+    if (macroTime(item.published_at) > macroTime(item.available_at) || macroTime(item.available_at) > macroTime(r.as_of)) throw new Error('Invalid news availability');
+  }
+  return r as MacroNewsLatestResponse;
+}
+export function validateMacroVSI(value: unknown): VSIGreedFearResponse {
+  const r = macroSnapshot(value);
+  macroNumber(r.score, 0, 100); macroNumber(r.article_count, 0, 1e12, true); macroNumber(r.avg_sentiment, -100, 100);
+  // Backend classifies before rounding the displayed score; validate vocabulary, not inferred thresholds.
+  const levels = ['extreme_fear', 'fear', 'neutral', 'greed', 'extreme_greed'];
+  if (!levels.includes(r.level)) throw new Error('Invalid VSI level');
+  const ratios = ['bullish_ratio', 'bearish_ratio', 'neutral_ratio'].map((key) => macroNumber(r[key], 0, 1));
+  if (Math.abs(ratios.reduce((a, b) => a + b, 0) - (r.article_count ? 1 : 0)) > 0.001) throw new Error('Invalid VSI ratios');
+  const indices = macroRecord(r.sub_indices);
+  if (Object.keys(indices).length > 100) throw new Error('Oversized VSI indices');
+  Object.values(indices).forEach((n) => macroNumber(n, 0, 100));
+  let previous = -1n;
+  for (const raw of macroList(r.history_7d, 8)) {
+    const point = macroRecord(raw), time = macroTime(point.as_of);
+    if (point.date !== point.as_of.slice(0, 10) || time <= previous || time > macroTime(r.as_of)) throw new Error('Invalid VSI history');
+    previous = time; macroNumber(point.vsi_score, 0, 100); macroNumber(point.article_count, 0, 1e12, true);
+    if (!levels.includes(point.level)) throw new Error('Invalid historical VSI level');
+  }
+  return r as VSIGreedFearResponse;
+}
+export function validateMacroContagion(value: unknown): SectorContagionResponse {
+  const r = macroSnapshot(value), names = new Set<string>();
+  macroNumber(r.overall_contagion_index, 0, 100); macroText(r.systemic_risk_level, 128);
+  const nodes = macroList(r.nodes, 32).map(macroRecord);
+  for (const node of nodes) {
+    const name = macroText(node.sector, 100);
+    if (names.has(name)) throw new Error('Duplicate sector');
+    names.add(name); macroNumber(node.stress_score, 0, 100); macroNumber(node.sentiment_delta, -1, 1); macroNumber(node.transmission_risk, 0, 1);
+    if (!['LOW', 'NORMAL', 'ELEVATED', 'HIGH', 'CRITICAL'].includes(node.contagion_level) || !['RISING', 'STABLE', 'FALLING'].includes(node.trend_24h)) throw new Error('Invalid sector state');
+  }
+  for (const node of nodes) {
+    const related = new Set<string>();
+    for (const raw of macroList(node.correlated_sectors, 32)) {
+      const edge = macroRecord(raw), name = macroText(edge.sector, 100);
+      if (name === node.sector || related.has(name)) throw new Error('Invalid sector relationship');
+      related.add(name); macroNumber(edge.correlation_weight, 0, 1);
+    }
+  }
+  return r as SectorContagionResponse;
+}
+export function validateMacroIntelligence(value: unknown): LLMMacroIntelligenceResponse {
+  const r = macroSnapshot(value);
+  for (const key of ['model', 'prompt_version', 'regime_summary', 'executive_verdict']) macroText(r[key]);
+  for (const key of ['primary_risks', 'catalysts', 'macro_tags', 'key_entities']) macroStrings(r[key]);
+  const impacts = macroRecord(r.sector_impacts);
+  if (Object.keys(impacts).length > 32) throw new Error('Oversized sector impacts');
+  Object.entries(impacts).forEach(([key, text]) => { macroText(key, 100); macroText(text); });
+  macroNumber(r.sentiment_confidence, 0, 1);
+  return r as LLMMacroIntelligenceResponse;
+}
+
+// ponytail: macro GETs only, 1 MiB/10 seconds; share transport when wider API scope is authorized.
+async function macroRequest<T>(path: string, validate: (value: unknown) => T, signal?: AbortSignal): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const abort = () => { clearTimeout(timer); controller.abort(); };
+  if (signal?.aborted) throw new Error('Macro observation unavailable or invalid.');
+  signal?.addEventListener('abort', abort, { once: true });
+  let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+  timer = setTimeout(abort, 10000);
+  const cancelled = new Promise<never>((_, reject) => controller.signal.addEventListener('abort', () => reject(new Error('Macro observation unavailable or invalid.')), { once: true }));
+  try {
+    const response = await Promise.race([fetch(`${API_BASE}${path}`, { signal: controller.signal, headers: { Accept: 'application/json' } }), cancelled]);
+    if (!response.ok || !response.body) throw new Error('Invalid macro response');
+    reader = response.body.getReader();
+    const chunks: Uint8Array[] = []; let size = 0;
+    while (true) {
+      const { done, value } = await Promise.race([reader.read(), cancelled]);
+      if (done) break;
+      size += value.byteLength;
+      if (size > 1048576) throw new Error('Oversized macro response');
+      chunks.push(value);
+    }
+    const bytes = new Uint8Array(size); let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+    if (text.startsWith('﻿') || controller.signal.aborted) throw new Error('Invalid macro encoding');
+    return validate(JSON.parse(text));
+  } catch {
+    throw new Error('Macro observation unavailable or invalid.');
+  } finally {
+    clearTimeout(timer); signal?.removeEventListener('abort', abort);
+    void reader?.cancel().catch(() => {}); controller.abort();
+  }
 }
 
 export interface BarraFactorExposure {
@@ -1352,44 +1492,27 @@ export const apiClient = {
   },
 
   // Macro News & LLM Sentiment APIs (Phase 7)
-  getMacroNewsLatest: async (params: { limit?: number; ticker?: string; sector?: string } = {}): Promise<MacroNewsLatestResponse> => {
-    const qParams = new URLSearchParams();
-    if (params.limit) qParams.append('limit', String(params.limit));
-    if (params.ticker) qParams.append('ticker', params.ticker);
-    if (params.sector) qParams.append('sector', params.sector);
-
-    const resp = await fetch(`${API_BASE}/api/v1/macro/news/latest?${qParams.toString()}`);
-    if (!resp.ok) {
-      throw new Error(`Failed to fetch latest macro news: HTTP ${resp.status} ${resp.statusText}`);
-    }
-    return await resp.json();
+  getMacroNewsLatest: async (params: { limit?: number; ticker?: string; sector?: string; as_of?: string } = {}, signal?: AbortSignal): Promise<MacroNewsLatestResponse> => {
+    const query = new URLSearchParams();
+    if (params.limit !== undefined) query.set('limit', String(macroNumber(params.limit, 1, 100, true)));
+    if (params.ticker !== undefined) query.set('ticker', macroText(params.ticker, 32));
+    if (params.sector !== undefined) query.set('sector', macroText(params.sector, 100));
+    if (params.as_of !== undefined) { macroTime(params.as_of); query.set('as_of', params.as_of); }
+    return macroRequest(`/api/v1/macro/news/latest?${query}`, validateMacroNews, signal);
   },
 
-  getVSISentiment: async (asOf?: string): Promise<VSIGreedFearResponse> => {
-    const qParams = new URLSearchParams();
-    if (asOf) qParams.append('as_of', asOf);
-
-    const resp = await fetch(`${API_BASE}/api/v1/sentiment/vsi?${qParams.toString()}`);
-    if (!resp.ok) {
-      throw new Error(`Failed to fetch VSI sentiment: HTTP ${resp.status} ${resp.statusText}`);
-    }
-    return await resp.json();
+  getVSISentiment: async (asOf?: string, signal?: AbortSignal): Promise<VSIGreedFearResponse> => {
+    const query = new URLSearchParams();
+    if (asOf !== undefined) { macroTime(asOf); query.set('as_of', asOf); }
+    return macroRequest(`/api/v1/sentiment/vsi?${query}`, validateMacroVSI, signal);
   },
 
-  getSectorContagion: async (): Promise<SectorContagionResponse> => {
-    const resp = await fetch(`${API_BASE}/api/v1/sentiment/contagion`);
-    if (!resp.ok) {
-      throw new Error(`Failed to fetch sector contagion: HTTP ${resp.status} ${resp.statusText}`);
-    }
-    return await resp.json();
+  getSectorContagion: async (signal?: AbortSignal): Promise<SectorContagionResponse> => {
+    return macroRequest('/api/v1/sentiment/contagion', validateMacroContagion, signal);
   },
 
-  getLLMMacroAnalysis: async (): Promise<LLMMacroIntelligenceResponse> => {
-    const resp = await fetch(`${API_BASE}/api/v1/sentiment/llm-analysis`);
-    if (!resp.ok) {
-      throw new Error(`Failed to fetch LLM macro analysis: HTTP ${resp.status} ${resp.statusText}`);
-    }
-    return await resp.json();
+  getLLMMacroAnalysis: async (signal?: AbortSignal): Promise<LLMMacroIntelligenceResponse> => {
+    return macroRequest('/api/v1/sentiment/llm-analysis', validateMacroIntelligence, signal);
   },
 
   // Phase 8: Barra Multi-Factor Risk & TCA Analytics

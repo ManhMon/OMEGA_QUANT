@@ -4,7 +4,8 @@ import { createRoot, Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { advancedQuantApi, validateSystemTelemetry, validateOperationsBreaker, validateResourceGovernor, validateGovernorUpdate, operationsTime } from '../api/advancedQuant';
 import { OverviewTab } from '../modules/control_center/tabs/OverviewTab';
-import { apiClient } from '../api/client';
+import { apiClient, macroTime, validateMacroNews, validateMacroVSI, validateMacroContagion, validateMacroIntelligence } from '../api/client';
+import { MacroNewsHubView } from '../modules/macro_news/MacroNewsHubView';
 import { ModelRegistryView, validateModelCatalog, validateModelVersions, validateModelLineage } from '../modules/model_registry/ModelRegistryView';
 import { ConceptDriftPanel, DriftMonitorPanel, getRegistryEvidence, validateConceptDrift, validateMonitorStatus, registryTime } from '../modules/model_registry/DriftMonitorPanel';
 import { useUiStore } from '../store/uiStore';
@@ -637,6 +638,107 @@ class PipelineSource {
   constructor(public url: string) { PipelineSource.instances.push(this); }
   send(value: unknown) { this.onmessage?.({ data: JSON.stringify(value) }); }
 }
+
+const macroBase = (source = 'parquet_store', is_synthetic = false) => ({ status: 'success', as_of: '2026-10-10T08:30:00.000000001Z', source, is_synthetic });
+const macroArticle = () => ({ news_id: 'news-1', title: 'Policy update', source: 'News desk', symbol: 'FPT', sector: 'Technology', summary: '<script>not executable</script>', sentiment_score: 0, polarity: 'NEUTRAL', macro_tags: ['SBV'], entities: ['SBV'], published_at: '2026-10-10T15:30:00+07:00', available_at: '2026-10-10T08:30:00.000000001Z', url: 'https://user:secret@host' });
+const macroNews = () => ({ ...macroBase(), total_count: 1, items: [macroArticle()] });
+const macroVSI = () => ({ ...macroBase('vsi_engine'), score: 50, level: 'neutral', article_count: 1, avg_sentiment: 0, bullish_ratio: 0, bearish_ratio: 0, neutral_ratio: 1, sub_indices: { retail_sentiment: 50 }, history_7d: [{ date: '2026-10-10', as_of: '2026-10-10T08:30:00Z', vsi_score: 50, level: 'neutral', article_count: 1 }] });
+const macroContagion = () => ({ ...macroBase('synthetic_simulation', true), overall_contagion_index: 0, systemic_risk_level: 'LOW', nodes: [{ sector: 'Technology', stress_score: 0, contagion_level: 'LOW', trend_24h: 'STABLE', sentiment_delta: 0, transmission_risk: 0, correlated_sectors: [{ sector: 'Telecommunication', correlation_weight: 0 }] }] });
+const macroIntelligence = () => ({ ...macroBase('synthetic_simulation', true), model: 'synthetic_macro_template', prompt_version: 'v1', regime_summary: 'Demonstration only', primary_risks: ['Rates'], catalysts: ['Policy'], sector_impacts: { Technology: 'No measured effect' }, macro_tags: ['SBV'], key_entities: ['SBV'], sentiment_confidence: 0, executive_verdict: 'Not trading advice' });
+const macroReply = (url: string) => url.includes('/news/latest') ? macroNews() : url.includes('/vsi?') ? macroVSI() : url.includes('/contagion') ? macroContagion() : macroIntelligence();
+
+describe('Slice21 macro news lifecycle', () => {
+  let container: HTMLDivElement, root: Root, unmounted: boolean;
+  let initial: ReturnType<typeof useUiStore.getState>;
+  const settle = async () => { await act(async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); }); };
+  const render = (strict = false) => act(() => root.render(React.createElement(strict ? React.StrictMode : React.Fragment, null, React.createElement(MacroNewsHubView))));
+  const button = (name: string) => container.querySelector<HTMLButtonElement>(`button[aria-label="${name}"]`)!;
+  beforeEach(() => {
+    vi.useFakeTimers(); vi.setSystemTime(new Date('2026-10-11T08:30:00Z'));
+    initial = useUiStore.getState(); useUiStore.setState({ ...initial, locale: 'en' }, true);
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => jsonResponse(macroReply(url))));
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container); unmounted = false;
+  });
+  afterEach(() => { if (!unmounted) act(() => root.unmount()); container.remove(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); useUiStore.setState(initial, true); });
+  it('renders honest independent snapshots, measured zero, matrix external targets and no purple', async () => {
+    render(); await settle(); expect(fetch).toHaveBeenCalledTimes(4);
+    expect(container.textContent).toContain('SIMULATION — Not live evidence'); expect(container.textContent).toContain('Observed — Not PIT-verified');
+    expect(container.querySelector('meter')?.value).toBe(50); expect(container.textContent).toContain('0.0%');
+    expect(container.querySelector('section[aria-label="Sector contagion matrix"] table')?.textContent).toContain('Telecommunication'); expect(container.textContent).toContain('0.00');
+    expect(container.textContent).not.toContain('secret'); expect(container.querySelector('script')).toBeNull(); expect(container.querySelector('a')).toBeNull();
+    expect(container.innerHTML).not.toMatch(/purple|violet|fuchsia/i); expect(container.textContent).not.toContain('SSE STREAM ACTIVE');
+    const input = container.querySelector('input')!;
+    act(() => { Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'missing'); input.dispatchEvent(new Event('input', { bubbles: true })); });
+    expect(container.textContent).toContain('No news matching filters.');
+    act(() => useUiStore.getState().setLocale('vi')); expect(container.textContent).toContain('Trung tâm tin tức vĩ mô'); expect(fetch).toHaveBeenCalledTimes(4);
+  });
+  it('isolates failure, clears old data, serializes manual retry and never exposes errors', async () => {
+    render(); await settle(); vi.mocked(fetch).mockImplementation(async (url) => String(url).includes('/vsi?') ? new Response('secret', { status: 429 }) : jsonResponse(macroReply(String(url))));
+    act(() => { button('Refresh Vietnam Sentiment Index (VSI)').click(); button('Refresh Vietnam Sentiment Index (VSI)').click(); }); await settle();
+    expect(fetch).toHaveBeenCalledTimes(5); expect(container.querySelector('meter')).toBeNull(); expect(container.textContent).toContain('Observation unavailable or invalid.'); expect(container.textContent).toContain('Policy update');
+    await act(async () => { await vi.advanceTimersByTimeAsync(120000); }); expect(fetch).toHaveBeenCalledTimes(5); expect(container.textContent).not.toContain('secret');
+    vi.mocked(fetch).mockImplementation(async (url) => jsonResponse(macroReply(String(url)))); act(() => button('Refresh Vietnam Sentiment Index (VSI)').click()); await settle(); expect(container.querySelector('meter')).not.toBeNull();
+  });
+  it('aborts all unmounted reads and ignores StrictMode obsolete completion', async () => {
+    let resolve!: (value: Response) => void, oldSignal!: AbortSignal;
+    vi.mocked(fetch).mockImplementationOnce((_url, init) => { oldSignal = init!.signal as AbortSignal; return new Promise((done) => { resolve = done; }); });
+    render(true); await settle(); expect(oldSignal.aborted).toBe(true);
+    await act(async () => resolve(jsonResponse({ ...macroNews(), items: [{ ...macroArticle(), title: 'obsolete' }] }))); await settle(); expect(container.textContent).not.toContain('obsolete');
+    const signals: AbortSignal[] = [];
+    vi.mocked(fetch).mockImplementation((_url, init) => { signals.push(init!.signal as AbortSignal); return new Promise(() => {}); });
+    act(() => root.render(null)); render(); await settle(); act(() => root.unmount()); unmounted = true; expect(signals).toHaveLength(4); expect(signals.every((signal) => signal.aborted)).toBe(true); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('shows no-sample VSI and empty news without invented scores', async () => {
+    vi.mocked(fetch).mockImplementation(async (url) => jsonResponse(String(url).includes('/vsi?') ? { ...macroVSI(), article_count: 0, neutral_ratio: 0 } : String(url).includes('/news/latest') ? { ...macroNews(), total_count: 0, items: [] } : macroReply(String(url))));
+    render(); await settle(); expect(container.querySelector('meter')).toBeNull(); expect(container.textContent).toContain('VSI unavailable — No article samples.'); expect(container.textContent).toContain('No news matching filters.');
+  });
+  it.each([null, undefined, [], '', 1, NaN, Infinity, -Infinity])('rejects malformed envelopes %s', (bad) => {
+    for (const validate of [validateMacroNews, validateMacroVSI, validateMacroContagion, validateMacroIntelligence]) expect(() => validate(bad)).toThrow();
+  });
+  it.each([null, '0', [], NaN, Infinity, -Infinity, -1, 1e12 + 1])('rejects invalid bounded numeric payloads %s', (bad) => {
+    expect(() => validateMacroVSI({ ...macroVSI(), score: bad })).toThrow(); expect(() => validateMacroContagion({ ...macroContagion(), overall_contagion_index: bad })).toThrow(); expect(() => validateMacroIntelligence({ ...macroIntelligence(), sentiment_confidence: bad })).toThrow();
+  });
+  it.each(['future', 'availability', 'nanosecond', 'duplicate', 'tags', 'title', 'synthetic', 'status', 'oversize'])('rejects news drift %s', (kind) => {
+    const data: any = macroNews();
+    if (kind === 'future') data.as_of = '2099-01-01T00:00:00Z'; if (kind === 'availability') data.items[0].available_at = '2026-10-09T00:00:00Z';
+    if (kind === 'nanosecond') data.items[0].available_at = '2026-10-10T08:30:00.000000002Z'; if (kind === 'duplicate') { data.items.push(data.items[0]); data.total_count = 2; }
+    if (kind === 'tags') data.items[0].macro_tags = [null]; if (kind === 'title') data.items[0].title = {}; if (kind === 'synthetic') delete data.is_synthetic;
+    if (kind === 'status') data.status = 'failed'; if (kind === 'oversize') data.items = Array(101).fill(data.items[0]); expect(() => validateMacroNews(data)).toThrow();
+  });
+  it.each(['ratios', 'level', 'history-future', 'history-duplicate', 'history-date', 'indices', 'confidence', 'impact', 'edge', 'node', 'delta', 'transmission'])('rejects indicator drift %s', (kind) => {
+    const vsi: any = macroVSI(), contagion: any = macroContagion(), intelligence: any = macroIntelligence();
+    if (kind === 'ratios') vsi.neutral_ratio = 0; if (kind === 'level') vsi.level = 'unknown'; if (kind === 'history-future') vsi.history_7d[0].as_of = '2099-01-01T00:00:00Z'; if (kind === 'history-duplicate') vsi.history_7d.push(vsi.history_7d[0]); if (kind === 'history-date') vsi.history_7d[0].date = '2026-10-09'; if (kind === 'indices') vsi.sub_indices = { bad: NaN };
+    if (kind === 'confidence') intelligence.sentiment_confidence = 2; if (kind === 'impact') intelligence.sector_impacts = { bad: [] }; if (kind === 'edge') contagion.nodes[0].correlated_sectors.push(contagion.nodes[0].correlated_sectors[0]); if (kind === 'node') contagion.nodes.push(contagion.nodes[0]); if (kind === 'delta') contagion.nodes[0].sentiment_delta = -2; if (kind === 'transmission') contagion.nodes[0].transmission_risk = 2;
+    expect(() => kind.startsWith('history') || ['ratios', 'level', 'indices'].includes(kind) ? validateMacroVSI(vsi) : ['confidence', 'impact'].includes(kind) ? validateMacroIntelligence(intelligence) : validateMacroContagion(contagion)).toThrow();
+  });
+  it('preserves inclusive ICT close, nanosecond ordering and zero values', () => {
+    expect(validateMacroVSI({ ...macroVSI(), score: 81, level: 'greed' }).level).toBe('greed');
+    expect(macroTime('2026-10-10T15:30:00+07:00')).toBe(macroTime('2026-10-10T08:30:00Z'));
+    expect(macroTime('2026-10-10T08:30:00.000000002Z') - macroTime('2026-10-10T08:30:00.000000001Z')).toBe(1n);
+    expect(validateMacroNews(macroNews()).items[0].sentiment_score).toBe(0); expect(validateMacroContagion(macroContagion()).nodes[0].transmission_risk).toBe(0);
+    for (const time of ['2026-02-30T08:30:00Z', '2026-10-10T24:00:00Z', '2026-10-10T08:30:00', '', null]) expect(() => macroTime(time)).toThrow();
+  });
+  it.each(['bad-json', 'null', 'bom', 'utf8', 'large', '429', '424', '500', 'network'])('bounds all four GET failure branches %s', async (kind) => {
+    vi.mocked(fetch).mockImplementation(async () => {
+      if (kind === 'network') throw new Error('https://user:secret@host');
+      const body = kind === 'null' ? 'null' : kind === 'bom' ? '﻿{}' : kind === 'utf8' ? new Uint8Array([255]) : kind === 'large' ? 'x'.repeat(1048577) : '{';
+      return new Response(body, { status: ['429', '424', '500'].includes(kind) ? Number(kind) : 200 });
+    });
+    for (const call of [() => apiClient.getMacroNewsLatest(), () => apiClient.getVSISentiment(), () => apiClient.getSectorContagion(), () => apiClient.getLLMMacroAnalysis()]) await expect(call()).rejects.toThrow('Macro observation unavailable or invalid.');
+    expect(fetch).toHaveBeenCalledTimes(4); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('accepts CRLF, encodes filters, rejects invalid queries before network', async () => {
+    vi.mocked(fetch).mockResolvedValue(new Response(JSON.stringify(macroNews(), null, 2).replace(/\n/g, '\r\n')));
+    await apiClient.getMacroNewsLatest({ limit: 1, ticker: 'FPT&limit=99', sector: 'A/B', as_of: '2026-10-10T15:30:00+07:00' });
+    const url = new URL(String(vi.mocked(fetch).mock.calls[0][0]), 'https://example.com'); expect(url.searchParams.get('ticker')).toBe('FPT&limit=99'); expect(url.searchParams.get('limit')).toBe('1');
+    vi.mocked(fetch).mockClear(); for (const limit of [0, -1, 101, NaN, Infinity]) await expect(apiClient.getMacroNewsLatest({ limit })).rejects.toThrow();
+    const controller = new AbortController(); controller.abort(); await expect(apiClient.getSectorContagion(controller.signal)).rejects.toThrow(); expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each(['fetch', 'body'])('times out stalled %s even when fetch ignores abort, with no retry', async (kind) => {
+    vi.mocked(fetch).mockImplementation(() => kind === 'fetch' ? new Promise(() => {}) : Promise.resolve(new Response(new ReadableStream({ start() {} }))));
+    const request = apiClient.getVSISentiment(), assertion = expect(request).rejects.toThrow('Macro observation unavailable or invalid.'); await vi.advanceTimersByTimeAsync(10000); await assertion; expect(fetch).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(0);
+  });
+});
 
 describe('Slice17 pipeline console lifecycle', () => {
   let container: HTMLDivElement;
