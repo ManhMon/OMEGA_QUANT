@@ -198,8 +198,14 @@ def infer_risk(scope: str) -> tuple[str, str]:
 class ParsedL3Args(tuple):
     model: str | None = None
     subagent_model: str | None = None
+    pre_audit_path: str | None = None
+    pre_audit_sha256: str | None = None
+    model_decision_path: str | None = None
+    model_decision_digest: str | None = None
+    resume: bool = False
+    force_new: bool = False
 
-    def __new__(cls, pos0, pos1, pos2, pos3, pos4, risk, run, model=None, subagent_model=None, pre_audit_path=None, pre_audit_sha256=None, model_decision_path=None, model_decision_digest=None):
+    def __new__(cls, pos0, pos1, pos2, pos3, pos4, risk, run, model=None, subagent_model=None, pre_audit_path=None, pre_audit_sha256=None, model_decision_path=None, model_decision_digest=None, resume=False, force_new=False):
         inst = super().__new__(cls, (pos0, pos1, pos2, pos3, pos4, risk, run))
         inst.model = model
         inst.subagent_model = subagent_model
@@ -207,6 +213,8 @@ class ParsedL3Args(tuple):
         inst.pre_audit_sha256 = pre_audit_sha256
         inst.model_decision_path = model_decision_path
         inst.model_decision_digest = model_decision_digest
+        inst.resume = resume
+        inst.force_new = force_new
         return inst
 
 
@@ -229,7 +237,9 @@ def parse_cli_args(args: list[str]):
             "  --risk LEVEL   Risk tier ('low', 'high') to select model\n"
             "  --model MODEL  Override model identifier explicitly\n"
             "  --subagent-model MODEL Override subagent model identifier explicitly\n"
-            "  --run          Execute command immediately after generation"
+            "  --run          Execute command immediately after generation\n"
+            "  --resume       Explicitly resume prior L3 session\n"
+            "  --force-new    Force new L3 session, bypassing resume detection"
         )
         sys.exit(0)
     if any(not isinstance(arg, str) or re.search(r"[\x00-\x1f\x7f-\x9f]", arg) for arg in args):
@@ -243,6 +253,8 @@ def parse_cli_args(args: list[str]):
     explicit_pre_audit_sha256: str | None = None
     explicit_model_decision_path: str | None = None
     explicit_model_decision_digest: str | None = None
+    explicit_resume: bool = False
+    explicit_force_new: bool = False
     run_mode = False
     i = 0
     while i < len(args):
@@ -320,6 +332,20 @@ def parse_cli_args(args: list[str]):
                 explicit_pre_audit_sha256 = args[i + 1]
             i += 2
             continue
+        if arg == "--resume":
+            if explicit_resume:
+                print("[ERROR] Duplicate --resume flag provided.", file=sys.stderr)
+                sys.exit(2)
+            explicit_resume = True
+            i += 1
+            continue
+        if arg == "--force-new":
+            if explicit_force_new:
+                print("[ERROR] Duplicate --force-new flag provided.", file=sys.stderr)
+                sys.exit(2)
+            explicit_force_new = True
+            i += 1
+            continue
         if arg.startswith("-"):
             print(f"[ERROR] Unknown or unsupported flag: '{arg}'.", file=sys.stderr)
             sys.exit(2)
@@ -329,15 +355,25 @@ def parse_cli_args(args: list[str]):
     if len(pos_args) != 5:
         print(
             "Usage: python scripts/dispatch_l3.py <l3_role_name> <gate_name> "
-            "<l2_session_id> <l2_role_name> <scope> [--risk low|high] [--model <model>] [--subagent-model <model>] [--run]",
+            "<l2_session_id> <l2_role_name> <scope> [--risk low|high] [--model <model>] [--subagent-model <model>] [--run] [--resume] [--force-new]",
             file=sys.stderr,
         )
+        sys.exit(2)
+
+    if explicit_resume and explicit_force_new:
+        print("[ERROR] Cannot specify both --resume and --force-new.", file=sys.stderr)
         sys.exit(2)
 
     if (explicit_model_decision_path is None) != (explicit_model_decision_digest is None):
         print("[ERROR] model decision path and digest must be supplied together.", file=sys.stderr)
         sys.exit(2)
-    return ParsedL3Args(pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, run_mode, model=explicit_model, subagent_model=explicit_subagent_model, pre_audit_path=explicit_pre_audit_path, pre_audit_sha256=explicit_pre_audit_sha256, model_decision_path=explicit_model_decision_path, model_decision_digest=explicit_model_decision_digest)
+    return ParsedL3Args(
+        pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4],
+        explicit_risk, run_mode, model=explicit_model, subagent_model=explicit_subagent_model,
+        pre_audit_path=explicit_pre_audit_path, pre_audit_sha256=explicit_pre_audit_sha256,
+        model_decision_path=explicit_model_decision_path, model_decision_digest=explicit_model_decision_digest,
+        resume=explicit_resume, force_new=explicit_force_new,
+    )
 
 
 def validate_pre_audit(path_value: str, expected_sha256: str, gate: str, session_id: str, role_name: str, expected_scope: list[str] | None = None) -> dict:
@@ -560,6 +596,7 @@ def main():
             risk, risk_reason, model, explicit_risk is not None, run_mode, graph_evidence,
             subagent_model=subagent_model, pre_audit=pre_audit_payload,
             jev_dimension_focus=decision.get("dimension_focus") if model_decision_path else None,
+            resume=args.resume, force_new=args.force_new,
         )
     finally:
         release_session_lock(lock_path)
@@ -654,11 +691,31 @@ def extract_prior_audit_outcomes(
     return [], [], None
 
 
+def _critic_mcp_config(gate: str, session: str, role: int, risk: str) -> str:
+    validate_identifier(gate, "gate_name")
+    validate_identifier(session, "session_id")
+    if type(role) is not int or not 17 <= role <= 30 or risk not in ("low", "medium", "high"):
+        raise ValueError("invalid L3 critic launch authority")
+    # Override only this server; preserve unrelated sparse Codex configuration.
+    quote = lambda value: json.dumps(value, ensure_ascii=True)
+    env = {"OMEGA_DISPATCH_GATE": gate, "OMEGA_DISPATCH_SESSION_ID": session,
+           "OMEGA_DISPATCH_ROLE_ID": str(role), "OMEGA_DISPATCH_RISK": "low" if risk == "low" else "high"}
+    bindings = ", ".join(f"{key} = {quote(value)}" for key, value in env.items())
+    return ('mcp_servers.omega-l3-critic = { command = ' + quote(sys.executable)
+            + ', args = [' + quote(str(REPO_ROOT / "scripts" / "l3_mcp_critic.py"))
+            + '], env = { ' + bindings
+            + ' }, env_vars = ["NINE_ROUTER_API_KEY", "9ROUTER_API_KEY", "ROUTER_API_KEY", '
+              '"OMEGA_LLM_BASE_URL", "OMEGA_LLM_API_KEY"], '
+              'enabled = true, required = true, enabled_tools = ["consult_critic"], '
+              'startup_timeout_sec = 30, tool_timeout_sec = 900 }')
+
+
 def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scope,
                       l3_role_id, l2_role_id, l3_session_id, report_path,
                       risk, risk_reason, model, _explicit_flag, run_mode, graph_evidence,
                        subagent_model: str = "cx/gpt-6-luna", pre_audit: dict | None = None,
-                       jev_dimension_focus: int | None = None):
+                       jev_dimension_focus: int | None = None,
+                       resume: bool = False, force_new: bool = False):
     # 4. Pre-create audit report file (containment-checked inside .ly_state/session)
     report_full = ensure_session_containment(REPO_ROOT / report_path, REPO_ROOT)
 
@@ -752,6 +809,16 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         f"{pre_audit_clause}"
         f"{adversarial_directive} "
         f"{test_slices_directive}"
+        f"MCP CRITIC: Consult consult_critic before the final verdict, purpose=adversarial_critique, "
+        f"model=cx/gpt-6.1-sol (cx/gpt-6-astra for difficult critique), "
+        f"gate={gate_name}, session_id={l3_session_id}, role_id={l3_role_id}, risk={'low' if risk == 'low' else 'high'}. "
+        f"Use schema_version=mcp-advisor-request/v1, unique request_id, UTC as_of_time and attributed observations; "
+        f"consult after collecting fresh audit/test evidence. The server captures a trusted consultation cutoff "
+        f"bounded by current UTC, not startup time: available_at <= as_of_time <= consultation cutoff. "
+        f"Never future-date evidence or supply a cutoff override. "
+        f"bind context_sha256 to canonical sanitized JSON bytes. Private authorization stays inside the server; "
+        f"never request a token. Required critic errors block completion. Critique is not approval; "
+        f"the independent Codex auditor retains verdict responsibility. "
         f"Report reset/snapshot evidence: pre_run_sha256={pre_run_digest}, pre_run_mtime_ns={pre_run_mtime_ns}; verify the report is newly written before verdict. "
         f"AUDIT EVIDENCE CHECKLIST: "
         f"1. Verify l2_role_id={l2_role_id} != l3_role_id={l3_role_id}. "
@@ -781,17 +848,52 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
     expected_digest = write_prompt_with_sha256(prompt_path, prompt)
     read_stmt = build_verified_prompt_read_statement(prompt_path, expected_digest)
 
+    # RESUME_FIRST_MANDATORY_20261008: Auto-detect resume condition unless --force-new
+    is_resume = False
+    resume_reason = ""
+    if force_new:
+        is_resume = False
+        resume_reason = "BYPASSED (--force-new explicitly provided)"
+    elif resume:
+        is_resume = True
+        resume_reason = "EXPLICIT_RESUME_FLAG"
+    elif "_rem" in l2_session_id:
+        is_resume = True
+        resume_reason = "REMEDIATION_CYCLE_DETECTED"
+    elif prior_report_file is not None:
+        is_resume = True
+        resume_reason = "PRIOR_AUDIT_DETECTED"
+
     if model.startswith("cx/"):
-        cmd = (
-            f'if (-not (Test-Path {ps_quote(report_path.replace("/", chr(92)))})) {{ New-Item -ItemType File -Path {ps_quote(report_path.replace("/", chr(92)))} -Force | Out-Null }}; '
-             f'{read_stmt} echo "" | codex exec -m {ps_quote(model)} --enable multi_agent -s danger-full-access '
-            f'--dangerously-bypass-approvals-and-sandbox $__OMEGA_PROMPT'
+        critic_config = _critic_mcp_config(gate_name, l3_session_id, l3_role_id, risk)
+        config_setup = (
+            f'$__OMEGA_CRITIC_CONFIG = {ps_quote(critic_config)}; '
+            'if ($PSVersionTable.PSVersion -lt [version]\'7.3\' -or $PSNativeCommandArgumentPassing -eq \'Legacy\') '
+            '{ $__OMEGA_CRITIC_CONFIG = $__OMEGA_CRITIC_CONFIG.Replace(\'"\', \'\\"\') }; '
         )
+        if is_resume:
+            cmd = (
+                f'if (-not (Test-Path {ps_quote(report_path.replace("/", chr(92)))})) {{ New-Item -ItemType File -Path {ps_quote(report_path.replace("/", chr(92)))} -Force | Out-Null }}; '
+                f'{read_stmt} {config_setup} $__OMEGA_PROMPT | codex exec resume --last --enable multi_agent '
+                f'-c $__OMEGA_CRITIC_CONFIG --dangerously-bypass-approvals-and-sandbox -'
+            )
+        else:
+            cmd = (
+                f'if (-not (Test-Path {ps_quote(report_path.replace("/", chr(92)))})) {{ New-Item -ItemType File -Path {ps_quote(report_path.replace("/", chr(92)))} -Force | Out-Null }}; '
+                f'{read_stmt} {config_setup} echo "" | codex exec -m {ps_quote(model)} --enable multi_agent -s danger-full-access '
+                f'-c $__OMEGA_CRITIC_CONFIG --dangerously-bypass-approvals-and-sandbox $__OMEGA_PROMPT'
+            )
     else:
-        cmd = (
-             f'{read_stmt} echo "" | opencode run -m {ps_quote(model)} --pure --dangerously-skip-permissions --print-logs '
-             f'--dir {ps_quote(str(REPO_ROOT))} $__OMEGA_PROMPT'
-        )
+        if is_resume:
+            cmd = (
+                 f'{read_stmt} echo "" | opencode resume {ps_quote(l3_session_id)} --pure --dangerously-skip-permissions --print-logs '
+                 f'--dir {ps_quote(str(REPO_ROOT))} $__OMEGA_PROMPT'
+            )
+        else:
+            cmd = (
+                 f'{read_stmt} echo "" | opencode run -m {ps_quote(model)} --pure --dangerously-skip-permissions --print-logs '
+                 f'--dir {ps_quote(str(REPO_ROOT))} $__OMEGA_PROMPT'
+            )
 
     # 7. Output
     print(f"L3_SESSION_ID={l3_session_id}")
@@ -804,6 +906,10 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
     print(f"RISK={risk}")
     print(f"REPORT={report_path}")
     print(f"GATE={gate_name}")
+    if is_resume:
+        print(f"RESUME_MODE=ACTIVE (RESUME_FIRST_MANDATORY_20261008: {resume_reason})")
+    elif force_new:
+        print("RESUME_MODE=BYPASSED (--force-new)")
     if pre_audit:
         print(f"PRE_AUDIT_PATH=.ly_state/session/pre_audit_{l2_session_id}.json")
         print(f"PRE_AUDIT_SHA256={hashlib.sha256((REPO_ROOT / '.ly_state' / 'session' / f'pre_audit_{l2_session_id}.json').read_bytes()).hexdigest()}")
