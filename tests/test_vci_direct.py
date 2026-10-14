@@ -17,7 +17,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-import scripts.ingest_all_market_data as iam
+import scripts.update_market_data as umd
+from datetime import date
+
+from omega.data.calendar import VNTradingCalendar
 
 from omega.data.vci_direct import (
     DirectVCIClient,
@@ -29,6 +32,16 @@ from omega.data.vci_direct import (
 from omega.data.market_flow import VNMarketFlowDataSource
 from omega.data.vnstock_client import RateLimiter, UpstreamTransportException, VnstockClient, atomic_write_with_backup
 from omega.quant.graph.fetcher import GraphFetcher, slice_vci_statement_envelope
+
+
+def _foreign_frame():
+    from omega.data.vci_direct import FOREIGN_FLOW_COLUMNS
+    return pd.DataFrame([["2026-01-02", 1000, 400, 600, 10, 4, 6]], columns=FOREIGN_FLOW_COLUMNS)
+
+
+def _ssi_row(day="02/01/2026"):
+    return {"symbol": "HPG", "trading_date": day, "foreign_buy_value_total": "1000",
+            "foreign_sell_value_total": "400", "foreign_buy_volume_total": "10", "foreign_sell_volume_total": "4"}
 
 
 def payload():
@@ -45,10 +58,475 @@ def test_direct_client_is_wired_into_data_adapters():
 def test_market_flow_uses_injected_vci_client():
     class Client:
         def foreign_trade(self, **kwargs):
-            return pd.DataFrame([{"trading_date": "2026-01-02"}])
+            return _foreign_frame()
 
     rows = VNMarketFlowDataSource(vci_client=Client()).fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")
     assert rows[0]["timestamp"]
+    assert rows[0]["buy_value"] == 1000
+    assert rows[0]["ownership"] is None
+
+
+def test_f007_ssi_history_and_all_facades_use_total_semantics(monkeypatch):
+    from omega.data.vnstock_client import Trading
+    calls = []
+    def ssi(name, arguments):
+        calls.append((name, arguments))
+        assert "exchange" not in arguments
+        return {"status": "success", "data": {"stocks": [_ssi_row()]}}
+    direct = DirectVCIClient(ssi_call=ssi)
+    monkeypatch.setattr(direct, "fetch_price_board", lambda *_: pytest.fail("Historical request reached live board"))
+    for fetch in (lambda: direct.foreign_trade("HPG", "2026-01-01", "2026-01-02"),
+                  lambda: Trading("HPG", direct_vci_client=direct).foreign_trade(start="2026-01-01", end="2026-01-02"),
+                  lambda: VnstockClient(direct_vci_client=direct).fetch_foreign_trade("HPG", "2026-01-01", "2026-01-02")):
+        frame = fetch()
+        assert frame.iloc[0]["fr_buy_value_total"] == 1000
+        assert "fr_buy_value_matched" not in frame
+        assert frame.attrs["historical_pit_verified"] is False
+    assert calls[0] == ("marketdata_list_daily_stock_infor", {"symbol": "HPG", "range": "1d", "toDate": "02/01/2026", "pageSize": 200, "pageIndex": 1})
+    assert VNMarketFlowDataSource(vci_client=direct).fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")[0]["net_value"] == 600
+
+
+def test_f007_ssi_accepts_ok_status_and_explicit_token():
+    calls = []
+    def ssi(name, arguments):
+        calls.append((name, arguments))
+        return {"status": "ok", "data": {"stocks": [_ssi_row()]}}
+
+    client = DirectVCIClient(ssi_call=ssi, ssi_token="test-token")
+    assert client.ssi_token == "test-token"
+    frame = client.foreign_trade("HPG", "2026-01-01", "2026-01-02")
+    assert not frame.empty
+    assert frame.iloc[0]["fr_buy_value_total"] == 1000
+
+    with pytest.raises(ValueError, match="ssi_token must be string"):
+        DirectVCIClient(ssi_token=123)
+
+    res = client.call_ssi("marketdata_list_daily_stock_infor", {"symbol": "HPG"})
+    assert res["status"] == "ok"
+
+
+@pytest.mark.parametrize("bad", [None, {}, {"stocks": []}, {"stocks": None}, {"status": "error", "data": None}])
+def test_f007_ssi_errors_never_become_empty_success(bad):
+    with pytest.raises((ValueError, RuntimeError)):
+        DirectVCIClient(ssi_call=lambda *_: bad).foreign_trade("HPG", "2026-01-01", "2026-01-02")
+
+
+@pytest.mark.parametrize("key,value", [("foreign_buy_value_total", None), ("foreign_buy_value_total", ""),
+    ("foreign_buy_value_total", "NaN"), ("foreign_buy_value_total", "Inf"), ("foreign_buy_value_total", "-Inf"),
+    ("foreign_buy_value_total", True), ("foreign_buy_value_total", -1), pytest.param("foreign_buy_value_total", 10**400, id="numeric-overflow"),
+    ("foreign_buy_volume_total", 1.5), ("symbol", "VCB"), ("trading_date", None),
+    ("trading_date", "03/01/2026"), ("trading_date", "bad")])
+def test_f007_ssi_rejects_malformed_rows(key, value):
+    row = _ssi_row()
+    row[key] = value
+    with pytest.raises(ValueError):
+        DirectVCIClient(ssi_call=lambda *_: {"stocks": [row]}).foreign_trade("HPG", "2026-01-01", "2026-01-02")
+
+
+@pytest.mark.parametrize("days,window", [(1, "1d"), (2, "3m"), (90, "3m"), (91, "6m"), (180, "6m"), (181, "1y"), (365, "1y"), (366, "max_range")])
+def test_f007_ssi_chooses_smallest_range(days, window):
+    end = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").tz_localize(None).normalize() - pd.Timedelta(days=1)
+    start = end - pd.Timedelta(days=days)
+    def call(name, arguments):
+        assert arguments["range"] == window
+        return {"stocks": [_ssi_row(end.strftime("%d/%m/%Y"))]}
+    DirectVCIClient(ssi_call=call).foreign_trade("HPG", start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+
+
+@pytest.mark.parametrize("failure", ["duplicate", "exhausted", "later-error"])
+def test_f007_ssi_pagination_is_bounded_and_atomic(failure):
+    calls = []
+    def call(name, arguments):
+        calls.append(arguments["pageIndex"])
+        if failure == "later-error" and len(calls) == 2:
+            raise TimeoutError("failure")
+        return {"stocks": [_ssi_row()] * 200}
+    source = VNMarketFlowDataSource(vci_client=DirectVCIClient(ssi_call=call))
+    with pytest.raises((ValueError, RuntimeError)):
+        source.fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")
+    assert source._cache == {}
+    assert len(calls) <= 5
+
+
+@pytest.mark.parametrize("time", ["08:29:59", "08:30:00", "08:30:01"])
+def test_f007_live_foreign_board_cutoff_and_provenance(time):
+    today = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").date().isoformat()
+    row = _board_row()
+    row["matchPrice"].update(time=today + "T" + time + "Z", foreignBuyValue=1000, foreignSellValue=400,
+                             foreignBuyVolume=10, foreignSellVolume=4)
+    client, _ = _direct_fixture([row])
+    client.ssi_call = lambda *_: pytest.fail("Current snapshot reached SSI")
+    frame = client.foreign_trade("HPG", today, today)
+    assert frame.iloc[0]["fr_net_volume_total"] == 6
+    assert frame.attrs["snapshot"] is True
+    assert frame.attrs["historical_pit_verified"] is False
+
+
+@pytest.mark.parametrize("failure", ["stale", "missing", "partial", "malformed"])
+def test_f007_live_board_fails_closed(failure):
+    today = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").date().isoformat()
+    row = _board_row()
+    row["matchPrice"].update(foreignBuyValue=1000, foreignSellValue=400, foreignBuyVolume=10, foreignSellVolume=4)
+    if failure != "stale":
+        row["matchPrice"]["time"] = pd.Timestamp.now(tz="UTC").isoformat()
+    if failure == "missing":
+        for key in ("foreignBuyValue", "foreignSellValue", "foreignBuyVolume", "foreignSellVolume"):
+            del row["matchPrice"][key]
+    if failure == "partial":
+        del row["matchPrice"]["foreignBuyValue"]
+    if failure == "malformed":
+        row["matchPrice"]["foreignBuyValue"] = math.nan
+    client, _ = _direct_fixture([row])
+    with pytest.raises(ValueError):
+        client.foreign_trade("HPG", today, today)
+
+
+@pytest.mark.parametrize("failure", [None, "missing", "timeout", "malformed"])
+def test_f007_prop_fallback_and_facades(monkeypatch, failure):
+    import types
+    from omega.data.vci_direct import PROP_FLOW_COLUMNS
+    from omega.data.vnstock_client import Trading
+    calls = []
+    frame = pd.DataFrame([["2026-01-02", 1000, 400, 600, 10, 4, 6]], columns=PROP_FLOW_COLUMNS)
+    frame.attrs["historical_pit_verified"] = True
+    class Provider:
+        def __init__(self, **kwargs):
+            calls.append(kwargs)
+        def prop_trade(self, **kwargs):
+            if failure == "timeout":
+                raise TimeoutError("https://user:password@example.com/?token=secret")
+            if failure == "malformed":
+                return pd.DataFrame()
+            return frame
+    if failure == "missing":
+        Provider.prop_trade = None
+    monkeypatch.setitem(sys.modules, "vnstock.api.trading", types.SimpleNamespace(Trading=Provider))
+    direct = DirectVCIClient()
+    monkeypatch.setattr(direct, "_ssi_daily_stock", lambda **_: pytest.fail("Prop reached SSI"))
+    methods = [lambda: direct.prop_trade("HPG", "2026-01-01", "2026-01-02"),
+               lambda: Trading("HPG", direct_vci_client=direct).prop_trade(start="2026-01-01", end="2026-01-02"),
+               lambda: VnstockClient(direct_vci_client=direct).fetch_prop_trade("HPG", "2026-01-01", "2026-01-02"),
+               lambda: VNMarketFlowDataSource(vci_client=direct).fetch_prop_flow("HPG", "2026-01-01", "2026-01-02")]
+    for method in methods:
+        if failure:
+            with pytest.raises((ValueError, RuntimeError)) as error:
+                method()
+            assert "secret" not in str(error.value) and "password" not in str(error.value)
+        else:
+            result = method()
+            if isinstance(result, pd.DataFrame):
+                assert result.attrs["historical_pit_verified"] is False
+            else:
+                assert result[0]["net_value"] == 600
+                assert result[0]["pct_buy_volume"] is None
+    assert all(call == {"symbol": "HPG", "source": "VCI"} for call in calls)
+
+
+@pytest.mark.parametrize("prop_call", [False, 0, "provider", {}, []])
+def test_rem6_prop_call_requires_callable(prop_call):
+    with pytest.raises(ValueError, match="prop_call must be callable"):
+        DirectVCIClient(prop_call=prop_call)
+
+
+@pytest.mark.parametrize("failure", [None, "timeout", "none", "empty", "schema", "duplicate", "net",
+                                    "nan", "inf", "negative-inf", "overflow", "negative", "zero"])
+def test_rem6_prop_call_all_public_entries_fail_closed(monkeypatch, failure):
+    from omega.data.vci_direct import PROP_FLOW_COLUMNS
+    from omega.data.vnstock_client import Trading
+    monkeypatch.setitem(sys.modules, "vnstock.api.trading", None)
+    calls = []
+    frame = pd.DataFrame([["2026-01-02", 2e12, 1e12, 1e12, 10, 4, 6]], columns=PROP_FLOW_COLUMNS)
+    frame.attrs.update(historical_pit_verified=True, available_at="2026-01-02T00:00:00Z")
+    if failure == "empty":
+        frame = frame.iloc[:0]
+    elif failure == "schema":
+        frame = frame.iloc[:, :1]
+    elif failure == "duplicate":
+        frame = pd.concat([frame, frame])
+    elif failure == "net":
+        frame.iloc[0, 3] = 0
+    elif failure in ("nan", "inf", "negative-inf", "overflow", "negative"):
+        frame.iloc[0, 1] = {"nan": math.nan, "inf": math.inf, "negative-inf": -math.inf,
+                           "overflow": float(2**64), "negative": -1}[failure]
+    elif failure == "zero":
+        frame.iloc[0, 1:] = 0
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        if failure == "timeout":
+            raise TimeoutError("https://user:password@example.com/?token=secret")
+        return None if failure == "none" else frame
+    direct = DirectVCIClient(prop_call=fetch)
+    source = VNMarketFlowDataSource(vci_client=direct)
+    methods = [lambda: direct.prop_trade(" hpg ", "2026-01-01", "2026-01-02"),
+               lambda: Trading("HPG", direct_vci_client=direct).prop_trade(start="2026-01-01", end="2026-01-02"),
+               lambda: VnstockClient(direct_vci_client=direct).fetch_prop_trade("HPG", "2026-01-01", "2026-01-02"),
+               lambda: source.fetch_prop_flow("HPG", "2026-01-01", "2026-01-02")]
+    for method in methods:
+        if failure not in (None, "zero"):
+            with pytest.raises((ValueError, RuntimeError)) as error:
+                method()
+            assert "secret" not in str(error.value) and "password" not in str(error.value)
+            assert error.value.__suppress_context__ or failure != "timeout"
+            assert source._cache == {}
+        else:
+            result = method()
+            if isinstance(result, pd.DataFrame):
+                assert result.attrs["source"] == "PROP_CALL"
+                assert result.attrs["historical_pit_verified"] is False
+                assert "available_at" not in result.attrs
+                assert result.attrs["observed_at"].tzinfo is not None
+            else:
+                assert result[0]["net_value"] == (0 if failure == "zero" else 1e12)
+    assert calls == [{"symbol": "HPG", "start": "2026-01-01", "end": "2026-01-02"}] * 4
+
+
+@pytest.mark.parametrize("symbol,start,end", [(None, "2026-01-01", "2026-01-02"),
+                                             ("", "2026-01-01", "2026-01-02"),
+                                             ("HPG", None, "2026-01-02"),
+                                             ("HPG", "", "2026-01-02"),
+                                             ("HPG", "2026-01-03", "2026-01-02"),
+                                             ("HPG", "2026-01-01", "2100-01-01")])
+def test_rem6_prop_call_validates_before_dispatch(symbol, start, end):
+    client = DirectVCIClient(prop_call=lambda **_: pytest.fail("Invalid request reached provider"))
+    with pytest.raises(ValueError):
+        client.prop_trade(symbol, start, end)
+
+
+def test_rem6_prop_call_failure_recovers_without_partial_cache():
+    from omega.data.vci_direct import PROP_FLOW_COLUMNS
+    calls = []
+    def fetch(**kwargs):
+        calls.append(kwargs)
+        frame = _foreign_frame()
+        frame.columns = PROP_FLOW_COLUMNS
+        return frame.iloc[:0] if len(calls) == 1 else frame
+    source = VNMarketFlowDataSource(vci_client=DirectVCIClient(prop_call=fetch))
+    with pytest.raises(ValueError):
+        source.fetch_prop_flow("HPG", "2026-01-01", "2026-01-02")
+    assert source._cache == {}
+    rows = source.fetch_prop_flow("HPG", "2026-01-01", "2026-01-02")
+    rows[0]["net_value"] = -1
+    assert source.fetch_prop_flow("HPG", "2026-01-01", "2026-01-02")[0]["net_value"] == 600
+    assert len(calls) == 2
+
+
+@pytest.mark.skipif(os.environ.get("OMEGA_REM6_LIVE_SSI") != "1", reason="Explicit live SSI opt-in required")
+def test_rem6_live_authenticated_ssi_public_entries():
+    from omega.data.vci_direct import _get_ssi_token
+    from omega.data.vnstock_client import Trading
+    assert _get_ssi_token(), "Live SSI credentials unavailable"
+    observed = []
+    class LiveClient(DirectVCIClient):
+        def foreign_trade(self, symbol, start, end):
+            frame = super().foreign_trade(symbol, start, end)
+            assert frame.attrs["source"] == "SSI_MCP"
+            assert frame.attrs["snapshot"] is False
+            assert frame.attrs["historical_pit_verified"] is False
+            assert frame.attrs["observed_at"].tzinfo is not None
+            assert "available_at" not in frame.columns
+            observed.append({"rows": len(frame), "observed_at": frame.attrs["observed_at"].isoformat(),
+                             "historical_pit_verified": False})
+            return frame
+    client = LiveClient(timeout=30)
+    methods = [lambda: client.foreign_trade("HPG", "2026-10-12", "2026-10-13"),
+               lambda: Trading("HPG", direct_vci_client=client).foreign_trade(start="2026-10-12", end="2026-10-13"),
+               lambda: VnstockClient(direct_vci_client=client).fetch_foreign_trade("HPG", "2026-10-12", "2026-10-13"),
+               lambda: VNMarketFlowDataSource(vci_client=client).fetch_foreign_flow("HPG", "2026-10-12", "2026-10-13")]
+    for method in methods:
+        assert len(method()) == 2
+    assert len(observed) == 4
+    print("SSI_MCP live public entries: " + json.dumps(observed))
+
+
+def test_rem6_missing_prop_dependency_fails_closed(monkeypatch):
+    monkeypatch.setitem(sys.modules, "vnstock.api.trading", None)
+    source = VNMarketFlowDataSource(vci_client=DirectVCIClient())
+    with pytest.raises(RuntimeError, match="vnstock proprietary-trade fallback unavailable"):
+        source.fetch_prop_flow("HPG", "2026-01-01", "2026-01-02")
+    assert source._cache == {}
+
+
+@pytest.mark.parametrize("proprietary", [False, True])
+@pytest.mark.parametrize("failure", ["missing", "empty", "duplicate", "bad-net", "outside", "provenance"])
+def test_f007_injected_frames_cannot_bypass_validation(proprietary, failure):
+    from omega.data.vci_direct import PROP_FLOW_COLUMNS
+    frame = _foreign_frame()
+    if proprietary:
+        frame.columns = PROP_FLOW_COLUMNS
+    if failure == "missing":
+        frame = frame.iloc[:, :1]
+    elif failure == "empty":
+        frame = frame.iloc[:0]
+    elif failure == "duplicate":
+        frame = pd.concat([frame, frame])
+    elif failure == "bad-net":
+        frame.iloc[0, 3] = 1
+    elif failure == "outside":
+        frame.iloc[0, 0] = "2026-01-03"
+    else:
+        frame.attrs["historical_pit_verified"] = True
+    class Client:
+        def foreign_trade(self, **kwargs):
+            return frame
+        prop_trade = foreign_trade
+    source = VNMarketFlowDataSource(vci_client=Client())
+    fetch = source.fetch_prop_flow if proprietary else source.fetch_foreign_flow
+    if failure == "provenance":
+        result = source._trading_data("HPG", "prop_trade" if proprietary else "foreign_trade", "2026-01-01", "2026-01-02")
+        assert result.attrs["historical_pit_verified"] is False
+    else:
+        with pytest.raises(ValueError):
+            fetch("HPG", "2026-01-01", "2026-01-02")
+        assert source._cache == {}
+
+
+@pytest.mark.parametrize("proprietary", [False, True])
+@pytest.mark.parametrize("value", [None, "", "bad", "2026-01-01T00:00:00Z", "2100-01-01"])
+def test_f007_all_flow_dates_validate_before_dispatch(proprietary, value):
+    class Client:
+        def foreign_trade(self, **kwargs):
+            pytest.fail("Invalid input reached provider")
+        prop_trade = foreign_trade
+    source = VNMarketFlowDataSource(vci_client=Client())
+    fetch = source.fetch_prop_flow if proprietary else source.fetch_foreign_flow
+    with pytest.raises(ValueError):
+        fetch("HPG", value, value)
+    assert source._cache == {}
+
+
+@pytest.mark.parametrize("proprietary", [False, True])
+def test_f007_injected_missing_method_and_unavailable_provider(proprietary):
+    source = VNMarketFlowDataSource(vci_client=object())
+    fetch = source.fetch_prop_flow if proprietary else source.fetch_foreign_flow
+    with pytest.raises(RuntimeError, match="lacks"):
+        fetch("HPG", "2026-01-01", "2026-01-02")
+    source.vci_client = None
+    source.Trading = None
+    with pytest.raises(RuntimeError, match="unavailable"):
+        fetch("HPG", "2026-01-01", "2026-01-02")
+
+
+@pytest.mark.parametrize("values", [(0, 0, 0, 0), (10**13, 0, 10**6, 0)])
+def test_f007_total_values_allow_zero_and_large_vnd_without_division(values):
+    row = _ssi_row()
+    for name, value in zip(("foreign_buy_value_total", "foreign_sell_value_total", "foreign_buy_volume_total", "foreign_sell_volume_total"), values):
+        row[name] = value
+    frame = DirectVCIClient(ssi_call=lambda *_: {"stocks": [row]}).foreign_trade("HPG", "2026-01-01", "2026-01-02")
+    assert frame.iloc[0]["fr_net_value_total"] == values[0] - values[1]
+
+
+def test_f007_foreign_never_imports_vnstock(monkeypatch):
+    import builtins
+    original = builtins.__import__
+    def guarded(name, *args, **kwargs):
+        if name == "vnstock" or name.startswith("vnstock."):
+            pytest.fail("Foreign flow imported vnstock")
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", guarded)
+    frame = DirectVCIClient(ssi_call=lambda *_: {"stocks": [_ssi_row()]}).foreign_trade("HPG", "2026-01-01", "2026-01-02")
+    assert not frame.empty
+
+
+@pytest.mark.parametrize("mode", ["structured", "text", "tool-error", "bad-content", "transport", "oversized"])
+def test_f007_native_ssi_transport_lifecycle(monkeypatch, mode):
+    from contextlib import asynccontextmanager
+    import types
+    import mcp
+    import mcp.client.streamable_http as transport
+    events = []
+    @asynccontextmanager
+    async def stream(url, **kwargs):
+        assert url == "https://mcp.ssi.com.vn/mcp"
+        events.append("open")
+        try:
+            if mode == "transport":
+                raise TimeoutError("https://user:password@example.com/?token=secret")
+            yield object(), object(), None
+        finally:
+            events.append("close")
+    class Session:
+        def __init__(self, *_):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *_):
+            events.append("session-close")
+        async def initialize(self):
+            events.append("initialize")
+        async def call_tool(self, name, arguments):
+            assert name == "marketdata_list_daily_stock_infor" and "exchange" not in arguments
+            value = {"stocks": [_ssi_row()]}
+            content = [] if mode == "bad-content" else [types.SimpleNamespace(type="text", text="x" * 2000 if mode == "oversized" else json.dumps(value))]
+            return types.SimpleNamespace(isError=mode == "tool-error", structuredContent=value if mode == "structured" else None, content=content)
+    monkeypatch.setattr(transport, "streamablehttp_client", stream)
+    monkeypatch.setattr(mcp, "ClientSession", Session)
+    client = DirectVCIClient(max_payload_bytes=1000)
+    if mode in ("structured", "text"):
+        assert not client.foreign_trade("HPG", "2026-01-01", "2026-01-02").empty
+    else:
+        with pytest.raises(RuntimeError) as error:
+            client.foreign_trade("HPG", "2026-01-01", "2026-01-02")
+        assert "password" not in str(error.value) and "secret" not in str(error.value)
+    assert events[0] == "open" and events[-1] == "close"
+
+
+def test_f007_prop_missing_dependency_is_explicit(monkeypatch):
+    import builtins
+    original = builtins.__import__
+    def missing(name, *args, **kwargs):
+        if name == "vnstock.api.trading":
+            raise ImportError("not installed")
+        return original(name, *args, **kwargs)
+    monkeypatch.setattr(builtins, "__import__", missing)
+    with pytest.raises(RuntimeError, match="fallback unavailable"):
+        DirectVCIClient().prop_trade("HPG", "2026-01-01", "2026-01-02")
+
+
+def test_f007_ssi_callback_error_is_secret_safe():
+    def failed(*_):
+        raise TimeoutError("https://user:password@example.com/?token=secret")
+    with pytest.raises(RuntimeError) as error:
+        DirectVCIClient(ssi_call=failed).foreign_trade("HPG", "2026-01-01", "2026-01-02")
+    assert str(error.value) == "SSI MCP daily-stock request failed"
+    assert error.value.__suppress_context__
+
+
+def test_f007_ssi_successful_pagination_filters_inclusive_range():
+    calls = []
+    end = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").tz_localize(None).normalize() - pd.Timedelta(days=1)
+    start = end - pd.Timedelta(days=200)
+    def ssi(name, arguments):
+        calls.append(arguments)
+        offset = 0 if len(calls) == 1 else 200
+        size = 200 if offset == 0 else 1
+        return {"stocks": [_ssi_row((start + pd.Timedelta(days=offset + day)).strftime("%d/%m/%Y")) for day in range(size)]}
+    frame = DirectVCIClient(ssi_call=ssi).foreign_trade("HPG", start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
+    assert len(frame) == 201 and len(calls) == 2
+    assert frame.iloc[0]["trading_date"] == start.strftime("%Y-%m-%d")
+    assert frame.iloc[-1]["trading_date"] == end.strftime("%Y-%m-%d")
+
+
+def test_f007_cache_return_isolation_and_live_refresh():
+    class Client:
+        calls = 0
+        def foreign_trade(self, **kwargs):
+            self.calls += 1
+            frame = _foreign_frame()
+            frame["trading_date"] = kwargs["end"]
+            return frame
+    client = Client()
+    source = VNMarketFlowDataSource(vci_client=client)
+    first = source.fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")
+    first[0]["buy_value"] = -1
+    second = source.fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")
+    assert second[0]["buy_value"] == 1000
+    second[0]["buy_value"] = -1
+    assert source.fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")[0]["buy_value"] == 1000
+    today = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").date().isoformat()
+    source.fetch_foreign_flow("HPG", today, today)
+    source.fetch_foreign_flow("HPG", today, today)
+    assert client.calls == 3
+
 
 
 def test_market_flow_propagates_injected_transport_error():
@@ -64,7 +542,9 @@ def test_market_flow_propagates_injected_transport_error():
 def test_market_flow_rejects_non_finite_numeric_fields(bad_value):
     class Client:
         def foreign_trade(self, **kwargs):
-            return pd.DataFrame([{"trading_date": "2026-01-02", "fr_buy_value_matched": bad_value}])
+            frame = _foreign_frame()
+            frame["fr_buy_value_total"] = bad_value
+            return frame
 
     with pytest.raises(ValueError, match="finite"):
         VNMarketFlowDataSource(vci_client=Client()).fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")
@@ -73,7 +553,7 @@ def test_market_flow_rejects_non_finite_numeric_fields(bad_value):
 def test_market_flow_converts_ict_date_to_utc():
     class Client:
         def foreign_trade(self, **kwargs):
-            return pd.DataFrame([{"trading_date": "2026-01-02"}])
+            return _foreign_frame()
 
     row = VNMarketFlowDataSource(vci_client=Client()).fetch_foreign_flow("HPG", "2026-01-01", "2026-01-02")[0]
     assert row["timestamp"] == int(pd.Timestamp("2026-01-01 17:00:00", tz="UTC").timestamp())
@@ -263,20 +743,17 @@ def test_vnstock_direct_transport_error_is_typed(monkeypatch):
         client.fetch_history("VCB", "2026-01-01", "2026-01-02")
 
 
-def test_ingest_cli_bootstraps_src_path_from_external_cwd(tmp_path):
-    script = REPO_ROOT / "scripts" / "ingest_all_market_data.py"
+def test_updater_cli_bootstraps_from_external_cwd_and_uses_canonical_flags(tmp_path):
+    script = REPO_ROOT / "scripts" / "update_market_data.py"
     env = dict(os.environ)
     env.pop("PYTHONPATH", None)
-    result = subprocess.run(
-        [sys.executable, str(script), "--help"],
-        cwd=REPO_ROOT,
-        env=env,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    result = subprocess.run([sys.executable, str(script), "--help"], cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
     assert result.returncode == 0
-    assert "usage:" in result.stdout
+    assert all(flag in result.stdout for flag in ("--symbols", "--start", "--end"))
+
+    result = subprocess.run([sys.executable, str(script), "--dry-run", "--symbols", "HPG", "--start", "2026-01-01", "--end", "2026-01-02", "--obsolete"], cwd=tmp_path, env=env, capture_output=True, text=True, check=False)
+    assert result.returncode != 0
+    assert "unrecognized arguments" in result.stderr
 
 
 def test_unpack_normalizes_vnd_full_and_preserves_contract():
@@ -362,19 +839,26 @@ def test_market_flow_rejects_invalid_date_range_before_dispatch(start, end):
         VNMarketFlowDataSource(vci_client=Client()).fetch_foreign_flow("HPG", start, end)
 
 
-def test_archive_fallback_validates_ticker_and_bounds(tmp_path):
-    archive_dir = tmp_path / "archive"
-    archive_dir.mkdir()
-    pd.DataFrame({"time": pd.to_datetime(["2026-01-01", "2026-02-01"], utc=True), "ticker": ["VIC", "VIC"], "close": [1, 2]}).to_parquet(archive_dir / "HPG.parquet", index=False)
-    with pytest.raises(ValueError, match="ticker mismatch"):
-        iam._validated_archive_frame(pd.read_parquet(archive_dir / "HPG.parquet"), "HPG", "2026-01-01", "2026-01-31")
+def _canonical_sample():
+    dates = pd.to_datetime(["2026-01-01", "2026-01-02"])
+    return pd.DataFrame({
+        "ticker": ["HPG", "HPG"], "date": dates, "exchange": ["HOSE", "HOSE"],
+        "open": [27000.0, 27000.0], "high": [28000.0, 28000.0], "low": [26500.0, 26500.0],
+        "close": [27500.0, 27500.0], "volume": [100000, 100000],
+        "as_of": dates, "available_at": pd.to_datetime(["2026-01-02", "2026-01-03"], utc=True),
+        "source": ["vnstock_vci", "vnstock_vci"], "price_scale": ["VND", "VND"],
+        "adjusted": ["backward_adjusted", "backward_adjusted"], "rebuild_date": ["2026-06-13"] * 2,
+    })
 
 
-def test_archive_fallback_rejects_stale_rows(tmp_path):
-    archive_dir = tmp_path / "archive"
-    archive_dir.mkdir()
-    pd.DataFrame({"time": pd.to_datetime(["2020-01-01"], utc=True), "ticker": ["HPG"], "close": [27000]}).to_parquet(archive_dir / "HPG.parquet", index=False)
-    assert iam._validated_archive_frame(pd.read_parquet(archive_dir / "HPG.parquet"), "HPG", "2026-01-01", "2026-01-31").empty
+def test_updater_validation_rejects_duplicate_and_invalid_canonical_rows():
+    frame = _canonical_sample()
+    valid, errors = umd.validate_dataframe(pd.concat([frame, frame], ignore_index=True), "candidate")
+    assert not valid and any("duplicate (ticker, date)" in error for error in errors)
+    invalid = frame.copy()
+    invalid.loc[0, "close"] = math.nan
+    valid, errors = umd.validate_dataframe(invalid, "candidate")
+    assert not valid and any("null" in error and "close" in error for error in errors)
 
 
 def test_token_bucket_rejects_non_finite_rate():
@@ -481,214 +965,108 @@ def _sample_frame(ticker="HPG", n=3):
     })
 
 
-def test_production_atomic_write_frame_rejects_empty_frame(tmp_path):
-    with pytest.raises(ValueError, match="empty market data"):
-        iam.atomic_write_frame(pd.DataFrame(), tmp_path / "empty.parquet")
+def test_updater_rejects_empty_candidate_before_publication():
+    valid, errors = umd.validate_dataframe(pd.DataFrame(), "candidate")
+    assert not valid and any("empty" in error for error in errors)
 
 
-def test_production_atomic_write_frame_writes_valid_data(tmp_path):
-    frame = _sample_frame()
+def test_updater_atomic_write_writes_valid_data(tmp_path):
+    frame = _canonical_sample()
     target = tmp_path / "valid.parquet"
-    iam.atomic_write_frame(frame, target)
-    assert target.exists()
-    assert len(pd.read_parquet(target)) == len(frame)
+    umd.atomic_write_with_backup(frame, target)
+    pd.testing.assert_frame_equal(pd.read_parquet(target), frame)
 
 
-def test_production_atomic_write_frame_rejects_none_and_non_finite(tmp_path):
-    target = tmp_path / "invalid.parquet"
-    with pytest.raises(TypeError, match="cannot be None"):
-        iam.atomic_write_frame(None, target)
-    invalid = _sample_frame()
+def test_updater_rejects_none_and_non_finite_candidate(tmp_path):
+    with pytest.raises(TypeError, match="DataFrame"):
+        umd.atomic_write_with_backup(None, tmp_path / "invalid.parquet")
+    invalid = _canonical_sample()
     invalid.loc[0, "close"] = math.nan
-    with pytest.raises(ValueError, match="NaN or Inf"):
-        iam.atomic_write_frame(invalid, target)
+    valid, errors = umd.validate_dataframe(invalid, "candidate")
+    assert not valid and any("non-finite" in error for error in errors)
 
 
-def test_production_atomic_write_post_replace_failure_reports_rollback(tmp_path):
+def test_direct_atomic_write_post_replace_failure_rolls_back(tmp_path, monkeypatch):
+    import omega.data.vnstock_client as module
+
     target = tmp_path / "market.parquet"
-    iam.atomic_write_frame(_sample_frame(), target)
+    module.atomic_write_with_backup(_sample_frame(), target)
     original = target.read_bytes()
-    with pytest.raises(iam.AtomicWriteError) as exc_info:
-        iam.atomic_write_frame(
-            _sample_frame(n=4),
-            target,
-            post_replace_hook=lambda: (_ for _ in ()).throw(OSError("directory fsync crash")),
-        )
-    assert exc_info.value.rolled_back is True
+    def failed_sync(*_):
+        raise OSError("directory fsync crash")
+    monkeypatch.setattr(module, "_fsync_directory", failed_sync)
+    with pytest.raises(OSError, match="directory fsync crash"):
+        module.atomic_write_with_backup(_sample_frame(n=4), target)
     assert target.read_bytes() == original
+    assert not list(tmp_path.glob("*.tmp"))
 
 
-def test_production_fetch_history_propagates_provider_transport_error(monkeypatch):
-    class FailedVCI:
-        def __init__(self, **kwargs):
-            pass
-
-        def fetch_history(self, *args):
-            raise OSError("VCI unavailable")
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps({"data": [
-                {"time": "2026-01-01", "open": 27, "high": 28, "low": 26, "close": 27, "volume": 100},
-            ]}).encode()
-
-    monkeypatch.setattr(iam, "DirectVCIClient", FailedVCI)
-    with pytest.raises(OSError, match="VCI unavailable"):
-        iam.fetch_history("hpg", "2026-01-01", "2026-01-02")
+@pytest.mark.parametrize("failure", [TimeoutError("VCI unavailable"), ConnectionError("VCI unavailable")])
+def test_updater_provider_failure_has_bounded_attempts_without_remote_fallback(monkeypatch, failure):
+    calls = []
+    class Client:
+        def fetch_history(self, **kwargs):
+            calls.append(kwargs)
+            raise failure
+    with pytest.raises(RuntimeError, match="failed after 2 attempts") as caught:
+        umd._fetch_history_chunked(Client(), "HPG", "2026-01-01", "2026-01-02", max_chunk_retries=2, listing_date="2020-01-01")
+    assert len(calls) == 2
+    assert caught.value.__cause__ is failure
 
 
-def test_production_fetch_history_does_not_fallback_on_provider_transport_error(monkeypatch):
-    class FailedVCI:
-        def __init__(self, **kwargs):
-            pass
-
-        def fetch_history(self, *args):
-            raise OSError("VCI unavailable")
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return json.dumps({"data": [
-                {"time": "2025-12-31", "close": 26},
-                {"time": "2026-01-01", "close": 27},
-                {"time": "2026-01-02", "close": 28},
-                {"time": "2026-01-03", "close": 29},
-            ]}).encode()
-
-    monkeypatch.setattr(iam, "DirectVCIClient", FailedVCI)
-    with pytest.raises(OSError, match="VCI unavailable"):
-        iam.fetch_history("HPG", "2026-01-01", "2026-01-02")
-
-
-def test_production_tcbs_fallback_rejects_unparseable_dates(monkeypatch):
-    class FailedVCI:
-        def __init__(self, **kwargs):
-            pass
-
-        def fetch_history(self, *args):
-            return pd.DataFrame()
-
-    class Response:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return b'{"data": [{"time": "not-a-date", "close": 27}]}'
-
-    monkeypatch.setattr(iam, "DirectVCIClient", FailedVCI)
-    monkeypatch.setattr(iam, "urlopen", lambda request, timeout: Response())
-    with pytest.raises(ValueError, match="unparseable dates"):
-        iam.fetch_history("HPG", "2026-01-01", "2026-01-02")
+def test_updater_rejects_unparseable_dates_before_transport():
+    class Client:
+        def fetch_history(self, **kwargs):
+            raise AssertionError("No dispatch for malformed date")
+    with pytest.raises(ValueError):
+        umd._fetch_history_chunked(Client(), "HPG", "bad-date", "2026-01-02")
 
 
 @pytest.mark.parametrize("start,end", [(None, "2026-01-02"), ("bad-date", "2026-01-02"), ("2026-01-03", "2026-01-02")])
-def test_production_fetch_history_rejects_invalid_date_bounds(start, end):
+def test_direct_history_rejects_invalid_date_bounds_before_transport(start, end):
+    def forbidden(*_, **__):
+        raise AssertionError("No dispatch for invalid bounds")
     with pytest.raises(ValueError, match="date range|date"):
-        iam.fetch_history("HPG", start, end)
+        DirectVCIClient(opener=forbidden).fetch_history("HPG", start, end)
 
 
-def test_production_ingest_empty_remote_preserves_cache(tmp_path, monkeypatch):
+def test_updater_empty_remote_preserves_cache(tmp_path):
     target = tmp_path / "FLC.parquet"
-    iam.atomic_write_frame(_sample_frame("FLC"), target)
+    umd.atomic_write_with_backup(_canonical_sample(), target)
     original = target.read_bytes()
-    registry = tmp_path / "symbols_delisted.json"
-    registry.write_text(json.dumps(["FLC"]), encoding="utf-8")
-    class EmptyVCI:
-        def __init__(self, **kwargs):
-            pass
-
-        def fetch_history(self, *args):
+    class Client:
+        def fetch_history(self, **kwargs):
             return pd.DataFrame()
-
-    class EmptyResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return b'{"data": []}'
-
-    monkeypatch.setattr(iam, "DirectVCIClient", EmptyVCI)
-    monkeypatch.setattr(iam, "urlopen", lambda request, timeout: EmptyResponse())
-    with pytest.raises(ValueError, match="delisted=True"):
-        iam.ingest_symbol("FLC", "2026-01-01", "2026-01-02", target, registry=registry, archive_dir=tmp_path / "archive")
+    with pytest.raises(RuntimeError, match="empty"):
+        umd.fetch_one_symbol(Client(), "FLC", "2026-01-01", "2026-01-12", "HOSE", listing_date="2020-01-01")
     assert target.read_bytes() == original
 
 
-def test_ingest_symbol_propagates_provider_transport_error_without_archive(tmp_path, monkeypatch):
+def test_updater_transport_failure_preserves_cache(tmp_path):
     target = tmp_path / "HPG.parquet"
-    monkeypatch.setattr("urllib.request.urlopen", lambda *_args, **_kwargs: (_ for _ in ()).throw(ConnectionError("provider down")))
-    with pytest.raises(ConnectionError, match="provider down"):
-        iam.ingest_symbol("HPG", "2026-01-01", "2026-01-02", target, archive_dir=tmp_path)
+    umd.atomic_write_with_backup(_canonical_sample(), target)
+    original = target.read_bytes()
+    class Client:
+        def fetch_history(self, **kwargs):
+            raise ConnectionError("provider down")
+    with pytest.raises(RuntimeError, match="failed after"):
+        umd.fetch_one_symbol(Client(), "HPG", "2026-01-01", "2026-01-02", "HOSE", listing_date="2020-01-01")
+    assert target.read_bytes() == original
 
 
-def test_ingest_fetch_history_rejects_malformed_symbol_without_tcbs_fallback():
+def test_direct_history_rejects_malformed_symbol_without_fallback():
+    def forbidden(*_, **__):
+        raise AssertionError("Invalid ticker dispatched")
     with pytest.raises(ValueError, match="Invalid ticker"):
-        iam.fetch_history("HPG/../x", "2026-01-01", "2026-01-02")
+        DirectVCIClient(opener=forbidden).fetch_history("HPG/../x", "2026-01-01", "2026-01-02")
 
 
-def test_production_ingest_uses_delisted_archive_when_provider_empty(tmp_path, monkeypatch):
-    archive_dir = tmp_path / "delisted_archive"
-    archive_dir.mkdir()
-    archive = archive_dir / "FLC.parquet"
-    archived = _sample_frame("FLC", n=2)
-    archived.to_parquet(archive, index=False)
-    target = tmp_path / "FLC.output.parquet"
-    class EmptyVCI:
-        def __init__(self, **kwargs):
-            pass
-
-        def fetch_history(self, *args):
+def test_updater_post_delisting_empty_is_not_synthetic_archive_data():
+    class Client:
+        def fetch_history(self, **kwargs):
             return pd.DataFrame()
-
-    class EmptyResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *args):
-            return None
-
-        def read(self):
-            return b'{"data": []}'
-
-    monkeypatch.setattr(iam, "DirectVCIClient", EmptyVCI)
-    monkeypatch.setattr(iam, "urlopen", lambda request, timeout: EmptyResponse())
-    iam.ingest_symbol("flc", "2026-01-01", "2026-01-02", target, archive_dir=archive_dir)
-    assert target.exists()
-    pd.testing.assert_frame_equal(pd.read_parquet(target), archived)
-
-
-def test_production_main_routes_through_ingest_symbol(monkeypatch, tmp_path):
-    archive_dir = tmp_path / "delisted_archive"
-    archive_dir.mkdir()
-    archived = _sample_frame("HPG", n=2)
-    archived.to_parquet(archive_dir / "HPG.parquet", index=False)
-    target = tmp_path / "HPG.parquet"
-    registry = tmp_path / "symbols_delisted.json"
-    registry.write_text(json.dumps(["HPG"]), encoding="utf-8")
-    monkeypatch.setattr(sys, "argv", [
-        "ingest_all_market_data.py", "HPG", "2026-01-01", "2026-01-02",
-        "--output", str(target), "--registry", str(registry), "--archive-dir", str(archive_dir),
-    ])
-    monkeypatch.setattr(iam, "fetch_history", lambda *args, **kwargs: pd.DataFrame())
-    assert iam.main() == 0
-    pd.testing.assert_frame_equal(pd.read_parquet(target), archived)
+    frame = umd.fetch_one_symbol(Client(), "FLC", "2026-01-01", "2026-01-02", "HOSE", listing_date="2020-01-01", delisting_date="2025-12-31")
+    assert frame.empty
 
 
 class _FakeTransportResponse:
@@ -1090,9 +1468,9 @@ def test_f002_fetch_history_returns_explicit_pit_fields():
 
 
 @pytest.mark.parametrize("cli_args", [["--unknown-flag"], ["--malicious=true"], ["-x"], ["--output", "target.parquet", "--bogus"]])
-def test_f003_ingest_cli_rejects_unknown_and_flag_smuggling(cli_args):
-    script = REPO_ROOT / "scripts" / "ingest_all_market_data.py"
-    result = subprocess.run([sys.executable, str(script), "HPG", "2026-01-01", "2026-01-02", *cli_args], cwd=REPO_ROOT, capture_output=True, text=True, check=False)
+def test_f003_updater_cli_rejects_unknown_and_flag_smuggling(cli_args):
+    script = REPO_ROOT / "scripts" / "update_market_data.py"
+    result = subprocess.run([sys.executable, str(script), "--dry-run", "--symbols", "HPG", "--start", "2026-01-01", "--end", "2026-01-02", *cli_args], cwd=REPO_ROOT, capture_output=True, text=True, check=False)
     assert result.returncode != 0
     assert "unrecognized arguments" in result.stderr
 
@@ -1124,21 +1502,18 @@ def test_graph_fetcher_retry_timing_boundaries_reject_non_finite_or_non_positive
         GraphFetcher(retry_delay=bad_val)
 
 
-def test_production_atomic_write_frame_rollback_cleans_temporary_files_on_failure(tmp_path):
+def test_updater_atomic_write_readback_failure_preserves_target_and_cleans_temp(tmp_path, monkeypatch):
     target = tmp_path / "protected_target.parquet"
-    original_frame = _sample_frame("HPG", n=3)
-    iam.atomic_write_frame(original_frame, target)
+    original_frame = _canonical_sample()
+    umd.atomic_write_with_backup(original_frame, target)
     original_bytes = target.read_bytes()
-
-    corrupt_frame = _sample_frame("HPG", n=2)
-    corrupt_frame.loc[0, "close"] = math.nan
-
-    with pytest.raises(ValueError, match="NaN or Inf"):
-        iam.atomic_write_frame(corrupt_frame, target)
-
+    def corrupt_readback(*_, **__):
+        return pd.DataFrame()
+    monkeypatch.setattr(umd.pd, "read_parquet", corrupt_readback)
+    with pytest.raises(ValueError, match="verification failed"):
+        umd.atomic_write_with_backup(original_frame, target)
     assert target.read_bytes() == original_bytes
-    tmp_files = list(tmp_path.glob("*.tmp")) + list(tmp_path.glob(".*.tmp"))
-    assert tmp_files == []
+    assert not list(tmp_path.glob("*.tmp"))
 
 
 # ---------------------------------------------------------------------------
@@ -1199,3 +1574,373 @@ def test_unpack_friday_available_at_is_not_saturday():
     assert available_at_ict.weekday() == 0, f"Expected Monday, got weekday {available_at_ict.weekday()}"
     assert available_at_ict.hour == 9
 
+
+def _direct_fixture(data):
+    calls = []
+    def opener(request, timeout=None):
+        calls.append(request)
+        return _FakeTransportResponse(json.dumps(data).encode())
+    return DirectVCIClient(opener=opener), calls
+
+
+def test_direct_company_profile_and_listing_date():
+    client, calls = _direct_fixture({"data": {"ticker": "HPG", "listingDate": "2007-11-15", "profile": "Steel"}})
+    assert client.fetch_listing_date(" hpg ") == "2007-11-15"
+    assert client.fetch_company_profile("HPG").iloc[0]["company_profile"] == "Steel"
+    assert calls[0].full_url.endswith("/company/details?ticker=HPG")
+
+
+@pytest.mark.parametrize("value", [None, {}, {"data": []}, {"data": {"listingDate": 123}}, {"data": {"listingDate": "bad"}}])
+def test_direct_profile_rejects_malformed_metadata(value):
+    client, _ = _direct_fixture(value)
+    with pytest.raises(ValueError):
+        client.fetch_listing_date("HPG")
+
+
+def test_direct_listing_date_missing_is_not_inferred():
+    client, _ = _direct_fixture({"data": {}})
+    assert client.fetch_listing_date("HPG") is None
+
+
+def test_direct_all_symbols_filters_products_and_maps_exchange():
+    client, calls = _direct_fixture([{"symbol": "HPG", "board": "HSX", "type": "STOCK", "organName": "Steel"}, {"symbol": "VN30F1M", "board": "HNX", "type": "FUTURES"}])
+    frame = client.fetch_all_symbols()
+    assert frame[["ticker", "exchange"]].to_dict("records") == [{"ticker": "HPG", "exchange": "HOSE"}]
+    assert calls[0].get_method() == "GET"
+
+
+@pytest.mark.parametrize("rows", [None, {}, [None], [{"symbol": "HPG"}], [{"symbol": "HPG", "board": "OTHER", "type": "STOCK"}], [{"symbol": "HPG", "board": "HSX", "type": "STOCK"}] * 2])
+def test_direct_symbols_reject_malformed_or_duplicate_universe(rows):
+    client, _ = _direct_fixture(rows)
+    with pytest.raises(ValueError):
+        client.fetch_all_symbols()
+
+
+@pytest.mark.parametrize("statement,section", [("income", "INCOME_STATEMENT"), ("balance", "BALANCE_SHEET"), ("cashflow", "CASH_FLOW"), ("ratio", None)])
+@pytest.mark.parametrize("period,key", [("year", "years"), ("quarter", "quarters")])
+def test_direct_financials_statement_and_period(statement, section, period, key):
+    client, calls = _direct_fixture({"data": {"years": [{"yearReport": 2025}], "quarters": [{"yearReport": 2026}]}})
+    frame = client.fetch_financials("HPG", statement, period)
+    assert frame.iloc[0]["year_report"] == (2025 if key == "years" else 2026)
+    assert frame.attrs["historical_pit_verified"] is False
+    assert calls[0].full_url.endswith("section=" + section if section else "/statistics-financial")
+
+
+@pytest.mark.parametrize("method", ["fetch_company_news", "fetch_company_events"])
+def test_direct_company_pages_cursor_and_schema(method):
+    row = {"newsTitle": "Profit", "publicDate": "2026-10-01T09:00:00"} if method == "fetch_company_news" else {"eventNameVi": "Dividend", "publicDate": "2026-10-01T09:00:00"}
+    client, calls = _direct_fixture({"data": {"content": [row], "last": False}})
+    frame = getattr(client, method)("HPG", page_size=1, cursor="2")
+    assert frame.attrs["next_cursor"] == "3"
+    assert "page=2&size=1" in calls[0].full_url
+    assert "public_date" in frame
+    if method == "fetch_company_news":
+        assert frame.iloc[0]["news_title"] == "Profit"
+
+
+@pytest.mark.parametrize("method", ["fetch_company_news", "fetch_company_events"])
+@pytest.mark.parametrize("value", [None, {}, {"data": []}, {"data": {"content": [None]}}, {"data": {"content": [{}]}}, {"data": {"content": [], "last": False}}, {"data": {"content": [], "last": "false"}}])
+def test_direct_company_pages_fail_closed(method, value):
+    client, _ = _direct_fixture(value)
+    with pytest.raises(ValueError):
+        getattr(client, method)("HPG")
+
+
+@pytest.mark.parametrize("value", [None, "", [], 123, math.nan, math.inf, "--help", "HPG/../X"])
+@pytest.mark.parametrize("method", ["fetch_listing_date", "fetch_company_profile", "fetch_financials", "fetch_company_news", "fetch_company_events"])
+def test_direct_company_inputs_rejected_before_transport(method, value):
+    client, calls = _direct_fixture({})
+    with pytest.raises(ValueError):
+        getattr(client, method)(value)
+    assert calls == []
+
+
+@pytest.mark.parametrize("page_size,cursor", [(0, None), (-1, None), (True, None), (101, None), (math.inf, None), (10, "-1"), (10, "500"), (10, []), (10, "1&size=999")])
+def test_direct_company_pagination_is_bounded(page_size, cursor):
+    client, calls = _direct_fixture({})
+    with pytest.raises(ValueError):
+        client.fetch_company_news("HPG", page_size, cursor)
+    assert calls == []
+
+
+@pytest.mark.parametrize("value", [None, {}, {"data": {"years": None}}, {"data": {"years": [None]}}, {"data": {"years": [{"isa1": math.inf}]}}, {"data": {"years": [{"isa1": math.nan}]}}])
+def test_direct_financials_rejects_malformed_and_non_finite_payloads(value):
+    client, _ = _direct_fixture(value)
+    with pytest.raises(ValueError):
+        client.fetch_financials("HPG")
+
+
+@pytest.mark.parametrize("statement,period", [(None, "year"), ([], "year"), ("income", []), ("income", "month"), ("--help", "year")])
+def test_direct_financials_validates_options_before_transport(statement, period):
+    client, calls = _direct_fixture({})
+    with pytest.raises(ValueError):
+        client.fetch_financials("HPG", statement, period)
+    assert calls == []
+
+
+@pytest.mark.parametrize("method", ["fetch_company_profile", "fetch_all_symbols", "fetch_financials", "fetch_company_news", "fetch_company_events", "fetch_price_board"])
+def test_direct_new_endpoints_transport_failure_is_explicit(method):
+    def opener(*args, **kwargs):
+        raise TimeoutError("upstream timeout")
+    client = DirectVCIClient(opener=opener)
+    args = () if method == "fetch_all_symbols" else (["HPG"],) if method == "fetch_price_board" else ("HPG",)
+    with pytest.raises(RuntimeError, match="timeout"):
+        getattr(client, method)(*args)
+
+
+def _board_row():
+    return {"listingInfo": {"symbol": "HPG", "board": "HSX"}, "matchPrice": {"openPrice": 20450, "highest": 20550, "lowest": 20350, "matchPrice": 20450, "accumulatedVolume": 4857400, "time": "2026-10-01T06:35:49Z"}}
+
+
+def test_direct_price_board_is_full_vnd_not_chart_thousands():
+    client, calls = _direct_fixture([_board_row()])
+    frame = client.fetch_price_board([" hpg "])
+    assert frame.iloc[0]["close"] == 20450
+    assert frame.iloc[0]["exchange"] == "HOSE"
+    assert frame.attrs["price_scale"] == "VND_FULL"
+    assert calls[0].get_method() == "POST"
+    assert json.loads(calls[0].data) == {"symbols": ["HPG"]}
+
+
+@pytest.mark.parametrize("key,value", [("matchPrice", math.nan), ("highest", math.inf), ("lowest", -math.inf), ("openPrice", 0), ("openPrice", -1), ("matchPrice", 1e13), ("accumulatedVolume", 1.5), ("accumulatedVolume", 2**63), ("time", None), ("time", "2026-10-01"), ("time", "2100-01-01T00:00:00Z")])
+def test_direct_price_board_rejects_invalid_numeric_and_timestamp_fields(key, value):
+    row = _board_row()
+    row["matchPrice"][key] = value
+    client, _ = _direct_fixture([row])
+    with pytest.raises(ValueError):
+        client.fetch_price_board(["HPG"])
+
+
+@pytest.mark.parametrize("symbols", [None, [], "HPG", ["HPG"] * 2, ["HPG"] * 101, [None], ["HPG;rm"]])
+def test_direct_price_board_validates_batch_before_transport(symbols):
+    client, calls = _direct_fixture([])
+    with pytest.raises(ValueError):
+        client.fetch_price_board(symbols)
+    assert calls == []
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "2130706433", "0177.0.0.1", "0x7f000001", "[::ffff:127.0.0.1]", "[64:ff9b::7f00:1]", "169.254.169.254", "100.64.0.1", "192.0.2.1", "[::1]"])
+def test_direct_url_denies_literal_legacy_and_special_use_addresses(host):
+    client, calls = _direct_fixture({})
+    with pytest.raises(ValueError):
+        client.get(f"https://{host}/api/test")
+    assert calls == []
+
+
+def test_updater_listing_resolution_uses_direct_metadata_once():
+    from scripts import update_market_data
+    class Direct:
+        calls = 0
+        def fetch_listing_date(self, symbol):
+            self.calls += 1
+            return "2007-11-15"
+    direct = Direct()
+    class Adapter:
+        direct_vci_client = direct
+        def fetch_company_profile(self, symbol):
+            raise AssertionError("Legacy profile resolution must not run")
+    listing, _ = update_market_data._resolve_listing_dates(Adapter(), "HPG")
+    assert listing == pd.Timestamp("2007-11-15")
+    assert direct.calls == 1
+
+
+def test_updater_direct_downloads_use_bounded_concurrency(monkeypatch):
+    from scripts import update_market_data
+    import threading
+    class Adapter:
+        direct_vci = True
+        source = "VCI"
+    rendezvous = threading.Barrier(2)
+    seen = set()
+    def fetch(*args, **kwargs):
+        seen.add(threading.get_ident())
+        rendezvous.wait(timeout=5)
+        return pd.DataFrame(columns=update_market_data.CANONICAL_COLUMNS)
+    monkeypatch.setattr(update_market_data, "fetch_one_symbol", fetch)
+    _, stats = update_market_data.fetch_symbols(Adapter(), ["HPG", "VCB"], {"HPG": "HOSE", "VCB": "HOSE"}, "2026-10-01", "2026-10-02")
+    assert len(seen) == 2
+    assert stats["errors"] == 0
+
+
+def test_direct_intraday_and_industry_helpers():
+    client, calls = _direct_fixture({"data": [{"truncTime": "2026-10-01T06:30:00Z", "matchPrice": 20450, "matchVol": 100}]})
+    frame = client.fetch_intraday("HPG")
+    assert frame.iloc[0]["price"] == 20450
+    assert calls[0].get_method() == "POST"
+    client, _ = _direct_fixture({"data": [{"icbCode": "10", "viSector": "Steel"}]})
+    assert "icb_code" in client.industries_icb()
+    client, _ = _direct_fixture({"data": [{"code": "HPG", "icbLv2": {"code": "10", "name": "Steel"}}]})
+    assert "icb_lv2" in client.symbols_by_industries()
+
+
+def test_data_namespace_limits_vnstock_import_to_prop_trade():
+    import ast
+    offenders = []
+    for path in (REPO_ROOT / "src/omega/data").rglob("*.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8-sig"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                names = [node.module or ""]
+            elif isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute)) and (getattr(node.func, "id", "") == "__import__" or getattr(node.func, "attr", "") == "import_module"):
+                names = [arg.value for arg in node.args[:1] if isinstance(arg, ast.Constant) and isinstance(arg.value, str)]
+            else:
+                names = []
+            if any(name == "vnstock" or name.startswith("vnstock.") for name in names):
+                parents = [parent for parent in ast.walk(tree) if isinstance(parent, ast.FunctionDef) and node in list(ast.walk(parent))]
+                if path != REPO_ROOT / "src/omega/data/vci_direct.py" or len(parents) != 1 or parents[0].name != "prop_trade":
+                    offenders.append(f"{path.relative_to(REPO_ROOT)}:{node.lineno}")
+    assert offenders == []
+
+
+def test_direct_adapter_defaults_to_vci_without_throttle():
+    client, _ = _direct_fixture({"data": {"ticker": "HPG", "listingDate": "2007-11-15"}})
+    limiter = RateLimiter(sleep_fn=lambda _: pytest.fail("Wrapper throttle invoked"))
+    adapter = VnstockClient(direct_vci=False, direct_vci_client=client, rate_limiter=limiter)
+    assert adapter.direct_vci is True
+    assert adapter.fetch_company_profile("HPG").iloc[0]["symbol"] == "HPG"
+
+
+@pytest.mark.parametrize("endpoint,statement", [("income_statement", "income"), ("balance_sheet", "balance"), ("cash_flow", "cashflow"), ("ratios", "ratio")])
+def test_direct_graph_financial_compatibility_delegates(monkeypatch, endpoint, statement):
+    calls = []
+    frame = pd.DataFrame([{"year_report": 2025}])
+    monkeypatch.setattr(DirectVCIClient, "fetch_financials", lambda self, symbol, section, period:
+                        calls.append((symbol, section, period)) or frame)
+    result = GraphFetcher(rate_limiter=type("Limiter", (), {"throttle": lambda self: None})()).financial("hpg", endpoint, "quarter")
+    assert result is frame
+    assert calls == [("HPG", statement, "quarter")]
+
+
+def test_direct_graph_reference_and_flow_delegation_are_explicit(monkeypatch):
+    from omega.data.vnstock_client import Reference, Trading
+    frame = pd.DataFrame([{"symbol": "HPG"}])
+    monkeypatch.setattr(DirectVCIClient, "fetch_company_profile", lambda self, symbol: frame)
+    assert Reference().company("HPG").info() is frame
+    with pytest.raises(NotImplementedError):
+        Reference().company("HPG").shareholders()
+    monkeypatch.setattr(DirectVCIClient, "foreign_trade", lambda self, symbol, start, end: _foreign_frame())
+    assert not Trading("HPG").foreign_trade(start="2026-01-01", end="2026-01-02").empty
+
+
+@pytest.mark.parametrize("source", [None, 1, "KBS", "TCBS"])
+def test_direct_consumers_reject_unsupported_sources(source):
+    from omega.data.live_ingestor import LiveDataIngestor
+    with pytest.raises(ValueError, match="Unsupported source"):
+        VnstockClient(source=source)
+    with pytest.raises(ValueError, match="Unsupported source"):
+        LiveDataIngestor(source=source)
+
+
+def test_direct_live_snapshot_retains_vnd_identity_and_session_date():
+    from omega.data.live_ingestor import LiveDataIngestor
+    ingestor = LiveDataIngestor(timeout=7, max_retries=2)
+    assert ingestor.client.direct_vci_client.timeout == 7
+    assert ingestor.client.direct_vci_client.max_attempts == 2
+    client, _ = _direct_fixture([_board_row()])
+    ingestor.client.direct_vci_client = client
+    frame = ingestor.fetch_live_price(" hpg ", "HSX")
+    assert frame.iloc[0]["symbol"] == "HPG"
+    assert frame.iloc[0]["close"] == 20450
+    assert frame.iloc[0]["exchange"] == "HOSE"
+    assert frame.iloc[0]["date"] == pd.Timestamp("2026-10-01")
+    assert ingestor.fetch_live_price("HPG", "HNX") is None
+
+
+def test_direct_live_batch_chunks_and_contains_provider_failures():
+    from omega.data.live_ingestor import LiveDataIngestor
+    ingestor = LiveDataIngestor()
+    calls = []
+
+    class Client:
+        def fetch_price_board(self, symbols):
+            calls.append(symbols)
+            if len(calls) == 1:
+                raise RuntimeError("provider unavailable")
+            return pd.DataFrame([dict(symbol=symbols[0], exchange="HNX", date=pd.Timestamp("2026-10-01T03:00:00Z"),
+                                      open=100, high=100, low=100, close=100, volume=0)])
+
+    ingestor.client.direct_vci_client = Client()
+    symbols = [f"S{i}" for i in range(101)]
+    frame = ingestor.fetch_live_batch(symbols, {})
+    assert [len(batch) for batch in calls] == [100, 1]
+    assert frame.iloc[0]["exchange"] == "HNX"
+    assert frame.iloc[0]["close"] == 100  # Live full-VND prices must not be scaled heuristically.
+
+
+def test_direct_live_append_replaces_only_matching_symbol_session():
+    from omega.data.live_ingestor import LiveDataIngestor
+    warehouse = pd.DataFrame([{"symbol": "HPG", "date": pd.Timestamp("2026-10-01"), "close": 20000},
+                              {"symbol": "VCB", "date": pd.Timestamp("2026-10-01"), "close": 60000}])
+    live = pd.DataFrame([{"symbol": "HPG", "date": pd.Timestamp("2026-10-01"), "close": 20450}])
+    result = LiveDataIngestor().append_live_to_warehouse(warehouse, live)
+    assert dict(zip(result["symbol"], result["close"])) == {"HPG": 20450, "VCB": 60000}
+    assert warehouse.iloc[0]["close"] == 20000
+
+
+def test_direct_news_consumer_paginates_unsorted_pages_and_filters_pit(monkeypatch):
+    from datetime import datetime, timezone
+    import omega.data.news_aggregator as module
+    aggregator = module.NewsAggregator()
+    monkeypatch.setattr(aggregator, "_rate_limit", lambda _: None)
+    monkeypatch.setattr(aggregator, "_load_universe_tickers", lambda: ["HPG"])
+    monkeypatch.setattr(aggregator, "_matches_sentiment_keywords", lambda *_: True)
+    calls = []
+
+    class Client:
+        def fetch_company_news(self, ticker, page_size, cursor):
+            calls.append(cursor)
+            frame = pd.DataFrame([{"news_title": "Old", "public_date": "2026-09-01T09:00:00+07:00"},
+                                  {"news_title": "New", "public_date": "2026-10-01T09:00:00+07:00"}]) if cursor is None else pd.DataFrame([
+                                      {"news_title": "More", "public_date": "2026-10-01T10:00:00+07:00"},
+                                      {"news_title": "Future", "public_date": "2026-10-03T09:00:00+07:00"}])
+            frame.attrs["next_cursor"] = "1" if cursor is None else None
+            return frame
+
+    monkeypatch.setattr(module, "VnstockClient", lambda **_: type("Adapter", (), {"direct_vci_client": Client()})())
+    result = aggregator._scrape_vnstock_news(datetime(2026, 10, 2, tzinfo=timezone.utc), hours_back=48)
+    assert calls == [None, "1"]
+    assert [record.text for record in result] == ["New", "More"]
+
+
+def test_direct_news_consumer_contains_provider_errors(monkeypatch):
+    from datetime import datetime, timezone
+    import omega.data.news_aggregator as module
+    aggregator = module.NewsAggregator()
+    monkeypatch.setattr(aggregator, "_rate_limit", lambda _: None)
+    monkeypatch.setattr(aggregator, "_load_universe_tickers", lambda: ["HPG"])
+
+    class Client:
+        def fetch_company_news(self, *args, **kwargs):
+            raise RuntimeError("provider unavailable")
+
+    monkeypatch.setattr(module, "VnstockClient", lambda **_: type("Adapter", (), {"direct_vci_client": Client()})())
+    assert aggregator._scrape_vnstock_news(datetime(2026, 10, 2, tzinfo=timezone.utc)) == []
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_direct_macro_news_worker_preserves_failure_and_cleanup(monkeypatch, failure):
+    import omega.data.macro_news_pipeline as module
+    frame = pd.DataFrame([{"news_title": "Profit", "public_date": "2026-10-01T09:00:00+07:00"}])
+    def fetch(self, ticker, page_size):
+        assert ticker == "HPG" and page_size == 100
+        if failure:
+            raise RuntimeError("provider unavailable")
+        return frame
+    monkeypatch.setattr(DirectVCIClient, "fetch_company_news", fetch)
+    class Connection:
+        sent = None
+        closed = False
+        def send(self, data):
+            self.sent = data
+        def close(self):
+            self.closed = True
+    connection = Connection()
+    module._vnstock_news_worker(connection, "HPG", 1_000_000)
+    assert connection.closed is True
+    assert connection.sent[0] is not failure
+    if failure:
+        assert connection.sent[1] == "RuntimeError"
+    else:
+        pd.testing.assert_frame_equal(connection.sent[1], frame)

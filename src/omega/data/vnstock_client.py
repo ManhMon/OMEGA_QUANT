@@ -1,23 +1,4 @@
-"""
-OMEGA_QUANT Unified Vnstock Client (vnstock 4.x)
-==================================================
-Single-point adapter wrapping vnstock 4.x classes (Quote, Listing, Trading,
-Market) with:
-
-  - Source normalization (VCI primary, KBS/TCBS fallback for Listing)
-  - VND_FULL price-unit guard at every read boundary
-  - Built-in rate limiter (60 req/min, configurable)
-  - Graceful error handling and availability probe
-
-All other modules in ``omega.data`` and ``omega.quant`` should import vnstock
-functionality from **this module** rather than importing ``vnstock`` directly.
-Direct ``vnstock`` imports are retained only inside this adapter and in
-low-level provider modules that already carry a documented rationale.
-
-Author: Data Engineer (Role 15, L2)
-Date: 2026-06-12
-Gate: VNSTOCK_LATEST_STANDARDIZATION_20260612
-"""
+"""VCI-only market-data facade with safe legacy compatibility exports."""
 
 from __future__ import annotations
 
@@ -43,16 +24,76 @@ from urllib.request import Request, urlopen
 import pandas as pd
 from filelock import FileLock
 
-# ── vnstock 4.x namespace imports (the only module that imports vnstock directly) ──────
-from vnstock.api.quote import Quote  # noqa: F401  (re-export)
-from vnstock.api.listing import Listing  # noqa: F401  (re-export)
-from vnstock.api.trading import Trading  # noqa: F401  (re-export)
-from vnstock.api.company import Company  # noqa: F401  (re-export)
-from vnstock import Fundamental, Reference  # noqa: F401  (re-export)
-from vnstock.ui.market import Market  # noqa: F401  (re-export)
-from vnstock.core.types import TimeFrame  # noqa: F401
+# Legacy facade imports remain available; unsupported surfaces fail explicitly.
+class _UnsupportedProviderFacade:
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        raise NotImplementedError("Provider facades are no longer supported; use DirectVCIClient")
 
-# ── VND_FULL price-unit contract guard ──────────────────────────────────────
+
+Quote = Listing = Company = Market = _UnsupportedProviderFacade
+TimeFrame = None
+
+
+class Trading:
+    def __init__(self, symbol: str, source: str = "VCI", *, direct_vci_client: Optional[DirectVCIClient] = None) -> None:
+        if source != "VCI":
+            raise ValueError("Only VCI is supported")
+        self.symbol = DirectVCIClient._ticker(symbol)
+        self.client = direct_vci_client or DirectVCIClient()
+
+    def foreign_trade(self, *, start: str, end: str) -> pd.DataFrame:
+        return self.client.foreign_trade(self.symbol, start, end)
+
+    def prop_trade(self, *, start: str, end: str) -> pd.DataFrame:
+        return self.client.prop_trade(self.symbol, start, end)
+
+
+class Fundamental:
+    def equity(self, symbol: str) -> Fundamental:
+        self.symbol = DirectVCIClient._ticker(symbol)
+        return self
+
+    def income_statement(self, period: str = "year") -> pd.DataFrame:
+        return DirectVCIClient().fetch_financials(self.symbol, "income", period)
+
+    def balance_sheet(self, period: str = "year") -> pd.DataFrame:
+        return DirectVCIClient().fetch_financials(self.symbol, "balance", period)
+
+    def cash_flow(self, period: str = "year") -> pd.DataFrame:
+        return DirectVCIClient().fetch_financials(self.symbol, "cashflow", period)
+
+    def ratios(self, period: str = "year") -> pd.DataFrame:
+        return DirectVCIClient().fetch_financials(self.symbol, "ratio", period)
+
+
+class Reference:
+    def __init__(self) -> None:
+        self.industry = self
+        self.equity = self
+
+    def company(self, symbol: str) -> Reference:
+        self.symbol = DirectVCIClient._ticker(symbol)
+        return self
+
+    def info(self) -> pd.DataFrame:
+        return DirectVCIClient().fetch_company_profile(self.symbol)
+
+    def news(self) -> pd.DataFrame:
+        return DirectVCIClient().fetch_company_news(self.symbol)
+
+    def list(self) -> pd.DataFrame:
+        return DirectVCIClient().industries_icb()
+
+    def sectors(self) -> pd.DataFrame:
+        return DirectVCIClient().industries_icb()
+
+    def list_by_industry(self) -> pd.DataFrame:
+        return DirectVCIClient().symbols_by_industries()
+
+    def __getattr__(self, name: str) -> Any:
+        raise NotImplementedError(f"VCI reference endpoint {name} has no supported direct implementation")
+
+from omega.data.vci_direct import DirectVCIClient
 from omega.data.vnd_price_contract import (
     VND_FULL,
     RAW_PRICE_THRESHOLD,
@@ -76,8 +117,6 @@ _CREDENTIAL_PATTERNS = (
     (re.compile(r"(?i)(\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|auth[_-]?token|token|password)=)[^&\s,]+"), r"\1[REDACTED]"),
     (re.compile(r"(?i)(\bauthorization\s+(?:bearer\s+)?|\bbearer\s+)[^\s,]+"), r"\1[REDACTED]"),
 )
-from omega.data.vci_direct import DirectVCIClient
-
 
 def _redact_exception_text(exc: BaseException) -> str:
     """Remove credentials from upstream error text before logging."""
@@ -140,14 +179,6 @@ class VciCircuitBreaker:
             self.state = CircuitState.OPEN
             self.opened_at = self.time_fn()
             self.probe_in_flight = False
-
-
-# ── Package version metadata ────────────────────────────────────────────────
-try:
-    from importlib.metadata import version as _pkg_version
-    VNSTOCK_VERSION: str = _pkg_version("vnstock")
-except Exception:
-    VNSTOCK_VERSION = "unknown"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -218,21 +249,17 @@ class RateLimiter:
 # VnstockClient  – unified facade
 # ═══════════════════════════════════════════════════════════════════════════════
 
-# Source preference for Listing: VCI is the richest; KBS is a lightweight fallback.
-_LISTING_SOURCES = ("VCI", "KBS")
+# Direct VCI responses remain bounded at the transport boundary.
 _VCI_HISTORY_URL = "https://trading.vietcap.com.vn/api/chart/OHLCChart/gap-chart"
 _VCI_RESPONSE_LIMIT = 16 * 1024 * 1024
 
 
 class VnstockClient:
     """
-    Unified vnstock 4.x client for OMEGA_QUANT.
+    Direct VCI adapter retaining the legacy client name.
 
-    Wraps Quote, Listing, Trading, and Market with:
-      * Source normalisation (VCI primary, KBS fallback for Listing)
-      * VND_FULL guard on price data
-      * Built-in rate limiter
-      * Graceful degradation when API key or network is unavailable
+    Historical prices retain VND_FULL validation and circuit-breaker behavior.
+    The rate_limiter argument is retained for callers but is not invoked.
 
     Usage::
 
@@ -251,18 +278,15 @@ class VnstockClient:
         direct_vci: bool = False,
         direct_vci_client: Optional[DirectVCIClient] = None,
     ) -> None:
-        self.source = source
+        self.source = source.upper() if isinstance(source, str) else ""
+        if self.source != "VCI":
+            raise ValueError(f"Unsupported source: {source}; only VCI is supported")
         self.rate_limiter = rate_limiter or RateLimiter()
         self.breaker = breaker
-        self.direct_vci = direct_vci and source.upper() == "VCI"
+        self.direct_vci = True
         self.direct_vci_client = direct_vci_client or DirectVCIClient(
             timeout=30, opener=urlopen, max_payload_bytes=_VCI_RESPONSE_LIMIT, max_attempts=1
         )
-
-        # Ensure VNSTOCK_API_KEY is set (env var takes precedence)
-        api_key = os.getenv("VNSTOCK_API_KEY")
-        if api_key:
-            os.environ["VNSTOCK_API_KEY"] = api_key
 
     # ── Quote helpers ─────────────────────────────────────────────────────
 
@@ -307,14 +331,8 @@ class VnstockClient:
         """
         if self.breaker:
             self.breaker.before_request()
-        if not self.direct_vci:
-            self.rate_limiter.throttle()
         try:
-            if self.direct_vci:
-                df = self._fetch_direct_vci_history(symbol, start_date, end_date, interval)
-            else:
-                quote = Quote(source=self.source, symbol=symbol)
-                df = quote.history(start=start_date, end=end_date, interval=interval)
+            df = self._fetch_direct_vci_history(symbol, start_date, end_date, interval)
             if self.breaker:
                 self.breaker.success()
         except UpstreamThrottledException:
@@ -387,84 +405,27 @@ class VnstockClient:
         Returns:
             DataFrame with intraday OHLCV data in VND_FULL.
         """
-        self.rate_limiter.throttle()
-        try:
-            quote = Quote(source=self.source, symbol=symbol)
-            df = quote.intraday(symbol=symbol, page_size=page_size)
-        except Exception as exc:
-            logger.error("fetch_intraday(%s): %s", symbol, _redact_exception_text(exc))
-            return pd.DataFrame()
-
-        if df is None or df.empty:
-            return pd.DataFrame()
-
-        # VND_FULL guard — same as fetch_history / fetch_equity_ohlcv
-        if normalize_vnd:
-            price_cols = [c for c in ("open", "high", "low", "close") if c in df.columns]
-            if price_cols:
-                df = ensure_vnd_scale(df, price_cols=price_cols)
-
-        return df
+        return self.direct_vci_client.fetch_intraday(symbol, page_size=page_size)
 
     # ── Listing helpers ───────────────────────────────────────────────────
 
     def list_symbols(self, exchange: str = "HOSE") -> List[str]:
-        """
-        List symbols for *exchange* using VCI primary with KBS fallback.
-
-        The Listing API source is tried in order: VCI, KBS.  The first
-        source that returns a non-empty result wins.
-        """
-        for src in _LISTING_SOURCES:
-            try:
-                listing = Listing(source=src)
-                symbols = listing.symbols_by_exchange(exchange=exchange)
-                if symbols:
-                    logger.info(
-                        f"list_symbols({exchange}): resolved via {src} "
-                        f"({len(symbols)} symbols)"
-                    )
-                    return symbols
-            except Exception as exc:
-                logger.warning("list_symbols(%s) source=%s failed: %s", exchange, src, _redact_exception_text(exc))
-        logger.error(f"list_symbols({exchange}): all sources exhausted")
-        return []
+        """List symbols for the requested exchange directly from VCI."""
+        symbols = self.direct_vci_client.fetch_all_symbols()
+        normalized_exchange = {"HSX": "HOSE"}.get(exchange.upper(), exchange.upper())
+        return symbols.loc[symbols["exchange"].eq(normalized_exchange), "ticker"].tolist()
 
     def all_symbols(self) -> List[str]:
-        """Return all symbols across all exchanges (VCI primary, KBS fallback)."""
-        for src in _LISTING_SOURCES:
-            try:
-                listing = Listing(source=src)
-                symbols = listing.all_symbols()
-                if symbols:
-                    return symbols
-            except Exception as exc:
-                logger.warning("all_symbols() source=%s failed: %s", src, _redact_exception_text(exc))
-        return []
+        """Return all symbols across all exchanges through DirectVCIClient."""
+        return self.direct_vci_client.fetch_all_symbols()["ticker"].tolist()
 
     def industries_icb(self) -> pd.DataFrame:
-        """Fetch ICB industry classification (VCI primary, KBS fallback)."""
-        for src in _LISTING_SOURCES:
-            try:
-                listing = Listing(source=src)
-                df = listing.industries_icb()
-                if df is not None and not df.empty:
-                    return df
-            except Exception as exc:
-                logger.warning("industries_icb() source=%s failed: %s", src, _redact_exception_text(exc))
-        return pd.DataFrame()
+        """Fetch ICB industry classification through DirectVCIClient."""
+        return self.direct_vci_client.industries_icb()
 
     def symbols_by_industries(self) -> pd.DataFrame:
-        """Fetch symbol-to-industry mapping (VCI primary, KBS fallback)."""
-        for src in _LISTING_SOURCES:
-            try:
-                listing = Listing(source=src)
-                df = listing.symbols_by_industries()
-                if df is not None and not df.empty:
-                    return df
-            except Exception as exc:
-                logger.warning("symbols_by_industries() source=%s failed: %s", src, _redact_exception_text(exc))
-        return pd.DataFrame()
+        """Fetch symbol-to-industry mapping through DirectVCIClient."""
+        return self.direct_vci_client.symbols_by_industries()
 
     # ── Trading helpers (foreign / prop flow) ─────────────────────────────
 
@@ -474,15 +435,8 @@ class VnstockClient:
         start_date: str,
         end_date: str,
     ) -> pd.DataFrame:
-        """Fetch foreign-trading data via ``Trading.foreign_trade()``."""
-        self.rate_limiter.throttle()
-        try:
-            tr = Trading(symbol=symbol, source=self.source)
-            df = tr.foreign_trade(start=start_date, end=end_date)
-            return df if df is not None else pd.DataFrame()
-        except Exception as exc:
-            logger.error("fetch_foreign_trade(%s): %s", symbol, _redact_exception_text(exc))
-            return pd.DataFrame()
+        """Fetch SSI historical totals or the current VCI foreign-flow snapshot."""
+        return self.direct_vci_client.foreign_trade(symbol, start_date, end_date)
 
     def fetch_prop_trade(
         self,
@@ -490,15 +444,8 @@ class VnstockClient:
         start_date: str,
         end_date: str,
     ) -> pd.DataFrame:
-        """Fetch proprietary-trading data via ``Trading.prop_trade()``."""
-        self.rate_limiter.throttle()
-        try:
-            tr = Trading(symbol=symbol, source=self.source)
-            df = tr.prop_trade(start=start_date, end=end_date)
-            return df if df is not None else pd.DataFrame()
-        except Exception as exc:
-            logger.error("fetch_prop_trade(%s): %s", symbol, _redact_exception_text(exc))
-            return pd.DataFrame()
+        """Fetch proprietary stock flow through the narrowly retained vnstock fallback."""
+        return self.direct_vci_client.prop_trade(symbol, start_date, end_date)
 
     # ── Market helper ─────────────────────────────────────────────────────
 
@@ -510,78 +457,21 @@ class VnstockClient:
         *,
         normalize_vnd: bool = True,
     ) -> pd.DataFrame:
-        """Fetch OHLCV via ``Market().equity(ticker).ohlcv()``."""
-        self.rate_limiter.throttle()
-        try:
-            mkt = Market()
-            df = mkt.equity(ticker).ohlcv(start=start_date, end=end_date)
-        except Exception as exc:
-            logger.error("fetch_equity_ohlcv(%s): %s", ticker, _redact_exception_text(exc))
-            return pd.DataFrame()
-
-        if df is None or df.empty:
-            return pd.DataFrame()
-
-        if normalize_vnd:
-            df = ensure_vnd_scale(df, price_cols=["open", "high", "low", "close"])
-        return df
+        """Fetch daily OHLCV through the direct VCI history endpoint."""
+        return self.fetch_history(ticker, start_date, end_date, normalize_vnd=normalize_vnd)
 
     # ── Company profile (via Company.overview with compatibility fallbacks) ──
 
     def fetch_company_profile(self, symbol: str) -> pd.DataFrame:
-        """Fetch company profile using ``Company.overview()``.
-
-        Vnstock 4.x exposes company overview data through ``overview()``.
-        Older provider variants may still expose ``profile()`` or ``info()``,
-        so these are retained as compatibility fallbacks.
-        """
-        self.rate_limiter.throttle()
-        try:
-            company = Company(symbol=symbol, source=self.source)
-            for method_name in ("overview", "profile", "info"):
-                method = getattr(company, method_name, None)
-                if callable(method):
-                    profile = method()
-                    if profile is not None:
-                        return profile
-            return pd.DataFrame()
-        except Exception as exc:
-            logger.error("fetch_company_profile(%s): %s", symbol, _redact_exception_text(exc))
-            return pd.DataFrame()
+        """Fetch company profile through DirectVCIClient."""
+        return self.direct_vci_client.fetch_company_profile(symbol)
 
     # ── Probe / diagnostics ───────────────────────────────────────────────
 
     @staticmethod
     def probe() -> Dict[str, Any]:
-        """Return a diagnostic dict describing vnstock availability."""
-        result: Dict[str, Any] = {
-            "vnstock_version": VNSTOCK_VERSION,
-            "quote_available": False,
-            "listing_available": False,
-            "trading_available": False,
-            "market_available": False,
-        }
-        try:
-            Quote  # noqa: B018
-            result["quote_available"] = True
-        except Exception:
-            pass
-        try:
-            Listing  # noqa: B018
-            result["listing_available"] = True
-        except Exception:
-            pass
-        try:
-            Trading  # noqa: B018
-            result["trading_available"] = True
-        except Exception:
-            pass
-        try:
-            Market  # noqa: B018
-            result["market_available"] = True
-        except Exception:
-            pass
-        return result
+        """Return availability of the direct VCI transport."""
+        return {"provider": "VCI", "available": True}
 
 
 # ── Module-level singleton (lazy) ────────────────────────────────────────────

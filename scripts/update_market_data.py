@@ -294,17 +294,17 @@ def _canonical_metadata(canonical_df: Optional[pd.DataFrame]) -> Tuple[Optional[
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# VCI Fetch (via vnstock 4.x)
+# VCI Fetch (via DirectVCIClient)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def _create_vnstock_client():
-    """Create a VnstockClient using the unified adapter."""
+    """Retain the updater adapter contract with direct VCI transport only."""
     try:
-        from omega.data.vnstock_client import VnstockClient, RateLimiter
+        from omega.data.vnstock_client import VnstockClient
+        from omega.data.vci_direct import DirectVCIClient
         return VnstockClient(
-            source="VCI",
-            direct_vci=True,
-            rate_limiter=RateLimiter(max_requests=55, period_seconds=60.0),
+            source="VCI", direct_vci=True,
+            direct_vci_client=DirectVCIClient(timeout=30, max_attempts=1),
         )
     except ImportError:
         logger.error("Cannot import omega.data.vnstock_client. Ensure src/ is on path.")
@@ -352,7 +352,16 @@ def _resolve_listing_dates(
     if list_dt is not None:
         return list_dt, delist_dt
 
-    if hasattr(client, "get_listing_date") and callable(client.get_listing_date):
+    direct = getattr(client, "direct_vci_client", None)
+    if direct is not None:
+        try:
+            value = direct.fetch_listing_date(symbol)
+            if value is not None:
+                list_dt = pd.Timestamp(value)
+        except (ValueError, RuntimeError):
+            # Missing metadata cannot certify an empty history chunk.
+            pass
+    elif hasattr(client, "get_listing_date") and callable(client.get_listing_date):
         try:
             ld = client.get_listing_date(symbol)
             if ld:
@@ -366,7 +375,7 @@ def _resolve_listing_dates(
                 list_dt = pd.to_datetime(ld)
         except Exception:
             pass
-    if list_dt is None and hasattr(client, "fetch_company_profile") and callable(client.fetch_company_profile):
+    if direct is None and list_dt is None and hasattr(client, "fetch_company_profile") and callable(client.fetch_company_profile):
         try:
             prof = client.fetch_company_profile(symbol)
             if isinstance(prof, pd.DataFrame) and not prof.empty and "listing_date" in prof.columns:
@@ -1359,7 +1368,8 @@ def run_targeted_refetch(
                             f"boundary return={new_ret*100:.1f}%"
                         )
 
-        time.sleep(RATE_LIMIT_SECONDS)
+        if not getattr(client, "direct_vci", False):
+            time.sleep(RATE_LIMIT_SECONDS)
 
     stats["needs_full_refetch"] = needs_full_refetch
 
