@@ -1,0 +1,35 @@
+{
+  "phase_name": "GP_OVERFITTING_REMEDIATION_GATE4_20260704",
+  "plan_path": ".ly_state/session/gp_overfitting_remediation_plan_gate4.md",
+  "l2_session_id": "l2_role16_b1_gate4_reconcile_20260728",
+  "l2_completed": true,
+  "l2_role_id": 16,
+  "l2_role_name": "machine-learning-engineer",
+  "l3_session_id": "l3_role21_b1_gate4_reaudit_20260728",
+  "l3_session_key": "l3_role21_b1_gate4_reaudit_20260728",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_b1_gate4_reaudit_20260728.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "timestamp": "2026-06-26T06:36:11.4153000+07:00",
+  "scope": "Phases 1-5 + 7e mandatory",
+  "repo_local_skill_sources": [
+    ".agents/agent/code-reviewer.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/clean-code/SKILL.md",
+    ".agents/skills/testing-patterns/SKILL.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md"
+  ],
+  "forbidden_path_scan": ".gemini\\antigravity-ide\\scratch\\ag-kit non-authoritative scan evidence only; no reliance.\n.openclaw\\skills non-authoritative scan evidence only; no reliance.\nC:\\Users\\GHC\\.agents non-authoritative scan evidence only; no reliance.\n.codex\\memories non-authoritative scan evidence only; no reliance.",
+  "canonical_source_evidence": [
+    ".ly_state/session/gp_overfitting_remediation_plan_gate4.md",
+    ".ly_state/session/l2_role16_gp_gate4_20260704.md",
+    ".ly_state/session/l2_role9_legacy_gate_reconciliation_b1_20260726.md",
+    ".ly_state/session/l2_role9_legacy_gate_reconciliation_gp_overfitting_remediation_gate4_20260704_20260726.md",
+    "git commit f34fcbbaef7bcc1bc0e306c5ca1dde57d2df8344",
+    ".ly_state/session/audit_reports/role21_gp_overfitting_remediation_gate4_reaudit_20260726.md"
+  ]
+}

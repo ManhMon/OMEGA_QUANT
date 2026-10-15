@@ -1,0 +1,33 @@
+{
+  "phase_name": "GP_ENSEMBLE_SELECTION_GATE5_20260704",
+  "plan_path": ".ly_state/session/gp_ensemble_plan_gate5.md",
+  "l2_session_id": "l2_role16_gp_ensemble_gate5_20260704",
+  "l2_completed": true,
+  "l2_role_id": 16,
+  "l2_role_name": "machine-learning-engineer",
+  "l3_session_id": "l3_role23_gp_ensemble_gate5_20260704",
+  "l3_session_key": "role23_gp_ensemble_gate5_20260704",
+  "l3_role_id": 23,
+  "l3_role_name": "performance-tester",
+  "audit_report_path": ".ly_state/session/audit_reports/role23_gp_ensemble_gate5_20260704.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "timestamp": "2026-07-04T01:33:00+07:00",
+  "scope": "Phase 6 ensemble with validation-only selection",
+  "repo_local_skill_sources": [
+    ".agents/agent/performance-tester.md",
+    ".agents/skills/performance-profiling/SKILL.md",
+    ".agents/skills/webapp-testing/SKILL.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/systematic-debugging/SKILL.md",
+    ".ly_state/session/l2_role16_gp_ensemble_gate5_20260704.md"
+  ],
+  "forbidden_path_scan": "No authoritative reliance on forbidden paths; matches found only in repo-local SOD docs and L2 report scan evidence explicitly marked non-authoritative.",
+  "codex_approval": "APPROVED",
+  "claude_code_approval": "APPROVED",
+  "l2_implementation_conditions": [
+    "Extend candidate storage to retain val_signal/oos_signal/lockbox_signal arrays + stable ID",
+    "Implement explicit np.isnan(corr) guard to skip degenerate correlation pairs"
+  ]
+}

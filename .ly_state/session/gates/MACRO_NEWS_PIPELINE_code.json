@@ -1,0 +1,25 @@
+{
+  "phase_name": "MACRO_NEWS_PIPELINE_code",
+  "l2_session_id": ".ly_state/session/l2_role15_macro_news_pipeline_fix8_20260813.md",
+  "l2_completed": true,
+  "l2_role_id": 15,
+  "l2_role_name": "data-engineer",
+  "l3_session_id": "role21_macro_news_pipeline_audit_fix8_20260813",
+  "l3_session_key": "role21_macro_news_pipeline_audit_fix8",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_macro_news_pipeline_audit_fix8_20260813.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "timestamp": "2026-08-13T15:08:47+07:00",
+  "repo_local_skill_sources": [
+    ".agents/agent/code-reviewer.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/clean-code/SKILL.md",
+    ".agents/skills/testing-patterns/SKILL.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md"
+  ],
+  "forbidden_path_scan": "PASS: zero matches in Fix8 modified and approved Macro News scope files; no forbidden path opened or used as authority."
+}

@@ -1,0 +1,25 @@
+{
+  "phase_name": "LEGACY_RESIDUAL_CLOSURE_DOSSIER_20260728",
+  "timestamp": "2026-07-28T00:00:00+07:00",
+  "l2_session_id": "l2_role11_legacy_residual_closure_dossier_20260728",
+  "l2_completed": true,
+  "l2_role_id": 11,
+  "l2_role_name": "devops-engineer",
+  "l3_session_id": "l3_role21_legacy_residual_closure_dossier_20260728",
+  "l3_session_key": "l3_role21_legacy_residual_closure_dossier_20260728",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_legacy_residual_closure_dossier_20260728.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "repo_local_skill_sources": [
+    ".agents/agent/code-reviewer.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/clean-code/SKILL.md",
+    ".agents/skills/testing-patterns/SKILL.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md"
+  ],
+  "forbidden_path_scan": "no authoritative reliance"
+}

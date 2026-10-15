@@ -1,0 +1,13 @@
+{
+  "l2_session_id": "l2_role15_macro_news_deep_audit_impl_retry1_20260820",
+  "l2_role_id": 15,
+  "l2_role_name": "data-engineer",
+  "l3_session_id": "l3_role21_macro_news_pipeline_deep_audit_impl_retry1_20260820",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_macro_news_pipeline_deep_audit_impl_retry1_20260820.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "l2_completed": true
+}

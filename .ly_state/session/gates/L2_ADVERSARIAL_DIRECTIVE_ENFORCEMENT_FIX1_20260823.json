@@ -1,0 +1,14 @@
+{
+  "phase_name": "L2_ADVERSARIAL_DIRECTIVE_ENFORCEMENT_FIX1_20260823",
+  "l2_session_id": "l2_role15_l2_adversarial_directive_enforcement_fix1_20260823",
+  "l2_role_id": 15,
+  "l2_role_name": "data-engineer",
+  "l3_session_id": "l3_role21_l2_adversarial_directive_enforcement_fix1_20260823",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_l2_adversarial_directive_enforcement_fix1_20260823.md",
+  "final_verdict": "[NEEDS_FIX]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "l2_completed": true
+}

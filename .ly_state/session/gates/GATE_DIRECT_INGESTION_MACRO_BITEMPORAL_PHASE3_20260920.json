@@ -1,0 +1,27 @@
+{
+  "phase_name": "GATE_DIRECT_INGESTION_MACRO_BITEMPORAL_PHASE3_20260920",
+  "l2_session_id": "l2_role15_direct_ingestion_macro_bitemporal_p3_fix1_20260920",
+  "l2_role_id": 15,
+  "l2_role_name": "data-engineer",
+  "l3_session_id": "l3_role21_gate_direct_ingestion_macro_bitemporal_phase3_20260920",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_gate_direct_ingestion_macro_bitemporal_phase3_20260920.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "l2_completed": true,
+  "timestamp": "2026-09-20T15:47:24+07:00",
+  "l3_session_key": "l3_role21_gate_direct_ingestion_macro_bitemporal_phase3_20260920",
+  "repo_local_skill_sources": [
+    ".agents/agent/data-engineer.md",
+    ".agents/agent/code-reviewer.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/clean-code/SKILL.md",
+    ".agents/skills/testing-patterns/SKILL.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md"
+  ],
+  "forbidden_path_scan": "forbidden path scan completed for session l3_role21_gate_direct_ingestion_macro_bitemporal_phase3_20260920; non-authoritative scan evidence only; no reliance.",
+  "closed": true
+}

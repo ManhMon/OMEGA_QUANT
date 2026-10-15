@@ -1,0 +1,26 @@
+{
+  "phase_name": "MACRO_PIPELINE_V8_LATENT_BUGS_20260812",
+  "l2_session_id": "l2_role9_macro_pipeline_latent_bugs_20260812",
+  "l2_completed": true,
+  "l2_role_id": 9,
+  "l2_role_name": "backend-engineer",
+  "l3_session_id": "l3_role21_macro_pipeline_latent_bugs_20260812",
+  "l3_session_key": "l3_role21_macro_pipeline_latent_bugs_20260812",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_macro_pipeline_latent_bugs_20260812.md",
+  "final_verdict": "[NEEDS_FIX]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "timestamp": "2026-08-12T00:00:00Z",
+  "repo_local_skill_sources": [
+    ".agents/agent/code-reviewer.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/clean-code/SKILL.md",
+    ".agents/skills/testing-patterns/SKILL.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md"
+  ],
+  "forbidden_path_scan": "NO_AUTHORITATIVE_RELIANCE_ON_FORBIDDEN_PATHS; NO_FORBIDDEN_PATH_TOKENS_IN_SCOPED_SOURCE_OR_TEST; L2 report matches are explicit negative evidence only.",
+  "evidence": "NEEDS_FIX: query_as_of normalizes published_at and ingested_at but not observation_date before deduplication; equivalent observation instants return two rows. Empty urls behavior is fixed. Focused tests: 22 passed. Full suite: exit 0, 3233 collected, 3 skipped."
+}

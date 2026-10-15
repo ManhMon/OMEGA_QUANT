@@ -1,0 +1,41 @@
+{
+  "phase_name": "sod_enforcer_lineage_canonical_fix1_20260729",
+  "timestamp": "2026-07-29T16:27:36+07:00",
+  "l2_session_id": "l2_role11_sod_enforcer_lineage_canonical_fix2_20260729",
+  "l2_completed": true,
+  "l2_role_id": 11,
+  "l2_role_name": "devops-engineer",
+  "l3_session_id": "l3_role21_sod_enforcer_lineage_canonical_fix1_20260729",
+  "l3_session_key": "l3_role21_sod_enforcer_lineage_canonical_fix1_20260729",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_sod_enforcer_lineage_canonical_fix1_20260729.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "repo_local_skill_sources": [
+    ".agents/agent/code-reviewer.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/clean-code/SKILL.md",
+    ".agents/skills/testing-patterns/SKILL.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md"
+  ],
+  "forbidden_path_scan": "No authoritative reliance on .gemini/antigravity-ide/scratch/ag-kit, .openclaw/skills, C:/Users/GHC/.agents, or .codex/memories; each appears only in enforcer constants or explicit non-authoritative scan evidence.",
+  "checks": {
+    "writer_auditor_separated": "APPROVED: l2_role_id 11 != l3_role_id 21",
+    "canonical_gate_identity": "APPROVED: dictionary keys equal explicit phase_name values; missing phase_name remains canonically backfilled",
+    "parser_mismatch_rejection": "APPROVED: load_gates returns [] and load_canonical_gate_map returns {} for key/phase_name mismatch",
+    "mixed_case_lineage": "APPROVED: case-insensitive FIX<n> recognition joins mixed-case remediation members",
+    "approved_predecessor_protection": "APPROVED: prior [APPROVED] and [APPROVED_PARTIAL] members are not superseded",
+    "fix2_provenance": "APPROVED: dedicated l2_role11_sod_enforcer_lineage_canonical_fix2_20260729 report exists and satisfies L2 repo-local evidence contract",
+    "pit_safety": "N/A: SoD gate metadata parser and tests only",
+    "l2_report_contract": "APPROVED: exact role and declared repo-local skill files plus forbidden-path scan are documented"
+  },
+  "verification": [
+    "python -m pytest tests/test_strict_repo_local_skill_loading.py -q: 111 passed, 1 pre-existing pytest cache warning",
+    "python -m py_compile scripts/sod_gate_enforcer.py tests/test_strict_repo_local_skill_loading.py: passed",
+    "python scripts/sod_gate_enforcer.py --check-before-push: exit 0; [PASS] All SoD gates approved. Safe to push."
+  ],
+  "evidence": "Independent L3 review confirmed canonical key enforcement, mixed-case remediation lineage, approved-predecessor protection, dedicated Fix2 L2 provenance, and no PIT impact."
+}

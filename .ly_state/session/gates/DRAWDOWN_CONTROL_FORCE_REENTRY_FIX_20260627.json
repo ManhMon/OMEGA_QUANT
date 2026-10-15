@@ -1,0 +1,25 @@
+{
+  "phase_name": "DRAWDOWN_CONTROL_FORCE_REENTRY_FIX_20260627",
+  "l2_session_id": "l2_role14_drawdown_control_force_reentry_respect_dd_floor_fix1_20260627",
+  "l2_completed": true,
+  "l2_role_id": 14,
+  "l2_role_name": "data-scientist",
+  "l3_session_id": "l3_role25_drawdown_control_force_reentry_fix_20260627",
+  "l3_session_key": "role25_drawdown_control_force_reentry_fix_20260627",
+  "l3_role_id": 25,
+  "l3_role_name": "it-systems-auditor",
+  "audit_report_path": ".ly_state/session/audit_reports/role25_drawdown_control_force_reentry_fix_20260627.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "timestamp": "2026-06-27T18:58:25.2916096+07:00",
+  "repo_local_skill_sources": [
+    ".agents/agent/compliance-officer.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/vulnerability-scanner/SKILL.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md",
+    ".agents/skills/sops/SKILL.md"
+  ],
+  "forbidden_path_scan": "no authoritative reliance; forbidden path strings appear only in repo-local skill docs as non-authoritative references; .gemini\\\\antigravity-ide\\\\scratch\\\\ag-kit not used as source; .openclaw\\\\skills not used as source; C:\\\\Users\\\\GHC\\\\.agents not used as source; .codex\\\\memories not used as source"
+}

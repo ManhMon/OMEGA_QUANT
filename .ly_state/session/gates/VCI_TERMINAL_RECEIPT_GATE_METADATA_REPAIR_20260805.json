@@ -1,0 +1,25 @@
+{
+  "phase_name": "VCI_TERMINAL_RECEIPT_GATE_METADATA_REPAIR_20260805",
+  "l2_session_id": "l2_role15_vci_terminal_receipt_full_history_aggregation_reissue_20260805",
+  "l2_completed": true,
+  "l2_role_id": 15,
+  "l2_role_name": "data-engineer",
+  "l3_session_id": "l3_role20_vci_terminal_receipt_gate_metadata_repair_20260805",
+  "l3_session_key": "l3_role20_vci_terminal_receipt_gate_metadata_repair_20260805",
+  "l3_role_id": 20,
+  "l3_role_name": "compliance-officer",
+  "audit_report_path": ".ly_state/session/audit_reports/role20_vci_terminal_receipt_gate_metadata_repair_20260805.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "repo_local_skill_sources": [
+    ".agents/agent/compliance-officer.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/vulnerability-scanner/SKILL.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md",
+    ".agents/skills/sops/SKILL.md"
+  ],
+  "forbidden_path_scan": "no authoritative reliance",
+  "evidence": "L3-owned state metadata repair only. Historical NEEDS_FIX verdict remains intact and is represented as superseded by the linked current-date approved re-audit."
+}

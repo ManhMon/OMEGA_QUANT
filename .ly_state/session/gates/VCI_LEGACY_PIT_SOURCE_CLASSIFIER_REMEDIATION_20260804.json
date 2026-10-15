@@ -1,0 +1,23 @@
+{
+  "l2_session_id": "l2_role15_vci_legacy_pit_source_classifier_remediation_20260804",
+  "l2_completed": true,
+  "l2_role_id": 15,
+  "l2_role_name": "data-engineer",
+  "l3_session_id": "l3_role20_vci_legacy_pit_source_classifier_remediation_20260804",
+  "l3_session_key": "l3_role20_vci_legacy_pit_source_classifier_remediation_20260804",
+  "l3_role_id": 20,
+  "l3_role_name": "compliance-officer",
+  "audit_report_path": ".ly_state/session/audit_reports/role20_vci_legacy_pit_source_classifier_remediation_20260804.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "repo_local_skill_sources": [
+    ".agents/agent/compliance-officer.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/vulnerability-scanner/SKILL.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md",
+    ".agents/skills/sops/SKILL.md"
+  ],
+  "forbidden_path_scan": "no authoritative reliance"
+}

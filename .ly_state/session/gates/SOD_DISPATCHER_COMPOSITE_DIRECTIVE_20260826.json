@@ -1,0 +1,14 @@
+{
+  "phase_name": "SOD_DISPATCHER_COMPOSITE_DIRECTIVE_20260826",
+  "l2_session_id": "l2_role9_sod_dispatcher_directive_hardening_fix2_20260826",
+  "l2_role_id": 9,
+  "l2_role_name": "backend-engineer",
+  "l3_session_id": "l3_role25_role19_sod_dispatcher_composite_directive_20260826_fix2",
+  "l3_role_id": 25,
+  "l3_role_name": "it-systems-auditor",
+  "audit_report_path": ".ly_state/session/audit_reports/role25_sod_dispatcher_composite_directive_fix2_20260826.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "l2_completed": true
+}

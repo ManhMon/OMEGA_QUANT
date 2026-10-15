@@ -31,6 +31,11 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
+if __package__:
+    from .gate_store import GateStore, GateStoreLock, _records
+else:
+    from gate_store import GateStore, GateStoreLock, _records
+
 ADVISORY_METADATA_CUTOFF_KEY_DATE = "20260827"
 PLACEHOLDER_VALUES = {"", "pending", "unknown", "todo", "tbd", "tba"}
 _ROLE_NAME_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -191,6 +196,30 @@ def _close_scope(root: Path, paths: list[str]) -> list[str]:
             raise RuntimeError(f"gate-close path must be an existing file: {raw}")
         resolved.append(relative)
     resolved.append(".ly_state/session/phase_gates.json")
+    gates_dir = root / ".ly_state/session/gates"
+    artifacts = list(gates_dir.glob("*.json"))
+    marker = gates_dir / ".initialized"
+    if marker.exists():
+        artifacts.append(marker)
+    for artifact in artifacts:
+        if artifact.is_symlink() or not artifact.is_file() or artifact.resolve().parent != gates_dir.absolute():
+            raise RuntimeError("invalid gate-close migration artifact")
+        resolved.append(artifact.relative_to(root).as_posix())
+    for args in (("ls-tree", "-r", "-z", "--name-only", "HEAD", "--", ".ly_state/session/gates/"),
+                 ("ls-files", "-z", "--", ".ly_state/session/gates/")):
+        tracked = _git_bytes(root, *args)
+        if tracked.returncode:
+            raise RuntimeError("cannot enumerate tracked gate-close artifacts")
+        for raw in tracked.stdout.split(b"\x00"):
+            if not raw:
+                continue
+            relative = raw.decode("utf-8", errors="strict")
+            path = Path(relative)
+            if path.parent.as_posix() == ".ly_state/session/gates" and (path.suffix == ".json" or path.name == ".initialized"):
+                artifact = root / path
+                if artifact.is_symlink() or (artifact.exists() and not artifact.is_file()):
+                    raise RuntimeError("invalid tracked gate-close artifact")
+                resolved.append(relative)
     return sorted(set(resolved))
 
 
@@ -213,12 +242,16 @@ def _release_close_lock(lock: tuple[int, Path] | None) -> None:
     path.unlink(missing_ok=True)
 
 
-def _snapshot_files(paths: list[Path]) -> dict[str, str]:
+def _snapshot_files(paths: list[Path]) -> dict[str, str | None]:
     snapshot = {}
     for path in paths:
         try:
+            if path.is_symlink():
+                raise RuntimeError("cannot snapshot gate-close symlink")
             raw = path.read_bytes().replace(b"\r\n", b"\n")
             snapshot[path.as_posix()] = hashlib.sha256(raw).hexdigest()
+        except FileNotFoundError:
+            snapshot[path.as_posix()] = None
         except OSError as exc:
             raise RuntimeError(f"cannot snapshot gate-close file: {path.name}") from exc
     return snapshot
@@ -269,7 +302,7 @@ def close_gate_transaction(
         raise RuntimeError("invalid gate name")
     if not isinstance(message, str) or not message.strip() or "\x00" in message:
         raise RuntimeError("commit message must be non-empty and NUL-free")
-    paths = _close_scope(repo, scope)
+    _close_scope(repo, scope)
     lock = None
     gates_path = repo / ".ly_state" / "session" / "phase_gates.json"
     try:
@@ -281,7 +314,16 @@ def close_gate_transaction(
         gate = gates.get(gate_name) if isinstance(gates, dict) else None
         if not isinstance(gate, dict) or gate.get("final_verdict") != "[APPROVED]":
             raise RuntimeError("gate is not exactly [APPROVED]")
-        return _close_gate_locked(gate_name, paths, message, repo, gates_path)
+        session = gates_path.parent
+        store = GateStore(session / "gates", session / "phase_gates.db", gates_path)
+        with GateStoreLock(store.lock_path):
+            records = store._read_current()
+            if records != _records(gates):
+                raise RuntimeError("gate shards and legacy metadata disagree")
+            if not store._initialized():
+                store._publish(records, True)
+            paths = _close_scope(repo, scope)
+            return _close_gate_locked(gate_name, paths, message, repo, gates_path)
     finally:
         _release_close_lock(lock)
 
@@ -315,6 +357,22 @@ def _close_gate_locked(gate_name: str, paths: list[str], message: str, repo: Pat
 
     if _snapshot_files([gates_path, *scoped_paths]) != snapshot:
         raise RuntimeError("gate-close snapshot changed during verification")
+    if set(_close_scope(repo, [".ly_state/session/phase_gates.json"])) - set(paths):
+        raise RuntimeError("gate-close artifact set changed during verification")
+    non_test_paths = [p for p in paths if not (p.startswith("tests/") or p.endswith("_test.py") or "test" in Path(p).name)]
+    for path in non_test_paths:
+        if snapshot[(repo / path).as_posix()] is not None:
+            text = (repo / path).read_text(encoding="utf-8", errors="replace")
+            if _SECRET_RE.search(text) or _SECRET_RE.search(text.replace(chr(92) + '"', '"')):
+                raise RuntimeError("secret-like value detected in scoped file")
+    # Already-staged deletions are absent from the index; git add rejects them.
+    tracked = _git_bytes(repo, "ls-files", "-z", "--", *paths)
+    if tracked.returncode:
+        raise RuntimeError("cannot enumerate scoped index paths")
+    indexed = set(tracked.stdout.decode("utf-8", errors="strict").split("\x00"))
+    stage_paths = [p for p in paths if snapshot[(repo / p).as_posix()] is not None or p in indexed]
+    if stage_paths and _git(repo, "add", "-A", "--", *stage_paths).returncode:
+        raise RuntimeError("cannot stage scoped gate-close artifacts")
 
     diff = _git(repo, "diff", "--binary", "HEAD", "--", *paths)
     if diff.returncode:
@@ -338,6 +396,9 @@ def _close_gate_locked(gate_name: str, paths: list[str], message: str, repo: Pat
     if _snapshot_files([gates_path, *scoped_paths]) != snapshot:
         raise RuntimeError("gate-close snapshot changed before commit")
 
+    expected_changes = _git(repo, "diff", "--name-only", "HEAD", "--", *paths)
+    if expected_changes.returncode or not expected_changes.stdout.splitlines():
+        raise RuntimeError("cannot resolve scoped changed paths")
     commit = _git(repo, "commit", "--only", "-m", message.strip(), "--", *paths)
     if commit.returncode:
         raise RuntimeError("scoped commit failed")
@@ -349,9 +410,14 @@ def _close_gate_locked(gate_name: str, paths: list[str], message: str, repo: Pat
     if parent.returncode or parent.stdout.strip() != base_head:
         raise RuntimeError("commit parent verification failed")
     changed = _git(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", new_head)
-    if changed.returncode or set(changed.stdout.splitlines()) != set(paths):
+    if changed.returncode or set(changed.stdout.splitlines()) != set(expected_changes.stdout.splitlines()):
         raise RuntimeError("commit scope verification failed")
     for path in paths:
+        if snapshot[(repo / path).as_posix()] is None:
+            tree = _git(repo, "ls-tree", "-r", "--name-only", new_head, "--", path)
+            if tree.returncode or tree.stdout:
+                raise RuntimeError("deleted gate-close artifact remains in commit tree")
+            continue
         blob_oid = _git(repo, "rev-parse", f"{new_head}:{path}")
         if blob_oid.returncode or not re.fullmatch(r"[0-9a-f]{40,64}", blob_oid.stdout.strip()):
             raise RuntimeError("commit tree blob is invalid")
@@ -434,22 +500,20 @@ def main():
 
 
 def _update_gate(gate_name: str, updates: dict) -> None:
-    gates_path = Path(".ly_state/session/phase_gates.json")
-    try:
-        original = gates_path.read_bytes()
-        gates = json.loads(original.decode("utf-8"))
-    except FileNotFoundError:
-        print(f"[ERROR] Gates file not found: {gates_path}")
-        raise RuntimeError(f"Gates file not found: {gates_path}")
-    except (OSError, UnicodeError, ValueError) as exc:
-        print(f"[ERROR] Malformed gates JSON, refusing scoped update: {exc}")
-        raise RuntimeError(f"Malformed gates JSON, refusing scoped update: {exc}") from exc
+    session = Path.cwd() / ".ly_state" / "session"
+    store = GateStore(session / "gates", session / "phase_gates.db", session / "phase_gates.json")
+    store._shard_path(gate_name)
+    if not isinstance(updates, dict) or any(not isinstance(key, str) or not key for key in updates):
+        raise ValueError("Invalid gate field updates")
+    with GateStoreLock(store.lock_path):
+        try:
+            gates = store._read_current()
+        except (OSError, ValueError) as exc:
+            raise RuntimeError("Malformed gates schema, refusing scoped update") from exc
+        _update_gate_locked(gate_name, updates, gates, store)
 
-    if not isinstance(gates, dict) or any(
-        not isinstance(key, str) or not isinstance(value, dict)
-        for key, value in gates.items()
-    ):
-        raise RuntimeError("Malformed gates schema, refusing scoped update")
+
+def _update_gate_locked(gate_name: str, updates: dict, gates: dict, store: GateStore) -> None:
 
     if gate_name not in gates:
         gates[gate_name] = {"phase_name": gate_name}
@@ -529,11 +593,11 @@ def _update_gate(gate_name: str, updates: dict) -> None:
         print("[ERROR] Non-target gates were modified — aborting")
         raise RuntimeError("Non-target gates were modified")
 
-    # Publish atomically; restore the previous bytes if verification fails.
-    raw = json.dumps(gates, indent=2, ensure_ascii=False).encode("utf-8")
-    _publish_gate_file(gates_path, original, raw)
+    # Store lock spans the entire read/validate/publish operation.
+    store._publish(gates, True)
+    store._sync_cache(gates)
 
-    print(f"[OK] Updated gate '{gate_name}': {updates}")
+    print(f"[OK] Updated gate '{gate_name}'; fields: {sorted(updates)}")
     if defaults:
         print(f"[OK] Auto-populated advisory fields: {sorted(defaults)}")
     print(f"[OK] Non-target hash unchanged: {before_hash}")

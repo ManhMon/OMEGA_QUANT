@@ -1,0 +1,25 @@
+{
+  "phase_name": "RISK_ADJUSTED_PORTFOLIO_GUARD_20260614",
+  "l2_session_id": "l2_role16_risk_adjusted_portfolio_guard_20260614",
+  "l2_completed": true,
+  "l2_role_id": 16,
+  "l2_role_name": "machine-learning-engineer",
+  "l3_session_id": "l3_role20_risk_adjusted_portfolio_guard_20260614",
+  "l3_session_key": "role20_risk_adjusted_portfolio_guard_20260614",
+  "l3_role_id": 20,
+  "l3_role_name": "compliance-officer",
+  "audit_report_path": ".ly_state/session/audit_reports/role20_risk_adjusted_portfolio_guard_20260614.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "repo_local_skill_sources": [
+    ".agents/agent/compliance-officer.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/vulnerability-scanner/SKILL.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md",
+    ".agents/skills/sops/SKILL.md"
+  ],
+  "forbidden_path_scan": "clean - forbidden paths are non-authoritative and not used as source",
+  "timestamp": "2026-06-14T09:48:31+07:00"
+}

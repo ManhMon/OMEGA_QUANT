@@ -1,0 +1,14 @@
+{
+  "phase_name": "HYBRID_QUANT_FORMULA_ENGINE_HARDENED_FIX1_20260822",
+  "l2_session_id": "l2_role15_hybrid_quant_formula_engine_hardened_fix1_20260823",
+  "l2_role_id": 15,
+  "l2_role_name": "data-engineer",
+  "l3_session_id": "l3_role21_hybrid_quant_formula_engine_hardened_fix1_20260823",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_hybrid_quant_formula_engine_hardened_fix1_20260823.md",
+  "final_verdict": "[NEEDS_FIX]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "l2_completed": true
+}

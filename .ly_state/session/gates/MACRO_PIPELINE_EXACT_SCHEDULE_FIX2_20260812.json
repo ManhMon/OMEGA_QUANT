@@ -1,0 +1,26 @@
+{
+  "phase_name": "MACRO_PIPELINE_EXACT_SCHEDULE_FIX2_20260812",
+  "l2_session_id": "l2_role9_macro_pipeline_exact_schedule_fix2_20260812",
+  "l2_completed": true,
+  "l2_role_id": 9,
+  "l2_role_name": "backend-engineer",
+  "l3_session_id": "role21_macro_pipeline_exact_schedule_fix2_reaudit2_20260812",
+  "l3_session_key": "role21_macro_pipeline_exact_schedule_fix2_reaudit2_20260812",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_macro_pipeline_exact_schedule_fix2_reaudit2_20260812.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "timestamp": "2026-08-12T12:12:24.9265245+07:00",
+  "repo_local_skill_sources": [
+    ".agents/agent/code-reviewer.md",
+    ".agents/skills/code-review-checklist/SKILL.md",
+    ".agents/skills/clean-code/SKILL.md",
+    ".agents/skills/testing-patterns/SKILL.md",
+    ".agents/skills/audit-cycle/SKILL.md",
+    ".agents/skills/omega-sod/SKILL.md"
+  ],
+  "forbidden_path_scan": ".gemini\\antigravity-ide\\scratch\\ag-kit non-authoritative scan evidence only; no reliance.\n.openclaw\\skills non-authoritative scan evidence only; no reliance.\nC:\\Users\\GHC\\.agents non-authoritative scan evidence only; no reliance.\n.codex\\memories non-authoritative scan evidence only; no reliance.",
+  "evidence": "APPROVED: World Bank annual data publishes January 29 of the following year; Yahoo same-day 15:15 and SBV next-calendar-day 16:00 schedules are exact; PIT cutoffs, focused tests, full suite, role separation, scope, and repo-local skill-source evidence pass."
+}

@@ -1,0 +1,21 @@
+{
+  "phase_name": "SOD_DISPATCHER_ADVISORY_HARDENING_20260826",
+  "l2_session_id": "l2_role9_sod_dispatcher_advisory_hardening_fix14_20260826",
+  "l2_role_id": 9,
+  "l2_role_name": "backend-engineer",
+  "l3_session_id": "l3_role25_sod_dispatcher_advisory_hardening_fix2_20260826",
+  "l3_role_id": 25,
+  "l3_role_name": "it-systems-auditor",
+  "audit_report_path": ".ly_state/session/audit_reports/role25_sod_dispatcher_advisory_hardening_fix2_20260826.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "l2_completed": true,
+  "repo_local_skill_sources": [
+    ".agents/agent/backend-engineer.md",
+    ".agents/agent/system-architect.md"
+  ],
+  "forbidden_path_scan": "clean_no_authoritative_reliance",
+  "timestamp": "2026-08-26T23:59:59Z",
+  "l3_session_key": "l3_role25_sod_dispatcher_advisory_hardening_fix2_20260826"
+}

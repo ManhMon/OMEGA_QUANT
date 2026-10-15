@@ -1,0 +1,16 @@
+{
+  "phase_name": "VNSTOCK_LATEST_STANDARDIZATION_20260612",
+  "l2_session_id": "l2_role15_vnstock_latest_standardization_fix_20260612",
+  "l2_completed": true,
+  "l2_role_id": 15,
+  "l2_role_name": "data-engineer",
+  "l3_session_id": "l3_role21_vnstock_latest_standardization_fix_reaudit_20260612",
+  "l3_session_key": "role21_vnstock_latest_standardization_fix_reaudit_20260612",
+  "l3_role_id": 21,
+  "l3_role_name": "code-reviewer",
+  "audit_report_path": ".ly_state/session/audit_reports/role21_vnstock_latest_standardization_fix_reaudit_20260612.md",
+  "final_verdict": "[APPROVED]",
+  "sod_boundary_checked": true,
+  "writer_auditor_separated": true,
+  "timestamp": "2026-06-11T23:59:59+07:00"
+}
