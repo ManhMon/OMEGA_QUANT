@@ -1243,3 +1243,80 @@ def test_audit_report_path_rejects_symlink_and_resolved_escape(tmp_path, monkeyp
     escaped_dir = audit / "jump"
     escaped_dir.symlink_to(tmp_path, target_is_directory=True)
     assert not sod.validate_audit_report_path(".ly_state/session/audit_reports/jump/outside.md")[0]
+
+
+def test_dispatch_l3_resume_flags_and_behavior(capsys):
+    import scripts.dispatch_l3 as dl3
+
+    parsed_resume = dl3.parse_cli_args(_valid_l3_argv() + ["--resume"])
+    assert parsed_resume.resume is True
+    parsed_force_new = dl3.parse_cli_args(_valid_l3_argv() + ["--force-new"])
+    assert parsed_force_new.resume is False
+    assert parsed_force_new.force_new is True
+
+    with pytest.raises(SystemExit) as exc:
+        dl3.parse_cli_args(_valid_l3_argv() + ["--resume", "--force-new"])
+    assert exc.value.code == 2
+
+    with pytest.raises(SystemExit) as exc:
+        dl3.parse_cli_args(_valid_l3_argv() + ["--resume", "--resume"])
+    assert exc.value.code == 2
+
+    with pytest.raises(SystemExit) as exc:
+        dl3.parse_cli_args(_valid_l3_argv() + ["--force-new", "--force-new"])
+    assert exc.value.code == 2
+
+
+def test_dispatch_l3_command_resume_detection(monkeypatch, tmp_path, capsys):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    session_dir = tmp_path / ".ly_state" / "session"
+    session_dir.mkdir(parents=True)
+    report_dir = session_dir / "audit_reports"
+    report_dir.mkdir(parents=True)
+
+    rem_session = "l2_role15_ok_session_rem1_20260826"
+    dl3._dispatch_l3_body(
+        l3_role_name="code-reviewer",
+        l2_role_name="data-engineer",
+        gate_name="TEST_GATE_L3",
+        l2_session_id=rem_session,
+        scope="tests/",
+        l3_role_id=21,
+        l2_role_id=15,
+        l3_session_id="l3_role21_test",
+        report_path=".ly_state/session/audit_reports/role21_test.md",
+        risk="low",
+        risk_reason="test",
+        model="cx/gpt-6.1-sol",
+        _explicit_flag=False,
+        run_mode=False,
+        graph_evidence={},
+    )
+    captured = capsys.readouterr()
+    assert "RESUME_MODE=ACTIVE (RESUME_FIRST_MANDATORY_20261008: REMEDIATION_CYCLE_DETECTED)" in captured.out
+    assert "codex exec resume --last" in captured.out
+
+    dl3._dispatch_l3_body(
+        l3_role_name="code-reviewer",
+        l2_role_name="data-engineer",
+        gate_name="TEST_GATE_L3",
+        l2_session_id=rem_session,
+        scope="tests/",
+        l3_role_id=21,
+        l2_role_id=15,
+        l3_session_id="l3_role21_test",
+        report_path=".ly_state/session/audit_reports/role21_test.md",
+        risk="low",
+        risk_reason="test",
+        model="cx/gpt-6.1-sol",
+        _explicit_flag=False,
+        run_mode=False,
+        graph_evidence={},
+        force_new=True,
+    )
+    captured = capsys.readouterr()
+    assert "RESUME_MODE=BYPASSED (--force-new)" in captured.out
+    assert "codex exec resume --last" not in captured.out
+

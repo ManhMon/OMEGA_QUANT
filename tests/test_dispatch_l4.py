@@ -3068,3 +3068,49 @@ def test_pipeline_planner_restore_reacquisition_fails_closed(outcome, fault, pla
         assert handle.read() == captured_owner[0][0]
     evidence_identity = captured_owner[0][1]
     assert (captured[0].stat().st_dev, captured[0].stat().st_ino) == (evidence_identity.st_dev, evidence_identity.st_ino)
+
+
+def test_dispatch_l4_resume_flags_and_behavior():
+    from scripts.dispatch_l4 import _parse_l4_cli_args
+
+    base_args = ["system-architect", "TEST_GATE", "test_slug", "Task desc", "scope.py"]
+    parsed_resume = _parse_l4_cli_args(base_args + ["--resume"])
+    assert parsed_resume.resume is True
+    assert parsed_resume.force_new is False
+
+    parsed_force_new = _parse_l4_cli_args(base_args + ["--force-new"])
+    assert parsed_force_new.resume is False
+    assert parsed_force_new.force_new is True
+
+    with pytest.raises(SystemExit) as exc:
+        _parse_l4_cli_args(base_args + ["--resume", "--force-new"])
+    assert exc.value.code == 2
+
+    with pytest.raises(SystemExit) as exc:
+        _parse_l4_cli_args(base_args + ["--resume", "--resume"])
+    assert exc.value.code == 2
+
+    with pytest.raises(SystemExit) as exc:
+        _parse_l4_cli_args(base_args + ["--force-new", "--force-new"])
+    assert exc.value.code == 2
+
+
+def test_dispatch_l4_command_resume_detection(stage3_dispatch):
+    dispatch, tmp_path, generate = stage3_dispatch
+
+    code, cmd, output = generate(extra=())
+    assert code == 0
+    assert "RESUME_MODE=ACTIVE" not in output.out
+    assert "claude -p" in cmd
+    assert "--resume" not in cmd
+
+    code2, cmd2, output2 = generate(extra=())
+    assert code2 == 0
+    assert "RESUME_MODE=ACTIVE" in output2.out
+    assert "--resume 'l4_role9_stage3_" in cmd2
+
+    code3, cmd3, output3 = generate(extra=["--force-new"])
+    assert code3 == 0
+    assert "RESUME_MODE=BYPASSED (--force-new)" in output3.out
+    assert "--resume" not in cmd3
+

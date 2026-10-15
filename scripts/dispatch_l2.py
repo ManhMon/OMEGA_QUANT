@@ -15,6 +15,7 @@ Exit codes:
     2 = Fail-closed CLI error (invalid flags, missing args, invalid role)
 """
 import hashlib
+import hmac
 import os
 import sys
 import json
@@ -49,7 +50,7 @@ GRAPH_BUILD_TIMEOUT = 900
 GRAPH_MAX_SCOPE_FILES = 200
 GRAPH_MAX_DETAIL_FILES = 20
 GRAPH_MAX_QUERY_ENTITIES = 5
-GRAPH_IMPACT_MAX_RESULTS_LADDER: tuple[int, ...] = (100, 150, 200, 250)
+GRAPH_IMPACT_MAX_RESULTS_LADDER: tuple[int, ...] = (100, 150, 200, 250, 300, 400, 500)
 GRAPH_MAX_IMPACTED_FILES = 250
 GRAPH_MAX_OUTPUT_BYTES = 1_000_000
 GRAPH_MAX_JSON_BYTES = 1_000_000
@@ -1771,6 +1772,35 @@ def parse_frontmatter(content: str) -> dict:
     return result
 
 
+class ParsedL2Args(tuple):
+    resume: bool = False
+    force_new: bool = False
+    mcp_advisor: bool = False
+
+    def __new__(
+        cls,
+        pos0, pos1, pos2, pos3, pos4,
+        explicit_risk, co_roles, token_saver, explicit_model,
+        explicit_l2_model, explicit_l2_subagent_model, dry_run,
+        graph_evidence_path, model_decision_path, model_decision_digest,
+        resume: bool = False, force_new: bool = False,
+        mcp_advisor: bool = False,
+    ):
+        inst = super().__new__(
+            cls,
+            (
+                pos0, pos1, pos2, pos3, pos4,
+                explicit_risk, co_roles, token_saver, explicit_model,
+                explicit_l2_model, explicit_l2_subagent_model, dry_run,
+                graph_evidence_path, model_decision_path, model_decision_digest,
+            ),
+        )
+        inst.resume = resume
+        inst.force_new = force_new
+        inst.mcp_advisor = mcp_advisor
+        return inst
+
+
 def _parse_cli_args(args: list[str]):
     """Strictly parse positional arguments and optional repeatable flags."""
     if any(not isinstance(arg, str) or _CONTROL_RE.search(arg) for arg in args):
@@ -1787,6 +1817,9 @@ def _parse_cli_args(args: list[str]):
     graph_evidence_path = None
     model_decision_path = None
     model_decision_digest = None
+    explicit_resume = False
+    explicit_force_new = False
+    explicit_mcp_advisor = False
     i = 0
     while i < len(args):
         arg = args[i]
@@ -1883,9 +1916,33 @@ def _parse_cli_args(args: list[str]):
                 "  --l2-model MODEL  Override L2 lead model explicitly\n"
                 "  --subagent-model MODEL Override L2 subagent model explicitly\n"
                 "  --dry-run         Run validation without writing prompt or lock\n"
-                "  --graph-evidence PATH Use existing graph evidence file"
+                "  --graph-evidence PATH Use existing graph evidence file\n"
+                "  --resume          Explicitly resume existing session\n"
+                "  --force-new       Force new session, bypassing resume detection\n"
+                "  --mcp-advisor     Enable private MCP advisor (omega-l2-advisor)"
             )
             sys.exit(0)
+        elif arg == "--resume":
+            if explicit_resume:
+                print("[ERROR] Duplicate --resume flag provided.", file=sys.stderr)
+                sys.exit(2)
+            explicit_resume = True
+            i += 1
+            continue
+        elif arg == "--force-new":
+            if explicit_force_new:
+                print("[ERROR] Duplicate --force-new flag provided.", file=sys.stderr)
+                sys.exit(2)
+            explicit_force_new = True
+            i += 1
+            continue
+        elif arg == "--mcp-advisor":
+            if explicit_mcp_advisor:
+                print("[ERROR] Duplicate --mcp-advisor flag provided.", file=sys.stderr)
+                sys.exit(2)
+            explicit_mcp_advisor = True
+            i += 1
+            continue
         elif arg.startswith("-"):
             print(f"[ERROR] Unknown or unsupported flag: '{arg}'.", file=sys.stderr)
             sys.exit(2)
@@ -1895,15 +1952,26 @@ def _parse_cli_args(args: list[str]):
 
     if len(pos_args) != 5:
         print(
-            "Usage: python scripts/dispatch_l2.py <role_name> <gate_name> <task_slug> <task_description> <scope> [--risk low|high] [--co-role <role_name>]... [--token-saver] [--model <model>]",
+            "Usage: python scripts/dispatch_l2.py <role_name> <gate_name> <task_slug> <task_description> <scope> [--risk low|high] [--co-role <role_name>]... [--token-saver] [--model <model>] [--resume] [--force-new] [--mcp-advisor]",
             file=sys.stderr,
         )
+        sys.exit(2)
+
+    if explicit_resume and explicit_force_new:
+        print("[ERROR] Cannot specify both --resume and --force-new.", file=sys.stderr)
         sys.exit(2)
 
     if (model_decision_path is None) != (model_decision_digest is None):
         print("[ERROR] model decision path and digest must be supplied together.", file=sys.stderr)
         sys.exit(2)
-    return pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4], explicit_risk, co_roles, token_saver, explicit_model, explicit_l2_model, explicit_l2_subagent_model, dry_run, graph_evidence_path, model_decision_path, model_decision_digest
+    return ParsedL2Args(
+        pos_args[0], pos_args[1], pos_args[2], pos_args[3], pos_args[4],
+        explicit_risk, co_roles, token_saver, explicit_model, explicit_l2_model,
+        explicit_l2_subagent_model, dry_run, graph_evidence_path,
+        model_decision_path, model_decision_digest,
+        resume=explicit_resume, force_new=explicit_force_new,
+        mcp_advisor=explicit_mcp_advisor,
+    )
 
 
 def parse_cli_args(args: list[str]) -> tuple[str, str, str, str, str, str | None]:
@@ -2000,7 +2068,18 @@ def resolve_l2_roles(primary_name: str, co_role_names: list[str], repo_root: Pat
 def main():
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
-    role_name, gate_name, task_slug, task_desc, scope, explicit_risk, co_role_names, token_saver, explicit_model, explicit_l2_model, explicit_l2_subagent_model, dry_run, graph_evidence_path, model_decision_path, model_decision_digest = _parse_cli_args(sys.argv[1:])
+    if sys.argv[1:] == ["--private-mcp-stdio"]:
+        return _run_private_mcp_stdio()
+    parsed_args = _parse_cli_args(sys.argv[1:])
+    (
+        role_name, gate_name, task_slug, task_desc, scope,
+        explicit_risk, co_role_names, token_saver, explicit_model,
+        explicit_l2_model, explicit_l2_subagent_model, dry_run,
+        graph_evidence_path, model_decision_path, model_decision_digest,
+    ) = parsed_args
+    resume = parsed_args.resume
+    force_new = parsed_args.force_new
+    mcp_advisor = parsed_args.mcp_advisor
     validate_identifier(role_name, "role_name")
     validate_identifier(gate_name, "gate_name")
     validate_identifier(task_slug, "task_slug")
@@ -2071,6 +2150,9 @@ def main():
             subagent_model=subagent_model, jev_dimension_focus=jev_dimension_focus,
             token_saver=token_saver,
             dry_run=dry_run,
+            resume=resume,
+            force_new=force_new,
+            mcp_advisor=mcp_advisor,
         )
     except (RuntimeError, OSError, UnicodeError, ValueError) as exc:
         print(f"[ERROR] {redact_credentials(str(exc))}", file=sys.stderr)
@@ -2080,12 +2162,64 @@ def main():
     return 0
 
 
+def _run_private_mcp_stdio() -> int:
+    """Run private MCP stdio server for L2 OpenCode sessions."""
+    from scripts.dispatch_l4 import _run_private_mcp_stdio as _l4_stdio
+    return _l4_stdio()
+
+
+def _private_mcp_launch_command(
+    command: str,
+    gate: str,
+    session: str,
+    role: int,
+    risk: str,
+    config_path: Path,
+) -> str:
+    config_str = str(config_path)
+    values = {
+        "OMEGA_DISPATCH_GATE": gate,
+        "OMEGA_DISPATCH_SESSION_ID": session,
+        "OMEGA_DISPATCH_ROLE_ID": str(role),
+        "OMEGA_DISPATCH_RISK": "low" if risk == "low" else "high",
+        "OPENCODE_CONFIG": config_str,
+    }
+    names = [*values, "OMEGA_DISPATCH_TOKEN_SHA256", "OMEGA_DISPATCH_TOKEN"]
+    bindings = "; ".join(
+        f"[Environment]::SetEnvironmentVariable({ps_quote(key)}, {ps_quote(value)}, 'Process')"
+        for key, value in values.items()
+    )
+    return (
+        "& { $ErrorActionPreference = 'Stop'; $__OMEGA_OLD_ENV = @{}; "
+        f"$__OMEGA_ENV_NAMES = @({', '.join(ps_quote(name) for name in names)}); "
+        "foreach ($name in $__OMEGA_ENV_NAMES) { $__OMEGA_OLD_ENV[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; "
+        "$__OMEGA_RNG = $null; $__OMEGA_SHA = $null; $__OMEGA_RANDOM = New-Object byte[] 32; "
+        "try { $__OMEGA_RNG = [System.Security.Cryptography.RandomNumberGenerator]::Create(); "
+        "$__OMEGA_RNG.GetBytes($__OMEGA_RANDOM); "
+        "$__OMEGA_TOKEN = -join ($__OMEGA_RANDOM | ForEach-Object { $_.ToString('x2') }); "
+        "$__OMEGA_SHA = [System.Security.Cryptography.SHA256]::Create(); "
+        "$__OMEGA_TOKEN_HASH = -join ($__OMEGA_SHA.ComputeHash([Text.Encoding]::UTF8.GetBytes($__OMEGA_TOKEN)) | ForEach-Object { $_.ToString('x2') }); "
+        f"{bindings}; "
+        "[Environment]::SetEnvironmentVariable('OMEGA_DISPATCH_TOKEN', $__OMEGA_TOKEN, 'Process'); "
+        "[Environment]::SetEnvironmentVariable('OMEGA_DISPATCH_TOKEN_SHA256', $__OMEGA_TOKEN_HASH, 'Process'); "
+        f"{command}; $__OMEGA_EXIT = $LASTEXITCODE "
+        "} catch { [Console]::Error.WriteLine('[ERROR] private MCP launch failed'); exit 2 } "
+        "finally { foreach ($name in $__OMEGA_ENV_NAMES) { [Environment]::SetEnvironmentVariable($name, $__OMEGA_OLD_ENV[$name], 'Process') }; "
+        "if ($null -ne $__OMEGA_RNG) { $__OMEGA_RNG.Dispose() }; if ($null -ne $__OMEGA_SHA) { $__OMEGA_SHA.Dispose() }; "
+        "[Array]::Clear($__OMEGA_RANDOM, 0, $__OMEGA_RANDOM.Length); $__OMEGA_TOKEN = $null; $__OMEGA_TOKEN_HASH = $null }; "
+        "if ($__OMEGA_EXIT -ne 0) { exit $__OMEGA_EXIT } }"
+    )
+
+
 def _generate_and_print(roles, gate_name, task_desc, scope,
                         session_id, lessons_block, risk, risk_reason, model, graph_evidence,
                         subagent_model=DEFAULT_L2_SUBAGENT_MODEL,
                         jev_dimension_focus: int | None = None,
                         token_saver: bool = False,
-                        dry_run: bool = False):
+                        dry_run: bool = False,
+                        resume: bool = False,
+                        force_new: bool = False,
+                        mcp_advisor: bool = False):
     primary = roles[0]
     co_roles = roles[1:]
     role_name = primary["name"]
@@ -2141,6 +2275,14 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
     if dimension_focus_clause:
         adversarial_clause += f"\n{dimension_focus_clause}"
 
+    mcp_advisor_clause = (
+        "MCP ADVISOR DIRECTIVE: You have access to the local MCP advisor tool `consult_advisor` provided by `omega-l2-advisor`. "
+        "Actively consult `consult_advisor` for complex architectural trade-offs, PIT safety boundaries, 24D invariants, "
+        "Vietnamese market microstructure, and algorithm edge cases (default model cx/gpt-6.1-sol).\n"
+        if mcp_advisor
+        else ""
+    )
+
     prompt = (
         f"REPO_ROOT: {REPO_ROOT}. "
         f"ROLE: {role_id} {role_name} - OpenCode L2 Implementation Work. "
@@ -2148,6 +2290,7 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         f"AUTHORIZED REPO-LOCAL ROLE/SKILL FILES: {source_manifest}. "
         f"TASK: {task_desc}. "
         f"GATE: {gate_name}. "
+        f"{mcp_advisor_clause}"
         f"{build_graph_prompt_evidence(graph_evidence)} "
         f"LESSONS: {lessons_block}. "
         f"{token_saver_clause}"
@@ -2160,7 +2303,7 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         f"Report every exact repo-local role/skill file listed above and forbidden path scan result. "
         f"SCOPE: {scope}. "
         f"REQUIREMENTS: use repo-relative paths from REPO_ROOT only; implement/refactor/test only; "
-        f"TEST SCOPE CONSTRAINT: Limit test execution to declared scope files and related test suites (e.g. pytest <scope_test_files> -v, npm test); do NOT scan or run the full 4400+ test repository suite. "
+        f"TEST SCOPE CONSTRAINT: Limit test execution to declared scope files and related test suites (e.g. pytest <scope_test_files> -o addopts=\"\" --capture=sys -p no:terminal --junitxml=.ly_state/session/{session_id}_test.xml, npm test); do NOT scan or run the full 4400+ test repository suite. "
         f"ANTI-POLLING & ZERO-IDLE DIRECTIVE (ANTI_POLLING_ZERO_IDLE_20260918): NEVER poll, loop, or repeatedly run git status, task status, or sod_gate_enforcer to wait for background execution; stop calling tools immediately and end the turn when waiting for commands. "
         f"write L2 report to .ly_state/session/{session_id}.md. "
         f"Do not audit or approve. Stop/NEEDS_FIX if required repo-local source missing.\n"
@@ -2173,7 +2316,7 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         f"from REPO_AGENT_ROOT and REPO_SKILL_ROOT (e.g. '- .agents/agent/{role_name}.md', "
         f"'- .agents/skills/{{skill}}/skill.md'). "
         f"(4) '## Changes Made' listing modified files. "
-        f"(5) '## Verification' with actual test command outputs. "
+        f"(5) '## Verification' with actual test command outputs (use safe pytest flags: -o addopts=\"\" --capture=sys -p no:terminal --junitxml=.ly_state/session/{session_id}_test.xml). "
         f"(6) '## Forbidden Path Scan' with EXACTLY four lines, one per forbidden path, each line "
         f"ending with the EXACT phrase: 'non-authoritative scan evidence only; no reliance.' "
         f"The four lines must mention: '.gemini\\antigravity-ide\\scratch\\ag-kit', '.openclaw\\skills', "
@@ -2188,22 +2331,39 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
     prompt_dir = REPO_ROOT / ".ly_state" / "session"
     prompt_dir.mkdir(parents=True, exist_ok=True)
     prompt_path = ensure_session_containment(prompt_dir / f"prompt_{session_id}.txt", REPO_ROOT)
+    report_path = ensure_session_containment(prompt_dir / f"{session_id}.md", REPO_ROOT)
     expected_digest = hashlib.sha256(prompt.encode("utf-8")).hexdigest()
+
+    is_resume = False
+    resume_reason = ""
+    if force_new:
+        is_resume = False
+        resume_reason = "BYPASSED (--force-new explicitly provided)"
+    elif resume:
+        is_resume = True
+        resume_reason = "EXPLICIT_RESUME_FLAG"
+    elif prompt_path.is_file() and prompt_path.stat().st_size > 0:
+        is_resume = True
+        resume_reason = "EXISTING_SESSION_DETECTED"
+    elif report_path.is_file() and report_path.stat().st_size > 100:
+        is_resume = True
+        resume_reason = "EXISTING_REPORT_DETECTED"
+
     if not dry_run:
         expected_digest = write_prompt_with_sha256(prompt_path, prompt)
-    metadata = {"session_id": session_id, "role_id": role_id, "role_name": role_name, "subagent_model": subagent_model, "model": model}
-    metadata_raw = (json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("utf-8")
-    metadata_path = ensure_session_containment(prompt_dir / f"l2_metadata_{session_id}.json", REPO_ROOT)
-    metadata_sidecar = metadata_path.with_name(metadata_path.name + ".sha256")
-    if not dry_run:
-        for path, data in ((metadata_path, metadata_raw), (metadata_sidecar, f"{hashlib.sha256(metadata_raw).hexdigest()}  {metadata_path.name}\n".encode("ascii"))):
-            tmp = path.with_name(path.name + f".{os.getpid()}.tmp")
+        metadata = {"session_id": session_id, "role_id": role_id, "role_name": role_name, "subagent_model": subagent_model, "model": model}
+        metadata_raw = (json.dumps(metadata, sort_keys=True, separators=(",", ":"), ensure_ascii=True) + "\n").encode("utf-8")
+        metadata_path = ensure_session_containment(prompt_dir / f"l2_metadata_{session_id}.json", REPO_ROOT)
+        metadata_sidecar = metadata_path.with_name(metadata_path.name + ".sha256")
+        for p, data in ((metadata_path, metadata_raw), (metadata_sidecar, f"{hashlib.sha256(metadata_raw).hexdigest()}  {metadata_path.name}\n".encode("ascii"))):
+            tmp = p.with_name(p.name + f".{os.getpid()}.tmp")
             with open(tmp, "wb") as handle:
                 handle.write(data); handle.flush(); os.fsync(handle.fileno())
-            if path.exists() and path.read_bytes() != data:
+            if p.exists() and p.read_bytes() != data:
                 tmp.unlink(missing_ok=True); raise RuntimeError("authoritative L2 metadata already differs")
-            os.replace(tmp, path)
-        report_path = ensure_session_containment(prompt_dir / f"{session_id}.md", REPO_ROOT)
+            os.replace(tmp, p)
+
+    if not dry_run and (not is_resume or not report_path.is_file() or report_path.stat().st_size == 0):
         if not report_path.is_file() or report_path.stat().st_size == 0:
             scaffold_content = build_l2_report_scaffold(
                 session_id=session_id,
@@ -2244,11 +2404,40 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
         raise RuntimeError("prompt readback differs from generated anti-drip clause")
     read_stmt = build_verified_prompt_read_statement(prompt_path, expected_digest)
 
-    cmd = (
-        f"{read_stmt} "
-        f'echo "" | opencode run -m "{model}" --pure --dangerously-skip-permissions --print-logs '
-        f'--dir "{REPO_ROOT}" $__OMEGA_PROMPT'
-    )
+    if is_resume:
+        inner_cmd = (
+            f"{read_stmt} "
+            f'$__OMEGA_PROMPT | opencode run -s {ps_quote(session_id)} -m "{model}" --pure --auto --print-logs '
+            f'--dir "{REPO_ROOT}"'
+        )
+    else:
+        inner_cmd = (
+            f"{read_stmt} "
+            f'$__OMEGA_PROMPT | opencode run -m "{model}" --pure --auto --print-logs '
+            f'--dir "{REPO_ROOT}"'
+        )
+
+    if mcp_advisor:
+        config_path = ensure_session_containment(prompt_dir / f"opencode_mcp_{session_id}.json", REPO_ROOT)
+        mcp_config = {
+            "$schema": "https://opencode.ai/config.json",
+            "mcp": {
+                "omega-l2-advisor": {
+                    "type": "local",
+                    "command": [
+                        sys.executable,
+                        str(REPO_ROOT / "scripts" / "dispatch_l2.py"),
+                        "--private-mcp-stdio",
+                    ],
+                }
+            },
+        }
+        if not dry_run:
+            config_bytes = json.dumps(mcp_config, indent=2).encode("utf-8")
+            config_path.write_bytes(config_bytes)
+        cmd = _private_mcp_launch_command(inner_cmd, gate_name, session_id, role_id, risk, config_path)
+    else:
+        cmd = inner_cmd
 
     # 5. Output key-value metadata and exact command
     print(f"SESSION_ID={session_id}")
@@ -2263,6 +2452,12 @@ def _generate_and_print(roles, gate_name, task_desc, scope,
     print(f"ANTI_DRIP_MODE={contract['mode']}")
     print(f"ANTI_DRIP_CONTRACT={contract_path.relative_to(REPO_ROOT).as_posix()}")
     print(f"ANTI_DRIP_CONTRACT_SHA256={contract_sha256}")
+    if is_resume:
+        print(f"RESUME_MODE=ACTIVE (RESUME_FIRST_MANDATORY_20261008: {resume_reason})")
+    elif force_new:
+        print("RESUME_MODE=BYPASSED (--force-new)")
+    if mcp_advisor:
+        print("MCP_ADVISOR=ACTIVE (omega-l2-advisor via OPENCODE_CONFIG)")
     print(f"---COMMAND---")
     print(cmd)
 

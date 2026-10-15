@@ -204,8 +204,9 @@ class ParsedL3Args(tuple):
     model_decision_digest: str | None = None
     resume: bool = False
     force_new: bool = False
+    mcp_critic: bool = False
 
-    def __new__(cls, pos0, pos1, pos2, pos3, pos4, risk, run, model=None, subagent_model=None, pre_audit_path=None, pre_audit_sha256=None, model_decision_path=None, model_decision_digest=None, resume=False, force_new=False):
+    def __new__(cls, pos0, pos1, pos2, pos3, pos4, risk, run, model=None, subagent_model=None, pre_audit_path=None, pre_audit_sha256=None, model_decision_path=None, model_decision_digest=None, resume=False, force_new=False, mcp_critic=False):
         inst = super().__new__(cls, (pos0, pos1, pos2, pos3, pos4, risk, run))
         inst.model = model
         inst.subagent_model = subagent_model
@@ -215,6 +216,7 @@ class ParsedL3Args(tuple):
         inst.model_decision_digest = model_decision_digest
         inst.resume = resume
         inst.force_new = force_new
+        inst.mcp_critic = mcp_critic
         return inst
 
 
@@ -239,7 +241,8 @@ def parse_cli_args(args: list[str]):
             "  --subagent-model MODEL Override subagent model identifier explicitly\n"
             "  --run          Execute command immediately after generation\n"
             "  --resume       Explicitly resume prior L3 session\n"
-            "  --force-new    Force new L3 session, bypassing resume detection"
+            "  --force-new    Force new L3 session, bypassing resume detection\n"
+            "  --mcp-critic   Explicitly enable omega-l3-critic stdio MCP server for Codex audit"
         )
         sys.exit(0)
     if any(not isinstance(arg, str) or re.search(r"[\x00-\x1f\x7f-\x9f]", arg) for arg in args):
@@ -255,6 +258,7 @@ def parse_cli_args(args: list[str]):
     explicit_model_decision_digest: str | None = None
     explicit_resume: bool = False
     explicit_force_new: bool = False
+    explicit_mcp_critic: bool = False
     run_mode = False
     i = 0
     while i < len(args):
@@ -346,6 +350,13 @@ def parse_cli_args(args: list[str]):
             explicit_force_new = True
             i += 1
             continue
+        if arg == "--mcp-critic":
+            if explicit_mcp_critic:
+                print("[ERROR] Duplicate --mcp-critic flag provided.", file=sys.stderr)
+                sys.exit(2)
+            explicit_mcp_critic = True
+            i += 1
+            continue
         if arg.startswith("-"):
             print(f"[ERROR] Unknown or unsupported flag: '{arg}'.", file=sys.stderr)
             sys.exit(2)
@@ -355,7 +366,7 @@ def parse_cli_args(args: list[str]):
     if len(pos_args) != 5:
         print(
             "Usage: python scripts/dispatch_l3.py <l3_role_name> <gate_name> "
-            "<l2_session_id> <l2_role_name> <scope> [--risk low|high] [--model <model>] [--subagent-model <model>] [--run] [--resume] [--force-new]",
+            "<l2_session_id> <l2_role_name> <scope> [--risk low|high] [--model <model>] [--subagent-model <model>] [--run] [--resume] [--force-new] [--mcp-critic]",
             file=sys.stderr,
         )
         sys.exit(2)
@@ -372,7 +383,7 @@ def parse_cli_args(args: list[str]):
         explicit_risk, run_mode, model=explicit_model, subagent_model=explicit_subagent_model,
         pre_audit_path=explicit_pre_audit_path, pre_audit_sha256=explicit_pre_audit_sha256,
         model_decision_path=explicit_model_decision_path, model_decision_digest=explicit_model_decision_digest,
-        resume=explicit_resume, force_new=explicit_force_new,
+        resume=explicit_resume, force_new=explicit_force_new, mcp_critic=explicit_mcp_critic,
     )
 
 
@@ -582,7 +593,7 @@ def main():
             print(f"[ERROR] L2 report missing or unsafe: {l2_session_id}", file=sys.stderr)
             sys.exit(2)
         val_res = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "scripts" / "validate_l2_report.py"), l2_session_id, str(l2_role_id), l2_role_name],
+            [sys.executable, str(REPO_ROOT / "scripts" / "validate_l2_report.py"), l2_session_id, str(l2_role_id), l2_role_name, "--collect-timeout", "300"],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
@@ -597,6 +608,7 @@ def main():
             subagent_model=subagent_model, pre_audit=pre_audit_payload,
             jev_dimension_focus=decision.get("dimension_focus") if model_decision_path else None,
             resume=args.resume, force_new=args.force_new,
+            mcp_critic=args.mcp_critic,
         )
     finally:
         release_session_lock(lock_path)
@@ -715,7 +727,8 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
                       risk, risk_reason, model, _explicit_flag, run_mode, graph_evidence,
                        subagent_model: str = "cx/gpt-6-luna", pre_audit: dict | None = None,
                        jev_dimension_focus: int | None = None,
-                       resume: bool = False, force_new: bool = False):
+                       resume: bool = False, force_new: bool = False,
+                       mcp_critic: bool = False):
     # 4. Pre-create audit report file (containment-checked inside .ly_state/session)
     report_full = ensure_session_containment(REPO_ROOT / report_path, REPO_ROOT)
 
@@ -864,7 +877,8 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         is_resume = True
         resume_reason = "PRIOR_AUDIT_DETECTED"
 
-    if model.startswith("cx/"):
+    enable_critic = mcp_critic or model.startswith("cx/")
+    if enable_critic:
         critic_config = _critic_mcp_config(gate_name, l3_session_id, l3_role_id, risk)
         config_setup = (
             f'$__OMEGA_CRITIC_CONFIG = {ps_quote(critic_config)}; '
@@ -886,13 +900,13 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
     else:
         if is_resume:
             cmd = (
-                 f'{read_stmt} echo "" | opencode resume {ps_quote(l3_session_id)} --pure --dangerously-skip-permissions --print-logs '
-                 f'--dir {ps_quote(str(REPO_ROOT))} $__OMEGA_PROMPT'
+                 f'{read_stmt} $__OMEGA_PROMPT | opencode resume {ps_quote(l3_session_id)} --pure --auto --print-logs '
+                 f'--dir {ps_quote(str(REPO_ROOT))}'
             )
         else:
             cmd = (
-                 f'{read_stmt} echo "" | opencode run -m {ps_quote(model)} --pure --dangerously-skip-permissions --print-logs '
-                 f'--dir {ps_quote(str(REPO_ROOT))} $__OMEGA_PROMPT'
+                 f'{read_stmt} $__OMEGA_PROMPT | opencode run -m {ps_quote(model)} --pure --auto --print-logs '
+                 f'--dir {ps_quote(str(REPO_ROOT))}'
             )
 
     # 7. Output
@@ -904,6 +918,7 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
     print(f"MODEL={model}")
     print(f"SUBAGENT_MODEL={subagent_model}")
     print(f"RISK={risk}")
+    print(f"MCP_CRITIC={'enabled' if enable_critic else 'disabled'}")
     print(f"REPORT={report_path}")
     print(f"GATE={gate_name}")
     if is_resume:

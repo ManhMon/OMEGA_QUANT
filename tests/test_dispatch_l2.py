@@ -1473,11 +1473,12 @@ def test_graph_query_results_accept_up_to_impact_ladder_limit(tmp_path, monkeypa
 def test_graph_query_results_reject_above_impact_ladder_limit(tmp_path, monkeypatch):
     graph_file = tmp_path / "node.py"
     graph_file.write_text("# graph node", encoding="utf-8")
+    limit = dispatch_l2.GRAPH_IMPACT_MAX_RESULTS_LADDER[-1] + 1
     payload = {
         "status": "ok",
         "summary": "file summary",
-        "result_count": 251,
-        "results": [{"file_path": "node.py"} for _ in range(251)],
+        "result_count": limit,
+        "results": [{"file_path": "node.py"} for _ in range(limit)],
     }
     monkeypatch.setattr(
         dispatch_l2,
@@ -1490,7 +1491,7 @@ def test_graph_query_results_reject_above_impact_ladder_limit(tmp_path, monkeypa
     with pytest.raises(RuntimeError, match="invalid results"):
         dispatch_l2._graph_file_summary(tmp_path, "node.py")
     with pytest.raises(RuntimeError, match="invalid result_count"):
-        dispatch_l2._validated_results({**payload, "results": [], "result_count": 251}, tmp_path)
+        dispatch_l2._validated_results({**payload, "results": [], "result_count": limit}, tmp_path)
 
 
 def test_jev_api_failure_keeps_prompt_credentials_redacted_and_fails_closed(monkeypatch, tmp_path):
@@ -1804,9 +1805,9 @@ def test_bounded_impact_query_single_file_ladder_exhaustion_fails_closed(tmp_pat
     with pytest.raises(RuntimeError) as excinfo:
         dispatch_l2._bounded_impact_query(tmp_path, ["a.py"])
 
-    assert attempts == ["100", "150", "200", "250"]
+    assert attempts == [str(x) for x in dispatch_l2.GRAPH_IMPACT_MAX_RESULTS_LADDER]
     assert "safe complete representation is impossible" in str(excinfo.value)
-    assert "max_results=250" in str(excinfo.value)
+    assert f"max_results={dispatch_l2.GRAPH_IMPACT_MAX_RESULTS_LADDER[-1]}" in str(excinfo.value)
 
 
 def test_bounded_impact_query_byte_limit_bisects_without_laddering(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -2149,4 +2150,201 @@ def test_dispatch_l2_help_flags(monkeypatch, capsys):
         assert exc_info.value.code == 0
         captured = capsys.readouterr()
         assert "Usage: python scripts/dispatch_l2.py" in captured.out
+
+
+def test_dispatch_l2_resume_flags_and_behavior():
+    import pytest
+    from scripts.dispatch_l2 import _parse_cli_args
+
+    base_args = ["data-engineer", "TEST_GATE", "test_slug", "Task desc", "scope.py"]
+    parsed_resume = _parse_cli_args(base_args + ["--resume"])
+    assert parsed_resume.resume is True
+    assert parsed_resume.force_new is False
+
+    parsed_force_new = _parse_cli_args(base_args + ["--force-new"])
+    assert parsed_force_new.resume is False
+    assert parsed_force_new.force_new is True
+
+    with pytest.raises(SystemExit) as exc:
+        _parse_cli_args(base_args + ["--resume", "--force-new"])
+    assert exc.value.code == 2
+
+    with pytest.raises(SystemExit) as exc:
+        _parse_cli_args(base_args + ["--resume", "--resume"])
+    assert exc.value.code == 2
+
+    with pytest.raises(SystemExit) as exc:
+        _parse_cli_args(base_args + ["--force-new", "--force-new"])
+    assert exc.value.code == 2
+
+
+def test_dispatch_l2_command_resume_detection(monkeypatch, tmp_path, capsys):
+    import scripts.dispatch_l2 as dl2
+
+    monkeypatch.setattr(dl2, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dl2, "build_graph_prompt_evidence", lambda _: "GRAPH")
+
+    roles = [{
+        "name": "data-engineer",
+        "role_id": 15,
+        "role_file": ".agents/agent/data-engineer.md",
+        "skill_files": [".agents/skills/clean-code/skill.md"],
+    }]
+    session_id = "l2_role15_test_resume_20261011"
+
+    # 1. First run: new session, no prompt or report yet
+    dl2._generate_and_print(
+        roles=roles,
+        gate_name="TEST_GATE_RESUME",
+        task_desc="Test task",
+        scope="src/",
+        session_id=session_id,
+        lessons_block="None",
+        risk="low",
+        risk_reason="test",
+        model="9router/cx/gpt-6-luna",
+        graph_evidence={},
+    )
+    out1 = capsys.readouterr().out
+    assert "RESUME_MODE=ACTIVE" not in out1
+    assert f"opencode run -s '{session_id}'" not in out1
+    assert 'opencode run -m "9router/cx/gpt-6-luna"' in out1
+
+    # 2. Second run: prompt file exists -> auto resume detected
+    dl2._generate_and_print(
+        roles=roles,
+        gate_name="TEST_GATE_RESUME",
+        task_desc="Test task",
+        scope="src/",
+        session_id=session_id,
+        lessons_block="None",
+        risk="low",
+        risk_reason="test",
+        model="9router/cx/gpt-6-luna",
+        graph_evidence={},
+    )
+    out2 = capsys.readouterr().out
+    assert "RESUME_MODE=ACTIVE (RESUME_FIRST_MANDATORY_20261008: EXISTING_SESSION_DETECTED)" in out2
+    assert f"opencode run -s '{session_id}'" in out2
+
+    # 3. Third run: force_new overrides existing session
+    dl2._generate_and_print(
+        roles=roles,
+        gate_name="TEST_GATE_RESUME",
+        task_desc="Test task",
+        scope="src/",
+        session_id=session_id,
+        lessons_block="None",
+        risk="low",
+        risk_reason="test",
+        model="9router/cx/gpt-6-luna",
+        graph_evidence={},
+        force_new=True,
+    )
+    out3 = capsys.readouterr().out
+    assert "RESUME_MODE=BYPASSED (--force-new)" in out3
+    assert f"opencode run -s '{session_id}'" not in out3
+
+    # 4. Fourth run: fresh session with explicit resume
+    fresh_session = "l2_role15_fresh_resume_20261011"
+    dl2._generate_and_print(
+        roles=roles,
+        gate_name="TEST_GATE_RESUME",
+        task_desc="Test task",
+        scope="src/",
+        session_id=fresh_session,
+        lessons_block="None",
+        risk="low",
+        risk_reason="test",
+        model="9router/cx/gpt-6-luna",
+        graph_evidence={},
+        resume=True,
+    )
+    out4 = capsys.readouterr().out
+    assert "RESUME_MODE=ACTIVE (RESUME_FIRST_MANDATORY_20261008: EXPLICIT_RESUME_FLAG)" in out4
+    assert f"opencode run -s '{fresh_session}'" in out4
+
+
+def test_parse_cli_args_mcp_advisor_flag():
+    args = [
+        "data-engineer", "TEST_GATE", "test_slug",
+        "Test task description", "src/omega/data/",
+        "--mcp-advisor"
+    ]
+    parsed = dispatch_l2._parse_cli_args(args)
+    assert parsed.mcp_advisor is True
+
+
+def test_parse_cli_args_duplicate_mcp_advisor_fails():
+    args = [
+        "data-engineer", "TEST_GATE", "test_slug",
+        "Test task description", "src/omega/data/",
+        "--mcp-advisor", "--mcp-advisor"
+    ]
+    with pytest.raises(SystemExit) as excinfo:
+        dispatch_l2._parse_cli_args(args)
+    assert excinfo.value.code == 2
+
+
+def test_mcp_advisor_generation_and_config_wiring(capsys):
+    roles = [
+        {
+            "name": "backend-engineer",
+            "role_id": 9,
+            "role_file": ".agents/agent/backend-engineer.md",
+            "skills": ["clean-code"],
+            "skill_files": [".agents/skills/clean-code/skill.md"],
+        }
+    ]
+    session_id = "l2_role9_test_mcp_adv_20261011"
+    prompt_dir = REPO_ROOT / ".ly_state" / "session"
+    prompt_dir.mkdir(parents=True, exist_ok=True)
+    config_file = prompt_dir / f"opencode_mcp_{session_id}.json"
+    prompt_file = prompt_dir / f"prompt_{session_id}.txt"
+    try:
+        dispatch_l2._generate_and_print(
+            roles=roles,
+            gate_name="GATE_MCP_TEST",
+            task_desc="Test task with MCP advisor",
+            scope="src/omega/core/",
+            session_id=session_id,
+            lessons_block="None",
+            risk="low",
+            risk_reason="test",
+            model="9router/cx/gpt-6.1-sol",
+            graph_evidence={},
+            mcp_advisor=True,
+        )
+        out = capsys.readouterr().out
+        assert "MCP_ADVISOR=ACTIVE (omega-l2-advisor via OPENCODE_CONFIG)" in out
+        assert "OPENCODE_CONFIG" in out
+        assert "omega-l2-advisor" in out
+        assert config_file.is_file()
+
+        config_data = json.loads(config_file.read_text(encoding="utf-8"))
+        assert "mcp" in config_data
+        assert "omega-l2-advisor" in config_data["mcp"]
+        srv = config_data["mcp"]["omega-l2-advisor"]
+        assert srv["type"] == "local"
+        assert srv["command"][-1] == "--private-mcp-stdio"
+
+        assert prompt_file.is_file()
+        prompt_content = prompt_file.read_text(encoding="utf-8")
+        assert "MCP ADVISOR DIRECTIVE" in prompt_content
+        assert "consult_advisor" in prompt_content
+    finally:
+        config_file.unlink(missing_ok=True)
+        prompt_file.unlink(missing_ok=True)
+        (prompt_dir / f"anti_drip_contract_{session_id}.json").unlink(missing_ok=True)
+        (prompt_dir / f"anti_drip_contract_{session_id}.sha256").unlink(missing_ok=True)
+        (prompt_dir / f"{session_id}.md").unlink(missing_ok=True)
+
+
+def test_private_mcp_stdio_fails_closed_without_token(monkeypatch):
+    monkeypatch.delenv("OMEGA_DISPATCH_TOKEN", raising=False)
+    monkeypatch.delenv("OMEGA_DISPATCH_GATE", raising=False)
+    res = dispatch_l2._run_private_mcp_stdio()
+    assert res == 1
+
+
 
