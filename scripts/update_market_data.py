@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Canonical VCI Updater / Backfill for data/market_2015_now.parquet
+SSI incremental updater with retained VCI history for data/market_2015_now.parquet
 ==================================================================
 Role:   Data Engineer (Role 15, L2)
 Gate:   CANONICAL_UPDATER_FULL_OVERLAP_RELOAD_20260626
@@ -18,10 +18,13 @@ updater that:
   - Preserves canonical 14-column schema:
       ticker, date, exchange, open, high, low, close, volume,
       as_of, available_at, source, price_scale, adjusted, rebuild_date
-  - Uses VCI only for OHLCV; source=vnstock_vci
+  - SSI supplies new OHLCV; VCI is reference-only. Existing canonical rows win
+    equal market-value overlaps without relabeling provider/adjustment evidence.
+  - Retained history starts at 2015-01-01. SSI's rolling 730-day bound cannot
+    bootstrap or fully repair that history: unsupported requests fail closed.
   - price_scale label: "VND" (compatible with existing canonical data;
     values are VND_FULL i.e. whole-Dong, e.g. 50000.0)
-  - Enforces PIT available_at = date + 1 day
+  - SSI available_at is observation time; legacy VCI keeps its date+1 contract.
   - Enforces hard date lower bound >= 2015-01-01
   - Validates before write: duplicates, null OHLCV, non-positive OHLC,
     negative volume, exchange whitelist, schema
@@ -82,7 +85,7 @@ import time
 import traceback
 import uuid
 import io
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from pathlib import Path
@@ -143,7 +146,7 @@ EXCHANGE_WHITELIST = {"HOSE", "HNX"}
 MAX_RETRIES = 3
 RATE_LIMIT_SECONDS = 1.0
 BATCH_SIZE = 50
-VCI_FETCH_WORKERS = 8
+VCI_FETCH_WORKERS = 16
 
 # ── Price-scale compatibility note ──────────────────────────────────────────
 # The existing canonical data uses price_scale label "VND" while the actual
@@ -297,7 +300,7 @@ def _canonical_metadata(canonical_df: Optional[pd.DataFrame]) -> Tuple[Optional[
 # VCI Fetch (via DirectVCIClient)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-def _create_vnstock_client():
+def _create_vci_reference_client():
     """Retain the updater adapter contract with direct VCI transport only."""
     try:
         from omega.data.vnstock_client import VnstockClient
@@ -317,6 +320,31 @@ def _create_kbs_client():
     return VnstockClient(source="KBS", rate_limiter=RateLimiter(max_requests=55, period_seconds=60.0))
 
 
+def _create_ssi_client():
+    from omega.data.ssi_mcp_client import SSIMCPClient
+    return SSIMCPClient()
+
+
+def _create_vnstock_client():
+    """Legacy canonical factory hook; SSI transport is authoritative."""
+    return _create_ssi_client()
+
+
+def _fetch_ssi_symbol(client, symbol, start_date, end_date, exchange):
+    """Preserve observed SSI provenance; never synthesize historical availability."""
+    if exchange not in EXCHANGE_WHITELIST:
+        raise ValueError("Invalid SSI exchange")
+    pages = []
+    for page in client.iter_history(symbol, start_date, end_date):
+        if not page.empty:
+            page = page.rename(columns={"time": "date"}).copy()
+            page["exchange"] = exchange
+            pages.append(page[CANONICAL_COLUMNS])
+    if not pages:
+        return pd.DataFrame(columns=CANONICAL_COLUMNS)
+    return pd.concat(pages, ignore_index=True).sort_values("date").reset_index(drop=True)
+
+
 def _run_reconciliation(
     combined: pd.DataFrame,
     symbols: List[str],
@@ -325,17 +353,16 @@ def _run_reconciliation(
     state_path: Path,
     latest_path: Path,
 ) -> Dict:
-    """Best-effort KBS reconciliation. Never affects VCI publication."""
-    from omega.data.provider_reconciliation import reconcile_ohlcv
-    prior_state = json.loads(state_path.read_text(encoding="utf-8")) if state_path.exists() else {}
+    """VCI comparison only; never substitute reference rows into SSI data."""
+    from omega.data.ssi_mcp_client import reconcile_ssi_vci
+    primary = combined.loc[combined["source"].eq("SSI_MCP")].copy()
     try:
-        kbs_data, _ = fetch_symbols(_create_kbs_client(), symbols, exchange_map, as_of_date, as_of_date)
-        payload, next_state = reconcile_ohlcv(combined, kbs_data, prior_state, as_of_date)
-    except Exception as exc:
-        logger.warning("KBS reconciliation unavailable: %s", exc)
-        payload, next_state = reconcile_ohlcv(combined, None, prior_state, as_of_date)
-        payload["findings"][0]["reason"] = f"reconciliation_failed: {exc}"
-    _write_fsync(state_path, _canonical_json(next_state))
+        start = primary["date"].min().strftime("%Y-%m-%d") if not primary.empty else as_of_date
+        reference, stats = fetch_symbols(_create_vci_reference_client(), symbols, exchange_map, start, as_of_date)
+        payload = reconcile_ssi_vci(primary, None if stats["errors"] else reference)
+    except Exception:
+        payload = reconcile_ssi_vci(primary, None)
+    _write_fsync(state_path, _canonical_json(payload))
     _write_fsync(latest_path, _canonical_json(payload))
     return payload
 
@@ -352,13 +379,29 @@ def _resolve_listing_dates(
     if list_dt is not None:
         return list_dt, delist_dt
 
+    # 1. Fast local check from pre-signed ticker lifecycle metadata (avoids slow HTTP timeouts)
+    try:
+        if TICKER_LIFECYCLE_PATH.exists():
+            lifecycle_data = json.loads(TICKER_LIFECYCLE_PATH.read_text(encoding="utf-8"))
+            sym_entry = lifecycle_data.get(symbol.upper(), {})
+            payload = sym_entry.get("payload", sym_entry)
+            if list_dt is None and "listing_date" in payload:
+                list_dt = pd.to_datetime(payload["listing_date"])
+            if delist_dt is None and "delisting_date" in payload:
+                delist_dt = pd.to_datetime(payload["delisting_date"])
+    except Exception:
+        pass
+
+    if list_dt is not None:
+        return list_dt, delist_dt
+
     direct = getattr(client, "direct_vci_client", None)
     if direct is not None:
         try:
             value = direct.fetch_listing_date(symbol)
             if value is not None:
                 list_dt = pd.Timestamp(value)
-        except (ValueError, RuntimeError):
+        except (ValueError, RuntimeError, TimeoutError, OSError):
             # Missing metadata cannot certify an empty history chunk.
             pass
     elif hasattr(client, "get_listing_date") and callable(client.get_listing_date):
@@ -387,19 +430,6 @@ def _resolve_listing_dates(
         except Exception:
             pass
 
-    if list_dt is None or delist_dt is None:
-        try:
-            if TICKER_LIFECYCLE_PATH.exists():
-                lifecycle_data = json.loads(TICKER_LIFECYCLE_PATH.read_text(encoding="utf-8"))
-                sym_entry = lifecycle_data.get(symbol.upper(), {})
-                payload = sym_entry.get("payload", sym_entry)
-                if list_dt is None and "listing_date" in payload:
-                    list_dt = pd.to_datetime(payload["listing_date"])
-                if delist_dt is None and "delisting_date" in payload:
-                    delist_dt = pd.to_datetime(payload["delisting_date"])
-        except Exception:
-            pass
-
     return list_dt, delist_dt
 
 
@@ -422,7 +452,9 @@ def _fetch_history_chunked(
     end_dt = pd.to_datetime(end_date)
     max_days = 5 * 365
 
-    list_dt, delist_dt = _resolve_listing_dates(client, symbol, listing_date, delisting_date)
+    # Lazy listing date resolution: only resolve when actually needed to verify empty chunks
+    list_dt = pd.to_datetime(listing_date) if listing_date is not None else None
+    delist_dt = pd.to_datetime(delisting_date) if delisting_date is not None else None
 
     if (end_dt - start_dt).days <= max_days:
         total_attempts = 0
@@ -441,24 +473,26 @@ def _fetch_history_chunked(
                     interval="1D",
                     normalize_vnd=True,
                 )
-                if res is None or res.empty:
-                    is_pre_listing = list_dt is not None and end_dt < list_dt
-                    is_post_delisting = delist_dt is not None and start_dt > delist_dt
-                    if is_pre_listing or is_post_delisting:
-                        return pd.DataFrame()
-                    # Short windows can legitimately contain no exchange sessions
-                    # (weekend/holiday). Preserve checkpoint continuity instead of
-                    # treating absence of a bar as upstream corruption.
-                    if (end_dt - start_dt).days <= 7:
-                        return pd.DataFrame()
-                    if list_dt is None:
-                        raise RuntimeError(
-                            f"[{symbol}] Unverified empty chunk {start_date}..{end_date}: missing positive listing_date or trading continuity proof"
-                        )
+                if res is not None and not res.empty:
+                    return res
+                if list_dt is None or delist_dt is None:
+                    list_dt, delist_dt = _resolve_listing_dates(client, symbol, list_dt, delist_dt)
+                is_pre_listing = list_dt is not None and end_dt < list_dt
+                is_post_delisting = delist_dt is not None and start_dt > delist_dt
+                if is_pre_listing or is_post_delisting:
+                    return pd.DataFrame()
+                # Short windows can legitimately contain no exchange sessions
+                # (weekend/holiday). Preserve checkpoint continuity instead of
+                # treating absence of a bar as upstream corruption.
+                if (end_dt - start_dt).days <= 7:
+                    return pd.DataFrame()
+                if list_dt is None:
                     raise RuntimeError(
-                        f"[{symbol}] Unverified empty chunk {start_date}..{end_date}: empty chunk during listed period (listing_date={list_dt.date()}) failed closed, missing positive listing_date or trading continuity proof"
+                        f"[{symbol}] Unverified empty chunk {start_date}..{end_date}: missing positive listing_date or trading continuity proof"
                     )
-                return res
+                raise RuntimeError(
+                    f"[{symbol}] Unverified empty chunk {start_date}..{end_date}: empty chunk during listed period (listing_date={list_dt.date()}) failed closed, missing positive listing_date or trading continuity proof"
+                )
             except Exception as e:
                 last_exc = e
         if isinstance(last_exc, RuntimeError) and (
@@ -609,6 +643,8 @@ def fetch_one_symbol(
     delisting_date: Optional[str] = None,
 ) -> pd.DataFrame:
     """Fetch OHLCV for one symbol from VCI, returning canonical-schema DataFrame."""
+    if getattr(client, "source", None) == "SSI_MCP":
+        return _fetch_ssi_symbol(client, symbol, start_date, end_date, exchange)
     df = _fetch_history_chunked(
         client=client,
         symbol=symbol,
@@ -675,6 +711,10 @@ def _is_transport_error(exc: BaseException) -> bool:
 
 def _vci_available_at(dates: pd.Series) -> pd.Series:
     """Return canonical start-of-next-day dissemination time in Vietnam time."""
+    if pd.api.types.is_datetime64_any_dtype(dates):
+        if getattr(dates.dt, "tz", None) is None:
+            return (dates.dt.normalize() + timedelta(days=1)).dt.tz_localize(VN_TZ)
+        return (dates.dt.tz_convert(VN_TZ).dt.tz_localize(None).dt.normalize() + timedelta(days=1)).dt.tz_localize(VN_TZ)
     return (_timezone_naive_datetime(dates).dt.normalize() + timedelta(days=1)).dt.tz_localize(VN_TZ)
 
 
@@ -687,20 +727,42 @@ def _timezone_naive_datetime(values: pd.Series) -> pd.Series:
     )
 
 
-def _normalize_legacy_vci_available_at(df: pd.DataFrame) -> pd.DataFrame:
+def cleanup_temporary_market_files(target_dir: Optional[Path] = None) -> int:
+    """No filename-based deletion: names/age do not prove inactive ownership.
+
+    Writers clean their exact allocated path in finally while holding their
+    target FileLock. Fetchers remove only their own mkdtemp directory.
+    ponytail: orphan recovery requires an ownership ledger and writer exclusion.
+    """
+    return 0
+
+
+def _normalize_legacy_vci_available_at(df: pd.DataFrame, in_place: bool = False) -> pd.DataFrame:
     """Normalize PIT timestamps; repair only positively identified legacy VCI rows."""
-    normalized = df.copy()
-    if "price_scale" in normalized.columns:
+    if df is None or df.empty:
+        return df
+    normalized = df if in_place else df.copy()
+    if "price_scale" in normalized.columns and normalized["price_scale"].isna().any():
         normalized["price_scale"] = normalized["price_scale"].fillna(PRICE_SCALE_LABEL)
-    if "adjusted" in normalized.columns:
+    if "adjusted" in normalized.columns and normalized["adjusted"].isna().any():
         normalized["adjusted"] = normalized["adjusted"].fillna("backward_adjusted")
-    if "rebuild_date" in normalized.columns:
+    if "rebuild_date" in normalized.columns and normalized["rebuild_date"].isna().any():
         normalized["rebuild_date"] = normalized["rebuild_date"].fillna("2026-06-13")
-    vci_rows = _is_legacy_vci_provenance(normalized)
-    normalized["available_at"] = pd.to_datetime(
-        normalized["available_at"], utc=True
-    ).dt.tz_convert(VN_TZ)
-    normalized.loc[vci_rows, "available_at"] = _vci_available_at(normalized.loc[vci_rows, "date"])
+
+    if "available_at" in normalized.columns and "date" in normalized.columns:
+        vci_rows = _is_legacy_vci_provenance(normalized)
+        if vci_rows.any():
+            if vci_rows.all():
+                normalized["available_at"] = _vci_available_at(normalized["date"])
+            else:
+                avail = normalized["available_at"]
+                if not pd.api.types.is_datetime64_any_dtype(avail) or getattr(avail.dt, "tz", None) is None:
+                    normalized["available_at"] = pd.to_datetime(avail, utc=True).dt.tz_convert(VN_TZ)
+                normalized.loc[vci_rows, "available_at"] = _vci_available_at(normalized.loc[vci_rows, "date"])
+        else:
+            avail = normalized["available_at"]
+            if not pd.api.types.is_datetime64_any_dtype(avail) or getattr(avail.dt, "tz", None) is None:
+                normalized["available_at"] = pd.to_datetime(avail, utc=True).dt.tz_convert(VN_TZ)
     return normalized
 
 
@@ -709,29 +771,69 @@ def _is_legacy_vci_provenance(df: pd.DataFrame) -> pd.Series:
     required = {"source", *LEGACY_VCI_PROVENANCE}
     if not required.issubset(df.columns):
         return pd.Series(False, index=df.index)
-    source = df["source"].astype("string").str.strip().str.casefold()
-    known_vci_source = source.isin(LEGACY_VCI_SOURCE_VALUES)
+    source = df["source"]
+    if source.dtype == "object":
+        known_vci_source = source.isin(LEGACY_VCI_SOURCE_VALUES)
+        if not known_vci_source.all():
+            known_vci_source = source.astype("string").str.strip().str.casefold().isin(LEGACY_VCI_SOURCE_VALUES)
+    else:
+        known_vci_source = source.astype("string").str.strip().str.casefold().isin(LEGACY_VCI_SOURCE_VALUES)
+
+    if known_vci_source.all():
+        return known_vci_source
+
     canonical_signature = pd.Series(True, index=df.index)
     for field, value in LEGACY_VCI_PROVENANCE.items():
-        canonical_signature &= df[field].astype("string").str.strip().eq(value)
-    return known_vci_source | (source.isna() | source.eq("")) & canonical_signature
+        s = df[field]
+        if s.dtype == "object":
+            canonical_signature &= s.eq(value)
+        else:
+            canonical_signature &= s.astype("string").str.strip().eq(value)
+    source_empty = source.isna() | source.eq("")
+    return known_vci_source | (source_empty & canonical_signature)
 
 
-def merge_canonical_and_new(existing: pd.DataFrame, new_data: pd.DataFrame) -> Tuple[pd.DataFrame, List[str]]:
-    """Merge ordinary overlaps only when immutable market fields agree."""
-    existing = _normalize_legacy_vci_available_at(existing)
-    new_data = _normalize_legacy_vci_available_at(new_data)
+def merge_canonical_and_new(
+    existing: pd.DataFrame,
+    new_data: pd.DataFrame,
+    in_place: bool = True,
+) -> Tuple[pd.DataFrame, List[str]]:
+    """Retain canonical evidence on equal market values during VCI-to-SSI migration.
+
+    Provider timestamps/adjustment labels are evidence, not price conflicts.
+    Same-provider overlaps still require the original immutable contract.
+    No adjustment equivalence or historical SSI availability is inferred.
+    """
+    existing = _normalize_legacy_vci_available_at(existing, in_place=in_place)
+    new_data = _normalize_legacy_vci_available_at(new_data, in_place=in_place)
     combined = pd.concat([existing, new_data], ignore_index=True)
+    del existing, new_data
+    gc.collect()
+
     duplicate_mask = combined.duplicated(["ticker", "date"], keep=False)
     conflicts: List[str] = []
-    for (ticker, date), rows in combined.loc[duplicate_mask].groupby(["ticker", "date"], sort=False):
-        if len(rows[OVERLAP_EQUIVALENCE_COLUMNS].drop_duplicates()) != 1:
-            conflicts.append(f"overlap conflict: {ticker} {pd.Timestamp(date).date()}")
+    if duplicate_mask.any():
+        for (ticker, date), rows in combined.loc[duplicate_mask].groupby(["ticker", "date"], sort=False):
+            migration = rows["source"].eq("SSI_MCP").any() and _is_legacy_vci_provenance(rows).any()
+            columns = OVERLAP_EQUIVALENCE_COLUMNS
+            if migration and (rows["source"].eq("SSI_MCP") | _is_legacy_vci_provenance(rows)).all():
+                columns = ["exchange", "open", "high", "low", "close", "volume", "price_scale"]
+            elif rows["source"].eq("SSI_MCP").all():
+                columns = [column for column in columns if column != "available_at"]
+            if len(rows[columns].drop_duplicates()) != 1:
+                conflicts.append(f"overlap conflict: {ticker} {pd.Timestamp(date).date()}")
+    del duplicate_mask
+    gc.collect()
+
     if conflicts:
         return combined, conflicts
-    return combined.drop_duplicates(["ticker", "date"], keep="first").sort_values(
+
+    deduped = combined.drop_duplicates(["ticker", "date"], keep="first").sort_values(
         ["ticker", "date"]
-    ).reset_index(drop=True), []
+    ).reset_index(drop=True)
+    del combined
+    gc.collect()
+    return deduped, []
 
 
 def fetch_symbols(
@@ -751,7 +853,8 @@ def fetch_symbols(
     if symbol_filter:
         symbols = [s for s in symbols if s in symbol_filter]
 
-    all_frames: List[pd.DataFrame] = []
+    chunk_files: List[Path] = []
+    chunk_buffer: List[pd.DataFrame] = []
     stats = {"fetched": 0, "empty": 0, "errors": 0, "rows": 0, "total_symbols": len(symbols)}
     errors: List[Dict] = []
     empty_tickers: List[str] = []
@@ -770,11 +873,12 @@ def fetch_symbols(
                 overlap_dt = MIN_DATE
             symbol_start = overlap_dt.strftime("%Y-%m-%d")
 
-        for retries in range(MAX_RETRIES):
+        attempts = 1 if getattr(client, "source", None) == "SSI_MCP" else MAX_RETRIES
+        for retries in range(attempts):
             try:
                 return symbol, fetch_one_symbol(client, symbol, symbol_start, end_date, exchange), None
             except Exception as e:
-                if retries + 1 < MAX_RETRIES:
+                if retries + 1 < attempts:
                     wait = 2 ** (retries + 1)
                     logger.warning(
                         f"[{symbol}] Retry {retries + 1}/{MAX_RETRIES}: {e}, wait {wait}s"
@@ -808,9 +912,15 @@ def fetch_symbols(
             )
             df = df[valid].copy()
             if not df.empty:
-                all_frames.append(df)
+                chunk_buffer.append(df)
                 stats["fetched"] += 1
                 stats["rows"] += len(df)
+                if len(chunk_buffer) >= BATCH_SIZE:
+                    chunk_path = temp_chunk_dir / f"chunk_{len(chunk_files)}.parquet"
+                    pd.concat(chunk_buffer, ignore_index=True).to_parquet(chunk_path, index=False, compression="zstd")
+                    chunk_files.append(chunk_path)
+                    chunk_buffer.clear()
+                    gc.collect()
             else:
                 stats["empty"] += 1
                 empty_tickers.append(symbol)
@@ -826,29 +936,47 @@ def fetch_symbols(
                 f"Rate: {rate:.2f}/s | ETA: {eta:.0f}s"
             )
 
-    direct_vci = getattr(client, "direct_vci", False) and getattr(client, "source", "").upper() == "VCI"
-    if direct_vci:
-        with ThreadPoolExecutor(max_workers=min(VCI_FETCH_WORKERS, max(1, len(symbols)))) as executor:
-            futures = {executor.submit(fetch_symbol, symbol): index for index, symbol in enumerate(symbols)}
-            results = {}
-            for future in as_completed(futures):
-                results[futures[future]] = future.result()
-        for index in range(len(symbols)):
-            record_result(index, *results[index])
-    else:
-        for index, symbol in enumerate(symbols):
-            record_result(index, *fetch_symbol(symbol))
-            if index < len(symbols) - 1:
-                time.sleep(RATE_LIMIT_SECONDS)
+    temp_chunk_dir = tempfile.mkdtemp(prefix="omega_fetch_chunks_")
+    try:
+        temp_chunk_dir = Path(temp_chunk_dir)
+        direct_vci = getattr(client, "direct_vci", False) and getattr(client, "source", "").upper() == "VCI"
+        if direct_vci or getattr(client, "source", None) == "SSI_MCP":
+            with ThreadPoolExecutor(max_workers=min(VCI_FETCH_WORKERS, max(1, len(symbols)))) as executor:
+                pending_symbols = iter(symbols)
+                futures = {executor.submit(fetch_symbol, symbol) for symbol in
+                           [next(pending_symbols, None) for _ in range(VCI_FETCH_WORKERS)] if symbol is not None}
+                completed_count = 0
+                while futures:
+                    done, futures = wait(futures, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        record_result(completed_count, *future.result())
+                        completed_count += 1
+                        symbol = next(pending_symbols, None)
+                        if symbol is not None:
+                            futures.add(executor.submit(fetch_symbol, symbol))
+        else:
+            for index, symbol in enumerate(symbols):
+                record_result(index, *fetch_symbol(symbol))
+                if index < len(symbols) - 1:
+                    time.sleep(RATE_LIMIT_SECONDS)
 
-    if all_frames:
-        combined = pd.concat(all_frames, ignore_index=True)
-    else:
-        combined = pd.DataFrame(columns=CANONICAL_COLUMNS)
+        if chunk_buffer:
+            chunk_path = temp_chunk_dir / f"chunk_{len(chunk_files)}.parquet"
+            pd.concat(chunk_buffer, ignore_index=True).to_parquet(chunk_path, index=False, compression="zstd")
+            chunk_files.append(chunk_path)
+            chunk_buffer.clear()
+            gc.collect()
 
-    stats["errors_list"] = errors
-    stats["empty_tickers"] = empty_tickers
-    return combined, stats
+        if chunk_files:
+            combined = pd.concat([pd.read_parquet(f) for f in chunk_files], ignore_index=True)
+        else:
+            combined = pd.DataFrame(columns=CANONICAL_COLUMNS)
+
+        stats["errors_list"] = errors
+        stats["empty_tickers"] = empty_tickers
+        return combined, stats
+    finally:
+        shutil.rmtree(temp_chunk_dir)
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -859,6 +987,15 @@ def _pit_timestamp_errors(df: pd.DataFrame, label: str) -> List[str]:
     """Require aware available_at on the exact date+1 calendar-day rule."""
     if "available_at" not in df.columns or "date" not in df.columns:
         return []
+    ssi_mask = df["source"].eq("SSI_MCP") if "source" in df else pd.Series(False, index=df.index)
+    if ssi_mask.any():
+        ssi = df.loc[ssi_mask]
+        events = pd.to_datetime(ssi["as_of"], errors="coerce", utc=True)
+        available = pd.to_datetime(ssi["available_at"], errors="coerce", utc=True)
+        expected = pd.to_datetime(ssi["date"]).dt.tz_localize(VN_TZ) + pd.Timedelta(hours=15, minutes=30)
+        invalid = events.isna() | available.isna() | events.ne(expected) | available.lt(events)
+        errors = [f"{label}: invalid SSI observation timestamps"] if invalid.any() else []
+        return errors + _pit_timestamp_errors(df.loc[~ssi_mask], label)
     expected = pd.to_datetime(df["date"], errors="coerce").dt.normalize() + timedelta(days=1)
     available = df["available_at"]
     parsed = pd.to_datetime(available, errors="coerce", utc=True)
@@ -1412,6 +1549,14 @@ def run_full_history_refetch(
             "targets": 0, "success": 0, "failed": 0,
         }
 
+    if getattr(client, "source", None) == "SSI_MCP" and pd.Timestamp(FULL_HISTORY_START) < client.history_start():
+        return pd.DataFrame(columns=CANONICAL_COLUMNS), {
+            "targets": len(symbols_to_refetch), "success": 0, "failed": len(symbols_to_refetch),
+            "details": [{"symbol": entry["symbol"], "status": "unsupported_history",
+                         "reason": f"SSI cannot repair from {FULL_HISTORY_START}; earliest supported date {client.history_start().date()}; canonical history retained"}
+                        for entry in symbols_to_refetch],
+        }
+
     logger.info(
         f"Full-history refetch: {len(symbols_to_refetch)} symbols from "
         f"{FULL_HISTORY_START} to {end_date}"
@@ -1575,7 +1720,7 @@ def atomic_write_with_backup(
 
         try:
             # 1. Temp write
-            df.to_parquet(temp_path, index=False)
+            df.to_parquet(temp_path, index=False, compression="zstd")
 
             # 2. File fsync
             with temp_path.open("rb+") as stream:
@@ -2209,7 +2354,7 @@ def _vci_terminal_evidence(
             errors.append("provenance: invalid available_at")
     terminal_session = pd.Series(terminal_by_ticker).value_counts().index[0] if terminal_by_ticker else None
     return not errors, errors, {
-        "provider": "VCI",
+        "provider": "SSI_MCP" if "source" in candidate and candidate["source"].eq("SSI_MCP").any() else "VCI",
         "requested_symbols": sorted(requested_symbols),
         "terminal_by_ticker": terminal_by_ticker,
         "terminal_session": terminal_session,
@@ -2438,7 +2583,7 @@ def publish_candidate(
         atomic_write_with_backup(candidate, candidate_path, backup=False)
         # Test doubles may only assert the call; production always has the file.
         if not candidate_path.exists():
-            candidate.to_parquet(candidate_path, index=False)
+            candidate.to_parquet(candidate_path, index=False, compression="zstd")
         payload = dict(manifest or {})
         prior = json.loads(pointer_path.read_text(encoding="utf-8")) if pointer_path.exists() else {}
         prior_generation = int(prior.get("generation", 0))
@@ -2461,7 +2606,7 @@ def publish_candidate(
             "stale": False,
             "terminal_session": vci_authority["terminal_session"],
             "execution_allowed": True,
-            "reason": "vci_authority_v2",
+            "reason": "ssi_canonical_v2" if vci_authority.get("provider") == "SSI_MCP" else "vci_authority_v2",
             "publication": {"run_id": run_id, "candidate_path": str(candidate_path), "pointer_path": str(pointer_path), "sha256": candidate_sha256},
             "projection_path": "",
             "projection_sha256": "",
@@ -2665,11 +2810,22 @@ def run_updater(
     end_str = end_ts.strftime("%Y-%m-%d")
     logger.info(f"Fetch window: {start_str} to {end_str}")
 
-    # 3. Fetch new data from VCI
+    # SSI is canonical; VCI is fetched independently for comparison only.
     client = _create_vnstock_client()
     if client is None:
         logger.error("Failed to create VnstockClient. Cannot fetch.")
         return {"status": "error", "message": "VnstockClient creation failed"}
+
+    if getattr(client, "source", None) == "SSI_MCP":
+        earliest = client.history_start()
+        unsupported = [symbol for symbol in requested_symbols
+                       if (symbol_max_dates.get(symbol, fetch_start) - timedelta(days=15)
+                           if symbol in symbol_max_dates else fetch_start) < earliest]
+        if unsupported:
+            return {"status": "unsupported_history", "provider": "SSI_MCP",
+                    "requested_start": start_str, "supported_start": str(earliest.date()),
+                    "symbols": unsupported, "canonical_history_preserved": True,
+                    "message": "SSI cannot bootstrap/backfill/repair older history; retain verified canonical history from 2015-01-01; no reference-provider substitution"}
 
     new_data, fetch_stats = fetch_symbols(
         client,
@@ -2777,6 +2933,9 @@ def run_updater(
             full_df, full_refetch_stats = run_full_history_refetch(
                 client, needs_full, exchange_map, end_str,
             )
+            if any(detail["status"] == "unsupported_history" for detail in full_refetch_stats.get("details", [])):
+                return {"status": "unsupported_history", "full_refetch_stats": full_refetch_stats,
+                        "canonical_history_preserved": True}
             # The incremental batch is the terminal-session authority. Full-history
             # recovery replaces history but must not advance a ticker's session.
             terminal_candidate = new_data.copy()
@@ -2806,8 +2965,11 @@ def run_updater(
         logger.info("Targeted re-fetch skipped (--no-refetch)")
 
     # 4. Normalize candidate PIT metadata before any overlap comparison or validation.
-    new_data = _normalize_legacy_vci_available_at(new_data)
-    terminal_candidate = _normalize_legacy_vci_available_at(terminal_candidate)
+    new_data = _normalize_legacy_vci_available_at(new_data, in_place=True)
+    if terminal_candidate is not new_data:
+        terminal_candidate = _normalize_legacy_vci_available_at(terminal_candidate, in_place=True)
+    else:
+        terminal_candidate = new_data
     new_valid, new_errors = validate_dataframe(new_data, "new_data")
     if not new_valid:
         logger.error("New data validation FAILED:")
@@ -2824,14 +2986,14 @@ def run_updater(
                 before_delete = len(canonical_df)
                 canonical_df = canonical_df[
                     ~canonical_df["ticker"].isin(full_history_symbols)
-                ].copy()
+                ]
                 deleted = before_delete - len(canonical_df)
                 logger.info(
                     f"Deleted {deleted} old canonical rows for "
                     f"{len(full_history_symbols)} phase-shifted symbols: "
                     f"{sorted(full_history_symbols)}"
                 )
-            combined, overlap_errors = merge_canonical_and_new(canonical_df, new_data)
+            combined, overlap_errors = merge_canonical_and_new(canonical_df, new_data, in_place=True)
             del canonical_df
             canonical_df = None
             gc.collect()
@@ -2897,7 +3059,7 @@ def run_updater(
             reconciliation_state_path, reconciliation_latest_path,
         )
     except Exception as exc:
-        logger.warning("KBS reconciliation boundary failed: %s", exc)
+        logger.warning("VCI reconciliation unavailable")
         summary["market_data_reconciliation"] = {"status": "warning", "reason": "reconciliation_failed"}
 
     if dry_run:
