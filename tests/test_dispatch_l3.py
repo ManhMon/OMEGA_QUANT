@@ -110,6 +110,34 @@ def test_extract_prior_audit_outcomes_deduplicates_identical_statuses(tmp_path):
     assert path == report
 
 
+def test_extract_prior_audit_outcomes_uses_repo_root_without_session_directory(tmp_path):
+    import scripts.dispatch_l3 as dl3
+
+    report = tmp_path / "audit.md"
+    report.write_text("""## 16-Dimension Adversarial Matrix
+| 1 | Integrity | PASS |
+""" + ("x" * 101), encoding="utf-8")
+    passed, failed, path = dl3.extract_prior_audit_outcomes("GATE", 21, tmp_path, report)
+    assert passed == [(1, "Integrity")]
+    assert failed == []
+    assert path == report
+
+
+def test_extract_prior_audit_outcomes_keeps_session_root_containment(tmp_path):
+    import scripts.dispatch_l3 as dl3
+
+    session = tmp_path / ".ly_state" / "session"
+    session.mkdir(parents=True)
+    report = tmp_path / "audit.md"
+    report.write_text("""## 16-Dimension Adversarial Matrix
+| 1 | Integrity | PASS |
+""" + ("x" * 101), encoding="utf-8")
+    passed, failed, path = dl3.extract_prior_audit_outcomes("GATE", 21, tmp_path, report)
+    assert passed == []
+    assert failed == []
+    assert path is None
+
+
 def test_extract_prior_audit_outcomes_rejects_dimension_overlap(tmp_path):
     import scripts.dispatch_l3 as dl3
 
@@ -139,6 +167,32 @@ def test_extract_prior_audit_outcomes_accepts_24_and_legacy_16(tmp_path):
 | 16 | Legacy security | PASS |
 """ + ("x" * 101), encoding="utf-8")
     assert dl3.extract_prior_audit_outcomes("GATE", 21, tmp_path, report)[0] == [(16, "Legacy security")]
+
+
+def test_l3_report_reset_fsyncs_backup_and_empty_publication(tmp_path, monkeypatch, capsys):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dl3, "build_graph_prompt_evidence", lambda _: "GRAPH")
+    monkeypatch.setattr(dl3, "load_sanitized_lesson_entries", lambda *_: [])
+    monkeypatch.setattr(dl3, "build_lessons_data_block", lambda _: "lessons")
+    report = tmp_path / ".ly_state/session/audit_reports/role21_reset_gate_20261016.md"
+    report.parent.mkdir(parents=True)
+    report.write_bytes(b"previous report" + b"x" * 101)
+    fsynced = []
+    real_fsync = dl3.os.fsync
+    monkeypatch.setattr(dl3.os, "fsync", lambda fd: fsynced.append(fd) or real_fsync(fd))
+
+    dl3._dispatch_l3_body(
+        "code-reviewer", "devops-engineer", "GATE", "l2_role11_task_20260927",
+        "tests/test_dispatch_l3.py", 21, 11, "l3_role21_reset_gate_20261016",
+        ".ly_state/session/audit_reports/role21_reset_gate_20261016.md", "low", "test",
+        "cx/gpt-6.1-sol(medium)", False, False, {},
+    )
+
+    assert fsynced
+    assert report.read_bytes() == b""
+    assert (report.parent / "role21_reset_gate_20261016_cycle1.md").read_bytes().startswith(b"previous report")
 
 
 def test_jev_dimension_focus_is_written_to_l3_prompt(tmp_path, monkeypatch, capsys):
@@ -1320,3 +1374,85 @@ def test_dispatch_l3_command_resume_detection(monkeypatch, tmp_path, capsys):
     assert "RESUME_MODE=BYPASSED (--force-new)" in captured.out
     assert "codex exec resume --last" not in captured.out
 
+
+
+@pytest.mark.parametrize("alias", ["luna", "LUNA", "terra", "terra(xhigh)", "terra-xhigh", "cx/gpt-6-luna", "gpt-6-luna"])
+def test_rem3_subagent_aliases_cannot_become_l3_lead(monkeypatch, tmp_path, alias):
+    import scripts.dispatch_l3 as dl3
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["dispatch_l3.py", "code-reviewer", "GATE", "l2_role15_session", "data-engineer", "tests/", "--model", alias])
+    with pytest.raises(SystemExit) as excinfo:
+        dl3.main()
+    assert excinfo.value.code == 2
+    assert not any(tmp_path.rglob("prompt_*.txt"))
+
+
+def _l3_argv(monkeypatch, gate="F_REM5_20261016", l2="l2_role15_rem5_20261016"):
+    monkeypatch.setattr(sys, "argv", ["dispatch_l3.py", "code-reviewer", gate, l2, "data-engineer", "tests/", "--risk", "low"])
+
+
+def test_dispatch_l3_parent_timeout_on_validate_l2_report_fails_closed_and_releases_lock(monkeypatch, tmp_path):
+    """F-006: hung validator -> exit 2, timeout kwarg passed, lock released, no spawn."""
+    import scripts.dispatch_l3 as dl3
+
+    seen = []
+
+    def fake_run(*args, **kwargs):
+        seen.append(kwargs)
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    _l3_argv(monkeypatch)
+    with pytest.raises(SystemExit) as exc:
+        dl3.main()
+    assert exc.value.code == 2
+    assert len(seen) == 1 and seen[0]["timeout"] > 300
+    assert not list((tmp_path / ".ly_state" / "session").glob("dispatch_*.lock"))
+
+
+@pytest.mark.parametrize("field,value", [
+    ("role_id", "21.0"), ("role_id", "abc"), ("role_id", "true"), ("role_id", ""),
+    ("name", "other-role"), ("name", "code-reviewer-x"),
+])
+def test_dispatch_l3_rejects_non_int_role_id_and_name_mismatch_before_effects(monkeypatch, tmp_path, field, value):
+    """F-004: role_id must be int; frontmatter name must equal requested role."""
+    import scripts.dispatch_l3 as dl3
+
+    agent_root = tmp_path / ".agents" / "agent"
+    agent_root.mkdir(parents=True)
+    for name in ("code-reviewer", "data-engineer"):
+        shutil.copy(Path(dl3.REPO_ROOT) / ".agents" / "agent" / f"{name}.md", agent_root / f"{name}.md")
+    text = (agent_root / "code-reviewer.md").read_text(encoding="utf-8")
+    lines = [f"{field}: {value}" if l.startswith(f"{field}:") else l for l in text.splitlines()]
+    (agent_root / "code-reviewer.md").write_text("\n".join(lines), encoding="utf-8")
+    calls = []
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dl3, "AGENT_ROOT", agent_root)
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: calls.append(a))
+    _l3_argv(monkeypatch)
+    with pytest.raises((SystemExit, TypeError)) as exc:
+        dl3.main()
+    assert isinstance(exc.value, SystemExit) and exc.value.code != 0
+    assert calls == []
+    assert not (tmp_path / ".ly_state" / "session" / "audit_reports").exists()
+
+
+def test_dispatch_l3_release_does_not_delete_foreign_lock(monkeypatch, tmp_path):
+    """F-002: L3 release is owner-verified; a foreign lock swapped in during dispatch survives."""
+    import scripts.dispatch_l3 as dl3
+
+    lock = tmp_path / ".ly_state" / "session" / "dispatch_l3_role21_f_rem5_20261016.lock"
+    real_body = dl3._dispatch_l3_body
+
+    def swap(*args, **kwargs):
+        lock.unlink()
+        lock.write_bytes(b"foreign-owner")
+        return real_body(*args, **kwargs)
+
+    monkeypatch.setattr(dl3, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(dl3, "_dispatch_l3_body", swap)
+    _l3_argv(monkeypatch, gate="F_REM5_20261016")
+    dl3.main()
+    assert lock.read_bytes() == b"foreign-owner"

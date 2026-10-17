@@ -424,6 +424,16 @@ def test_strict_utc_timestamp_rejection(date):
     assert not provider.calls
 
 
+def test_invalid_utf8_and_unicode_pit_fail_before_reservation():
+    with pytest.raises(advisor.ToolError, match="ERR_INVALID_ARGUMENTS"):
+        advisor.strict_json(b'{"as_of_time":"2026-10-04T12:\xff:00Z"}')
+
+    value = request("unicode_pit")
+    value["as_of_time"] = "2026-10-04T12:00:00Z\\u0301"
+    with pytest.raises(advisor.ToolError, match="ERR_INVALID_ARGUMENTS"):
+        consult(bridge(FakeProvider()), value)
+
+
 @pytest.mark.parametrize("variant", ["missing_source", "missing_time", "extra_key", "derived_late", "nested_derived_late", "secret_source", "instruction_data"], ids=str)
 def test_missing_provenance_and_instruction_smuggling(variant):
     provider = FakeProvider()
@@ -2907,3 +2917,44 @@ def test_stage2_committed_recovery_fault_blocks_access_without_rollback(tmp_path
     assert store.path.read_bytes() == raw
     with pytest.raises(advisor.ToolError, match="^ERR_REPLAYED_REQUEST$"):
         store.reserve(target)
+
+
+@pytest.mark.parametrize("model", advisor.MODELS)
+def test_valid_different_allowlisted_model_response_rejected(model):
+    """F-005: provider answering with another valid allowlisted model is a mismatch (no implicit downgrade)."""
+    other = next(m for m in advisor.MODELS if m != model)
+    value = request(model=model)
+    provider = FakeProvider(body=provider_body(other))
+    result = consult(bridge(provider), value)
+    assert result["status"] == "error" or result["model"] == model
+    advisor.validate_response(result, value)
+    assert result["model"] == model and result["advice"] is None
+
+
+def test_replayed_request_id_rejected_without_second_provider_call():
+    """F-005: identical request_id replay is denied before reaching the provider."""
+    value = request("replay_dispatch")
+    provider = FakeProvider()
+    instance = bridge(provider)
+    first = consult(instance, value)
+    assert first["status"] == "advice"
+    with pytest.raises(advisor.ToolError, match="ERR_REPLAYED_REQUEST"):
+        consult(instance, value)
+    assert len(provider.calls) == 1
+
+
+def test_provider_timeout_returns_bounded_timeout_error_and_frees_capacity(monkeypatch):
+    """F-005: hung provider -> TIMEOUT error response, no advice, capacity released, request id burned."""
+    monkeypatch.setattr(advisor, "DEADLINE_SECONDS", 0.01)
+
+    async def hang(_payload):
+        await anyio.sleep_forever()
+
+    value = request("timeout_dispatch")
+    instance = bridge(hang)
+    result = consult(instance, value)
+    advisor.validate_response(result, value)
+    assert result["status"] == "error" and result["error"]["code"] == "TIMEOUT" and result["advice"] is None
+    assert instance._active == 0
+    with pytest.raises(advisor.ToolError, match="ERR_REPLAYED_REQUEST"):
+        consult(instance, value)

@@ -40,10 +40,13 @@ try:
         load_sanitized_lesson_entries,
         ps_quote,
         write_prompt_with_sha256,
-        acquire_session_lock,
-        release_session_lock,
         run_graph_predispatch_gate,
         validate_identifier,
+    )
+    from scripts.dispatch_l4 import (
+        _fsync_directory,
+        acquire_session_lock,
+        release_session_lock,
     )
 except ImportError:  # direct script execution: python scripts/dispatch_l3.py
     from dispatch_l2 import (
@@ -59,16 +62,16 @@ except ImportError:  # direct script execution: python scripts/dispatch_l3.py
         load_sanitized_lesson_entries,
         ps_quote,
         write_prompt_with_sha256,
-        acquire_session_lock,
-        release_session_lock,
         run_graph_predispatch_gate,
         validate_identifier,
     )
+    from dispatch_l4 import _fsync_directory, acquire_session_lock, release_session_lock
 
 REPO_ROOT = Path(__file__).parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+VALIDATE_L2_TIMEOUT_SECONDS = 360  # > validate_l2_report --collect-timeout 300
 AGENT_ROOT = REPO_ROOT / ".agents" / "agent"
 
 L3_LEAD_MODELS = {
@@ -388,8 +391,12 @@ def parse_cli_args(args: list[str]):
 
 
 def validate_pre_audit(path_value: str, expected_sha256: str, gate: str, session_id: str, role_name: str, expected_scope: list[str] | None = None) -> dict:
-    path = (REPO_ROOT / path_value).resolve()
-    if not path.is_file() or path.is_symlink() or not path.is_relative_to((REPO_ROOT / ".ly_state" / "session").resolve()):
+    raw_path = REPO_ROOT / path_value
+    session_root = REPO_ROOT / ".ly_state" / "session"
+    if raw_path.is_symlink() or any(parent.is_symlink() for parent in (raw_path.parent, *raw_path.parent.parents)):
+        raise SystemExit(2)
+    path = raw_path.resolve()
+    if not path.is_file() or not path.is_relative_to(session_root.resolve()):
         raise SystemExit(2)
     raw = path.read_bytes()
     if not re.fullmatch(r"[0-9a-f]{64}", expected_sha256) or hashlib.sha256(raw).hexdigest() != expected_sha256:
@@ -406,7 +413,8 @@ def validate_pre_audit(path_value: str, expected_sha256: str, gate: str, session
         raise SystemExit(2)
     if payload.get("schema_version") != "1.0" or payload.get("gate") != gate or payload.get("session_id") != session_id or payload.get("role") != role_name:
         raise SystemExit(2)
-    if abs((datetime.now(timezone.utc) - generated).total_seconds()) > 1800:
+    age = (datetime.now(timezone.utc) - generated).total_seconds()
+    if age < 0 or age > 1800:
         raise SystemExit(2)
     if expected_scope is not None and payload.get("scope") != expected_scope:
         raise SystemExit(2)
@@ -494,10 +502,8 @@ def main():
             "sol-6.1(xhigh)": "cx/gpt-6.1-sol(xhigh)",
             "sol61": "cx/gpt-6.1-sol",
         }
-        model = model_aliases.get(explicit_model.lower())
-        if model is None and explicit_model in L3_APPROVED_LEAD_MODELS:
-            model = explicit_model
-        if model is None:
+        model = model_aliases.get(explicit_model.lower(), explicit_model)
+        if model not in L3_APPROVED_LEAD_MODELS:
             print("[ERROR] invalid or unapproved L3 lead model", file=sys.stderr)
             sys.exit(2)
     elif not model_decision_path:
@@ -542,8 +548,11 @@ def main():
     if l3_tier != 3 or l3_platform != "Codex":
         print(f"[ERROR] Not an L3 role: tier={l3_tier}, platform={l3_platform}")
         sys.exit(1)
-    if not (17 <= l3_role_id <= 30):
-        print(f"[ERROR] role_id {l3_role_id} not in L3 range 17-30")
+    if type(l3_role_id) is not int or not (17 <= l3_role_id <= 30):
+        print(f"[ERROR] role_id {l3_role_id!r} not an int in L3 range 17-30")
+        sys.exit(1)
+    if l3_fm.get("name") != l3_role_name:
+        print(f"[ERROR] L3 role frontmatter name {l3_fm.get('name')!r} != requested {l3_role_name!r}", file=sys.stderr)
         sys.exit(1)
 
     # 2. Validate L2 role
@@ -557,6 +566,9 @@ def main():
         print(f"[ERROR] L2 role spec unreadable: {l2_role_name}", file=sys.stderr)
         sys.exit(2)
     l2_role_id = l2_fm.get("role_id")
+    if type(l2_role_id) is not int or l2_fm.get("name") != l2_role_name:
+        print(f"[ERROR] L2 role frontmatter invalid: role_id={l2_role_id!r} name={l2_fm.get('name')!r}", file=sys.stderr)
+        sys.exit(1)
 
     from scripts.sod_gate_enforcer import validate_l2_role
 
@@ -592,12 +604,17 @@ def main():
         if not safe_report:
             print(f"[ERROR] L2 report missing or unsafe: {l2_session_id}", file=sys.stderr)
             sys.exit(2)
-        val_res = subprocess.run(
-            [sys.executable, str(REPO_ROOT / "scripts" / "validate_l2_report.py"), l2_session_id, str(l2_role_id), l2_role_name, "--collect-timeout", "300"],
-            cwd=str(REPO_ROOT),
-            capture_output=True,
-            text=True,
-        )
+        try:
+            val_res = subprocess.run(
+                [sys.executable, str(REPO_ROOT / "scripts" / "validate_l2_report.py"), l2_session_id, str(l2_role_id), l2_role_name, "--collect-timeout", "300"],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                timeout=VALIDATE_L2_TIMEOUT_SECONDS,
+            )
+        except subprocess.TimeoutExpired:
+            print(f"[ERROR] Pre-L3 validation timed out for L2 report {l2_session_id}", file=sys.stderr)
+            sys.exit(2)
         if val_res.returncode != 0:
             print(f"[ERROR] Pre-L3 validation failed for L2 report {l2_session_id}:\n{val_res.stdout}\n{val_res.stderr}", file=sys.stderr)
             sys.exit(2)
@@ -620,10 +637,24 @@ def extract_prior_audit_outcomes(
     """Locate prior audit report for the gate and parse the versioned dimension table.
     Returns (passed_dimensions, failed_dimensions, prior_report_path)."""
     candidate_paths: list[Path] = []
+    session_root = (repo_root / ".ly_state" / "session").resolve()
+    containment_root = session_root if session_root.exists() else repo_root.resolve()
+
+    def safe_candidate(path: Path) -> Path | None:
+        try:
+            if path.is_symlink() or any(parent.is_symlink() for parent in (path.parent, *path.parent.parents)):
+                return None
+            resolved = path.resolve()
+            if not resolved.is_file() or not resolved.is_relative_to(containment_root):
+                return None
+            return resolved if resolved.stat().st_size > 100 else None
+        except (OSError, RuntimeError):
+            return None
 
     # 1. Check current report path if it already has content
-    if current_report_path.is_file() and current_report_path.stat().st_size > 100:
-        candidate_paths.append(current_report_path)
+    current = safe_candidate(current_report_path)
+    if current is not None:
+        candidate_paths.append(current)
 
     # 2. Check phase_gates.json for gate_name
     pg_path = repo_root / ".ly_state" / "session" / "phase_gates.json"
@@ -633,8 +664,8 @@ def extract_prior_audit_outcomes(
             g_entry = gates.get(gate_name, {})
             p = g_entry.get("audit_report_path")
             if p:
-                cand = repo_root / p
-                if cand.is_file() and cand.stat().st_size > 100 and cand not in candidate_paths:
+                cand = safe_candidate(repo_root / p)
+                if cand is not None and cand not in candidate_paths:
                     candidate_paths.append(cand)
         except Exception:
             pass
@@ -644,8 +675,9 @@ def extract_prior_audit_outcomes(
     gate_slug = gate_name.lower()
     if audit_dir.is_dir():
         for f in audit_dir.glob(f"*{gate_slug}*.md"):
-            if f.is_file() and f.stat().st_size > 100 and f not in candidate_paths:
-                candidate_paths.append(f)
+            candidate = safe_candidate(f)
+            if candidate is not None and candidate not in candidate_paths:
+                candidate_paths.append(candidate)
 
     # Find current 24D or historical 16D matrices.
     for path in candidate_paths:
@@ -745,11 +777,22 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         while (report_full.parent / f"{report_full.stem}_cycle{idx}.md").exists():
             idx += 1
         backup_path = report_full.parent / f"{report_full.stem}_cycle{idx}.md"
-        backup_path.write_bytes(prior_bytes)
-    empty_tmp = report_full.with_name(f".{report_full.name}.{os.getpid()}.tmp")
+        with backup_path.open("wb") as handle:
+            handle.write(prior_bytes)
+            handle.flush()
+            os.fsync(handle.fileno())
+        _fsync_directory(backup_path.parent)
     report_full.parent.mkdir(parents=True, exist_ok=True)
-    empty_tmp.write_bytes(b"")
-    os.replace(empty_tmp, report_full)
+    empty_tmp = report_full.with_name(f".{report_full.name}.{os.getpid()}.tmp")
+    try:
+        with empty_tmp.open("wb") as handle:
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(empty_tmp, report_full)
+        _fsync_directory(report_full.parent)
+    except BaseException:
+        empty_tmp.unlink(missing_ok=True)
+        raise
     pre_run_digest = hashlib.sha256(b"").hexdigest()
     pre_run_mtime_ns = report_full.stat().st_mtime_ns
 
@@ -822,8 +865,8 @@ def _dispatch_l3_body(l3_role_name, l2_role_name, gate_name, l2_session_id, scop
         f"{pre_audit_clause}"
         f"{adversarial_directive} "
         f"{test_slices_directive}"
-        f"MCP CRITIC: Consult consult_critic before the final verdict, purpose=adversarial_critique, "
-        f"model=cx/gpt-6.1-sol (cx/gpt-6-astra for difficult critique), "
+        f"MCP CRITIC: Consult consult_critic (tool name 'consult_critic' or 'mcp__omega_l3_critic__consult_critic', never call bare 'mcp__omega_l3_critic') before the final verdict, purpose=adversarial_critique, "
+        f"model=cx/gpt-6-astra, "
         f"gate={gate_name}, session_id={l3_session_id}, role_id={l3_role_id}, risk={'low' if risk == 'low' else 'high'}. "
         f"Use schema_version=mcp-advisor-request/v1, unique request_id, UTC as_of_time and attributed observations; "
         f"consult after collecting fresh audit/test evidence. The server captures a trusted consultation cutoff "

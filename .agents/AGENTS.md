@@ -8,7 +8,7 @@
 | L1 | Ly / Antigravity | 1-5 | Orchestrate, plan, delegate, enforce gates |
 | L2 | OpenCode | 6-16 | Implement, refactor, run tests, write L2 report |
 | L3 | Codex | 17-30 | Plan, independent audit, verdict, gate metadata |
-| L4 | Claude Code | 6-16 | Super-Implementer, escalated refactoring, native advisor, write L4/L2 report |
+| L4 | Claude Code | 6-16 | Super-Implementer, escalated refactoring, MCP advisor, write L4/L2 report |
 
 ## AG Kit Loading & Composite Role Protocol (COMPOSITE_ROLE_EXECUTION_20260824)
 
@@ -105,7 +105,7 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 - platform authorized as "Claude Code" (maps from Tier 2 role spec)
 - role_name MUST be extracted from `.agents/agent/*.md` frontmatter (exact match)
 - Lead model: `sonnet` (low/medium risk) or `opus` (high risk)
-- Native advisor: `--advisor opus` enabled by default
+- MCP advisor: `--mcp-advisor` (via `scripts/l4_mcp_advisor.py`) enabled by default; native `--advisor opus` strictly prohibited per MANDATORY_MCP_ADVISOR_CRITIC_20261015
 - Session ID format: `l4_role{role_id}_{task_slug}_{YYYYMMDD}`
 - Violation blocks dispatch
 
@@ -140,6 +140,11 @@ Before ANY L2 or L3 dispatch, L1 MUST:
 10. **L2/L4 session ID format**: L2 session IDs MUST follow format `l2_role{role_id}_{task_slug}_{YYYYMMDD}`. L4 session IDs MUST follow format `l4_role{role_id}_{task_slug}_{YYYYMMDD}`.
 11. **GEMINI.md Conflict Resolution**: In case of any conflict between the Tier 0 Edit Mode instructions in GEMINI.md (which may allow direct editing of single-file fixes by the L1 orchestrator) and the SoD platform isolation constraints in AGENTS.md, the SoD platform isolation constraints in AGENTS.md take absolute precedence. Under no circumstances is L1 allowed to bypass SoD or modify code directly. All code edits must go through L2 OpenCode or L4 Claude Code.
 12. **Anti-Polling & Zero-Idle Directive (ANTI_POLLING_ZERO_IDLE_20260918)**: L1, L2, L4, and L3 MUST NOT loop, poll, or repeatedly invoke status/inspection tools (`git status`, `git status -s`, `sod_gate_enforcer.py`, `manage_task status`, process polling) to wait for task or background completion. When launching a long-running or background command, the agent MUST immediately stop calling tools and yield the turn. Unbounded polling loops and repeated status probes without user interaction or state mutations are strictly forbidden.
+13. **Chỉ thị Ưu Tiên Resume Phiên L2/L3/L4 (RESUME_FIRST_MANDATORY_20261008, P0 Priority)**:
+    - **Nguyên tắc tối thượng**: Mọi phần việc của L2, L3, hoặc L4 bị gián đoạn, pause, timeout, chờ probe, hoặc bổ sung test evidence TUYỆT ĐỐI KHÔNG ĐƯỢC CHẠY LẠI TỪ ĐẦU. Luôn ưu tiên resume phiên hiện có để bảo toàn ngữ cảnh và tiết kiệm token/thời gian.
+    - **L2/L4**: Gián đoạn/timeout -> resume phiên hiện tại (`claude --resume`, OpenCode/Antigravity resume); chu kỳ remediation mới sau `[NEEDS_FIX]` -> khởi tạo phiên `_rem1`, `_rem2` mới kèm lesson extraction và hợp đồng anti-drip mới.
+    - **L3 Codex**: Gián đoạn/chờ probe -> resume; tái thẩm định chu kỳ remediation `_rem1`, `_rem2` -> BẮT BUỘC ƯU TIÊN RESUME phiên L3 trước đó (`codex exec resume <id>` hoặc `--last`) để kế thừa ngữ cảnh đối soát `F-xxx` và tiết kiệm token. Chỉ khởi tạo phiên L3 mới khi không có phiên trước hoặc chỉ định tường minh `--force-new`.
+    - **Pre-dispatch Check**: Trước khi copy lệnh dispatch mới, agent bắt buộc kiểm tra xem có phiên resume phù hợp hay không. Nếu có, ưu tiên thực thi resume thay vì dispatch từ đầu.
 
 ### L1 Audit Report Mechanical Correction Exception
 
@@ -231,7 +236,7 @@ To prevent iterative drip/piecemeal fixes (fix1, fix2, fix3...) and achieve sing
 1. **Zero-Patch Consolidated Prompting**: L1 MUST NOT dispatch piecemeal tasks. L1 must consolidate 100% of audit findings, edge cases, and dynamic 24-Dimension invariants into a single itemized prompt: `(1)..., (2)..., (3)...`.
 2. **Root-Cause Architectural Sweeping**: L2 MUST NOT apply symptom-level single-line patches. When a defect is identified (e.g. case-sensitivity, path aliasing, exit codes), L2 must use search tools to locate and fix all matching patterns across the entire module.
 3. **Pre-Audit Self-Fuzzing**: L2 MUST write adversarial unit tests covering boundary conditions (None/empty types, Math extremes/div0, File/rollback durability, Lock timeouts) prior to publishing reports.
-4. **Scoped Regression Closure**: L2 MUST execute the scoped related test suite (e.g. `pytest tests/test_<module>*.py -v`; do NOT run the full repository-wide 4,400+ test suite) ensuring zero regression breakage before submitting.
+4. **Scoped Regression Closure**: L2 MUST execute the scoped related test suite (e.g. `pytest tests/test_<module>*.py -o addopts="" --capture=sys -p no:terminal --junitxml=.ly_state/session/{session_id}_test.xml`; do NOT run the full repository-wide 4,400+ test suite) ensuring zero regression breakage before submitting.
 5. **Zero-Token Pre-Validation Gate**: L1 MUST run `python scripts/validate_l2_report.py` prior to invoking L3. Any formatting, heading, or placeholder defect MUST be rejected at zero LLM token cost.
 
 ### 24-Dimension Adversarial Matrix (dynamic catalog)
@@ -315,7 +320,7 @@ echo "" | opencode run -m "9router/cx/gpt-6-luna" --pure --dangerously-skip-perm
 ```powershell
 python scripts/dispatch_l4.py <role_name> <gate_name> <task_slug> "<task_description>" "<scope>" [--risk low|high]
 ```
-Copy lệnh từ output `---COMMAND---` rồi chạy. Script tự động: validate role, load lessons, inject 24-Dimension matrix, cấu hình native `--advisor opus`, và tạo session ID `l4_role{role_id}_{task_slug}_{YYYYMMDD}`.
+Copy lệnh từ output `---COMMAND---` rồi chạy. Script tự động: validate role, load lessons, inject 24-Dimension matrix, cấu hình MCP advisor `--mcp-advisor` (cấm `--advisor opus`), và tạo session ID `l4_role{role_id}_{task_slug}_{YYYYMMDD}`.
 
 ### Pre-L3 Validation Gate (TOKEN SAVER — MANDATORY)
 
@@ -436,6 +441,7 @@ Missing/invalid fields -> `PENDING_L3_AUDIT`.
    ```
 6. **Plan Creation & Approval Rule**: L1 TUYỆT ĐỐI KHÔNG ĐƯỢC TỰ LẬP KẾ HOẠCH. Mọi tác vụ lập kế hoạch tổng thể (master plan) và kế hoạch chi tiết (implementation_plan.md) bắt buộc phải được giao cho Codex L3 (sử dụng model `"cx/gpt-6-astra(low)"`) với một role phù hợp (không phải role audit) thực hiện. Sau khi kế hoạch được lập, quy trình audit bởi Codex L3 (role audit) vẫn phải diễn ra nghiêm ngặt trước khi chuyển cho L2 triển khai thực tế. L1 chỉ đóng vai trò điều phối, không được phép viết hay chỉnh sửa kế hoạch.
 7. **24-Dimension Pre-Audit Directive Enforcement**: L1 must ensure all L2 dispatches utilize `scripts/dispatch_l2.py` with the dynamic 24-Dimension Master Adversarial Matrix. L1 MUST execute `python scripts/validate_l2_report.py` before dispatching any L3 audit, mechanically rejecting invalid heading orders, unreplaced placeholders, and path traversal at zero token cost.
+8. **Resume-First Directive (RESUME_FIRST_MANDATORY_20261008)**: Phần việc nào của L2, L3, hoặc L4 bị gián đoạn, pause, timeout hoặc cần bổ sung test evidence mà nền tảng hỗ trợ resume (ví dụ `codex exec resume <session_id>`, Claude Code resume session, Antigravity resume), TUYỆT ĐỐI KHÔNG ĐƯỢC CHẠY LẠI TỪ ĐẦU (no restarting from scratch). Luôn ưu tiên resume phiên hiện có để bảo toàn ngữ cảnh và tiết kiệm token/thời gian. Chỉ khởi tạo phiên mới khi bắt đầu một chu kỳ remediation mới sau `[NEEDS_FIX]` hoặc phiên cũ bị hỏng không thể resume.
 
 ## 24-Dimension Master Adversarial Testing Matrix (STRICT_ADVERSARIAL_MATRIX_20260927)
 

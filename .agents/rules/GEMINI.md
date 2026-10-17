@@ -81,6 +81,7 @@ When auto-applying an agent, inform the user:
 | 2 | Did I READ the agent's `.md` file (or recall its rules)? | → STOP. Open `.agents/agent/{agent}.md` |
 | 3 | Did I announce `🤖 Applying knowledge of @[agent]...`? | → STOP. Add announcement before response. |
 | 4 | Did I load required skills from agent's frontmatter? | → STOP. Check `skills:` field and read them. |
+| 5 | Did I check for active/prior session to RESUME before dispatching? | → STOP. Check `.ly_state/session/` & `phase_gates.json`; prioritize RESUME. |
 
 **Failure Conditions:**
 
@@ -116,13 +117,28 @@ When user's prompt is NOT in English:
 
 **TUYỆT ĐỐI CẤM stream trực tiếp stdout pytest dài có escape sequences/colorama qua `run_command` trên Windows gây crash IDE host / context canceled.**
 - Bắt buộc dùng cờ an toàn khi collect/chạy test: `pytest -q -o addopts="" --capture=sys -p no:terminal`
+- Xuất test evidence có cấu trúc: Thêm cờ `--junitxml=.ly_state/session/{session_id}_test.xml` để lưu kết quả JUnit XML cho L3 đối soát.
 - Nếu cần chạy test suite đầy đủ: Redirect output ra file log tạm (`pytest ... > .ly_state/pytest.log 2>&1`) hoặc yêu cầu thực thi trên terminal độc lập ngoài IDE.
 
-### 🎯 Tuân Thủ 100% Lệnh Dispatch L2/L3 (STRICT_DISPATCH_COMMAND_INTEGRITY, Global Mandatory)
+### 🔄 Ưu Tiên Resume Phiên L2/L3/L4 (RESUME_FIRST_MANDATORY_20261008, P0 Tối Thượng - Override Dispatch Mới)
 
-**TUYỆT ĐỐI BẮT BUỘC chỉ copy và thực thi chính xác 100% câu lệnh nằm trong khối `---COMMAND---` do `dispatch_l2.py` hoặc `dispatch_l3.py` kết xuất.**
+**CHỈ THỊ P0 TUYỆT ĐỐI: `RESUME_FIRST_MANDATORY_20261008` CÓ ĐỘ ƯU TIÊN CAO HƠN `STRICT_DISPATCH_COMMAND_INTEGRITY`. Trước khi copy hay thực thi bất kỳ lệnh dispatch nào, BẮT BUỘC KIỂM TRA PHIÊN RESUME TỒN TẠI. Nếu có phiên dở dang hoặc chu kỳ tái thẩm định: TUYỆT ĐỐI PHẢI DÙNG RESUME, CẤM CHẠY LẠI TỪ ĐẦU (no restarting from scratch).**
+
+1. **L2 (Antigravity/OpenCode) & L4 (Claude Code)**:
+   - *Khi gián đoạn, pause, timeout, hoặc bổ sung evidence*: Bắt buộc Resume phiên hiện có (`claude --resume <session_id>` hoặc OpenCode/Antigravity resume).
+   - *Khi bắt đầu chu kỳ remediation mới sau `[NEEDS_FIX]`*: Khởi tạo phiên rem mới (`_rem1`, `_rem2`) để ký hợp đồng Anti-Drip mới và cô lập git diff.
+2. **L3 (Codex)**:
+   - *Khi gián đoạn, pause, timeout, chờ background worker probes*: Bắt buộc Resume phiên hiện có (`codex exec resume <id>` hoặc `--last`).
+   - *Khi tái thẩm định cho chu kỳ remediation (`_rem1`, `_rem2`)*: **BẮT BUỘC ƯU TIÊN RESUME phiên L3 trước đó** (`codex exec resume <prior_session_id>` hoặc `--last`) để kế thừa toàn bộ ngữ cảnh đối soát lỗi `F-xxx`, tiết kiệm ~80% token. Chỉ chạy phiên L3 mới từ đầu khi không có phiên trước hoặc có cờ tường minh `--force-new`.
+3. **Quy tắc Kiểm Tra Trước Khi Dispatch (Pre-Dispatch Resume Check)**:
+   - Trước khi copy bất kỳ lệnh nào trong khối `---COMMAND---`, agent BẮT BUỘC kiểm tra trạng thái trong `.ly_state/session/` và `phase_gates.json`. Nếu đủ điều kiện resume, BẮT BUỘC chạy lệnh resume thay vì lệnh khởi tạo mới.
+
+### 🎯 Tuân Thủ Lệnh Dispatch L2/L3/L4 (STRICT_DISPATCH_COMMAND_INTEGRITY, Global Mandatory)
+
+**Sau khi đã thỏa mãn quy tắc P0 `RESUME_FIRST_MANDATORY_20261008`:**
+- **Chỉ copy và thực thi chính xác câu lệnh do `dispatch_l2.py`, `dispatch_l3.py` hoặc `dispatch_l4.py` kết xuất.**
 - **Cấm đổi script / model**: Cấm tự ý đổi sang các script ReAct phụ hoặc model webchat fallback (như `scripts/run_l2_agent.py`, `scripts/run_l3_audit.py`, `scripts/sod_pipeline_au.py`, model `au/gpt-*`) trừ khi có chỉ thị rõ ràng từ user.
-- **Dùng đúng CLI và Model cấu hình**: Thực thi đúng CLI (`opencode run` hoặc `codex exec`) và model (`9router/cx/gpt-6-luna`, `9router/cx/gpt-6.1-sol`, `cx/gpt-6.1-sol`) được dispatch chỉ định.
+- **Dùng đúng CLI và Model cấu hình**: Thực thi đúng CLI (`opencode run`, `claude`, `codex exec`) và model được dispatch chỉ định.
 
 ### 🧹 Clean Code (Global Mandatory)
 

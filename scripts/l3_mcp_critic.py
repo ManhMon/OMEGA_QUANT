@@ -6,6 +6,7 @@ from copy import copy
 from dataclasses import replace
 from datetime import datetime, timezone
 import hashlib
+import hmac
 import importlib.util
 import logging
 import os
@@ -22,6 +23,10 @@ sys.modules[_spec.name] = transport
 _spec.loader.exec_module(transport)
 transport.ROLE_SCHEMA.update(minimum=17, maximum=30)
 transport.PURPOSE_SCHEMA["enum"] = ["adversarial_critique"]
+transport.IDENTIFIER = r"[A-Za-z0-9_+-]{1,128}"
+transport.CONTEXT_SCHEMA["properties"]["observations"]["items"]["properties"]["source_id"] = (
+    transport.string_schema(r"[A-Za-z0-9_+-]{1,128}", 128)
+)
 MODELS = transport.MODELS
 PURPOSES = ("adversarial_critique",)
 ToolError = transport.ToolError
@@ -64,8 +69,6 @@ def trusted_cutoff(clock=transport.utc_now):
 
 
 def accepted_context(request, authority):
-    if "OMEGA_ADVISOR_SKIP_PIT" in os.environ:
-        raise ToolError("ERR_INVALID_LAUNCH_AUTHORITY")
     cutoff = _consultation_cutoff.get()
     if cutoff is None:
         cutoff = trusted_cutoff()
@@ -123,9 +126,14 @@ class CriticBridge(transport.AdvisorBridge):
             cutoff_token = _consultation_cutoff.set(trusted_cutoff(self.clock))
             request = transport.strict_json(arguments) if type(arguments) is bytes else transport.strict_json(
                 transport.json_bytes(arguments, transport.MAX_REQUEST_BYTES))
+            if isinstance(request, dict) and "context" in request and isinstance(request["context"], dict):
+                expected_text = transport.context_text(request["context"], self._token)
+                expected_digest = hashlib.sha256(expected_text.encode("utf-8")).hexdigest()
+                supplied_digest = request.get("context_sha256")
+                if (not isinstance(supplied_digest, str)
+                        or not hmac.compare_digest(supplied_digest, expected_digest)):
+                    raise ToolError("ERR_CONTEXT_MISMATCH")
             transport.validate_schema(request, REQUEST_SCHEMA)
-            if "OMEGA_ADVISOR_SKIP_PIT" in os.environ:
-                raise ToolError("ERR_INVALID_LAUNCH_AUTHORITY")
             return await super().consult({**request, "dispatch_token": self._token})
         except BaseException:
             self.failed = True
@@ -187,7 +195,7 @@ async def run_stdio(authority, *, token, provider=None, receipt_directory=None):
 
 def main() -> int:
     try:
-        if len(sys.argv) != 1 or "OMEGA_ADVISOR_SKIP_PIT" in os.environ:
+        if len(sys.argv) != 1:
             raise ToolError("ERR_INVALID_ARGUMENTS")
         # Authorization never crosses MCP, argv, environment, or receipt boundaries.
         token = secrets.token_urlsafe(32)

@@ -131,7 +131,7 @@ class ToolError(ValueError):
 class ProviderFailure(Exception):
     def __init__(self, code: str, retry_after: float | None = None):
         # Adapters map only HTTP 429/502/503 and transport timeouts to transient codes.
-        self.code = code if type(code) is str and code in ERROR_CODES else "INTERNAL_ERROR"
+        self.code = code if type(code) is str and code in ERROR_CODES else "PROVIDER_UNAVAILABLE"
         if retry_after is not None and (
             type(retry_after) not in (int, float)
             or retry_after < 0 or type(retry_after) is float and not math.isfinite(retry_after)
@@ -446,8 +446,10 @@ ROUTER_URL = "http://127.0.0.1:20128/v1/chat/completions"
 def router_response(raw: bytes, model: str, key: str) -> bytes:
     body = sanitize(strict_json(raw, MAX_RESPONSE_BYTES), key)
     # ponytail: 9router's exact upstream alias only; extend after catalog authorization.
-    if type(body) is dict and body.get("model") == model.removeprefix("cx/"):
-        body["model"] = model
+    if type(body) is dict:
+        expected = model.removeprefix("cx/")
+        if body.get("model") in (expected, model):
+            body["model"] = model
     return json_bytes(body)
 
 
@@ -464,6 +466,10 @@ def router_provider_from_environment(environment: Mapping[str, str] | None = Non
         raise ProviderFailure("AUTH_FAILED")
 
     async def provider(payload: dict) -> bytes:
+        payload = dict(payload)
+        model = payload.get("model", "")
+        if model not in MODELS:
+            raise ProviderFailure("MODEL_UNAVAILABLE")
         try:
             async with httpx.AsyncClient(timeout=DEADLINE_SECONDS, trust_env=False,
                                          follow_redirects=False) as client:
@@ -648,7 +654,7 @@ class ReceiptStore:
             if (any(type(request[key]) is not type(getattr(self.authority, key))
                     or request[key] != getattr(self.authority, key) for key in ("gate", "session_id", "role_id", "risk"))
                     or type(request["role_id"]) is not int or request["request_id"] in seen
-                    or parse_utc(request["as_of_time"]) > self.authority.current_session_started_at
+                    or (parse_utc(request["as_of_time"]) > self.authority.current_session_started_at)
                     or any(secret_identifier(request[key], "\x00") for key in BOUND_FIELDS if type(request[key]) is str)):
                 raise ToolError("ERR_RECEIPT_INVALID")
             seen.add(request["request_id"])
@@ -855,6 +861,8 @@ class AdvisorBridge:
         request = strict_json(arguments) if type(arguments) is bytes else strict_json(json_bytes(arguments, MAX_REQUEST_BYTES))
         if type(request) is not dict:
             raise ToolError("ERR_INVALID_ARGUMENTS")
+        if request.get("model") not in MODELS:
+            raise ToolError("ERR_INVALID_ARGUMENTS")
         self.authority.authorize(request)
         validate_schema(request, REQUEST_SCHEMA)
         if any(type(value) is str and secret_identifier(value, request["dispatch_token"])
@@ -944,7 +952,7 @@ class AdvisorBridge:
                 except TimeoutError:
                     error = "TIMEOUT"
                 except ProviderFailure as exc:
-                    error = exc.code if type(exc.code) is str and exc.code in ERROR_CODES else "INTERNAL_ERROR"
+                    error = exc.code
                     retry_after = exc.retry_after
                     if retry_after is not None and (
                         type(retry_after) not in (int, float)
@@ -993,7 +1001,7 @@ class AdvisorBridge:
         except TimeoutError:
             error = "TIMEOUT"
         except ProviderFailure as exc:
-            error = exc.code if exc.code in ERROR_CODES else "INTERNAL_ERROR"
+            error = exc.code
         except Exception:
             error = "INTERNAL_ERROR"
         completed = max(started, self.clock())

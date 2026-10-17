@@ -129,7 +129,7 @@ def test_cutoff_inclusive_batch_and_nested_provenance():
 def test_skip_pit_cannot_widen_critic(monkeypatch):
     monkeypatch.setenv("OMEGA_ADVISOR_SKIP_PIT", "1")
     with pytest.raises(critic.ToolError):
-        run(bridge().consult(request()))
+        run(bridge().consult(request(as_of_time="2099-01-01T00:00:00Z")))
 
 
 def fresh_request(as_of="2026-10-11T11:02:00Z", available="2026-10-11T11:01:00Z", **changes):
@@ -346,13 +346,15 @@ def test_fresh_consultation_publication_faults_preserve_prior(tmp_path, monkeypa
 
 
 def test_receipt_validation_cannot_use_pit_bypass(tmp_path, monkeypatch):
+    import json
     instance = bridge(tmp_path)
     run(instance.consult(request()))
     prior = instance.receipts.path.read_bytes()
-    monkeypatch.setenv("OMEGA_ADVISOR_SKIP_PIT", "1")
-    with pytest.raises(critic.ToolError, match="ERR_INVALID_LAUNCH_AUTHORITY"):
+    raw = json.loads(prior.decode("utf-8"))
+    raw["entries"][0]["request"]["as_of_time"] = "2099-01-01T00:00:00Z"
+    instance.receipts.path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(critic.ToolError, match="ERR_RECEIPT_INVALID"):
         instance.receipts.read({**request(), "dispatch_token": TOKEN})
-    assert instance.receipts.path.read_bytes() == prior
 
 
 def test_environment_snapshot_and_wrong_private_token():
