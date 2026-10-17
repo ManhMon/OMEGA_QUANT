@@ -15,7 +15,7 @@ def test_configure_utf8_stdio_windows_safe():
 
 def test_vnstock_exception_resilience_falls_back_to_html():
     aggregator = NewsAggregator()
-    with patch.object(NewsAggregator, "_load_universe_tickers", return_value=["VCB"]), patch("vnstock.Company") as company:
+    with patch.object(NewsAggregator, "_load_universe_tickers", return_value=["VCB"]), patch("omega.data.vci_direct.DirectVCIClient.fetch_company_news") as company:
         company.side_effect = RuntimeError("RateLimitExceeded")
         result = aggregator._scrape_vnstock_news(datetime.now(timezone.utc), hours_back=24)
     assert isinstance(result, list)
@@ -114,11 +114,9 @@ def test_vnstock_news_filters_keywords_and_pit_window(mock_universe, mock_vnstoc
     agg = NewsAggregator()
     as_of = datetime(2026, 6, 19, 15, 0, 0)
 
-    company = MagicMock()
-    company.news.return_value = mock_vnstock_news_frame
-    mock_vnstock_news_frame.attrs["pagination"] = {"next_cursor": None}
+    mock_vnstock_news_frame.attrs["next_cursor"] = None
 
-    with patch("vnstock.Company", return_value=company) as mock_company:
+    with patch("omega.data.vci_direct.DirectVCIClient.fetch_company_news", return_value=mock_vnstock_news_frame) as mock_company:
         news = agg._scrape_vnstock_news(as_of_time=as_of, hours_back=24)
 
     assert [item.ticker for item in news] == ["VCB", "VCB"]
@@ -132,7 +130,7 @@ def test_vnstock_news_filters_keywords_and_pit_window(mock_universe, mock_vnstoc
     assert all(item.source == "vnstock" for item in news)
     assert all(isinstance(item, SentimentInput) for item in news)
     mock_universe.assert_called_once_with()
-    mock_company.assert_called_once_with(symbol="VCB", source="VCI")
+    mock_company.assert_called_once_with("VCB", page_size=100, cursor=None)
 
 
 @patch.object(NewsAggregator, "_load_universe_tickers", return_value=["VCB", "HPG"])
@@ -140,17 +138,15 @@ def test_vnstock_news_continues_on_symbol_failure(mock_universe, mock_vnstock_ne
     agg = NewsAggregator()
     as_of = datetime(2026, 6, 19, 15, 0, 0)
 
-    bad_company = MagicMock()
-    bad_company.news.side_effect = RuntimeError("boom")
-    good_company = MagicMock()
-    good_company.news.return_value = mock_vnstock_news_frame.iloc[[0]].copy()
-    good_company.news.return_value.attrs["pagination"] = {"next_cursor": None}
+    frame = mock_vnstock_news_frame.iloc[[0]].copy()
+    frame.attrs["next_cursor"] = None
 
-    def company_side_effect(symbol, source):
-        assert source == "VCI"
-        return bad_company if symbol == "VCB" else good_company
+    def company_side_effect(symbol, **kwargs):
+        if symbol == "VCB":
+            raise RuntimeError("boom")
+        return frame
 
-    with patch("vnstock.Company", side_effect=company_side_effect):
+    with patch("omega.data.vci_direct.DirectVCIClient.fetch_company_news", side_effect=company_side_effect):
         news = agg._scrape_vnstock_news(as_of_time=as_of, hours_back=24)
 
     assert len(news) == 1
@@ -229,7 +225,7 @@ def test_vnstock_exception_resilience_and_html_fallback():
     agg = NewsAggregator()
     as_of = datetime.now(timezone.utc)
     fallback = [SentimentInput(text="fallback", source="Vietstock", timestamp=as_of)]
-    with patch.object(NewsAggregator, "_load_universe_tickers", return_value=["VCB"]), patch("vnstock.Company", side_effect=RuntimeError("RateLimitExceeded")), patch.object(NewsAggregator, "_scrape_vietstock", return_value=fallback):
+    with patch.object(NewsAggregator, "_load_universe_tickers", return_value=["VCB"]), patch("omega.data.vci_direct.DirectVCIClient.fetch_company_news", side_effect=RuntimeError("RateLimitExceeded")), patch.object(NewsAggregator, "_scrape_vietstock", return_value=fallback):
         assert agg._scrape_vnstock_news(as_of_time=as_of) == []
         assert agg._scrape_vietstock(as_of_time=as_of) == fallback
 

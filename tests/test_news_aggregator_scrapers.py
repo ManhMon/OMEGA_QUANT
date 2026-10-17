@@ -429,6 +429,7 @@ def test_vnstock_pagination_stops_at_cutoff_without_requesting_next_cursor(monke
     aggregator = NewsAggregator()
     frame = type("Frame", (), {
         "empty": False,
+        "attrs": {"news_order": "descending"},
         "columns": ["news_title", "public_date"],
         "to_dict": lambda *_args, **_kwargs: [{
             "news_title": "VCB tăng", "public_date": "2026-08-06T23:00:00Z",
@@ -452,6 +453,84 @@ def test_vnstock_pagination_stops_at_cutoff_without_requesting_next_cursor(monke
     articles = aggregator._scrape_vnstock_news(datetime(2026, 8, 7, tzinfo=timezone.utc), hours_back=24)
 
     assert cursors == [None]
+    assert [article.text for article in articles] == ["VCB tăng"]
+
+
+@pytest.mark.parametrize("metadata", [None, {}, {"news_order": None}, {"news_order": "Descending"},
+                                      {"news_order": []}, {"pagination": {"news_order": "descending"}},
+                                      {"news_order": "descending"}])
+def test_news_pagination_untrusted_or_violated_order_continues(monkeypatch, metadata):
+    import pandas as pd
+
+    aggregator = NewsAggregator()
+    calls = []
+    pages = [
+        [("Old", "2026-08-05T00:00:00Z"), ("VCB tăng", "2026-08-06T23:00:00Z")],
+        [("VCB tăng tiếp", "2026-08-06T22:00:00Z"), ("Future", "2026-08-07T00:00:00Z")],
+    ]
+
+    def fetch_page(_company, cursor):
+        calls.append(cursor)
+        frame = pd.DataFrame(pages[len(calls) - 1], columns=["news_title", "public_date"])
+        frame.attrs = metadata if isinstance(metadata, dict) else {}
+        return frame, "next" if cursor is None else None
+
+    monkeypatch.setattr(aggregator, "_fetch_vnstock_page", fetch_page)
+    monkeypatch.setattr(aggregator, "_load_universe_tickers", lambda: ["VCB"])
+    monkeypatch.setattr(aggregator, "_rate_limit", lambda *_: None)
+    articles = aggregator._scrape_vnstock_news(datetime(2026, 8, 7, tzinfo=timezone.utc))
+    assert calls == [None, "next"]
+    assert [article.text for article in articles] == ["VCB tăng", "VCB tăng tiếp"]
+
+
+@pytest.mark.parametrize("initial_order,later_order", [(None, None), (None, "descending"),
+                                                        (None, "ascending"), ("descending", None),
+                                                        ("descending", "ascending")])
+def test_news_pagination_order_cannot_become_trusted_after_first_page(monkeypatch, initial_order, later_order):
+    import pandas as pd
+
+    aggregator = NewsAggregator()
+    calls = []
+    pages = [
+        [("VCB tăng", "2026-08-06T23:00:00Z")],
+        [("Old", "2026-08-06T00:00:00Z")],
+        [("VCB tăng tiếp", "2026-08-06T22:00:00Z")],
+    ]
+
+    def fetch_page(_company, cursor):
+        calls.append(cursor)
+        frame = pd.DataFrame(pages[len(calls) - 1], columns=["news_title", "public_date"])
+        frame.attrs["news_order"] = initial_order if cursor is None else later_order
+        return frame, str(len(calls)) if len(calls) < len(pages) else None
+
+    monkeypatch.setattr(aggregator, "_fetch_vnstock_page", fetch_page)
+    monkeypatch.setattr(aggregator, "_load_universe_tickers", lambda: ["VCB"])
+    monkeypatch.setattr(aggregator, "_rate_limit", lambda *_: None)
+    articles = aggregator._scrape_vnstock_news(datetime(2026, 8, 7, tzinfo=timezone.utc))
+    assert calls == [None, "1", "2"]
+    assert [article.text for article in articles] == ["VCB tăng", "VCB tăng tiếp"]
+
+
+@pytest.mark.parametrize("invalid", [None, "", "not-a-date", float("nan"), float("inf"),
+                                     float("-inf"), [], {}, 10**13])
+def test_news_pagination_invalid_dates_disable_order_shortcut(monkeypatch, invalid):
+    import pandas as pd
+
+    aggregator = NewsAggregator()
+    calls = []
+
+    def fetch_page(_company, cursor):
+        calls.append(cursor)
+        dates = [invalid, "2026-08-06T00:00:00Z"] if cursor is None else ["2026-08-06T22:00:00Z"]
+        frame = pd.DataFrame({"news_title": ["VCB tăng"] * len(dates), "public_date": dates})
+        frame.attrs["news_order"] = "descending"
+        return frame, "next" if cursor is None else None
+
+    monkeypatch.setattr(aggregator, "_fetch_vnstock_page", fetch_page)
+    monkeypatch.setattr(aggregator, "_load_universe_tickers", lambda: ["VCB"])
+    monkeypatch.setattr(aggregator, "_rate_limit", lambda *_: None)
+    articles = aggregator._scrape_vnstock_news(datetime(2026, 8, 7, tzinfo=timezone.utc))
+    assert calls == [None, "next"]
     assert [article.text for article in articles] == ["VCB tăng"]
 
 

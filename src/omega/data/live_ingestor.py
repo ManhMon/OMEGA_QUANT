@@ -8,15 +8,9 @@ Normalizes prices to VND and matches warehouse schema.
 import pandas as pd
 import logging
 from typing import Optional, List
-from datetime import datetime
-import time
 
-try:
-    from vnstock import Quote
-    VNSTOCK_AVAILABLE = True
-except ImportError:
-    VNSTOCK_AVAILABLE = False
-    logging.warning("vnstock not available. Live data ingestion disabled.")
+from omega.data.vci_direct import DirectVCIClient
+from omega.data.vnstock_client import VnstockClient
 
 
 class LiveDataIngestor:
@@ -29,13 +23,12 @@ class LiveDataIngestor:
             timeout: API timeout in seconds
             max_retries: Number of retry attempts on failure
         """
-        self.source = source
+        self.client = VnstockClient(source=source, direct_vci_client=DirectVCIClient(
+            timeout=timeout, max_attempts=max_retries))
+        self.source = self.client.source
         self.timeout = timeout
         self.max_retries = max_retries
         self.logger = logging.getLogger(__name__)
-
-        if not VNSTOCK_AVAILABLE:
-            self.logger.error("vnstock library not installed. Install with: pip install vnstock")
 
     def _normalize_price_columns_to_vnd(self, df: pd.DataFrame) -> pd.DataFrame:
         """Normalize price columns to VND_FULL using centralized guard."""
@@ -53,58 +46,8 @@ class LiveDataIngestor:
         Returns:
             DataFrame with single row matching warehouse schema, or None on failure
         """
-        if not VNSTOCK_AVAILABLE:
-            self.logger.error("Cannot fetch live data: vnstock not available")
-            return None
-
-        for attempt in range(self.max_retries):
-            try:
-                quote = Quote(source=self.source, symbol=symbol)
-
-                # Fetch last 1 day to get most recent price
-                df = quote.history(length="1D", interval="1D")
-
-                if df is None or df.empty:
-                    self.logger.warning(f"{symbol}: No data returned (attempt {attempt+1}/{self.max_retries})")
-                    if attempt < self.max_retries - 1:
-                        time.sleep(1)
-                        continue
-                    return None
-
-                # Normalize column names
-                if 'time' in df.columns:
-                    df = df.rename(columns={'time': 'date'})
-                elif 'timestamp' in df.columns:
-                    df = df.rename(columns={'timestamp': 'date'})
-
-                # Take most recent row
-                df = df.tail(1).copy()
-
-                # Add metadata
-                df['symbol'] = symbol
-                df['exchange'] = exchange
-
-                # Ensure schema match
-                required_cols = ['symbol', 'exchange', 'date', 'open', 'high', 'low', 'close', 'volume']
-                df = df[required_cols]
-
-                # VCI may return prices in thousand-VND units; normalize only then.
-                df = self._normalize_price_columns_to_vnd(df)
-
-                df['date'] = pd.to_datetime(df['date'])
-
-                self.logger.info(f"{symbol}: Live price fetched successfully (close={df['close'].iloc[0]:.2f})")
-                return df
-
-            except Exception as e:
-                self.logger.warning(f"{symbol}: Fetch failed (attempt {attempt+1}/{self.max_retries}): {e}")
-                if attempt < self.max_retries - 1:
-                    time.sleep(2 ** attempt)  # Exponential backoff
-                else:
-                    self.logger.error(f"{symbol}: All retry attempts exhausted")
-                    return None
-
-        return None
+        frame = self.fetch_live_batch([symbol], {symbol: exchange})
+        return None if frame.empty else frame
 
     def fetch_live_batch(self, symbols: List[str], symbol_exchange_map: dict) -> pd.DataFrame:
         """
@@ -119,15 +62,22 @@ class LiveDataIngestor:
         """
         all_data = []
 
-        for symbol in symbols:
-            exchange = symbol_exchange_map.get(symbol, 'HOSE')
-            df = self.fetch_live_price(symbol, exchange)
-
-            if df is not None:
-                all_data.append(df)
-
-            # Rate limiting: 60 requests/min for VCI Community
-            time.sleep(1.1)
+        normalized = [DirectVCIClient._ticker(symbol) for symbol in symbols]
+        exchanges = {DirectVCIClient._ticker(symbol): str(exchange).upper().replace('HSX', 'HOSE')
+                     for symbol, exchange in symbol_exchange_map.items()}
+        for offset in range(0, len(normalized), 100):
+            try:
+                frame = self.client.direct_vci_client.fetch_price_board(normalized[offset:offset + 100]).copy()
+                if frame.empty:
+                    continue
+                if not frame['symbol'].isin(normalized[offset:offset + 100]).all():
+                    raise ValueError("Unexpected live symbol")
+                frame = frame[frame.apply(lambda row: row['symbol'] not in exchanges or
+                                         row['exchange'] == exchanges[row['symbol']], axis=1)].copy()
+                frame['date'] = pd.to_datetime(frame['date'], utc=True).dt.tz_convert('Asia/Ho_Chi_Minh').dt.tz_localize(None).dt.normalize()
+                all_data.append(frame)
+            except Exception as error:
+                self.logger.warning("Live price board failed: %s", type(error).__name__)
 
         if all_data:
             combined = pd.concat(all_data, ignore_index=True)
@@ -152,21 +102,15 @@ class LiveDataIngestor:
             self.logger.warning("No live data to append")
             return df_warehouse
 
-        # Ensure date types match
+        df_live = df_live.copy()
+        df_warehouse = df_warehouse.copy()
         df_live['date'] = pd.to_datetime(df_live['date'])
         df_warehouse['date'] = pd.to_datetime(df_warehouse['date'])
-
-        # Remove any duplicate dates for same symbols (keep warehouse data)
-        live_date = df_live['date'].max()
-
-        # Filter out any existing data for the live date
-        df_warehouse_filtered = df_warehouse[df_warehouse['date'] < live_date]
-
-        # Concatenate
-        df_combined = pd.concat([df_warehouse_filtered, df_live], ignore_index=True)
+        df_combined = pd.concat([df_warehouse, df_live], ignore_index=True)
+        df_combined = df_combined.drop_duplicates(['symbol', 'date'], keep='last')
         df_combined = df_combined.sort_values(['symbol', 'date']).reset_index(drop=True)
 
-        self.logger.info(f"Live data appended: {len(df_live)} rows added (date={live_date})")
+        self.logger.info("Live data appended: %d rows", len(df_live))
         return df_combined
 
 

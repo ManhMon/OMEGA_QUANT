@@ -546,10 +546,12 @@ class DirectVCIClient:
         except RuntimeError:
             raise RuntimeError("SSI MCP daily-stock request failed") from None
 
-    def foreign_trade(self, symbol: str, start: str, end: str) -> pd.DataFrame:
+    def foreign_trade(self, symbol: str, start: str, end: str, *, snapshot: bool = True) -> pd.DataFrame:
+        if type(snapshot) is not bool:
+            raise ValueError("snapshot must be boolean")
         ticker, lower, upper = flow_date_range(symbol, start, end)
         today = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").tz_localize(None).normalize()
-        if lower == upper == today:
+        if snapshot and lower == upper == today:
             board = self.fetch_price_board([ticker])
             if board.empty or not set(FOREIGN_FLOW_COLUMNS[1:]).issubset(board):
                 raise ValueError("VCI price board lacks foreign totals")
@@ -591,8 +593,11 @@ class DirectVCIClient:
                           ("buy_value", "sell_value", "buy_volume", "sell_volume")]
                 if any(not value.is_integer() for value in values[2:]):
                     raise ValueError("SSI foreign volume must be integral")
+                buy, sell, buy_volume, sell_volume = values
+                for name, expected in (("net_buy_sell_value", buy - sell), ("net_buy_sell_volume", buy_volume - sell_volume)):
+                    if name in record and flow_number(record[name], signed=True) != expected:
+                        raise ValueError("SSI foreign net total mismatch")
                 if lower <= date <= upper:
-                    buy, sell, buy_volume, sell_volume = values
                     rows.append(dict(zip(FOREIGN_FLOW_COLUMNS, (date.strftime("%Y-%m-%d"), buy, sell, buy - sell,
                                                                buy_volume, sell_volume, buy_volume - sell_volume))))
             if len(records) < 200:
@@ -602,6 +607,23 @@ class DirectVCIClient:
         result = validate_flow_frame(pd.DataFrame(rows, columns=FOREIGN_FLOW_COLUMNS), ticker, start, end)
         result.attrs.update(source="SSI_MCP", snapshot=False, observed_at=pd.Timestamp.now(tz="UTC"))
         return result
+
+    def fetch_derivatives(self, symbol: str, start: str, end: str, *, as_of: Any = None) -> pd.DataFrame:
+        """SSI VN30 futures OHLCV: index points and contracts, never VND scaling."""
+        ticker = self._ticker(symbol)
+        if not re.fullmatch(r"VN30F(?:[12]M|[12]Q|\d{4})", ticker):
+            raise ValueError("Invalid VN30F contract")
+        from omega.data.ssi_mcp_client import SSIMCPClient
+        try:
+            frame = SSIMCPClient(call_tool=self.call_ssi, timeout=self.timeout,
+                                 max_attempts=min(self.max_attempts, 3)).fetch_history(ticker, start, end, as_of=as_of)
+        except OverflowError:
+            raise ValueError("SSI derivatives numeric overflow") from None
+        frame = frame.copy(deep=True)
+        frame["price_scale"] = "points"
+        frame["volume_unit"] = "contracts"
+        frame.attrs.update(price_scale="points", volume_unit="contracts", historical_pit_verified=False)
+        return frame
 
     def prop_trade(self, symbol: str, start: str, end: str) -> pd.DataFrame:
         ticker, _, _ = flow_date_range(symbol, start, end)

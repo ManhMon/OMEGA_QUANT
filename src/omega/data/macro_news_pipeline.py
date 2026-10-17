@@ -214,8 +214,8 @@ def _vnstock_news_worker(connection: Any, ticker: str, max_response_bytes: int) 
                     raise OSError("cannot cap provider memory")
                 if not kernel.AssignProcessToJobObject(job, kernel.GetCurrentProcess()):
                     raise OSError("cannot assign provider memory job")
-        from vnstock import Company
-        frame = Company(symbol=ticker, source="VCI").news()
+        from omega.data.vci_direct import DirectVCIClient
+        frame = DirectVCIClient().fetch_company_news(ticker, page_size=100)
         if not isinstance(frame, pd.DataFrame):
             raise ValueError("vnstock news must be a DataFrame")
         if frame.memory_usage(deep=True).sum() > max_response_bytes:
@@ -379,8 +379,6 @@ class VnstockNewsAdapter:
     def fetch(self, cutoff: datetime, as_of: datetime, ingested_at: datetime) -> tuple[list[dict[str, Any]], list[str]]:
         cutoff, as_of = _utc(cutoff), _utc(as_of)
         if cutoff > as_of: raise ValueError("cutoff must not exceed as_of")
-        try: import vnstock
-        except ImportError: return [], ["vnstock dependency unavailable"]
         records: list[tuple[tuple[Any, ...], dict[str, Any]]] = []; errors: list[str] = []
         seen: set[str] = set()
         for ticker, exchange in self.universe.members:

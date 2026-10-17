@@ -34,6 +34,477 @@ from omega.data.vnstock_client import RateLimiter, UpstreamTransportException, V
 from omega.quant.graph.fetcher import GraphFetcher, slice_vci_statement_envelope
 
 
+@pytest.fixture
+def flow_lake_root():
+    import tempfile
+    with tempfile.TemporaryDirectory(dir=REPO_ROOT / ".ly_state/session") as directory:
+        yield Path(directory)
+
+
+def test_lakehouse_ssi_derivatives_points_contracts_and_foreign_vnd(flow_lake_root):
+    from omega.data.market_flow import MarketFlowLakehouse
+    calls = []
+    def ssi(tool, arguments):
+        calls.append(tool)
+        row = _ssi_row()
+        row.update(net_buy_sell_value="600", net_buy_sell_volume="6")
+        if tool == "marketdata_list_stock_daily_data":
+            row.update(symbol="VN30F1M", open="1234.5", high="1240", low="1200", close="1230", volume="100")
+        return {"stocks": [row]}
+    lake = MarketFlowLakehouse(flow_lake_root, DirectVCIClient(ssi_call=ssi))
+    for kind, symbol, scale, unit in (("derivatives", "VN30F1M", "points", "contracts"),
+                                      ("foreign", "HPG", "VND_FULL", "shares")):
+        result = lake.ingest(kind, symbol, "2026-01-02", "2026-01-02")
+        assert result["status"] == "success"
+        frame = pd.read_parquet(REPO_ROOT / result["path"])
+        assert frame["price_scale"].eq(scale).all() and frame["volume_unit"].eq(unit).all()
+        assert not frame["historical_pit_verified"].any()
+        assert (frame["as_of"] <= frame["available_at"]).all()
+        observed = frame["available_at"].iloc[0]
+        assert lake.read(kind, symbol, as_of=(observed - pd.Timedelta(nanoseconds=1)).isoformat()).empty
+        assert len(lake.read(kind, symbol, as_of=observed.isoformat())) == 1
+        if kind == "derivatives":
+            assert frame.iloc[0]["close"] == 1230
+        else:
+            assert frame.iloc[0]["fr_buy_value_total"] == 1000
+        assert lake.ingest(kind, symbol, "2026-01-02", "2026-01-02")["rows"] == 1
+    assert set(calls) == {"marketdata_list_stock_daily_data", "marketdata_list_daily_stock_infor"}
+
+
+@pytest.mark.parametrize("value", [None, "", "NaN", "Inf", "-Inf", [], {}, True, -1, 0, 1e13, pytest.param(10**400, id="overflow")])
+@pytest.mark.parametrize("field", ["close", "volume"])
+def test_lakehouse_derivatives_rejects_bad_numbers(field, value):
+    row = dict(symbol="VN30F1M", trading_date="02/01/2026", open=1200, high=1250, low=1100, close=1230, volume=10)
+    row[field] = value
+    if field == "volume" and value == 0 and type(value) is int:
+        assert DirectVCIClient(ssi_call=lambda *_: {"stocks": [row]}).fetch_derivatives("VN30F1M", "2026-01-02", "2026-01-02").iloc[0]["volume"] == 0
+    else:
+        with pytest.raises((ValueError, RuntimeError)):
+            DirectVCIClient(ssi_call=lambda *_: {"stocks": [row]}).fetch_derivatives("VN30F1M", "2026-01-02", "2026-01-02")
+
+
+@pytest.mark.parametrize("field", ["net_buy_sell_value", "net_buy_sell_volume"])
+@pytest.mark.parametrize("value", [None, "NaN", "Inf", -999, [], True])
+def test_lakehouse_foreign_rejects_inconsistent_provider_nets(field, value):
+    row = _ssi_row()
+    row[field] = value
+    with pytest.raises(ValueError):
+        DirectVCIClient(ssi_call=lambda *_: {"stocks": [row]}).foreign_trade("HPG", "2026-01-02", "2026-01-02", snapshot=False)
+
+
+def test_lakehouse_proprietary_unavailable_not_zero_or_published(flow_lake_root):
+    from omega.data.market_flow import MarketFlowLakehouse, ProprietaryFlowIngestor
+    def unavailable(**_):
+        raise TimeoutError("token=must-not-leak")
+    client = DirectVCIClient(prop_call=unavailable)
+    frame = ProprietaryFlowIngestor(client).fetch("HPG", "2026-01-02", "2026-01-02")
+    assert frame.empty and frame.attrs["status"] == "unavailable"
+    assert MarketFlowLakehouse(flow_lake_root, client).ingest("proprietary", "HPG", "2026-01-02", "2026-01-02") == {"status": "unavailable", "rows": 0}
+    assert not list(flow_lake_root.glob("*.parquet"))
+
+
+@pytest.mark.parametrize("failure", ["schema", "duplicate", "units", "write", "directory"])
+def test_lakehouse_publication_failure_preserves_partition(flow_lake_root, monkeypatch, failure):
+    from omega.data.market_flow import MarketFlowLakehouse
+    import omega.data.vnstock_client as module
+    lake = MarketFlowLakehouse(flow_lake_root, DirectVCIClient(ssi_call=lambda *_: {"stocks": [_ssi_row()]}))
+    lake.ingest("foreign", "HPG", "2026-01-02", "2026-01-02")
+    path = flow_lake_root / "foreign_HPG.parquet"
+    frame = pd.read_parquet(path)
+    if failure == "schema":
+        frame = frame.drop(columns="source")
+    elif failure == "duplicate":
+        frame = pd.concat([frame, frame], ignore_index=True)
+    elif failure == "units":
+        frame["price_scale"] = "KVND"
+    elif failure == "directory":
+        path.unlink()
+        path.mkdir()
+    if failure not in ("write", "directory"):
+        frame.to_parquet(path, index=False)
+    before = path.read_bytes() if path.is_file() else None
+    if failure == "write":
+        monkeypatch.setattr(module, "_fsync_directory", lambda *_: (_ for _ in ()).throw(OSError("disk fault")))
+    with pytest.raises((ValueError, OSError)):
+        lake.ingest("foreign", "HPG", "2026-01-02", "2026-01-02")
+    assert path.read_bytes() == before if before is not None else path.is_dir()
+
+
+@pytest.fixture(params=["foreign", "proprietary"])
+def flow_partition(request):
+    from omega.data.vci_direct import FOREIGN_FLOW_COLUMNS, PROP_FLOW_COLUMNS
+    kind = request.param
+    columns = PROP_FLOW_COLUMNS if kind == "proprietary" else FOREIGN_FLOW_COLUMNS
+    frame = pd.DataFrame([["2026-01-02", 2e12, 1e12, 1e12, 10, 4, 6]], columns=columns)
+    frame["ticker"] = "HPG"
+    frame["time"] = pd.to_datetime(frame["trading_date"])
+    frame["as_of"] = pd.Timestamp("2026-01-02T15:30:00+07:00")
+    frame["available_at"] = pd.Timestamp("2026-01-02T08:30:01Z")
+    frame["source"] = "PROP_CALL" if kind == "proprietary" else "SSI_MCP"
+    frame["price_scale"] = "VND_FULL"
+    frame["volume_unit"] = "shares"
+    frame["historical_pit_verified"] = False
+    return kind, frame
+
+
+@pytest.mark.parametrize("boundary", ["read", "merge"])
+@pytest.mark.parametrize("mutation", [
+    "empty", "missing_total", "extra", "other_dataset", "duplicate_column", "duplicate_row",
+    "missing_metadata", "ticker", "units", "volume_unit", "source", "source_none",
+    "verified_true", "verified_integer", "verified_null", "nan", "inf", "negative_inf",
+    "none", "empty_numeric", "numeric_string", "bool_numeric", "complex", "negative",
+    "overflow", "fractional_volume", "wrong_net", "time", "time_null", "time_aware",
+    "trading_date", "intraday_date", "weekend", "holiday", "as_of_null", "as_of_naive",
+    "early_close", "late_close", "available_null", "available_naive", "available_before_close",
+    "available_future", "hidden_invalid_row", "optional_nan", "optional_inf",
+    "optional_negative", "optional_bool", "mixed_source", "time_intraday",
+] + ["missing_" + field for field in ("trading_date", "ticker", "time", "as_of", "available_at",
+                                      "source", "volume_unit", "historical_pit_verified")])
+def test_lakehouse_flow_partition_rejects_corruption(flow_lake_root, flow_partition, monkeypatch, boundary, mutation):
+    from omega.data.market_flow import MarketFlowLakehouse
+    from omega.data.vci_direct import FOREIGN_FLOW_COLUMNS, PROP_FLOW_COLUMNS
+    kind, original = flow_partition
+    frame = original.copy()
+    columns = PROP_FLOW_COLUMNS if kind == "proprietary" else FOREIGN_FLOW_COLUMNS
+    numeric = {"nan": math.nan, "inf": math.inf, "negative_inf": -math.inf, "none": None,
+               "empty_numeric": "", "numeric_string": "2000000000000", "bool_numeric": True,
+               "complex": 1j, "negative": -1, "overflow": float(2**64)}
+    fields = {"ticker": ("ticker", "FPT"), "units": ("price_scale", "KVND"),
+              "volume_unit": ("volume_unit", "contracts"), "source": ("source", "VCI"),
+              "source_none": ("source", None), "verified_true": ("historical_pit_verified", True),
+              "verified_integer": ("historical_pit_verified", 0), "verified_null": ("historical_pit_verified", None),
+              "fractional_volume": (columns[4], 1.5), "wrong_net": (columns[3], 0),
+              "time": ("time", pd.Timestamp("2026-01-05")), "time_null": ("time", pd.NaT),
+              "time_aware": ("time", pd.Timestamp("2026-01-02T00:00:00Z")),
+              "trading_date": ("trading_date", None), "intraday_date": ("trading_date", "2026-01-02T01:00:00"),
+              "as_of_null": ("as_of", pd.NaT), "as_of_naive": ("as_of", pd.Timestamp("2026-01-02T08:30:00")),
+              "early_close": ("as_of", pd.Timestamp("2026-01-02T08:29:59Z")),
+              "late_close": ("as_of", pd.Timestamp("2026-01-02T08:30:01Z")),
+              "available_null": ("available_at", pd.NaT),
+              "available_naive": ("available_at", pd.Timestamp("2026-01-02T08:30:01")),
+              "available_before_close": ("available_at", pd.Timestamp("2026-01-02T08:29:59Z")),
+              "available_future": ("available_at", pd.Timestamp("2100-01-01T00:00:00Z"))}
+    if mutation in numeric:
+        frame[columns[1]] = numeric[mutation]
+    elif mutation in fields:
+        field, value = fields[mutation]
+        frame[field] = value
+    elif mutation == "empty":
+        frame = frame.iloc[:0]
+    elif mutation.startswith("missing_"):
+        field = (columns[1] if mutation == "missing_total" else
+                 "price_scale" if mutation == "missing_metadata" else mutation.removeprefix("missing_"))
+        frame = frame.drop(columns=field)
+    elif mutation in ("extra", "other_dataset"):
+        frame["unexpected" if mutation == "extra" else
+              (FOREIGN_FLOW_COLUMNS[1] if kind == "proprietary" else PROP_FLOW_COLUMNS[1])] = 0
+    elif mutation == "duplicate_column":
+        frame = pd.concat([frame, frame[[columns[1]]]], axis=1)
+    elif mutation == "duplicate_row":
+        frame = pd.concat([frame, frame], ignore_index=True)
+    elif mutation in ("weekend", "holiday"):
+        day = "2026-01-03" if mutation == "weekend" else "2026-01-01"
+        frame["trading_date"], frame["time"] = day, pd.Timestamp(day)
+        frame["as_of"] = pd.Timestamp(day, tz="Asia/Ho_Chi_Minh") + pd.Timedelta(hours=15, minutes=30)
+        frame["available_at"] = frame["as_of"]
+    elif mutation.startswith("optional_"):
+        field = "percent_buy_trade_volume" if kind == "proprietary" else "fr_ownership"
+        frame[field] = {"optional_nan": math.nan, "optional_inf": math.inf,
+                        "optional_negative": -1, "optional_bool": True}[mutation]
+    elif mutation == "time_intraday":
+        frame["time"] += pd.Timedelta(hours=1)
+    elif mutation in ("hidden_invalid_row", "mixed_source"):
+        hidden = frame.copy()
+        hidden["trading_date"], hidden["time"] = "2026-01-05", pd.Timestamp("2026-01-05")
+        hidden["as_of"] = pd.Timestamp("2026-01-05T08:30:00Z")
+        hidden["available_at"] = pd.Timestamp("2026-01-05T08:30:01Z")
+        if mutation == "mixed_source":
+            hidden["source"] = "VNSTOCK_VCI" if kind == "proprietary" else "VCI"
+        else:
+            hidden["historical_pit_verified"] = True
+        frame = pd.concat([frame, hidden], ignore_index=True)
+    path = flow_lake_root / f"{kind}_HPG.parquet"
+    path.write_bytes(b"unchanged partition")
+    monkeypatch.setattr(pd, "read_parquet", lambda *_: frame.copy())
+    provider = original[list(columns)].copy()
+    provider.attrs.update(observed_at=original["available_at"].iloc[0], source=original["source"].iloc[0])
+    client = DirectVCIClient()
+    monkeypatch.setattr(client, "foreign_trade", lambda *_, **__: provider.copy())
+    monkeypatch.setattr(client, "prop_trade", lambda *_: provider.copy())
+    lake = MarketFlowLakehouse(flow_lake_root, client)
+    with pytest.raises(ValueError):
+        if boundary == "read":
+            lake.read(kind, "HPG", as_of="2026-01-02T08:30:01Z")
+        else:
+            lake.ingest(kind, "HPG", "2026-01-02", "2026-01-02")
+    assert path.read_bytes() == b"unchanged partition"
+
+
+@pytest.mark.parametrize("control", ["zero", "large", "negative_net", "optional", "source", "equal_close"])
+@pytest.mark.parametrize("cutoff,rows", [("2026-01-02T08:29:59Z", 0),
+                                        ("2026-01-02T08:30:00Z", 0),
+                                        ("2026-01-02T08:30:01Z", 1),
+                                        ("2026-01-02T15:30:01+07:00", 1)])
+def test_lakehouse_flow_partition_legitimate_controls(flow_lake_root, flow_partition, control, cutoff, rows):
+    from omega.data.market_flow import MarketFlowLakehouse
+    from omega.data.vci_direct import FOREIGN_FLOW_COLUMNS, PROP_FLOW_COLUMNS
+    kind, frame = flow_partition
+    columns = PROP_FLOW_COLUMNS if kind == "proprietary" else FOREIGN_FLOW_COLUMNS
+    if control == "zero":
+        frame[list(columns[1:])] = 0
+    elif control == "negative_net":
+        frame[list(columns[1:])] = [1e12, 2e12, -1e12, 4, 10, -6]
+    elif control == "optional":
+        optional = ([f"percent_{side}_trade_{unit}" for side in ("buy", "sell", "net")
+                     for unit in ("value", "volume")] if kind == "proprietary" else
+                    ["fr_ownership", "fr_total_room", "fr_current_room"])
+        frame[optional] = 0
+    elif control == "source" and kind == "proprietary":
+        frame["source"] = "VNSTOCK_VCI"
+    elif control == "equal_close":
+        frame["available_at"] = frame["as_of"]
+        rows = int(pd.Timestamp(cutoff) >= frame["as_of"].iloc[0])
+    path = flow_lake_root / f"{kind}_HPG.parquet"
+    frame.to_parquet(path, index=False)
+    before = path.read_bytes()
+    result = MarketFlowLakehouse(flow_lake_root).read(kind, "HPG", as_of=cutoff)
+    pd.testing.assert_frame_equal(result, pd.read_parquet(path).iloc[:rows])
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize("source", ["SSI_MCP", "PROP_CALL", "VNSTOCK_VCI", "PROPRIETARY"])
+def test_lakehouse_flow_ingest_read_roundtrip(flow_lake_root, source):
+    from omega.data.market_flow import MarketFlowLakehouse
+    from omega.data.vci_direct import FOREIGN_FLOW_COLUMNS, PROP_FLOW_COLUMNS
+    kind = "foreign" if source == "SSI_MCP" else "proprietary"
+    columns = FOREIGN_FLOW_COLUMNS if kind == "foreign" else PROP_FLOW_COLUMNS
+    def fetch(*_, **__):
+        frame = pd.DataFrame([["2026-01-02", 2000, 1000, 1000, 10, 4, 6]], columns=columns)
+        frame.attrs.update(source=source, observed_at=pd.Timestamp("2026-01-02T08:30:00Z"))
+        return frame
+    class Client:
+        foreign_trade = staticmethod(fetch)
+        prop_trade = staticmethod(fetch)
+    lake = MarketFlowLakehouse(flow_lake_root, Client())
+    assert lake.ingest(kind, "HPG", "2026-01-02", "2026-01-02")["rows"] == 1
+    result = lake.read(kind, "HPG", as_of="2026-01-02T08:30:00Z")
+    assert len(result) == 1 and result["source"].iloc[0] == source
+    assert not result["historical_pit_verified"].any()
+
+
+@pytest.fixture
+def derivatives_partition():
+    row = dict(symbol="VN30F1M", trading_date="02/01/2026", open=1200, high=1250, low=1100, close=1230, volume=0)
+    frame = DirectVCIClient(ssi_call=lambda *_: {"stocks": [row]}).fetch_derivatives("VN30F1M", "2026-01-02", "2026-01-02")
+    frame["historical_pit_verified"] = False
+    return frame
+
+
+@pytest.mark.parametrize("boundary", ["read", "ingest", "merge"])
+@pytest.mark.parametrize("field,value", [
+    (field, value) for field in ("open", "high", "low", "close", "volume")
+    for value in (None, math.nan, math.inf, -math.inf, -1, True, "1230", 1e13 if field != "volume" else 2**63)
+] + [(field, 0) for field in ("open", "high", "low", "close")] + [
+    ("volume", 0.5), ("ticker", "HPG"), ("ticker", None),
+    ("price_scale", "VND_FULL"), ("volume_unit", "shares"), ("source", "VCI"),
+    ("adjusted", "unadjusted"), ("historical_pit_verified", True),
+    ("historical_pit_verified", None), ("historical_pit_verified", 0),
+    ("time", pd.NaT), ("time", pd.Timestamp("2026-01-03")),
+    ("time", pd.Timestamp("2026-01-02T01:00:00")),
+    ("as_of", pd.NaT), ("as_of", pd.Timestamp("2026-01-02T08:29:59Z")),
+    ("available_at", pd.NaT), ("available_at", pd.Timestamp("2026-01-02T08:29:59Z")),
+    ("available_at", pd.Timestamp("2100-01-01T00:00:00Z")),
+    ("rebuild_date", "2026-01-01"), ("rebuild_date", None),
+    ("low", 1240), ("high", 1220),
+])
+def test_lakehouse_derivatives_validates_each_field(flow_lake_root, derivatives_partition, monkeypatch, boundary, field, value):
+    from omega.data.market_flow import MarketFlowLakehouse
+    frame = derivatives_partition.copy()
+    frame[field] = value
+    path = flow_lake_root / "derivatives_VN30F1M.parquet"
+    client = DirectVCIClient()
+    monkeypatch.setattr(client, "fetch_derivatives", lambda *_: derivatives_partition.copy() if boundary == "merge" else frame.copy())
+    lake = MarketFlowLakehouse(flow_lake_root, client)
+    if boundary != "ingest":
+        frame.to_parquet(path, index=False)
+    before = path.read_bytes() if path.exists() else None
+    with pytest.raises(ValueError):
+        if boundary == "read":
+            lake.read("derivatives", "VN30F1M", as_of=pd.Timestamp.now(tz="UTC").isoformat())
+        else:
+            lake.ingest("derivatives", "VN30F1M", "2026-01-02", "2026-01-02")
+    assert path.read_bytes() == before if before is not None else not path.exists()
+
+
+@pytest.mark.parametrize("boundary", ["read", "ingest", "merge"])
+@pytest.mark.parametrize("mutation", ["extra", "duplicate_column", "duplicate_row"] + [
+    "missing_" + field for field in ("time", "ticker", "open", "high", "low", "close", "volume", "as_of",
+                                    "available_at", "source", "price_scale", "adjusted", "rebuild_date", "volume_unit")])
+def test_lakehouse_derivatives_rejects_schema_drift(flow_lake_root, derivatives_partition, monkeypatch, boundary, mutation):
+    from omega.data.market_flow import MarketFlowLakehouse
+    frame = derivatives_partition.copy()
+    if mutation.startswith("missing_"):
+        frame = frame.drop(columns=mutation.removeprefix("missing_"))
+    elif mutation == "extra":
+        frame["unexpected"] = 1
+    elif mutation == "duplicate_column":
+        frame = pd.concat([frame, frame[["close"]]], axis=1)
+    else:
+        frame = pd.concat([frame, frame], ignore_index=True)
+    path = flow_lake_root / "derivatives_VN30F1M.parquet"
+    client = DirectVCIClient()
+    monkeypatch.setattr(client, "fetch_derivatives", lambda *_: derivatives_partition.copy() if boundary == "merge" else frame.copy())
+    if boundary != "ingest":
+        path.write_bytes(b"unchanged partition")
+        monkeypatch.setattr(pd, "read_parquet", lambda *_: frame.copy())
+    lake = MarketFlowLakehouse(flow_lake_root, client)
+    with pytest.raises(ValueError):
+        if boundary == "read":
+            lake.read("derivatives", "VN30F1M", as_of=pd.Timestamp.now(tz="UTC").isoformat())
+        else:
+            lake.ingest("derivatives", "VN30F1M", "2026-01-02", "2026-01-02")
+    assert path.read_bytes() == b"unchanged partition" if boundary != "ingest" else not path.exists()
+
+
+@pytest.mark.parametrize("kind,symbol", [("foreign", "HPG"), ("proprietary", "HPG"), ("derivatives", "VN30F1M")])
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure", ["write", "file_fsync", "readback", "replace_before", "replace_after", "directory_fsync"])
+def test_lakehouse_publication_fault_rolls_back(flow_lake_root, derivatives_partition, monkeypatch, kind, symbol, existing, failure):
+    from omega.data.market_flow import MarketFlowLakehouse
+    import omega.data.vnstock_client as module
+    client = DirectVCIClient(ssi_call=lambda *_: {"stocks": [_ssi_row()]}, prop_call=lambda **_: pd.DataFrame([{
+        "trading_date": "2026-01-02", "total_buy_trade_value": 1000, "total_sell_trade_value": 400,
+        "total_trade_net_value": 600, "total_buy_trade_volume": 10, "total_sell_trade_volume": 4,
+        "total_trade_net_volume": 6}]))
+    monkeypatch.setattr(client, "fetch_derivatives", lambda *_: derivatives_partition.copy())
+    lake = MarketFlowLakehouse(flow_lake_root, client)
+    path = flow_lake_root / f"{kind}_{symbol}.parquet"
+    if existing:
+        lake.ingest(kind, symbol, "2026-01-02", "2026-01-02")
+    before = path.read_bytes() if existing else None
+    def fault(*_args, **_kwargs):
+        raise OSError("publication fault")
+    if failure == "write":
+        monkeypatch.setattr(pd.DataFrame, "to_parquet", fault)
+    elif failure == "file_fsync":
+        monkeypatch.setattr(module.os, "fsync", fault)
+    elif failure == "readback":
+        read = pd.read_parquet
+        monkeypatch.setattr(pd, "read_parquet", lambda name, **kwargs: fault() if str(name).endswith(".tmp") else read(name, **kwargs))
+    elif failure.startswith("replace_"):
+        replace = module.os.replace
+        def broken_replace(source, target):
+            if failure == "replace_after":
+                replace(source, target)
+            fault()
+        monkeypatch.setattr(module.os, "replace", broken_replace)
+    else:
+        monkeypatch.setattr(module, "_fsync_directory", fault)
+    with pytest.raises(OSError, match="publication fault|rollback incomplete"):
+        lake.ingest(kind, symbol, "2026-01-02", "2026-01-02")
+    assert path.read_bytes() == before if existing else not path.exists()
+    assert not list(flow_lake_root.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("mutation", ["empty", "missing_provenance"])
+@pytest.mark.parametrize("boundary", ["read", "merge"])
+def test_lakehouse_derivatives_rejects_empty_or_missing_provenance(flow_lake_root, derivatives_partition, monkeypatch, boundary, mutation):
+    from omega.data.market_flow import MarketFlowLakehouse
+    path = flow_lake_root / "derivatives_VN30F1M.parquet"
+    frame = derivatives_partition.iloc[:0] if mutation == "empty" else derivatives_partition.drop(columns="historical_pit_verified")
+    frame.to_parquet(path, index=False)
+    before = path.read_bytes()
+    client = DirectVCIClient()
+    monkeypatch.setattr(client, "fetch_derivatives", lambda *_: derivatives_partition.copy())
+    lake = MarketFlowLakehouse(flow_lake_root, client)
+    with pytest.raises(ValueError):
+        if boundary == "read":
+            lake.read("derivatives", "VN30F1M", as_of=pd.Timestamp.now(tz="UTC").isoformat())
+        else:
+            lake.ingest("derivatives", "VN30F1M", "2026-01-02", "2026-01-02")
+    assert path.read_bytes() == before
+
+
+def test_lakehouse_failed_initial_writer_does_not_remove_successor(flow_lake_root, monkeypatch):
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from omega.data.market_flow import MarketFlowLakehouse
+    import omega.data.vnstock_client as module
+    published, release = Event(), Event()
+    write = module.atomic_write_with_backup
+    def publish(frame, target):
+        write(frame, target)
+        if frame["trading_date"].iloc[0] == "2026-01-02":
+            published.set()
+            assert release.wait(5)
+            raise OSError("first writer fault")
+    monkeypatch.setattr(module, "atomic_write_with_backup", publish)
+    def ingest(day):
+        client = DirectVCIClient(ssi_call=lambda *_: {"stocks": [_ssi_row(f"{day}/01/2026")]})
+        return MarketFlowLakehouse(flow_lake_root, client).ingest("foreign", "HPG", f"2026-01-{day}", f"2026-01-{day}")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        first = pool.submit(ingest, "02")
+        try:
+            assert published.wait(5)
+            second = pool.submit(ingest, "05")
+        finally:
+            release.set()
+        with pytest.raises(OSError, match="first writer fault"):
+            first.result(timeout=10)
+        assert second.result(timeout=10)["status"] == "success"
+    assert pd.read_parquet(flow_lake_root / "foreign_HPG.parquet")["trading_date"].tolist() == ["2026-01-05"]
+
+
+@pytest.mark.parametrize("failure", ["unlink", "rollback_fsync"])
+def test_lakehouse_initial_publication_cleanup_failure_is_explicit(flow_lake_root, monkeypatch, failure):
+    from omega.data.market_flow import MarketFlowLakehouse
+    import omega.data.vnstock_client as module
+    lake = MarketFlowLakehouse(flow_lake_root, DirectVCIClient(ssi_call=lambda *_: {"stocks": [_ssi_row()]}))
+    path = flow_lake_root / "foreign_HPG.parquet"
+    replace = module.os.replace
+    unlink = Path.unlink
+    def broken_replace(source, target):
+        replace(source, target)
+        raise OSError("replacement fault")
+    monkeypatch.setattr(module.os, "replace", broken_replace)
+    if failure == "unlink":
+        def broken_unlink(target, **kwargs):
+            if target == path:
+                raise OSError("unlink fault")
+            return unlink(target, **kwargs)
+        monkeypatch.setattr(Path, "unlink", broken_unlink)
+    else:
+        monkeypatch.setattr(module, "_fsync_directory", lambda *_: (_ for _ in ()).throw(OSError("rollback fsync fault")))
+    with pytest.raises(OSError, match="rollback incomplete") as caught:
+        lake.ingest("foreign", "HPG", "2026-01-02", "2026-01-02")
+    assert str(caught.value.__cause__) == "replacement fault"
+    assert path.exists() is (failure == "unlink")
+    unlink(path, missing_ok=True)
+
+
+@pytest.mark.parametrize("clock", ["2026-01-02T08:29:59Z", "2026-01-02T08:30:00Z", "2026-01-02T08:30:01Z"])
+def test_lakehouse_derivatives_session_boundary(monkeypatch, clock):
+    monkeypatch.setattr(pd.Timestamp, "now", classmethod(lambda cls, tz=None: pd.Timestamp(clock)))
+    row = dict(symbol="VN30F1M", trading_date="02/01/2026", open=1200, high=1250, low=1100, close=1230, volume=0)
+    client = DirectVCIClient(ssi_call=lambda *_: {"stocks": [row]})
+    if clock.endswith("29:59Z"):
+        with pytest.raises(ValueError, match="session"):
+            client.fetch_derivatives("VN30F1M", "2026-01-02", "2026-01-02", as_of=clock)
+    else:
+        assert len(client.fetch_derivatives("VN30F1M", "2026-01-02", "2026-01-02", as_of=clock)) == 1
+
+
+def test_lakehouse_parallel_writers_preserve_distinct_sessions(flow_lake_root):
+    from concurrent.futures import ThreadPoolExecutor
+    from omega.data.market_flow import MarketFlowLakehouse
+    def ingest(day):
+        client = DirectVCIClient(ssi_call=lambda *_: {"stocks": [_ssi_row(f"{day}/01/2026")]})
+        return MarketFlowLakehouse(flow_lake_root, client).ingest("foreign", "HPG", f"2026-01-{day}", f"2026-01-{day}")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        assert all(result["status"] == "success" for result in pool.map(ingest, ["02", "05"]))
+    assert len(pd.read_parquet(flow_lake_root / "foreign_HPG.parquet")) == 2
+
+
 def _foreign_frame():
     from omega.data.vci_direct import FOREIGN_FLOW_COLUMNS
     return pd.DataFrame([["2026-01-02", 1000, 400, 600, 10, 4, 6]], columns=FOREIGN_FLOW_COLUMNS)
@@ -1833,8 +2304,12 @@ def test_direct_consumers_reject_unsupported_sources(source):
         LiveDataIngestor(source=source)
 
 
-def test_direct_live_snapshot_retains_vnd_identity_and_session_date():
+def test_direct_live_snapshot_retains_vnd_identity_and_session_date(monkeypatch):
     from omega.data.live_ingestor import LiveDataIngestor
+    mock_time = pd.Timestamp("2026-10-01T06:35:49Z")
+    observed_at = mock_time + pd.Timedelta(minutes=1)
+    assert mock_time <= observed_at
+    monkeypatch.setattr(pd.Timestamp, "now", classmethod(lambda cls, tz=None: observed_at))
     ingestor = LiveDataIngestor(timeout=7, max_retries=2)
     assert ingestor.client.direct_vci_client.timeout == 7
     assert ingestor.client.direct_vci_client.max_attempts == 2

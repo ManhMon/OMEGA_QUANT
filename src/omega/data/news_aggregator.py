@@ -13,6 +13,8 @@ import re
 import sqlite3
 import time
 import unicodedata
+from functools import partial
+from types import SimpleNamespace
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional
@@ -22,6 +24,8 @@ from zoneinfo import ZoneInfo
 
 import requests
 from bs4 import BeautifulSoup
+from omega.data.vnstock_client import VnstockClient
+from omega.data.vci_direct import redact
 
 logger = logging.getLogger(__name__)
 
@@ -462,7 +466,7 @@ class NewsAggregator:
         return any(keyword in haystack for keyword in BULLISH_KEYWORDS | BEARISH_KEYWORDS)
 
     def _parse_public_date(self, public_date: Optional[str]) -> Optional[datetime]:
-        if not public_date:
+        if not isinstance(public_date, str) or not public_date.strip():
             return None
         try:
             return datetime.fromisoformat(public_date)
@@ -480,14 +484,9 @@ class NewsAggregator:
 
     @staticmethod
     def _fetch_vnstock_page(company: object, cursor: Optional[str]) -> tuple[object, Optional[str]]:
-        try:
-            frame = company.news(cursor=cursor, limit=VNSTOCK_PAGE_SIZE, sort="public_date_desc")
-        except TypeError as exc:
-            raise ValueError("vnstock endpoint does not expose required server-side cursor pagination") from exc
-        attrs = getattr(frame, "attrs", {})
-        metadata = attrs.get("pagination") if isinstance(attrs, dict) else None
-        next_cursor = metadata.get("next_cursor") if isinstance(metadata, dict) else None
-        return frame, next_cursor
+        frame = company.news(cursor=cursor, page_size=VNSTOCK_PAGE_SIZE)
+        metadata = frame.attrs.get("pagination", {})
+        return frame, frame.attrs.get("next_cursor", metadata.get("next_cursor"))
 
     def _scrape_vnstock_news(self, as_of_time: datetime, hours_back: int = 24) -> List[SentimentInput]:
         if not isinstance(as_of_time, datetime):
@@ -497,20 +496,16 @@ class NewsAggregator:
         cutoff = as_of_time - timedelta(hours=hours_back)
         results: List[SentimentInput] = []
 
-        try:
-            from vnstock import Company
-        except Exception as exc:
-            logger.error("vnstock import failed: %s", exc)
-            return results
+        client = VnstockClient().direct_vci_client
 
         def fetch_ticker(ticker: str) -> List[SentimentInput]:
             ticker_results: List[SentimentInput] = []
             try:
                 self._rate_limit("vnstock")
-                company = Company(symbol=ticker, source="VCI")
+                company = SimpleNamespace(news=partial(client.fetch_company_news, ticker))
                 frame, next_cursor = self._fetch_vnstock_page(company, cursor=None)
             except Exception as exc:
-                logger.warning("vnstock news fetch failed for %s: %s", ticker, exc)
+                logger.warning("vnstock news fetch failed for %s: %s", ticker, redact(exc))
                 return ticker_results
 
             if frame is None or frame.empty:
@@ -518,21 +513,29 @@ class NewsAggregator:
             try:
                 self._validate_vnstock_schema(frame)
             except Exception as exc:
-                logger.warning("vnstock schema validation failed for %s: %s", ticker, exc)
+                logger.warning("vnstock schema validation failed for %s: %s", ticker, redact(exc))
                 return ticker_results
             seen_cursors = set()
             page_count = 0
+            descending_order, previous_timestamp = True, None
             while page_count < MAX_PAGES_PER_TICKER:
                 page_count += 1
+                # news_order promises global ordering, not just ordering within this page.
+                metadata = getattr(frame, "attrs", {})
+                descending_order = descending_order and isinstance(metadata, dict) and metadata.get("news_order") == "descending"
                 reached_cutoff = False
                 for row in frame.to_dict(orient="records"):
                     timestamp = self._parse_public_date(row.get("public_date"))
                     if timestamp is None:
+                        descending_order = False
                         continue
                     timestamp = _as_utc(timestamp)
+                    if previous_timestamp is not None and timestamp > previous_timestamp:
+                        descending_order = False
+                    previous_timestamp = timestamp
                     if timestamp <= cutoff:
                         reached_cutoff = True
-                        break
+                        continue
                     if timestamp >= as_of_time:
                         continue
                     title = row.get("news_title")
@@ -546,7 +549,7 @@ class NewsAggregator:
                         ))
                 if next_cursor is not None and next_cursor in seen_cursors:
                     raise ValueError("vnstock cursor pagination repeated cursor")
-                if reached_cutoff or next_cursor is None:
+                if next_cursor is None or descending_order and reached_cutoff:
                     break
                 seen_cursors.add(next_cursor)
                 try:
@@ -557,7 +560,7 @@ class NewsAggregator:
                 except ValueError:
                     raise
                 except Exception as exc:
-                    logger.warning("vnstock cursor page validation/fetch failed for %s: %s", ticker, exc)
+                    logger.warning("vnstock cursor page validation/fetch failed for %s: %s", ticker, redact(exc))
                     break
             return ticker_results
 
