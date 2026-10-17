@@ -9,6 +9,7 @@ import { MacroNewsHubView } from '../modules/macro_news/MacroNewsHubView';
 import { ModelRegistryView, validateModelCatalog, validateModelVersions, validateModelLineage } from '../modules/model_registry/ModelRegistryView';
 import { ConceptDriftPanel, DriftMonitorPanel, getRegistryEvidence, validateConceptDrift, validateMonitorStatus, registryTime } from '../modules/model_registry/DriftMonitorPanel';
 import { useUiStore } from '../store/uiStore';
+import { useRealtimeStream } from '../hooks/useRealtimeStream';
 import { QuantControlCenter } from '../modules/control_center/QuantControlCenter';
 import { PipelineOrchestrationConsole, PIPELINE_STAGES, pipelineRequest, validatePipelineTelemetry } from '../modules/pipeline_console/PipelineOrchestrationConsole';
 
@@ -896,5 +897,113 @@ describe('Slice17 pipeline boundary validation', () => {
   it.each(['task_id', 'operation', 'status', 'schema_version', 'request_fingerprint', 'output_sha256', 'receipt_hmac', 'published_at', 'artifact_id'])('rejects receipt field %s', (field) => {
     const data = pipelineFrame(1, 'COMPLETED', 'RESEARCH_EXECUTION'); const receipt = pipelineReceipt(); delete (receipt as any)[field]; data.payload.receipt = receipt;
     expect(() => validatePipelineTelemetry(data, PIPE_JOB)).toThrow();
+  });
+});
+
+class RealtimeSource extends EventTarget {
+  static instances: RealtimeSource[] = [];
+  static failConstruction = false;
+  onopen: ((event: Event) => void) | null = null;
+  onmessage: ((event: MessageEvent) => void) | null = null;
+  onerror: ((event: Event) => void) | null = null;
+  close = vi.fn();
+  constructor(public url: string) {
+    super();
+    if (RealtimeSource.failConstruction) throw new Error('private transport details');
+    RealtimeSource.instances.push(this);
+  }
+  open() { this.onopen?.(new Event('open')); }
+  fail() { this.onerror?.(new Event('error')); }
+  send(data: unknown, type = 'message') {
+    const event = new MessageEvent(type, { data: JSON.stringify(data) });
+    this.dispatchEvent(event);
+    if (type === 'error') this.onerror?.(event);
+  }
+}
+
+describe('bounded system realtime stream', () => {
+  let container: HTMLDivElement, root: Root, client: QueryClient;
+  let state: ReturnType<typeof useRealtimeStream>;
+  let initial: ReturnType<typeof useUiStore.getState>;
+  let unmounted: boolean;
+  let updates: ReturnType<typeof vi.fn<(value: unknown) => void>>;
+  const source = () => RealtimeSource.instances.at(-1)!;
+  function Probe({ enabled = true, callback = updates }: { enabled?: boolean; callback?: (value: any) => void }) {
+    state = useRealtimeStream({ enabled, onUpdate: callback });
+    return null;
+  }
+  const render = (props = {}) => act(() => root.render(React.createElement(QueryClientProvider, { client }, React.createElement(Probe, props))));
+  const advance = async (ms: number) => act(async () => { await vi.advanceTimersByTimeAsync(ms); });
+  beforeEach(() => {
+    vi.useFakeTimers(); RealtimeSource.instances = []; RealtimeSource.failConstruction = false;
+    vi.stubGlobal('EventSource', RealtimeSource); updates = vi.fn();
+    initial = useUiStore.getState(); useUiStore.setState({ isStreamingConnected: false });
+    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+    client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } }); unmounted = false;
+  });
+  afterEach(() => {
+    if (!unmounted) act(() => root.unmount());
+    expect(vi.getTimerCount()).toBe(0); client.clear(); container.remove();
+    vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); useUiStore.setState(initial, true);
+  });
+  it('four attempts exhaust with exact 1/2/4s backoff despite duplicate and stale errors', async () => {
+    render();
+    for (const delay of [1000, 2000, 4000]) {
+      const current = source(), stale = current.onerror!;
+      act(() => { current.fail(); stale(new Event('error')); });
+      expect(current.close).toHaveBeenCalledTimes(1); expect(vi.getTimerCount()).toBe(1);
+      const count = RealtimeSource.instances.length;
+      await advance(delay - 1); expect(RealtimeSource.instances).toHaveLength(count);
+      await advance(1); expect(RealtimeSource.instances).toHaveLength(count + 1);
+    }
+    act(() => source().fail());
+    expect(state.isExhausted).toBe(true); expect(state.isConnected).toBe(false);
+    expect(vi.getTimerCount()).toBe(0); await advance(60000); expect(RealtimeSource.instances).toHaveLength(4);
+  });
+  it('bounds each opening deadline and constructor failure with no surviving timers', async () => {
+    render(); await advance(10000); expect(source().close).toHaveBeenCalledTimes(1);
+    await advance(1000); await advance(10000); await advance(2000); await advance(10000);
+    await advance(4000); await advance(10000); expect(state.isExhausted).toBe(true);
+    render({ enabled: false }); RealtimeSource.failConstruction = true; render();
+    await advance(7000); expect(state.isExhausted).toBe(true); expect(vi.getTimerCount()).toBe(0);
+  });
+  it('open does not replenish budget and application errors do not reconnect', async () => {
+    render();
+    for (const delay of [1000, 2000, 4000]) {
+      act(() => source().open()); expect(state.isConnected).toBe(true); expect(vi.getTimerCount()).toBe(0);
+      act(() => source().send({ timestamp: '2026-10-10T08:30:00Z' }, 'error'));
+      expect(state.isConnected).toBe(true);
+      act(() => source().fail()); await advance(delay);
+    }
+    act(() => { source().open(); source().fail(); }); expect(state.isExhausted).toBe(true);
+    expect(updates).toHaveBeenCalledTimes(3);
+  });
+  it('rejects malformed events, refreshes callback without replacing connection or retry budget', async () => {
+    render(); const current = source();
+    act(() => { for (const bad of [null, [], '', 1, {}, { timestamp: null }]) current.send(bad, 'status'); });
+    expect(updates).not.toHaveBeenCalled();
+    const replacement = vi.fn(); render({ callback: replacement });
+    expect(RealtimeSource.instances).toHaveLength(1);
+    act(() => current.send({ timestamp: '2026-10-10T08:30:00Z' }, 'status'));
+    expect(replacement).toHaveBeenCalledTimes(1); expect(updates).not.toHaveBeenCalled();
+    act(() => current.fail()); render({ callback: vi.fn() }); await advance(1000);
+    expect(RealtimeSource.instances).toHaveLength(2);
+  });
+  it('disable and unmount suppress stale callbacks, cancel opening and retry timers', async () => {
+    render(); const first = source(), lateOpen = first.onopen!, lateError = first.onerror!;
+    act(() => first.fail()); render({ enabled: false });
+    act(() => { lateOpen(new Event('open')); lateError(new Event('error')); first.send({ timestamp: 'stale' }, 'status'); });
+    expect(state.isConnected).toBe(false); expect(updates).not.toHaveBeenCalled(); expect(vi.getTimerCount()).toBe(0);
+    render(); const last = source(), open = last.onopen!;
+    act(() => root.unmount()); unmounted = true;
+    act(() => { open(new Event('open')); last.send({ timestamp: 'stale' }, 'status'); });
+    expect(useUiStore.getState().isStreamingConnected).toBe(false); expect(last.close).toHaveBeenCalledTimes(1);
+  });
+  it('StrictMode disposes obsolete source and owns only one deadline', () => {
+    act(() => root.render(React.createElement(React.StrictMode, null,
+      React.createElement(QueryClientProvider, { client }, React.createElement(Probe)))));
+    expect(RealtimeSource.instances).toHaveLength(2);
+    expect(RealtimeSource.instances[0].close).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(1);
   });
 });

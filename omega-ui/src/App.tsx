@@ -130,7 +130,7 @@ const DashboardContent: React.FC = () => {
   const t = locale === 'vi' ? vi : en;
 
   // Initialize background live event stream
-  useRealtimeStream({ enabled: true });
+  const stream = useRealtimeStream({ enabled: true });
 
   const renderModule = () => {
     switch (activeModule) {
@@ -168,10 +168,10 @@ const DashboardContent: React.FC = () => {
   return (
     <div className="flex flex-col h-screen w-screen bg-zinc-950 text-zinc-100 overflow-hidden font-sans select-none">
       {/* 1. Institutional Top Navigation */}
-      <TopNavBar />
+      <div className="shrink-0 overflow-x-auto [&>header]:min-w-max sm:[&>header]:min-w-0"><TopNavBar /></div>
 
       {/* 2. Main Workstation Shell: Side Dock + Workspace Grid */}
-      <div className="flex flex-1 overflow-hidden relative">
+      <div className="flex flex-col sm:flex-row flex-1 min-h-0 overflow-hidden relative">
         <SideDock
           activeModule={activeModule}
           onSelectModule={setActiveModule}
@@ -179,9 +179,9 @@ const DashboardContent: React.FC = () => {
           onToggleCollapse={toggleSideDockCollapse}
         />
 
-        <main aria-label={moduleHeader.title} className="flex-1 overflow-auto bg-zinc-950 p-4 font-mono flex flex-col gap-3">
-          <div className="flex items-center justify-between px-4 py-2.5 rounded-xl border border-white/10 bg-zinc-900/80 backdrop-blur-md shadow-sm">
-            <div className="flex items-center gap-3">
+        <main aria-label={moduleHeader.title} className="flex-1 min-w-0 min-h-0 overflow-auto bg-zinc-950 p-2 sm:p-4 font-mono flex flex-col gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 px-2 sm:px-4 py-2.5 rounded-xl border border-white/10 bg-zinc-900/80 backdrop-blur-md shadow-sm">
+            <div className="flex flex-wrap items-center gap-3 min-w-0">
               <span className="w-1.5 h-4 bg-emerald-400 rounded-sm inline-block shadow-[0_0_8px_rgba(52,211,153,0.6)]" />
               <h2 className="text-xs font-bold text-zinc-100 tracking-wider uppercase">{moduleHeader.title}</h2>
               <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono tracking-wider bg-zinc-800/90 text-emerald-300 border border-emerald-500/20">{moduleHeader.tag}</span>
@@ -195,7 +195,8 @@ const DashboardContent: React.FC = () => {
               </span>
             </div>
           </div>
-          <div className="flex-1 overflow-auto">
+          {stream?.isExhausted && <p role="status" className="text-xs text-amber-300">Live stream unavailable after 3 retries. Reload to reconnect.</p>}
+          <div className="flex-1 min-h-0 overflow-auto">
             {renderModule()}
           </div>
         </main>

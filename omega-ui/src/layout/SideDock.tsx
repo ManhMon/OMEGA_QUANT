@@ -143,13 +143,13 @@ export const SideDock: React.FC<SideDockProps> = ({
 
   return (
     <aside
-      className={`h-[calc(100vh-3.5rem)] border-r border-white/10 bg-zinc-950/90 backdrop-blur-md flex flex-col justify-between transition-all duration-200 z-30 select-none ${
-        isCollapsed ? 'w-16' : 'w-60'
+      className={`w-full shrink-0 sm:h-full border-b sm:border-b-0 sm:border-r border-white/10 bg-zinc-950/90 backdrop-blur-md flex flex-col justify-between transition-all duration-200 motion-reduce:transition-none z-30 select-none ${
+        isCollapsed ? 'sm:w-16' : 'sm:w-60'
       }`}
     >
       {/* Navigation Modules */}
-      <div className="p-3 flex flex-col gap-1.5 overflow-y-auto">
-        <div className="px-2 py-1.5 text-[10px] uppercase font-mono tracking-wider text-zinc-300 font-semibold flex items-center justify-between">
+      <div role="navigation" aria-label={t.nav.quantModules} className="p-1 sm:p-3 flex sm:flex-col gap-1.5 overflow-x-auto sm:overflow-x-hidden sm:overflow-y-auto">
+        <div className="hidden sm:flex px-2 py-1.5 text-[10px] uppercase font-mono tracking-wider text-zinc-300 font-semibold flex items-center justify-between">
           <span>{!isCollapsed && t.nav.quantModules}</span>
           <span className="text-[9px] bg-zinc-800 text-zinc-300 px-1 py-0.2 rounded font-mono">{t.nav.activeCount}</span>
         </div>
@@ -162,9 +162,12 @@ export const SideDock: React.FC<SideDockProps> = ({
           return (
             <button
               key={item.id}
+              type="button"
+              aria-label={label}
+              aria-current={isActive ? 'page' : undefined}
               onClick={() => onSelectModule(item.id)}
-              title={isCollapsed ? label : undefined}
-              className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-xs font-mono transition-all duration-150 relative group ${
+              title={label}
+              className={`shrink-0 min-w-11 min-h-11 sm:w-full flex items-center justify-center sm:justify-start gap-3 px-3 py-2.5 rounded-lg text-xs font-mono transition-all duration-150 motion-reduce:transition-none relative group ${
                 isActive
                   ? 'bg-emerald-500/15 text-emerald-300 border border-emerald-500/30 shadow-sm shadow-emerald-500/10 font-semibold'
                   : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5 border border-transparent'
@@ -173,7 +176,7 @@ export const SideDock: React.FC<SideDockProps> = ({
               <Icon className={`w-4 h-4 shrink-0 ${isActive ? 'text-emerald-400' : 'text-zinc-400 group-hover:text-zinc-200'}`} />
 
               {!isCollapsed && (
-                <div className="flex-1 flex items-center justify-between overflow-hidden">
+                <div className="hidden sm:flex flex-1 items-center justify-between overflow-hidden">
                   <span className="truncate">{label}</span>
                   <span className={`text-[9px] px-1 py-0.2 rounded font-mono ${
                     isActive ? 'bg-emerald-400/20 text-emerald-300' : 'bg-zinc-800/80 text-zinc-300'
@@ -192,7 +195,7 @@ export const SideDock: React.FC<SideDockProps> = ({
       </div>
 
       {/* Footer controls & Collapse */}
-      <div className="p-3 border-t border-white/5 flex flex-col gap-2">
+      <div className="hidden sm:flex p-3 border-t border-white/5 flex-col gap-2">
         <div className={`flex items-center ${isCollapsed ? 'justify-center' : 'justify-between'} px-1 text-xs text-zinc-400 font-mono`}>
           {!isCollapsed && (
             <div className="flex items-center gap-2">
@@ -203,7 +206,9 @@ export const SideDock: React.FC<SideDockProps> = ({
           {onToggleCollapse && (
             <button
               onClick={onToggleCollapse}
+              type="button"
               aria-label="Toggle SideDock Collapse"
+              aria-expanded={!isCollapsed}
               className="p-1 rounded hover:bg-white/5 text-zinc-400 hover:text-zinc-200"
             >
               {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronLeft className="w-4 h-4" />}

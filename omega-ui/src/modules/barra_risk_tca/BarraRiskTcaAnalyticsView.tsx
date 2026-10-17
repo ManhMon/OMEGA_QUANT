@@ -120,7 +120,9 @@ export const BarraRiskTcaAnalyticsView: React.FC = () => {
         </section>
         <section aria-label="Stress scenarios" className={panelClass}>
           <h2 className="font-bold">Stress scenarios</h2>
-          <p role="status">Calibrated CVaR: {stressQuery.isFetching ? 'Loading…' : 'unavailable'}</p>{error(stressQuery.error)}
+          <p role="status">Calibrated CVaR: {stressQuery.isFetching ? 'Loading…' : 'unavailable'}</p>
+      {!(riskErrorMessage(stressQuery.error) === 'STRESS_MODEL_UNAVAILABLE'
+        || (stressQuery.error instanceof Error && stressQuery.error.message === 'STRESS_MODEL_UNAVAILABLE')) && error(stressQuery.error)}
           <form onSubmit={(event) => { event.preventDefault(); simulation.reset(); submitJson('stress', stressInput, (value) => simulation.mutate(value as StressRequest)); }}>
             <label htmlFor="stress-request">Stress request JSON</label>
             <p id="stress-help" className="py-2 text-zinc-400">portfolio_weights: symbol-to-weight (0–1). Optional market_shock_pct (−50–50), volatility_shock_multiplier (0.5–10), include_contagion (boolean). Historical market inputs; estimated scenario impacts, not calibrated CVaR.</p>

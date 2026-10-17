@@ -728,8 +728,17 @@ it('mounts every real App route under network failure and closes streams', async
     'strategy_lab', 'macro_cockpit', 'macro_news_hub', 'fundamental_matrix', 'alpha_portfolio',
     'barra_risk_tca', 'chart_station', 'execution_blotter'];
   for (const module of modules) {
-    act(() => useUiStore.getState().setActiveModule(module));
+    const navigation = container.querySelector('[role="navigation"]')!;
+    const controls = Array.from(navigation.querySelectorAll('button'));
+    expect(controls).toHaveLength(modules.length);
+    act(() => controls[modules.indexOf(module)].click());
     await settle();
+    expect(useUiStore.getState().activeModule).toBe(module);
+    expect(navigation.querySelectorAll('[aria-current="page"]')).toHaveLength(1);
+    expect(controls[modules.indexOf(module)].getAttribute('aria-current')).toBe('page');
+    expect(controls.every((button) => button.type === 'button' && !!button.getAttribute('aria-label'))).toBe(true);
+    expect(container.querySelectorAll('main')).toHaveLength(1);
+    expect(container.querySelector('main main')).toBeNull();
     expect(container.querySelector('main')?.textContent).not.toBe('');
     if (module === 'pipeline_console') {
       const section = container.querySelector('main section')!;
@@ -754,6 +763,13 @@ it('mounts every real App route under network failure and closes streams', async
       expect(container.textContent).not.toContain('BARRA_VN_V3');
     }
   }
+  const names = Array.from(container.querySelectorAll('[role="navigation"] button')).map((button) => button.getAttribute('aria-label'));
+  const collapse = container.querySelector<HTMLButtonElement>('button[aria-label="Toggle SideDock Collapse"]')!;
+  expect(collapse.getAttribute('aria-expanded')).toBe('true');
+  act(() => collapse.click());
+  expect(collapse.getAttribute('aria-expanded')).toBe('false');
+  expect(Array.from(container.querySelectorAll('[role="navigation"] button')).map((button) => button.getAttribute('aria-label'))).toEqual(names);
+  act(() => collapse.click());
   for (const label of ['Copilot', 'Configuration']) {
     act(() => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === label)!.click());
     await settle();
@@ -774,6 +790,18 @@ it('mounts every real App route under network failure and closes streams', async
   expect(useUiStore.getState().isStreamingConnected).toBe(false);
   act(() => root.render(null));
   expect(closed).toHaveBeenCalled();
+});
+
+it('exposes bounded system stream exhaustion without leaking transport details', async () => {
+  vi.stubGlobal('EventSource', class {
+    constructor() { throw new Error('https://user:SECRET_PASSWORD@host'); }
+  });
+  act(() => root.render(<App />));
+  await act(async () => { await vi.advanceTimersByTimeAsync(7000); });
+  const status = Array.from(container.querySelectorAll('[role="status"]')).find((item) => item.textContent?.includes('after 3 retries'));
+  expect(status?.textContent).toBe('Live stream unavailable after 3 retries. Reload to reconnect.');
+  expect(container.textContent).not.toContain('SECRET_PASSWORD');
+  expect(useUiStore.getState().isStreamingConnected).toBe(false);
 });
 
 it('rejects unavailable config and invalid risk actions while recording user chat on Copilot transport failure', async () => {
