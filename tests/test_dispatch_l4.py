@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 import subprocess
 import sys
@@ -24,21 +25,28 @@ from scripts.dispatch_l4 import (
     _publish_dispatch_artifacts,
     _parse_l4_cli_args,
     redact_credentials,
+    validate_l4_report_advisor_model,
 )
 
 
-@pytest.mark.parametrize("mode", ["native", "mcp", "none", " MCP "], ids=["native", "mcp", "none", "normalized"])
-def test_stage3_advisor_modes_parse(mode):
-    parsed = _parse_l4_cli_args(["backend-engineer", "GATE", "slug", "task", "scope", "--advisor-mode", mode])
-    assert parsed[9] == mode.strip().lower()
-    assert parsed[10] is None
+@pytest.mark.parametrize("mode", ["native", "none"], ids=["native", "none"])
+def test_stage3_advisor_modes_parse_rejects_non_mcp(mode, capsys):
+    with pytest.raises(SystemExit) as error:
+        _parse_l4_cli_args(["backend-engineer", "GATE", "slug", "task", "scope", "--advisor-mode", mode])
+    assert error.value.code == 2
+    assert capsys.readouterr().err == "[ERROR] Only MCP advisor mode supported.\n"
+
+
+def test_stage3_advisor_mode_mcp_parses():
+    parsed = _parse_l4_cli_args(["backend-engineer", "GATE", "slug", "task", "scope", "--advisor-mode", "mcp"])
+    assert parsed[9:11] == ("mcp", None)
 
 
 @pytest.mark.parametrize("model", sorted(L4_ADVISOR_ALLOWLIST))
-def test_stage3_explicit_native_model_allowlist(model):
-    for flags in (["--advisor-mode", "native", "--advisor", model], ["--advisor", model, "--advisor-mode", "native"]):
-        parsed = _parse_l4_cli_args(["backend-engineer", "GATE", "slug", "task", "scope", *flags])
-        assert parsed[9:11] == ("native", model)
+def test_stage3_explicit_advisor_requires_mcp_mode(model):
+    with pytest.raises(SystemExit) as error:
+        _parse_l4_cli_args(["backend-engineer", "GATE", "slug", "task", "scope", "--advisor-mode", "native", "--advisor", model])
+    assert error.value.code == 2
 
 
 @pytest.mark.parametrize("flags", [
@@ -94,9 +102,24 @@ def stage3_dispatch(tmp_path, monkeypatch, capsys):
     return dispatch, tmp_path, generate
 
 
-@pytest.mark.parametrize("mode", [None, "native", "none", "legacy"], ids=["default", "native", "none", "no-advisor"])
+@pytest.mark.parametrize("mode", ["native", "none", "legacy"], ids=["native", "none", "no-advisor"])
 @pytest.mark.parametrize("risk", ["low", "high"])
-def test_stage5_disable_mcp_restores_dispatch_without_side_effects(mode, risk, stage3_dispatch, monkeypatch):
+def test_stage5_disable_mcp_rejected_before_side_effects(mode, risk, stage3_dispatch, monkeypatch, capsys):
+    dispatch, root, generate = stage3_dispatch
+    with pytest.raises(SystemExit) as error:
+        if mode == "legacy":
+            generate("mcp", risk, extra=("--no-advisor",))
+        else:
+            generate(mode, risk)
+    assert error.value.code == 2
+    expected = "[ERROR] MCP advisor mandatory; --no-advisor unsupported.\n" if mode == "legacy" else "[ERROR] Only MCP advisor mode supported.\n"
+    assert capsys.readouterr().err == expected
+    assert not (root / ".ly_state").exists()
+
+
+def _legacy_stage5_disabled_body(mode, risk, stage3_dispatch, monkeypatch):
+    pytest.skip("legacy native/disabled advisor behavior is no longer supported")
+
     import socket
     from datetime import timezone
     import anyio
@@ -145,7 +168,7 @@ def test_stage5_disable_mcp_restores_dispatch_without_side_effects(mode, risk, s
         disabled_mode = None if mode == "legacy" else mode
         code, command, output = generate(disabled_mode, risk, extra=("--no-advisor",) if mode == "legacy" else ())
     assert code == 0 and not output.err
-    native = mode in (None, "native")
+    native = mode == "native"
     assert ("--advisor 'opus'" in command) == native
     assert "--mcp-config" not in command and "OMEGA_DISPATCH_" not in command
     prompt = next(session.glob("prompt_*.txt")).read_text(encoding="utf-8")
@@ -174,7 +197,7 @@ def test_stage5_disable_mcp_restores_dispatch_without_side_effects(mode, risk, s
     assert {path.name: path.read_bytes() for path in receipt_directory.iterdir()} == original_receipts
 
 
-@pytest.mark.parametrize("mode", [None, "native", "mcp", "none"], ids=["default", "native", "mcp", "none"])
+@pytest.mark.parametrize("mode", [None, "mcp"], ids=["default", "mcp"])
 @pytest.mark.parametrize("risk", ["low", "medium", "high"])
 @pytest.mark.parametrize("dry_run", [False, True], ids=["published", "dry-run"])
 def test_stage3_generated_mode_is_exclusive(mode, risk, dry_run, stage3_dispatch, monkeypatch):
@@ -187,25 +210,24 @@ def test_stage3_generated_mode_is_exclusive(mode, risk, dry_run, stage3_dispatch
     assert code == 0 and not output.err
     assert dict(os.environ) == original_env
     assert "AMBIENT_PRIVATE_CANARY" not in output.out
-    assert f"ADVISOR_MODE={mode or 'native'}" in output.out
+    assert "ADVISOR_MODE=mcp" in output.out
     model = "opus" if risk == "high" else "sonnet"
     assert f"MODEL={model}\n" in output.out
     assert f"--model '{model}'" in command
-    assert ("--advisor 'opus'" in command) == (mode in (None, "native"))
-    assert ("--mcp-config" in command) == (mode == "mcp")
-    assert ("OMEGA_DISPATCH_TOKEN" in command) == (mode == "mcp")
+    assert "--advisor 'opus'" not in command
+    assert "--mcp-config" in command
+    assert "OMEGA_DISPATCH_TOKEN" in command
     assert (root / ".mcp.json").read_bytes() == b'{"mcpServers":{"unrelated":{}}}'
-    if mode == "mcp":
-        assert "--strict-mcp-config" in command
-        assert "RandomNumberGenerator" in command and "finally" in command
-        assert "'OMEGA_DISPATCH_ROLE_ID', '9', 'Process'" in command
-        assert f"'OMEGA_DISPATCH_RISK', '{'low' if risk == 'low' else 'high'}', 'Process'" in command
-        assert "--advisor" not in command and "AMBIENT" not in command
-        config_text = command.split("$__OMEGA_MCP_CONFIG = '", 1)[1].split("'; if ($PSVersionTable", 1)[0].replace("''", "'")
-        config = json.loads(config_text)["mcpServers"]["omega-l4-advisor"]
-        assert config["command"] == sys.executable
-        assert config["args"] == [str(root / "scripts/dispatch_l4.py"), "--private-mcp-stdio"]
-        assert "env" not in config
+    assert "--strict-mcp-config" in command
+    assert "RandomNumberGenerator" in command and "finally" in command
+    assert "'OMEGA_DISPATCH_ROLE_ID', '9', 'Process'" in command
+    assert f"'OMEGA_DISPATCH_RISK', '{'low' if risk == 'low' else 'high'}', 'Process'" in command
+    assert "--advisor 'opus'" not in command and "AMBIENT" not in command
+    config_text = command.split("$__OMEGA_MCP_CONFIG = '", 1)[1].split("'; if ($PSVersionTable", 1)[0].replace("''", "'")
+    config = json.loads(config_text)["mcpServers"]["omega-l4-advisor"]
+    assert config["command"] == sys.executable
+    assert config["args"] == [str(root / "scripts/dispatch_l4.py"), "--private-mcp-stdio"]
+    assert "env" not in config
     artifacts = list((root / ".ly_state/session").glob("*"))
     assert not any(path.suffix in (".tmp", ".lock") for path in artifacts)
     if dry_run:
@@ -213,12 +235,12 @@ def test_stage3_generated_mode_is_exclusive(mode, risk, dry_run, stage3_dispatch
     else:
         assert len(artifacts) == 4
         prompt = next(path for path in artifacts if path.suffix == ".txt").read_text(encoding="utf-8")
-        assert ("NATIVE ADVISOR:" in prompt) == (mode in (None, "native"))
-        assert ("MCP ADVISOR:" in prompt) == (mode == "mcp")
+        assert "NATIVE ADVISOR:" not in prompt
+        assert "MCP ADVISOR:" in prompt
         assert "OMEGA_DISPATCH_TOKEN" not in prompt
 
 
-@pytest.mark.parametrize("mode,model", [("mcp", "opus"), ("none", "opus"), ("bad", None), ("native", "bad")])
+@pytest.mark.parametrize("mode,model", [("none", "opus"), ("bad", None), ("native", "bad")])
 def test_stage3_direct_generation_rejects_conflicts_before_publication(mode, model, stage3_dispatch):
     _dispatch, root, _generate = stage3_dispatch
     baseline = set(root.iterdir())
@@ -294,6 +316,56 @@ def test_stage3_mcp_lock_contention_preserves_owner(stage3_dispatch):
         assert list(lock.parent.iterdir()) == [lock]
     finally:
         dispatch.release_session_lock(owned)
+
+
+def test_stage3_mcp_stale_lock_is_reclaimed_without_touching_live_owner(stage3_dispatch, monkeypatch):
+    dispatch, root, _generate = stage3_dispatch
+    session_id = "l4_role9_stale_lock_20261016"
+    lock = root / ".ly_state/session" / f"dispatch_{session_id}.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_bytes(b"123456789:" + b"a" * 32)
+    monkeypatch.setattr(dispatch, "_pid_is_stale", lambda _pid: True)
+
+    acquired = dispatch.acquire_session_lock(session_id, root)
+    try:
+        assert acquired[0].read_bytes() == acquired[2]
+    finally:
+        dispatch.release_session_lock(acquired)
+    assert not lock.exists()
+
+
+def test_l4_live_owner_probe_never_signals_windows_process(monkeypatch):
+    import scripts.dispatch_l4 as dispatch
+
+    if os.name == "nt":
+        monkeypatch.setattr(dispatch.os, "kill", lambda *_: pytest.fail("Windows liveness sent a signal"))
+    assert not dispatch._pid_is_stale(os.getpid())
+    assert not dispatch._pid_is_stale(0)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows process handles")
+@pytest.mark.parametrize("fault", ["missing", "access-denied", "wait-failed", "exited"])
+def test_l4_windows_owner_probe_fails_closed_and_closes_handle(fault, monkeypatch):
+    import ctypes
+    import scripts.dispatch_l4 as dispatch
+
+    closed = []
+
+    class Call:
+        def __init__(self, callback):
+            self.callback = callback
+        def __call__(self, *args):
+            return self.callback(*args)
+
+    class Kernel:
+        OpenProcess = Call(lambda *_: None if fault in ("missing", "access-denied") else 123)
+        WaitForSingleObject = Call(lambda *_: 0 if fault == "exited" else 0xFFFFFFFF)
+        CloseHandle = Call(lambda handle: closed.append(handle))
+
+    monkeypatch.setattr(ctypes, "WinDLL", lambda *_a, **_kw: Kernel())
+    monkeypatch.setattr(ctypes, "get_last_error", lambda: 87 if fault == "missing" else 5)
+    assert dispatch._pid_is_stale(12345) == (fault in ("missing", "exited"))
+    assert closed == ([] if fault in ("missing", "access-denied") else [123])
 
 
 def test_stage3_powershell_channel_fresh_private_bound_and_restored(stage3_dispatch):
@@ -424,7 +496,9 @@ def test_stage3_private_adapter_mcp_lifecycle_token_never_enters_model_arguments
                 assert "dispatch_token" not in json.dumps(tool.inputSchema)
                 request = dict(schema_version="mcp-advisor-request/v1", gate="GATE_TEST", session_id=env["OMEGA_DISPATCH_SESSION_ID"],
                                request_id="first", role_id=9, risk=risk, purpose="architecture", model=model,
-                               context={"instructions": "Review architecture", "observations": []}, as_of_time="2026-01-01T00:00:00Z")
+                               context={"instructions": "Review supplied evidence.", "observations": [
+                                   {"source_id": "fixture", "available_at": "2026-01-01T00:00:00Z", "data": {"price": 10}},
+                               ]}, as_of_time="2026-01-01T00:00:00Z")
                 request["context_sha256"] = hashlib.sha256(advisor.context_text(request["context"], token).encode()).hexdigest()
                 result = await client.call_tool("consult_advisor", request)
                 assert not result.isError and result.structuredContent["status"] == "advice"
@@ -432,6 +506,41 @@ def test_stage3_private_adapter_mcp_lifecycle_token_never_enters_model_arguments
                 assert result.structuredContent["attempts"] == 1 and result.structuredContent["model"] == model
                 advisor.validate_response(result.structuredContent, {**request, "dispatch_token": token})
                 assert token not in result.model_dump_json()
+                for context, code in (
+                    ({"instructions": "Review 2026-01-02; price is 10; available_at: 2026-01-01T00:00:00Z", "observations": []}, "ERR_INVALID_PROVENANCE"),
+                    ({"instructions": "Review supplied evidence.", "observations": [
+                        {"source_id": "fixture", "available_at": "2026-01-02T00:00:00Z", "data": {"price": 10}},
+                    ]}, "ERR_LOOKAHEAD_DETECTED"),
+                ):
+                    denied = await client.call_tool("consult_advisor", {**request, "context": context})
+                    assert denied.isError and denied.content[0].text == code
+                    assert denied.structuredContent is None
+                for index, context in enumerate((
+                    None, [], ["instructions"], 0, False, 1.5, "", " ",
+                    {"instructions": None}, {"instructions": []},
+                    {"instructions": "x" * 4097},
+                    {"observations": None}, {"observations": {}}, {"observations": [None]},
+                    {"observations": [{}]}, {"observations": [{}] * 129}, {"extra": True},
+                )):
+                    denied = await client.call_tool("consult_advisor", {
+                        **request, "request_id": f"context-{index}", "context": context,
+                    })
+                    assert denied.isError and denied.content[0].text == "ERR_INVALID_ARGUMENTS"
+                    assert denied.structuredContent is None and token not in denied.model_dump_json()
+                for index, context in enumerate(({}, {"instructions": "Review architecture."},
+                                                  {"observations": []}, "Review architecture.")):
+                    accepted = await client.call_tool("consult_advisor", {
+                        **request, "request_id": f"defaults-{index}", "context": context,
+                    })
+                    assert not accepted.isError and accepted.structuredContent["attempts"] == 1
+                omitted = {key: value for key, value in request.items() if key != "context"}
+                accepted = await client.call_tool("consult_advisor", {**omitted, "request_id": "omitted"})
+                assert not accepted.isError
+                for invalid, field in ((None, "as_of_time"), ("invalid", "purpose"), ("invalid", "model")):
+                    malformed = {**request, "request_id": f"invalid-{field}", field: invalid}
+                    malformed["context_sha256"] = hashlib.sha256(advisor.context_text(malformed["context"], token).encode()).hexdigest()
+                    denied = await client.call_tool("consult_advisor", malformed)
+                    assert denied.isError and denied.content[0].text == "ERR_INVALID_ARGUMENTS"
                 for spoof in ({"dispatch_token": token}, {"gate": "OTHER_GATE"}, {"role_id": 7},
                               {"risk": "high" if risk == "low" else "low"}, {"session_id": "other"}):
                     denied = await client.call_tool("consult_advisor", {**request, **spoof, "request_id": "spoof"})
@@ -496,8 +605,10 @@ def test_stage5_private_launch_provider_outcome_controls_process_exit(fault, cod
                 assert (bound["error"]["code"] if bound["error"] else None) == code
                 assert token not in json.dumps(result) and "PRIVATE_ROUTER_CANARY" not in json.dumps(result)
             process.stdin.close()
+            await process.stdin.wait_closed()
             await asyncio.wait_for(process.wait(), 10)
-            extra, errors = await process.communicate()
+            extra = await process.stdout.read()
+            errors = await process.stderr.read()
             assert process.returncode == (0 if fault == "success" else 1) and extra == b""
             assert errors.strip() == (b"ERR_ADVISOR_STARTUP_OR_TRANSPORT" if fault == "missing-key" else b"")
         finally:
@@ -874,7 +985,7 @@ def test_parse_l4_cli_args_valid_positional():
     assert co_roles == []
     assert token_saver is False
     assert explicit_model is None
-    assert advisor_mode == "native"
+    assert advisor_mode == "mcp"
     assert explicit_advisor is None
     assert dry_run is False
     assert graph_evidence_path is None
@@ -893,7 +1004,6 @@ def test_parse_l4_cli_args_with_flags():
         "--co-role", "tech-lead",
         "--token-saver",
         "--model", "opus",
-        "--no-advisor",
     ]
     (
         role_name, gate_name, task_slug, task_desc, scope,
@@ -906,7 +1016,7 @@ def test_parse_l4_cli_args_with_flags():
     assert co_roles == ["tech-lead"]
     assert token_saver is True
     assert explicit_model == "opus"
-    assert advisor_mode == "none"
+    assert advisor_mode == "mcp"
     assert explicit_advisor is None
 
 
@@ -1648,16 +1758,16 @@ def test_l4_lock_replacement_during_owner_read_is_preserved(tmp_path, monkeypatc
 
     owned = dispatch.acquire_session_lock("l4_role9_race_20261005", tmp_path)
     path, _identity, owner = owned
-    real_read = dispatch._read_artifact_bytes
+    real_rename = os.rename
 
-    def read(lock, limit):
-        contents = real_read(lock, limit)
-        replacement = path.with_suffix(".tmp")
+    def rename(src, dst):
+        # hostile swap lands between the pre-check and the atomic rename
+        replacement = Path(src).with_suffix(".tmp")
         replacement.write_bytes(owner)
-        os.replace(replacement, path)
-        return contents
+        os.replace(replacement, src)
+        return real_rename(src, dst)
 
-    monkeypatch.setattr(dispatch, "_read_artifact_bytes", read)
+    monkeypatch.setattr(dispatch.os, "rename", rename)
     dispatch.release_session_lock(owned)
     assert path.read_bytes() == owner
 
@@ -1722,13 +1832,25 @@ def test_l4_lock_cleanup_io_failure_is_nonzero_and_redacted(fault, stage3_dispat
             raise PermissionError("cleanup failed token=PRIVATE_CLEANUP_CANARY")
 
         if fault == "read":
-            monkeypatch.setattr(dispatch, "_read_artifact_bytes", fail)
+            monkeypatch.setattr(dispatch, "open", fail, raising=False)
         else:
             monkeypatch.setattr(dispatch, "release_session_lock", lambda lock: fail())
     code, command, output = generate(risk="high")
     assert code == 2 and not command and not output.out
     assert "PRIVATE_CLEANUP_CANARY" not in output.err and "[REDACTED]" in output.err
     assert len(list((root / ".ly_state/session").iterdir())) == 1
+
+
+def test_l4_report_advisor_model_validation_is_independent():
+    valid = "- **MCP Advisor Model**: `cx/gpt-6-astra`\n"
+    assert validate_l4_report_advisor_model(valid) == []
+    assert validate_l4_report_advisor_model(
+        "- **MCP Advisor Model**: `cx/gpt-6.1-sol`\n"
+    )
+    assert validate_l4_report_advisor_model("- **MCP Advisor Model**: `cx/gpt-6-astra`\n" * 2)
+    assert validate_l4_report_advisor_model(
+        "- **MCP Advisor Model**: `cx/gpt-6-astra`\n", "cx/gpt-6.1-sol"
+    )
 
 
 def test_report_validator_rejects_placeholder_completion_evidence():
@@ -1782,53 +1904,16 @@ def test_parse_l4_cli_args_invalid_risk(capsys):
     assert exc_info.value.code == 2
 
 
-def test_dispatch_l4_cli_execution_valid():
+def test_dispatch_l4_cli_execution_rejects_native_mode():
     cmd = [
-        sys.executable,
-        "scripts/dispatch_l4.py",
-        "system-architect",
-        "TEST_L4_GATE",
-        "test_l4_slug",
-        "Verify L4 dispatch generation",
-        ".agents/AGENTS.md",
-        "--risk", "low",
+        sys.executable, "scripts/dispatch_l4.py", "system-architect", "TEST_L4_GATE",
+        "test_l4_slug", "Verify L4 dispatch generation", ".agents/AGENTS.md",
+        "--risk", "low", "--advisor-mode", "native",
     ]
     res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True)
-    assert res.returncode == 0, f"STDOUT: {res.stdout}\nSTDERR: {res.stderr}"
-
-    stdout = res.stdout
-    today = datetime.now().strftime("%Y%m%d")
-    expected_session = f"l4_role6_test_l4_slug_{today}"
-
-    assert f"SESSION_ID={expected_session}" in stdout
-    assert "ROLE_ID=6" in stdout
-    assert "ROLE_NAME=system-architect" in stdout
-    assert "GATE=TEST_L4_GATE" in stdout
-    assert "MODEL=sonnet" in stdout
-    assert "ADVISOR_MODEL=opus" in stdout
-    assert "---COMMAND---" in stdout
-
-    command_part = stdout.split("---COMMAND---", 1)[1].strip()
-    assert "$__OMEGA_PROMPT | claude -p --dangerously-skip-permissions --model 'sonnet' --advisor 'opus'" in command_part
-    assert "System.Security.Cryptography.SHA256" in command_part
-
-    # Verify prompt file was created and contains required L4 sections
-    prompt_file = REPO_ROOT / ".ly_state" / "session" / f"prompt_{expected_session}.txt"
-    assert prompt_file.is_file()
-    prompt_content = prompt_file.read_text(encoding="utf-8")
-    assert "ROLE: 6 system-architect - Claude Code L4 Implementation Work" in prompt_content
-    assert "# L4 Implementation Report" in prompt_content
-    assert "- **Role**: 6 system-architect - Claude Code L4 Implementation" in prompt_content
-    assert "--advisor opus" in prompt_content
-
-    # Clean up generated test artifacts
-    prompt_file.unlink(missing_ok=True)
-    report_file = REPO_ROOT / ".ly_state" / "session" / f"{expected_session}.md"
-    report_file.unlink(missing_ok=True)
-    contract_file = REPO_ROOT / ".ly_state" / "session" / f"anti_drip_contract_{expected_session}.json"
-    contract_file.unlink(missing_ok=True)
-    contract_sidecar = contract_file.with_suffix(".sha256")
-    contract_sidecar.unlink(missing_ok=True)
+    assert res.returncode == 2
+    assert res.stdout == ""
+    assert res.stderr == "[ERROR] Only MCP advisor mode supported.\n"
 
 
 def test_parse_l4_cli_args_accepts_valid_advisor():
@@ -1859,37 +1944,23 @@ def test_parse_l4_cli_args_rejects_advisor_conflict_with_no_advisor():
     assert exc_info.value.code == 2
 
 
-def test_parse_l4_cli_args_accepts_no_advisor():
-    parsed = _parse_l4_cli_args(["system-architect", "GATE", "slug", "task", "scope", "--no-advisor"])
-    assert parsed[9] == "none"
-    assert parsed[10] is None
+def test_parse_l4_cli_args_rejects_no_advisor(capsys):
+    with pytest.raises(SystemExit) as exc_info:
+        _parse_l4_cli_args(["system-architect", "GATE", "slug", "task", "scope", "--no-advisor"])
+    assert exc_info.value.code == 2
+    assert capsys.readouterr().err == "[ERROR] MCP advisor mandatory; --no-advisor unsupported.\n"
 
 
-def test_dispatch_l4_cli_execution_with_no_advisor():
+def test_dispatch_l4_cli_execution_rejects_no_advisor():
     cmd = [
-        sys.executable,
-        "scripts/dispatch_l4.py",
-        "system-architect",
-        "TEST_L4_GATE_NO_ADV",
-        "test_l4_no_adv_slug",
-        "Test task description no advisor",
-        ".agents/AGENTS.md",
-        "--risk",
-        "low",
-        "--no-advisor",
+        sys.executable, "scripts/dispatch_l4.py", "system-architect", "TEST_L4_GATE_NO_ADV",
+        "test_l4_no_adv_slug", "Test task description no advisor", ".agents/AGENTS.md",
+        "--risk", "low", "--no-advisor",
     ]
     res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, check=False)
-    assert res.returncode == 0
-    assert "ADVISOR_MODEL=none" in res.stdout
-    assert "--advisor" not in res.stdout
-
-    today = datetime.now().strftime("%Y%m%d")
-    expected_session = f"l4_role6_test_l4_no_adv_slug_{today}"
-    (REPO_ROOT / ".ly_state" / "session" / f"prompt_{expected_session}.txt").unlink(missing_ok=True)
-    (REPO_ROOT / ".ly_state" / "session" / f"{expected_session}.md").unlink(missing_ok=True)
-    contract = REPO_ROOT / ".ly_state" / "session" / f"anti_drip_contract_{expected_session}.json"
-    contract.unlink(missing_ok=True)
-    contract.with_suffix(".sha256").unlink(missing_ok=True)
+    assert res.returncode == 2
+    assert res.stdout == ""
+    assert res.stderr == "[ERROR] MCP advisor mandatory; --no-advisor unsupported.\n"
 
 
 
@@ -1905,12 +1976,14 @@ def test_dispatch_l4_cli_execution_with_explicit_advisor():
         "--risk",
         "low",
         "--advisor",
-        "opus",
+        "cx/gpt-6-astra",
     ]
     res = subprocess.run(cmd, cwd=str(REPO_ROOT), capture_output=True, text=True, check=False)
     assert res.returncode == 0
-    assert "ADVISOR_MODEL=opus" in res.stdout
-    assert "--advisor 'opus'" in res.stdout
+    assert "ADVISOR_MODE=mcp" in res.stdout
+    assert "ADVISOR_MODEL=cx/gpt-6-astra" in res.stdout
+    assert "--mcp-config" in res.stdout
+    assert "--advisor 'opus'" not in res.stdout
 
     today = datetime.now().strftime("%Y%m%d")
     expected_session = f"l4_role6_test_l4_adv_slug_{today}"
@@ -3114,3 +3187,88 @@ def test_dispatch_l4_command_resume_detection(stage3_dispatch):
     assert "RESUME_MODE=BYPASSED (--force-new)" in output3.out
     assert "--resume" not in cmd3
 
+
+
+@pytest.mark.parametrize("advisor", sorted(L4_ADVISOR_ALLOWLIST))
+@pytest.mark.parametrize("risk", ["low", "high"])
+def test_rem3_mcp_command_never_emits_native_advisor_and_binds_model(stage3_dispatch, advisor, risk):
+    dispatch, _, generate = stage3_dispatch
+    code, command, output = generate("mcp", risk, extra=("--advisor", advisor))
+    assert code == 0 and f"ADVISOR_MODEL={advisor}" in output.out
+    assert not re.search(r"\s--advisor(\s|$)", command)
+    assert f"'OMEGA_DISPATCH_ADVISOR_MODEL', '{advisor}', 'Process'" in command
+    prompt = next((stage3_dispatch[1] / ".ly_state" / "session").glob("prompt_*.txt")).read_text(encoding="utf-8")
+    assert f"model {advisor}." in prompt
+
+
+def test_rem3_default_advisor_model_matches_command_and_prompt(stage3_dispatch):
+    dispatch, root, generate = stage3_dispatch
+    code, command, _ = generate("mcp", "high")
+    assert code == 0
+    assert f"'OMEGA_DISPATCH_ADVISOR_MODEL', '{dispatch.DEFAULT_L4_ADVISOR}', 'Process'" in command
+    assert f"model {dispatch.DEFAULT_L4_ADVISOR}." in next((root / ".ly_state" / "session").glob("prompt_*.txt")).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize("bad", ["", "opus", "cx/gpt-6-luna", "cx/gpt-6-astra'; calc; '", None])
+def test_rem3_launch_command_rejects_unapproved_advisor_model(bad):
+    import scripts.dispatch_l4 as dispatch
+
+    with pytest.raises(ValueError):
+        dispatch._private_mcp_launch_command("x", "G", "S", 9, "high", bad)
+
+
+@pytest.mark.parametrize("bad", ["opus", "cx/gpt-6-luna", "x" * 65, ""])
+def test_rem3_build_rejects_unapproved_advisor_in_cli(bad):
+    with pytest.raises(SystemExit):
+        _parse_l4_cli_args(["backend-engineer", "GATE", "slug", "task", "scope", "--advisor", bad])
+
+
+def test_l4_lock_release_never_deletes_foreign_after_precheck_swap(tmp_path, monkeypatch):
+    import scripts.dispatch_l4 as dispatch
+
+    owned = dispatch.acquire_session_lock("l4_role9_toctou_20261016", tmp_path)
+    path = owned[0]
+    real_rename = os.rename
+
+    def rename(src, dst):
+        Path(src).unlink()
+        Path(src).write_bytes(b"foreign-owner-longer-than-ours-xxxxxxxxxxxxxxxxxxxxxxxx")
+        return real_rename(src, dst)
+
+    monkeypatch.setattr(dispatch.os, "rename", rename)
+    dispatch.release_session_lock(owned)
+    assert path.read_bytes().startswith(b"foreign-owner")
+    assert [p.name for p in path.parent.iterdir()] == [path.name]
+
+
+@pytest.mark.parametrize("as_of,available_at,code", [
+    ("2999-01-01T00:00:00Z", None, "ERR_LOOKAHEAD_DETECTED"),
+    ("not-a-timestamp", None, "ERR_INVALID_ARGUMENTS"),
+    ("", None, "ERR_INVALID_ARGUMENTS"),
+    (12345, None, "ERR_INVALID_ARGUMENTS"),
+    ("2026-01-01T00:00:00Z", "garbage", "ERR_INVALID_ARGUMENTS"),
+    ("2026-01-01T00:00:00Z", "2026-02-01T00:00:00Z", "ERR_LOOKAHEAD_DETECTED"),
+])
+@pytest.mark.parametrize("nested", [False, True], ids=["top", "data"])
+def test_l4_advisor_timestamps_reject_malformed_or_future_without_overwrite(as_of, available_at, code, nested):
+    import scripts.dispatch_l4 as dispatch
+    from scripts import l4_mcp_advisor as advisor
+
+    obs = {"source_id": "s", "data": {}}
+    if available_at is not None:
+        (obs["data"] if nested else obs)["available_at"] = available_at
+    ctx = {"instructions": "x", "observations": [obs]}
+    req = {"as_of_time": as_of}
+    cutoff = datetime(2026, 6, 1, tzinfo=advisor.timezone.utc)
+    with pytest.raises(advisor.ToolError, match=code):
+        dispatch._validate_advisor_timestamps(req, ctx, cutoff)
+    assert req["as_of_time"] == as_of
+
+
+def test_l4_advisor_timestamps_accept_boundary_inclusive():
+    import scripts.dispatch_l4 as dispatch
+    from scripts import l4_mcp_advisor as advisor
+
+    ctx = {"observations": [{"available_at": "2026-06-01T00:00:00Z", "data": {"available_at": "2026-06-01T00:00:00Z"}}]}
+    dispatch._validate_advisor_timestamps({"as_of_time": "2026-06-01T00:00:00Z"}, ctx,
+                                          datetime(2026, 6, 1, tzinfo=advisor.timezone.utc))
