@@ -12,6 +12,58 @@ from unittest.mock import patch, mock_open
 from omega.data.calendar import VNTradingCalendar, _load_holidays, _get_json_holidays, get_futures_expiry_date
 
 
+@pytest.fixture(autouse=True)
+def calendar_cache(monkeypatch):
+    import omega.data.calendar as cal_module
+
+    monkeypatch.setattr(cal_module, "_JSON_HOLIDAYS_CACHE", None)
+    monkeypatch.setattr(VNTradingCalendar, "_holiday_cache", {})
+
+
+@pytest.mark.parametrize("day", [
+    "2015-09-03", "2016-09-01", "2017-02-02", "2017-04-14",
+    "2018-02-21", "2020-09-01", "2021-09-01", "2025-02-03", "2025-02-04",
+])
+def test_historical_trading_days(day):
+    from datetime import timedelta
+    from omega.data.calendar import trading_session_open_utc
+
+    dt = datetime.fromisoformat(day)
+    assert dt.date() not in _load_holidays(dt.year)
+    for _ in range(2):
+        assert VNTradingCalendar.is_trading_day(dt)
+        assert VNTradingCalendar.next_trading_day(dt - timedelta(days=1)) == dt.date()
+        assert VNTradingCalendar.prev_trading_day(dt + timedelta(days=1)) == dt.date()
+        assert trading_session_open_utc(dt).isoformat() == f"{day}T02:00:00+00:00"
+
+
+@pytest.mark.parametrize("day", [
+    "2015-09-02", "2016-09-02", "2017-02-01", "2018-02-20",
+    "2020-09-02", "2021-09-02", "2025-01-31", "2025-02-01", "2025-02-02",
+])
+def test_historical_closures_preserved(day):
+    assert not VNTradingCalendar.is_trading_day(datetime.fromisoformat(day))
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_calendar_cache_restored_after_failure(monkeypatch, warm):
+    import omega.data.calendar as cal_module
+
+    if warm:
+        VNTradingCalendar._get_holidays(2024)
+    original_json = cal_module._JSON_HOLIDAYS_CACHE
+    original_years = VNTradingCalendar._holiday_cache
+    with pytest.raises(RuntimeError, match="injected"):
+        with pytest.MonkeyPatch.context() as isolated:
+            calendar_cache.__wrapped__(isolated)
+            cal_module._JSON_HOLIDAYS_CACHE = {}
+            VNTradingCalendar._get_holidays(2024)
+            raise RuntimeError("injected")
+    assert cal_module._JSON_HOLIDAYS_CACHE is original_json
+    assert VNTradingCalendar._holiday_cache is original_years
+    assert date(2024, 2, 8) in VNTradingCalendar._get_holidays(2024)
+
+
 class TestJSONLoading:
     """Test JSON holiday loading functionality."""
     

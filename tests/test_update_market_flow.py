@@ -24,11 +24,60 @@ def clock(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def calendar_cache():
+def calendar_cache(monkeypatch):
+    import omega.data.calendar as cal_module
     from omega.data.market_flow import _market_flow_holidays
+
+    monkeypatch.setattr(cal_module, "_JSON_HOLIDAYS_CACHE", None)
+    monkeypatch.setattr(cal_module.VNTradingCalendar, "_holiday_cache", {})
     _market_flow_holidays.cache_clear()
-    yield
-    _market_flow_holidays.cache_clear()
+    try:
+        yield
+    finally:
+        _market_flow_holidays.cache_clear()
+
+
+@pytest.mark.parametrize("day", [
+    "2015-09-03", "2016-09-01", "2017-02-02", "2017-04-14",
+    "2018-02-21", "2020-09-01", "2021-09-01", "2025-02-03", "2025-02-04",
+])
+def test_historical_trading_days_ingested(monkeypatch, clock, day):
+    from omega.data.market_flow import is_market_flow_trading_day
+
+    stamp = pd.Timestamp(day)
+    for _ in range(2):
+        assert is_market_flow_trading_day(stamp)
+    mock_flow(monkeypatch, [item(stamp.strftime("%d/%m/%Y"))])
+    frame = ingest.fetch_foreign_ticker("HPG", stamp.year, stamp.year)[1]
+    assert frame.time.tolist() == [stamp]
+
+
+@pytest.mark.parametrize("warm", [False, True])
+def test_calendar_cache_restored_after_failure(monkeypatch, warm):
+    import omega.data.calendar as cal_module
+    from omega.data.market_flow import _market_flow_holidays
+
+    if warm:
+        cal_module.VNTradingCalendar._get_holidays(2024)
+        _market_flow_holidays(2024)
+    original_json = cal_module._JSON_HOLIDAYS_CACHE
+    original_years = cal_module.VNTradingCalendar._holiday_cache
+    with pytest.raises(RuntimeError, match="injected"):
+        with pytest.MonkeyPatch.context() as isolated:
+            fixture = calendar_cache.__wrapped__(isolated)
+            next(fixture)
+            try:
+                cal_module._JSON_HOLIDAYS_CACHE = {}
+                cal_module.VNTradingCalendar._get_holidays(2024)
+                _market_flow_holidays(2024)
+                raise RuntimeError("injected")
+            finally:
+                fixture.close()
+    assert cal_module._JSON_HOLIDAYS_CACHE is original_json
+    assert cal_module.VNTradingCalendar._holiday_cache is original_years
+    assert _market_flow_holidays.cache_info().currsize == 0
+    assert pd.Timestamp("2024-02-08") in _market_flow_holidays(2024)
+    assert pd.Timestamp("2024-02-08").date() in cal_module.VNTradingCalendar._get_holidays(2024)
 
 
 @pytest.fixture
