@@ -23,6 +23,14 @@ def clock(monkeypatch):
     return now
 
 
+@pytest.fixture(autouse=True)
+def calendar_cache():
+    from omega.data.market_flow import _market_flow_holidays
+    _market_flow_holidays.cache_clear()
+    yield
+    _market_flow_holidays.cache_clear()
+
+
 @pytest.fixture
 def storage():
     import tempfile
@@ -45,7 +53,14 @@ def page(items, proprietary=False, total=None):
 
 def mock_flow(monkeypatch, rows=None, proprietary=False):
     rows = [item(proprietary=proprietary)] if rows is None else rows
-    monkeypatch.setattr(ingest, "_request_json", lambda url: page(rows, proprietary))
+    def request(url):
+        query = ingest.urllib.parse.parse_qs(ingest.urllib.parse.urlsplit(url).query)
+        start = pd.Timestamp(query["StartDate"][0])
+        end = pd.Timestamp(query["EndDate"][0])
+        selected = [row for row in rows if start <= pd.to_datetime(
+            row["Date" if proprietary else "Ngay"], format="%d/%m/%Y", errors="coerce") <= end]
+        return page(selected, proprietary)
+    monkeypatch.setattr(ingest, "_request_json", request)
 
 
 def foreign(monkeypatch, clock, date="16/10/2026", symbol="HPG"):
@@ -116,7 +131,8 @@ def test_invalid_cafef_observations(monkeypatch, clock, change):
         row["Ngay"] = "31/02/2026"
     if change == "range":
         row["Ngay"] = "05/01/2015"
-    mock_flow(monkeypatch, [row, row] if change == "duplicate" else [row])
+    duplicate = dict(row, GtMua=row.get("GtMua", 0) + 1)
+    mock_flow(monkeypatch, [row, duplicate] if change == "duplicate" else [row])
     with pytest.raises(ValueError):
         ingest.fetch_foreign_ticker("HPG", 2026, 2026)
 
@@ -133,8 +149,7 @@ def test_repeated_pages_and_limit_exhaustion(monkeypatch, clock):
     monkeypatch.setattr(ingest, "PAGE_SIZE", 1)
     monkeypatch.setattr(ingest, "MAX_PAGES", 2)
     monkeypatch.setattr(ingest, "_request_json", lambda url: page([item()], total=2))
-    with pytest.raises(ValueError, match="observation"):
-        ingest.fetch_foreign_ticker("HPG", 2026, 2026)
+    assert len(ingest.fetch_foreign_ticker("HPG", 2026, 2026)[1]) == 1
     monkeypatch.setattr(ingest, "MAX_PAGES", 1)
     with pytest.raises(ValueError):
         ingest.fetch_foreign_ticker("HPG", 2026, 2026)
@@ -148,15 +163,19 @@ def test_changing_total_rejected(monkeypatch, clock):
         ingest.fetch_foreign_ticker("HPG", 2026, 2026)
 
 
-def test_proprietary_rolling_year_non_vn30(monkeypatch, clock, storage):
+def test_proprietary_complete_history_non_vn30(monkeypatch, clock, storage):
     urls = []
     def request(url):
         urls.append(url)
-        return page([item(symbol="OLD", proprietary=True)], proprietary=True)
+        year = ingest.urllib.parse.parse_qs(ingest.urllib.parse.urlsplit(url).query)["StartDate"][0][-4:]
+        return page([item("05/01/2015" if year == "2015" else "16/10/2026",
+                          symbol="OLD", proprietary=True)] if year in ("2015", "2026") else [], proprietary=True)
     monkeypatch.setattr(ingest, "_request_json", request)
     monkeypatch.setattr(ingest, "DATA_DIR", storage)
     frames = ingest.ingest_proprietary(["OLD"])
-    assert "StartDate=10%2F16%2F2025" in urls[0]
+    assert "StartDate=01%2F01%2F2015" in urls[0]
+    assert len(urls) == 12
+    assert frames[0].time.min() == pd.Timestamp("2015-01-05")
     assert frames[0].source.eq("PROPRIETARY").all()
     assert (storage / "proprietary_OLD.parquet").is_file()
 
@@ -403,7 +422,7 @@ def test_atomic_lock_timeout_and_concurrent_merge(monkeypatch, clock, storage):
     assert set(pd.read_parquet(target).ticker) == {"HPG", "OLD"}
 
 
-def test_fetch_failure_before_publication(monkeypatch, clock, storage):
+def test_fetch_failure_preserves_streamed_partition(monkeypatch, clock, storage):
     frame = foreign(monkeypatch, clock)
     monkeypatch.setattr(ingest, "DATA_DIR", storage)
     def fetch(sym, *args):
@@ -412,8 +431,10 @@ def test_fetch_failure_before_publication(monkeypatch, clock, storage):
         return sym, frame
     monkeypatch.setattr(ingest, "fetch_foreign_ticker", fetch)
     with pytest.raises(RuntimeError):
-        ingest.ingest_foreign(["HPG", "OLD"])
-    assert not list(storage.iterdir())
+        ingest.ingest_foreign(["HPG", "OLD"], workers=1)
+    assert (storage / "foreign_HPG.parquet").is_file()
+    assert not (storage / "foreign_OLD.parquet").exists()
+    assert not (storage / "foreign_flow_2015_now.parquet").exists()
 
 
 @pytest.mark.parametrize("failure", ["copy", "sync", "replace_stage"])
@@ -506,7 +527,7 @@ def test_cli_fail_closed_and_derivative_symbols(monkeypatch, capsys):
     called = []
     monkeypatch.setattr(ingest, "ingest_derivatives", lambda *args: called.append(args))
     assert ingest.main(["--kind", "derivatives", "--symbols", "VN30F2M", "--dry-run"]) == 0
-    assert called == [(["VN30F2M"], True)]
+    assert called == [(["VN30F2M"], True, 4)]
 
 
 @pytest.mark.parametrize("kind", ["foreign", "proprietary", "derivatives"])
@@ -560,3 +581,218 @@ def test_rem1_interrupted_publication_preserves_state(monkeypatch, clock, storag
         assert not target.exists()
     assert not list(storage.glob("*.tmp"))
     assert not list(storage.glob("*.rollback.*"))
+
+
+@pytest.mark.parametrize("proprietary", [False, True])
+def test_cafef_duplicate_days_across_pages(monkeypatch, clock, proprietary):
+    row = item(proprietary=proprietary)
+    monkeypatch.setattr(ingest, "PAGE_SIZE", 1)
+    monkeypatch.setattr(ingest, "_request_json", lambda url: page([dict(row)], proprietary, total=2))
+    kind = "proprietary" if proprietary else "foreign"
+    frame = ingest._fetch_flow("HPG", kind, ingest._history_windows(2026, 2026))[1]
+    assert len(frame) == 1
+    assert frame.available_at.iloc[0] == clock
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary", "derivatives"])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_parallel_streaming_order_bounds_and_isolation(monkeypatch, clock, storage, kind, dry_run):
+    import threading
+    symbols = ["VN30F1M", "VN30F2M"] if kind == "derivatives" else ["HPG", "OLD", "VCB"]
+    base = foreign(monkeypatch, clock)
+    if kind == "proprietary":
+        base = base.rename(columns=dict(zip(
+            ["fr_buy_value_total", "fr_sell_value_total", "fr_net_value_total", "fr_buy_volume_total", "fr_sell_volume_total", "fr_net_volume_total"],
+            ["total_buy_trade_value", "total_sell_trade_value", "total_trade_net_value", "total_buy_trade_volume", "total_sell_trade_volume", "total_trade_net_volume"])))
+        base["source"] = "PROPRIETARY"
+    if kind == "derivatives":
+        monkeypatch.setattr(ingest, "_request_json", lambda url: dchart())
+        base = ingest._fetch_derivatives(symbols[0])
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    rendezvous = threading.Barrier(2)
+    published = threading.Event()
+    lock = threading.Lock()
+    active = peak = 0
+    original_write = ingest.atomic_write
+    def write(frame, target, **kwargs):
+        original_write(frame, target, **kwargs)
+        if target.name == f"{kind}_{symbols[1]}.parquet":
+            published.set()
+    monkeypatch.setattr(ingest, "atomic_write", write)
+    def fetch(sym, *args):
+        nonlocal active, peak
+        with lock:
+            active += 1
+            peak = max(peak, active)
+        if sym in symbols[:2]:
+            rendezvous.wait(timeout=5)
+        if sym == symbols[0] and not dry_run:
+            assert published.wait(timeout=5), "Completed ticker was not streamed"
+        frame = base.copy(deep=True)
+        frame["ticker"] = sym
+        with lock:
+            active -= 1
+        return frame if kind == "derivatives" else (sym, frame)
+    monkeypatch.setattr(ingest, {"foreign": "fetch_foreign_ticker", "proprietary": "fetch_prop_ticker",
+                                "derivatives": "_fetch_derivatives"}[kind], fetch)
+    result = getattr(ingest, f"ingest_{kind}")(symbols, dry_run=dry_run, workers=2)
+    assert [frame.ticker.iloc[0] for frame in result] == symbols
+    assert peak == 2
+    if dry_run:
+        assert not list(storage.iterdir())
+    else:
+        assert all((storage / f"{kind}_{sym}.parquet").is_file() for sym in symbols)
+
+
+@pytest.mark.parametrize("workers", [None, True, 0, -1, 17, 1.5, "4", float("nan"), float("inf")])
+@pytest.mark.parametrize("kind", ["foreign", "proprietary", "derivatives"])
+def test_worker_bounds_before_network(monkeypatch, clock, kind, workers):
+    monkeypatch.setattr(ingest, "_request_json", lambda url: pytest.fail("Unexpected request"))
+    symbols = ["VN30F1M"] if kind == "derivatives" else ["HPG"]
+    with pytest.raises(ValueError, match="Workers"):
+        getattr(ingest, f"ingest_{kind}")(symbols, workers=workers)
+
+
+@pytest.mark.parametrize("failure", ["identity", "publication", "aggregate"])
+def test_stream_failure_gates_aggregate(monkeypatch, clock, storage, failure):
+    frame = foreign(monkeypatch, clock)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    monkeypatch.setattr(ingest, "fetch_foreign_ticker", lambda *args: ("HPG", frame))
+    original = ingest.atomic_write
+    def write(frame, target, **kwargs):
+        if failure == "publication" or failure == "aggregate" and "flow_" in target.name:
+            raise OSError("Injected publication failure")
+        return original(frame, target, **kwargs)
+    monkeypatch.setattr(ingest, "atomic_write", write)
+    with pytest.raises((ValueError, OSError)):
+        ingest.ingest_foreign(["OLD" if failure == "identity" else "HPG"])
+    assert not (storage / "foreign_flow_2015_now.parquet").exists()
+    assert (storage / "foreign_HPG.parquet").exists() == (failure == "aggregate")
+
+
+@pytest.mark.parametrize("day,expected", [("2015-01-05", True), ("2026-02-17", False),
+                                          ("2026-01-01", False), ("2026-10-17", False)])
+def test_calendar_fallback_preserves_vietnam_holidays(monkeypatch, clock, day, expected):
+    from omega.data.calendar import VNTradingCalendar
+    from omega.data.market_flow import is_market_flow_trading_day
+    def unavailable(*args):
+        raise ValueError("Calendar backend unavailable")
+    monkeypatch.setattr(VNTradingCalendar, "is_trading_day", unavailable)
+    assert is_market_flow_trading_day(pd.Timestamp(day)) is expected
+    if expected:
+        frame = foreign(monkeypatch, clock, "05/01/2015")
+        MarketFlowLakehouse._validate_partition(frame, "foreign", "HPG")
+        monkeypatch.setattr(ingest, "_request_json", lambda url: dchart())
+        MarketFlowLakehouse._validate_derivatives(ingest._fetch_derivatives("VN30F1M"), "VN30F1M")
+
+
+@pytest.mark.parametrize("payload", ["{}", "﻿{}", '{"holidays":{"2026":[]}}',
+    '{"holidays":{"2026":["2026-02-30"]}}', '{"holidays":{"2026":["2025-01-01"]}}',
+    '{"holidays":{"2026":["2026-01-01",null]}}'])
+def test_calendar_fallback_invalid_coverage_fails_closed(monkeypatch, payload):
+    from omega.data.calendar import VNTradingCalendar
+    from omega.data.market_flow import is_market_flow_trading_day
+    def unavailable(*args):
+        raise OSError("Calendar unavailable")
+    monkeypatch.setattr(VNTradingCalendar, "is_trading_day", unavailable)
+    monkeypatch.setattr(Path, "read_text", lambda *args, **kwargs: payload)
+    with pytest.raises(ValueError, match="coverage"):
+        is_market_flow_trading_day(pd.Timestamp("2026-10-16"))
+
+
+@pytest.mark.parametrize("proprietary", [False, True])
+def test_cafef_conflicting_duplicate_across_pages(monkeypatch, clock, proprietary):
+    monkeypatch.setattr(ingest, "PAGE_SIZE", 1)
+    first = item(proprietary=proprietary)
+    pages = iter([page([first], proprietary, 2), page([dict(first, GtMua=1)], proprietary, 2)])
+    monkeypatch.setattr(ingest, "_request_json", lambda url: next(pages))
+    with pytest.raises(ValueError, match="Conflicting"):
+        ingest._fetch_flow("HPG", "proprietary" if proprietary else "foreign",
+                           ingest._history_windows(2026, 2026))
+
+
+@pytest.mark.parametrize("failure", ["directory", "symlink", "oversized", "uncovered"])
+def test_calendar_fallback_path_and_coverage_bounds(monkeypatch, failure):
+    from omega.data.market_flow import is_market_flow_trading_day
+    if failure == "directory":
+        monkeypatch.setattr(Path, "is_file", lambda path: False)
+    elif failure == "symlink":
+        monkeypatch.setattr(Path, "is_symlink", lambda path: True)
+    elif failure == "oversized":
+        from types import SimpleNamespace
+        monkeypatch.setattr(Path, "stat", lambda *args, **kwargs: SimpleNamespace(st_size=1024 * 1024 + 1))
+    with pytest.raises(ValueError, match="calendar"):
+        is_market_flow_trading_day(pd.Timestamp("2028-01-03" if failure == "uncovered" else "2026-10-16"))
+
+
+def test_calendar_weak_primary_never_admits_tet(monkeypatch):
+    from omega.data.calendar import VNTradingCalendar
+    from omega.data.market_flow import is_market_flow_trading_day
+    monkeypatch.setattr(VNTradingCalendar, "is_trading_day", lambda day: True)
+    assert not is_market_flow_trading_day(pd.Timestamp("2026-02-17"))
+
+
+@pytest.mark.parametrize("bad", [None, [], pd.DataFrame()])
+def test_parallel_malformed_frame_does_not_publish(monkeypatch, clock, storage, bad):
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    monkeypatch.setattr(ingest, "fetch_foreign_ticker", lambda *args: ("HPG", bad))
+    with pytest.raises(ValueError):
+        ingest.ingest_foreign(["HPG"])
+    assert not list(storage.iterdir())
+
+
+def test_stream_failure_preserves_existing_aggregate(monkeypatch, clock, storage):
+    frame = foreign(monkeypatch, clock)
+    aggregate = storage / "foreign_flow_2015_now.parquet"
+    ingest.atomic_write(frame, aggregate, kind="foreign")
+    before = aggregate.read_bytes()
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    def fetch(sym, *args):
+        if sym == "OLD":
+            raise TimeoutError("Provider retries exhausted")
+        return sym, frame
+    monkeypatch.setattr(ingest, "fetch_foreign_ticker", fetch)
+    with pytest.raises(TimeoutError):
+        ingest.ingest_foreign(["HPG", "OLD"], workers=1)
+    assert aggregate.read_bytes() == before
+    assert (storage / "foreign_HPG.parquet").exists()
+
+
+def test_parallel_failure_drains_running_workers_without_publication(monkeypatch, clock, storage):
+    import threading
+    frame = foreign(monkeypatch, clock)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    rendezvous = threading.Barrier(2)
+    finished = threading.Event()
+    def fetch(sym, *args):
+        rendezvous.wait(timeout=5)
+        if sym == "HPG":
+            raise RuntimeError("Original provider failure")
+        finished.set()
+        raise ValueError("Secondary worker failure")
+    monkeypatch.setattr(ingest, "fetch_foreign_ticker", fetch)
+    with pytest.raises((RuntimeError, ValueError)):
+        ingest.ingest_foreign(["HPG", "OLD"], workers=2)
+    assert finished.is_set()
+    assert not list(storage.iterdir())
+    assert frame.available_at.iloc[0] == clock
+
+
+def test_streamed_partitions_preserve_pit_read_isolation(monkeypatch, clock, storage):
+    frame = foreign(monkeypatch, clock)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    monkeypatch.setattr(ingest, "fetch_foreign_ticker", lambda *args: ("HPG", frame))
+    ingest.ingest_foreign(["HPG"])
+    lake = MarketFlowLakehouse(storage)
+    assert lake.read("foreign", "HPG", as_of=(clock - pd.Timedelta(seconds=1)).isoformat()).empty
+    result = lake.read("foreign", "HPG", as_of=clock.isoformat())
+    assert result.available_at.iloc[0] == clock
+    assert not result.historical_pit_verified.any()
+
+
+def test_cli_history_and_workers_forwarded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(ingest, "ingest_proprietary", lambda *args: calls.append(args))
+    assert ingest.main(["--kind", "proprietary", "--symbols", "HPG", "--start-year", "2015",
+                        "--end-year", "2016", "--workers", "2", "--dry-run"]) == 0
+    assert calls == [(["HPG"], True, 2, 2015, 2016)]

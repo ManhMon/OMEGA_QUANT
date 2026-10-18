@@ -4,6 +4,7 @@ VN Market Flow Datasource - Khối ngoại & Tự doanh
 
 import time
 import math
+from functools import lru_cache
 import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -199,6 +200,37 @@ class ProprietaryFlowIngestor:
         return result
 
 
+@lru_cache(maxsize=32)
+def _market_flow_holidays(year: int) -> frozenset:
+    # ponytail: bundled coverage only; extend vn_holidays.json before new years.
+    import json
+    path = Path(__file__).resolve().parents[3] / "config/vn_holidays.json"
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 1024 * 1024:
+        raise ValueError("Trading calendar fallback unavailable") from None
+    try:
+        holidays = json.loads(path.read_text(encoding="utf-8"))["holidays"][str(year)]
+        if not isinstance(holidays, list) or not holidays:
+            raise ValueError
+        dates = frozenset(pd.Timestamp(value) for value in holidays
+                          if isinstance(value, str) and re.fullmatch(r"\d{4}-\d{2}-\d{2}", value))
+        if len(dates) != len(holidays) or any(value.year != year for value in dates):
+            raise ValueError
+    except (KeyError, TypeError, ValueError, OSError):
+        raise ValueError("Trading calendar fallback lacks valid coverage") from None
+    return dates
+
+
+def is_market_flow_trading_day(day: pd.Timestamp) -> bool:
+    from omega.data.calendar import VNTradingCalendar
+    holidays = _market_flow_holidays(day.year)
+    if day.weekday() >= 5 or day.normalize() in holidays:
+        return False
+    try:
+        return VNTradingCalendar.is_trading_day(day)
+    except (ValueError, OSError):
+        return True
+
+
 class MarketFlowLakehouse:
     """Persist validated SSI flows/futures without promoting snapshots to historical PIT."""
 
@@ -212,7 +244,6 @@ class MarketFlowLakehouse:
 
     @staticmethod
     def _validate_derivatives(frame: pd.DataFrame, ticker: str) -> None:
-        from omega.data.calendar import VNTradingCalendar
         columns = {"time", "ticker", "open", "high", "low", "close", "volume", "as_of",
                    "available_at", "source", "price_scale", "adjusted", "rebuild_date",
                    "volume_unit", "historical_pit_verified"}
@@ -252,7 +283,7 @@ class MarketFlowLakehouse:
                         or event != day.tz_localize("Asia/Ho_Chi_Minh") + pd.Timedelta(hours=15, minutes=30)
                         or event > available or available > pd.Timestamp.now(tz="UTC")
                         or row["source"] == "VNDIRECT" and day < pd.Timestamp("2017-08-10")
-                        or not VNTradingCalendar.is_trading_day(day.to_pydatetime())
+                        or not is_market_flow_trading_day(day)
                         or row["rebuild_date"] != available.date().isoformat()):
                     raise ValueError
             except (ValueError, TypeError, OverflowError):
@@ -265,7 +296,6 @@ class MarketFlowLakehouse:
             return
         if kind not in ("foreign", "proprietary"):
             raise ValueError("Invalid Lakehouse dataset")
-        from omega.data.calendar import VNTradingCalendar
         required = PROP_FLOW_COLUMNS if kind == "proprietary" else FOREIGN_FLOW_COLUMNS
         optional = ({f"percent_{side}_trade_{unit}" for side in ("buy", "sell", "net")
                      for unit in ("value", "volume")} if kind == "proprietary" else
@@ -316,7 +346,7 @@ class MarketFlowLakehouse:
                                                     ("trading_date", "time", "as_of", "available_at"))
                 if (any(pd.isna(value) for value in (day, time_value, event, available))
                         or time_value.tzinfo is not None or time_value != day
-                        or not VNTradingCalendar.is_trading_day(day)
+                        or not is_market_flow_trading_day(day)
                         or event.tzinfo is None or available.tzinfo is None
                         or event != day.tz_localize("Asia/Ho_Chi_Minh") + pd.Timedelta(hours=15, minutes=30)
                         or event > available or available > now):
@@ -360,8 +390,7 @@ class MarketFlowLakehouse:
             frame.attrs.update(source=source)
             if observed is None:
                 raise ValueError("Flow observation timestamp required")
-            from omega.data.calendar import VNTradingCalendar
-            if not pd.to_datetime(frame["trading_date"]).map(VNTradingCalendar.is_trading_day).all():
+            if not pd.to_datetime(frame["trading_date"]).map(is_market_flow_trading_day).all():
                 raise ValueError("Flow date outside trading calendar")
             observed = pd.Timestamp(observed)
             if pd.isna(observed) or observed.tzinfo is None or observed > pd.Timestamp.now(tz="UTC"):

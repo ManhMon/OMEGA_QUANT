@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import json
 import math
 import os
@@ -24,8 +25,7 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT / "src") not in sys.path:
     sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from omega.data.calendar import VNTradingCalendar
-from omega.data.market_flow import MarketFlowLakehouse
+from omega.data.market_flow import MarketFlowLakehouse, is_market_flow_trading_day
 
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 DATA_DIR = REPO_ROOT / "data"
@@ -122,7 +122,7 @@ def _number(value, *, integral: bool = False, price: bool = False) -> float:
 
 
 def _event(day: pd.Timestamp) -> pd.Timestamp:
-    if not VNTradingCalendar.is_trading_day(day):
+    if not is_market_flow_trading_day(day):
         raise ValueError("Provider returned a non-trading session")
     return day.tz_localize("Asia/Ho_Chi_Minh") + pd.Timedelta(hours=15, minutes=30)
 
@@ -153,7 +153,7 @@ def _cafef_page(kind: str, sym: str, page: int, start: pd.Timestamp, end: pd.Tim
 
 def _fetch_flow(sym: str, kind: str, windows: list[tuple[pd.Timestamp, pd.Timestamp]]):
     _symbols([sym])
-    rows, seen = [], set()
+    rows, seen = [], {}
     deadline = time.monotonic() + 1800
     for start, end in windows:
         count, expected = 0, None
@@ -175,15 +175,19 @@ def _fetch_flow(sym: str, kind: str, windows: list[tuple[pd.Timestamp, pd.Timest
                     if not isinstance(date, str) or re.fullmatch(r"\d{2}/\d{2}/\d{4}", date) is None:
                         raise ValueError
                     day = pd.to_datetime(date, format="%d/%m/%Y")
-                    if item["Symbol"] != sym or not start <= day <= end or day in seen:
+                    if item["Symbol"] != sym or not start <= day <= end:
                         raise ValueError
-                    seen.add(day)
                     event = _event(day)
                     buy, sell = (_number(item[k]) for k in ("GtMua", "GtBan"))
                     volume_keys = ("KLcpMua", "KlcpBan") if kind == "proprietary" else ("KLMua", "KLBan")
                     bv, sv = (_number(item[k], integral=True) for k in volume_keys)
                 except (KeyError, TypeError, ValueError, OverflowError):
                     raise ValueError("Invalid CafeF observation") from None
+                if day in seen:
+                    if seen[day] != item:
+                        raise ValueError("Conflicting CafeF duplicate observation")
+                    continue
+                seen[day] = dict(item)
                 if event > observed:
                     continue  # An unfinished current session is not an EOD observation.
                 names = (("total_buy_trade_value", "total_sell_trade_value", "total_trade_net_value",
@@ -208,20 +212,22 @@ def _fetch_flow(sym: str, kind: str, windows: list[tuple[pd.Timestamp, pd.Timest
     return sym, frame
 
 
-def fetch_prop_ticker(sym: str) -> tuple[str, pd.DataFrame]:
-    today = _now().tz_convert("Asia/Ho_Chi_Minh").tz_localize(None).normalize()
-    return _fetch_flow(sym, "proprietary", [(today - pd.DateOffset(years=1), today)])
-
-
-def fetch_foreign_ticker(sym: str, start_year: int = 2015, end_year: int | None = None):
+def _history_windows(start_year: int, end_year: int | None):
     today = _now().tz_convert("Asia/Ho_Chi_Minh").tz_localize(None).normalize()
     end_year = today.year if end_year is None else end_year
     if (type(start_year) is not int or type(end_year) is not int
             or not 2015 <= start_year <= end_year <= today.year):
-        raise ValueError("Invalid foreign history years")
-    windows = [(pd.Timestamp(year, 1, 1), min(pd.Timestamp(year, 12, 31), today))
-               for year in range(start_year, end_year + 1)]
-    return _fetch_flow(sym, "foreign", windows)
+        raise ValueError("Invalid flow history years")
+    return [(pd.Timestamp(year, 1, 1), min(pd.Timestamp(year, 12, 31), today))
+            for year in range(start_year, end_year + 1)]
+
+
+def fetch_prop_ticker(sym: str, start_year: int = 2015, end_year: int | None = None) -> tuple[str, pd.DataFrame]:
+    return _fetch_flow(sym, "proprietary", _history_windows(start_year, end_year))
+
+
+def fetch_foreign_ticker(sym: str, start_year: int = 2015, end_year: int | None = None):
+    return _fetch_flow(sym, "foreign", _history_windows(start_year, end_year))
 
 
 def _fetch_derivatives(sym: str) -> pd.DataFrame:
@@ -370,33 +376,57 @@ def atomic_write(df: pd.DataFrame, target: Path, *, kind: str | None = None) -> 
                 path.unlink(missing_ok=True)
 
 
-def _publish(frames: list[pd.DataFrame], kind: str, dry_run: bool) -> list[pd.DataFrame]:
-    for frame in frames:
-        _validate(frame, kind)
-    if not dry_run:
-        for frame in frames:
-            sym = frame["ticker"].iloc[0]
-            atomic_write(frame, DATA_DIR / f"{kind}_{sym}.parquet", kind=kind)
-        if kind != "derivatives":
-            name = "foreign_flow_2015_now.parquet" if kind == "foreign" else "proprietary_flow_2025_now.parquet"
-            atomic_write(pd.concat(frames, ignore_index=True), DATA_DIR / name, kind=kind)
-    return frames
+def _publish(symbols: list[str], fetch, kind: str, dry_run: bool, workers: int) -> list[pd.DataFrame]:
+    _symbols(symbols, derivatives=kind == "derivatives")
+    if type(workers) is not int or not 1 <= workers <= 16:
+        raise ValueError("Workers must be an integer from 1 to 16")
+    frames = {}
+    remaining = iter(symbols)
+    with ThreadPoolExecutor(max_workers=min(workers, len(symbols))) as pool:
+        pending = {pool.submit(fetch, sym): sym for sym in
+                   [next(remaining) for _ in range(min(workers, len(symbols)))]}
+        try:
+            while pending:
+                completed, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for job in completed:
+                    sym = pending.pop(job)
+                    frame = job.result()
+                    _validate(frame, kind)
+                    if not frame["ticker"].eq(sym).all():
+                        raise ValueError("Fetched partition identity mismatch")
+                    if not dry_run:
+                        atomic_write(frame, DATA_DIR / f"{kind}_{sym}.parquet", kind=kind)
+                    frames[sym] = frame
+                    next_sym = next(remaining, None)
+                    if next_sym is not None:
+                        pending[pool.submit(fetch, next_sym)] = next_sym
+        except BaseException:
+            for job in pending:
+                job.cancel()
+            raise
+    ordered = [frames[sym] for sym in symbols]
+    if not dry_run and kind != "derivatives":
+        name = "foreign_flow_2015_now.parquet" if kind == "foreign" else "proprietary_flow_2025_now.parquet"
+        atomic_write(pd.concat(ordered, ignore_index=True), DATA_DIR / name, kind=kind)
+    return ordered
 
 
-def ingest_derivatives(symbols: list[str], dry_run: bool = False) -> list[pd.DataFrame]:
-    _symbols(symbols, derivatives=True)
-    return _publish([_fetch_derivatives(sym) for sym in symbols], "derivatives", dry_run)
+def ingest_derivatives(symbols: list[str], dry_run: bool = False, workers: int = 4) -> list[pd.DataFrame]:
+    return _publish(symbols, _fetch_derivatives, "derivatives", dry_run, workers)
 
 
-def ingest_proprietary(symbols: list[str], dry_run: bool = False) -> list[pd.DataFrame]:
-    _symbols(symbols)
-    return _publish([fetch_prop_ticker(sym)[1] for sym in symbols], "proprietary", dry_run)
+def ingest_proprietary(symbols: list[str], dry_run: bool = False, workers: int = 4,
+                       start_year: int = 2015, end_year: int | None = None) -> list[pd.DataFrame]:
+    _history_windows(start_year, end_year)
+    return _publish(symbols, lambda sym: fetch_prop_ticker(sym, start_year, end_year)[1],
+                    "proprietary", dry_run, workers)
 
 
 def ingest_foreign(symbols: list[str], start_year: int = 2015, end_year: int | None = None,
-                   dry_run: bool = False) -> list[pd.DataFrame]:
-    _symbols(symbols)
-    return _publish([fetch_foreign_ticker(sym, start_year, end_year)[1] for sym in symbols], "foreign", dry_run)
+                   dry_run: bool = False, workers: int = 4) -> list[pd.DataFrame]:
+    _history_windows(start_year, end_year)
+    return _publish(symbols, lambda sym: fetch_foreign_ticker(sym, start_year, end_year)[1],
+                    "foreign", dry_run, workers)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -405,20 +435,21 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--symbols", help="Comma-separated ticker list; derivatives use futures symbols")
     parser.add_argument("--start-year", type=int, default=2015)
     parser.add_argument("--end-year", type=int)
+    parser.add_argument("--workers", type=int, default=4, choices=range(1, 17))
     parser.add_argument("--dry-run", action="store_true", help="Validate without writing")
     args = parser.parse_args(argv)
     try:
         symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else VN30_TICKERS
         if args.kind == "derivatives":
-            ingest_derivatives(symbols if args.symbols else ["VN30F1M", "VN30F2M"], args.dry_run)
+            ingest_derivatives(symbols if args.symbols else ["VN30F1M", "VN30F2M"], args.dry_run, args.workers)
         else:
             _symbols(symbols)
             if args.kind == "all":
-                ingest_derivatives(["VN30F1M", "VN30F2M"], args.dry_run)
+                ingest_derivatives(["VN30F1M", "VN30F2M"], args.dry_run, args.workers)
             if args.kind in ("all", "proprietary"):
-                ingest_proprietary(symbols, args.dry_run)
+                ingest_proprietary(symbols, args.dry_run, args.workers, args.start_year, args.end_year)
             if args.kind in ("all", "foreign"):
-                ingest_foreign(symbols, args.start_year, args.end_year, args.dry_run)
+                ingest_foreign(symbols, args.start_year, args.end_year, args.dry_run, args.workers)
     except Exception as exc:
         print(f"Market flow ingestion failed ({type(exc).__name__})", file=sys.stderr)
         return 1
