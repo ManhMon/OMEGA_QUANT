@@ -33,7 +33,7 @@ MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_FILE_BYTES = 64 * 1024 * 1024
 MAX_ROWS = 200_000
 PAGE_SIZE = 300
-MAX_PAGES = 16
+MAX_PAGES = 48
 MAX_ATTEMPTS = 3
 LOCK_TIMEOUT = 10
 CAFEF_ROOT = "https://cafef.vn/du-lieu/Ajax/PageNew/DataHistory/"
@@ -153,7 +153,8 @@ def _cafef_page(kind: str, sym: str, page: int, start: pd.Timestamp, end: pd.Tim
 
 def _fetch_flow(sym: str, kind: str, windows: list[tuple[pd.Timestamp, pd.Timestamp]]):
     _symbols([sym])
-    rows, seen = [], {}
+    rows, seen = [], set()
+    received = 0
     deadline = time.monotonic() + 1800
     for start, end in windows:
         count, expected = 0, None
@@ -166,6 +167,7 @@ def _fetch_flow(sym: str, kind: str, windows: list[tuple[pd.Timestamp, pd.Timest
                 raise ValueError("CafeF pagination changed during retrieval")
             expected = total
             count += len(items)
+            received += len(items)
             if count > total or not items and count != total:
                 raise ValueError("Incomplete CafeF pagination")
             for item in items:
@@ -183,13 +185,12 @@ def _fetch_flow(sym: str, kind: str, windows: list[tuple[pd.Timestamp, pd.Timest
                     bv, sv = (_number(item[k], integral=True) for k in volume_keys)
                 except (KeyError, TypeError, ValueError, OverflowError):
                     raise ValueError("Invalid CafeF observation") from None
-                if day in seen:
-                    if seen[day] != item:
-                        raise ValueError("Conflicting CafeF duplicate observation")
-                    continue
-                seen[day] = dict(item)
                 if event > observed:
                     continue  # An unfinished current session is not an EOD observation.
+                if day in seen:
+                    continue
+                # ponytail: retain first eligible provider snapshot; no intraday ordering metadata.
+                seen.add(day)
                 names = (("total_buy_trade_value", "total_sell_trade_value", "total_trade_net_value",
                           "total_buy_trade_volume", "total_sell_trade_volume", "total_trade_net_volume")
                          if kind == "proprietary" else
@@ -205,6 +206,8 @@ def _fetch_flow(sym: str, kind: str, windows: list[tuple[pd.Timestamp, pd.Timest
                 break
         else:
             raise ValueError("CafeF pagination limit exhausted")
+    if not received:
+        return sym, pd.DataFrame()
     if not rows:
         raise ValueError("No completed market-flow observations")
     frame = pd.DataFrame(rows).sort_values("time").reset_index(drop=True)
@@ -391,12 +394,15 @@ def _publish(symbols: list[str], fetch, kind: str, dry_run: bool, workers: int) 
                 for job in completed:
                     sym = pending.pop(job)
                     frame = job.result()
-                    _validate(frame, kind)
-                    if not frame["ticker"].eq(sym).all():
-                        raise ValueError("Fetched partition identity mismatch")
-                    if not dry_run:
-                        atomic_write(frame, DATA_DIR / f"{kind}_{sym}.parquet", kind=kind)
-                    frames[sym] = frame
+                    if kind != "derivatives" and isinstance(frame, pd.DataFrame) and frame.empty:
+                        frames[sym] = frame
+                    else:
+                        _validate(frame, kind)
+                        if not frame["ticker"].eq(sym).all():
+                            raise ValueError("Fetched partition identity mismatch")
+                        if not dry_run:
+                            atomic_write(frame, DATA_DIR / f"{kind}_{sym}.parquet", kind=kind)
+                        frames[sym] = frame
                     next_sym = next(remaining, None)
                     if next_sym is not None:
                         pending[pool.submit(fetch, next_sym)] = next_sym
@@ -404,8 +410,8 @@ def _publish(symbols: list[str], fetch, kind: str, dry_run: bool, workers: int) 
             for job in pending:
                 job.cancel()
             raise
-    ordered = [frames[sym] for sym in symbols]
-    if not dry_run and kind != "derivatives":
+    ordered = [frames[sym] for sym in symbols if not frames[sym].empty]
+    if ordered and not dry_run and kind != "derivatives":
         name = "foreign_flow_2015_now.parquet" if kind == "foreign" else "proprietary_flow_2025_now.parquet"
         atomic_write(pd.concat(ordered, ignore_index=True), DATA_DIR / name, kind=kind)
     return ordered

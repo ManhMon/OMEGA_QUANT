@@ -165,7 +165,7 @@ def test_volume_bounds(monkeypatch, clock, bad):
         ingest.fetch_foreign_ticker("HPG", 2026, 2026)
 
 
-@pytest.mark.parametrize("change", ["missing", "duplicate", "holiday", "weekend", "identity", "date", "range"])
+@pytest.mark.parametrize("change", ["missing", "holiday", "weekend", "identity", "date", "range"])
 def test_invalid_cafef_observations(monkeypatch, clock, change):
     row = item()
     if change == "missing":
@@ -180,8 +180,7 @@ def test_invalid_cafef_observations(monkeypatch, clock, change):
         row["Ngay"] = "31/02/2026"
     if change == "range":
         row["Ngay"] = "05/01/2015"
-    duplicate = dict(row, GtMua=row.get("GtMua", 0) + 1)
-    mock_flow(monkeypatch, [row, duplicate] if change == "duplicate" else [row])
+    monkeypatch.setattr(ingest, "_request_json", lambda url: page([row]))
     with pytest.raises(ValueError):
         ingest.fetch_foreign_ticker("HPG", 2026, 2026)
 
@@ -202,6 +201,117 @@ def test_repeated_pages_and_limit_exhaustion(monkeypatch, clock):
     monkeypatch.setattr(ingest, "MAX_PAGES", 1)
     with pytest.raises(ValueError):
         ingest.fetch_foreign_ticker("HPG", 2026, 2026)
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+def test_cafef_page_ceiling(monkeypatch, clock, kind):
+    assert ingest.MAX_PAGES == 48
+    monkeypatch.setattr(ingest, "PAGE_SIZE", 1)
+    calls = []
+    def request(url):
+        calls.append(url)
+        return page([item(proprietary=kind == "proprietary")], kind == "proprietary", total=48)
+    monkeypatch.setattr(ingest, "_request_json", request)
+    assert len(ingest._fetch_flow("HPG", kind, ingest._history_windows(2026, 2026))[1]) == 1
+    assert len(calls) == 48
+    monkeypatch.setattr(ingest, "_request_json", lambda url: page([], kind == "proprietary", total=49))
+    with pytest.raises(ValueError, match="page schema"):
+        ingest._fetch_flow("HPG", kind, ingest._history_windows(2026, 2026))
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_cafef_session_duplicates_keep_first(monkeypatch, clock, kind, reverse):
+    proprietary = kind == "proprietary"
+    rows = [item(proprietary=proprietary), dict(item(proprietary=proprietary), GtMua=1)]
+    if reverse:
+        rows.reverse()
+    monkeypatch.setattr(ingest, "PAGE_SIZE", 1)
+    pages = iter([page([row], proprietary, total=2) for row in rows])
+    monkeypatch.setattr(ingest, "_request_json", lambda url: next(pages))
+    frame = ingest._fetch_flow("HPG", kind, ingest._history_windows(2026, 2026))[1]
+    value = "total_buy_trade_value" if proprietary else "fr_buy_value_total"
+    assert len(frame) == 1
+    assert frame[value].iloc[0] == rows[0]["GtMua"]
+    assert frame.available_at.iloc[0] == clock
+    assert not frame.historical_pit_verified.any()
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+@pytest.mark.parametrize("bad", [None, [], "12", True, float("nan"), float("inf"), -float("inf"), -1, 1e300])
+def test_cafef_malformed_duplicate_rejected(monkeypatch, clock, kind, bad):
+    proprietary = kind == "proprietary"
+    rows = [item(proprietary=proprietary), dict(item(proprietary=proprietary), GtMua=bad)]
+    mock_flow(monkeypatch, rows, proprietary)
+    with pytest.raises(ValueError, match="observation"):
+        ingest._fetch_flow("HPG", kind, ingest._history_windows(2026, 2026))
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+def test_cafef_duplicate_after_session_close_eligible(monkeypatch, kind):
+    times = iter([pd.Timestamp("2026-10-16T08:29:59Z"),
+                  pd.Timestamp("2026-10-16T08:29:59Z"), pd.Timestamp("2026-10-16T08:30:00Z")])
+    monkeypatch.setattr(ingest, "_now", lambda: next(times))
+    monkeypatch.setattr(ingest, "PAGE_SIZE", 1)
+    monkeypatch.setattr(ingest, "_request_json", lambda url: page(
+        [item(proprietary=kind == "proprietary")], kind == "proprietary", total=2))
+    frame = ingest._fetch_flow("HPG", kind, ingest._history_windows(2026, 2026))[1]
+    assert len(frame) == 1
+    assert frame.as_of.iloc[0] == frame.available_at.iloc[0]
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+def test_cafef_post_2015_ipo_and_empty_history(monkeypatch, clock, kind):
+    proprietary = kind == "proprietary"
+    mock_flow(monkeypatch, [item("16/10/2026", proprietary=proprietary)], proprietary)
+    fetch = ingest.fetch_prop_ticker if proprietary else ingest.fetch_foreign_ticker
+    symbol, frame = fetch("HPG", 2015, 2026)
+    assert symbol == "HPG" and len(frame) == 1
+    assert frame.time.iloc[0] == pd.Timestamp("2026-10-16")
+    assert fetch("HPG", 2015, 2025)[1].empty
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+def test_cafef_empty_later_windows_and_overlapping_dates(monkeypatch, clock, kind):
+    proprietary = kind == "proprietary"
+    mock_flow(monkeypatch, [item("05/01/2015", proprietary=proprietary)], proprietary)
+    frame = ingest._fetch_flow("HPG", kind, ingest._history_windows(2015, 2026))[1]
+    assert len(frame) == 1
+    window = ingest._history_windows(2015, 2015)
+    assert len(ingest._fetch_flow("HPG", kind, window + window)[1]) == 1
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+@pytest.mark.parametrize("all_empty", [False, True])
+@pytest.mark.parametrize("dry_run", [False, True])
+def test_empty_flow_publication_preserves_existing(monkeypatch, clock, storage, kind, all_empty, dry_run):
+    proprietary = kind == "proprietary"
+    mock_flow(monkeypatch, proprietary=proprietary)
+    frame = ingest._fetch_flow("HPG", kind, ingest._history_windows(2026, 2026))[1]
+    aggregate = storage / ("proprietary_flow_2025_now.parquet" if proprietary else "foreign_flow_2015_now.parquet")
+    old = frame.assign(ticker="OLD")
+    ingest.atomic_write(old, storage / f"{kind}_OLD.parquet", kind=kind)
+    ingest.atomic_write(old, aggregate, kind=kind)
+    before = (storage / f"{kind}_OLD.parquet").read_bytes()
+    aggregate_before = aggregate.read_bytes()
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    def fetch(sym):
+        return pd.DataFrame() if sym == "OLD" or all_empty else frame
+    result = ingest._publish(["OLD", "HPG"], fetch, kind, dry_run, 1)
+    assert len(result) == (0 if all_empty else 1)
+    assert (storage / f"{kind}_OLD.parquet").read_bytes() == before
+    if all_empty or dry_run:
+        assert aggregate.read_bytes() == aggregate_before
+        assert not (storage / f"{kind}_HPG.parquet").exists()
+    else:
+        assert set(pd.read_parquet(aggregate).ticker) == {"OLD", "HPG"}
+
+
+def test_empty_derivatives_still_rejected(monkeypatch, storage):
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    with pytest.raises(ValueError, match="Invalid market-flow partition"):
+        ingest._publish(["VN30F1M"], lambda sym: pd.DataFrame(), "derivatives", False, 1)
+    assert not list(storage.glob("*.parquet"))
 
 
 def test_changing_total_rejected(monkeypatch, clock):
@@ -755,9 +865,11 @@ def test_cafef_conflicting_duplicate_across_pages(monkeypatch, clock, proprietar
     first = item(proprietary=proprietary)
     pages = iter([page([first], proprietary, 2), page([dict(first, GtMua=1)], proprietary, 2)])
     monkeypatch.setattr(ingest, "_request_json", lambda url: next(pages))
-    with pytest.raises(ValueError, match="Conflicting"):
-        ingest._fetch_flow("HPG", "proprietary" if proprietary else "foreign",
-                           ingest._history_windows(2026, 2026))
+    frame = ingest._fetch_flow("HPG", "proprietary" if proprietary else "foreign",
+                               ingest._history_windows(2026, 2026))[1]
+    column = "total_buy_trade_value" if proprietary else "fr_buy_value_total"
+    assert len(frame) == 1
+    assert frame[column].iloc[0] == first["GtMua"]
 
 
 @pytest.mark.parametrize("failure", ["directory", "symlink", "oversized", "uncovered"])
@@ -781,7 +893,7 @@ def test_calendar_weak_primary_never_admits_tet(monkeypatch):
     assert not is_market_flow_trading_day(pd.Timestamp("2026-02-17"))
 
 
-@pytest.mark.parametrize("bad", [None, [], pd.DataFrame()])
+@pytest.mark.parametrize("bad", [None, []])
 def test_parallel_malformed_frame_does_not_publish(monkeypatch, clock, storage, bad):
     monkeypatch.setattr(ingest, "DATA_DIR", storage)
     monkeypatch.setattr(ingest, "fetch_foreign_ticker", lambda *args: ("HPG", bad))
