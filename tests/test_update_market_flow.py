@@ -204,19 +204,95 @@ def test_repeated_pages_and_limit_exhaustion(monkeypatch, clock):
 
 
 @pytest.mark.parametrize("kind", ["foreign", "proprietary"])
-def test_cafef_page_ceiling(monkeypatch, clock, kind):
-    assert ingest.MAX_PAGES == 48
+@pytest.mark.parametrize("symbol", ingest.VN30_TICKERS)
+def test_cafef_page_ceiling(monkeypatch, clock, kind, symbol):
+    assert ingest.MAX_PAGES == 72
     monkeypatch.setattr(ingest, "PAGE_SIZE", 1)
     calls = []
     def request(url):
-        calls.append(url)
-        return page([item(proprietary=kind == "proprietary")], kind == "proprietary", total=48)
+        query = ingest.urllib.parse.parse_qs(ingest.urllib.parse.urlsplit(url).query)
+        calls.append(int(query["PageIndex"][0]))
+        assert query["Symbol"] == [symbol]
+        return page([item(symbol=symbol, proprietary=kind == "proprietary")],
+                    kind == "proprietary", total=72)
     monkeypatch.setattr(ingest, "_request_json", request)
-    assert len(ingest._fetch_flow("HPG", kind, ingest._history_windows(2026, 2026))[1]) == 1
-    assert len(calls) == 48
-    monkeypatch.setattr(ingest, "_request_json", lambda url: page([], kind == "proprietary", total=49))
+    assert len(ingest._fetch_flow(symbol, kind, ingest._history_windows(2026, 2026))[1]) == 1
+    assert calls == list(range(1, 73))
+    monkeypatch.setattr(ingest, "_request_json", lambda url: page([], kind == "proprietary", total=73))
     with pytest.raises(ValueError, match="page schema"):
-        ingest._fetch_flow("HPG", kind, ingest._history_windows(2026, 2026))
+        ingest._fetch_flow(symbol, kind, ingest._history_windows(2026, 2026))
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+@pytest.mark.parametrize("total", [1441, 1702, 2160, 2161])
+def test_cafef_short_pages_high_volume_year(monkeypatch, clock, kind, total):
+    proprietary = kind == "proprietary"
+    calls = []
+    def request(url):
+        query = ingest.urllib.parse.parse_qs(ingest.urllib.parse.urlsplit(url).query)
+        index = int(query["PageIndex"][0])
+        calls.append(index)
+        assert query["PageSize"] == ["300"]
+        assert query["Symbol"] == ["VNM"]
+        assert query["StartDate"] == ["01/01/2020"]
+        assert query["EndDate"] == ["12/31/2020"]
+        count = min(30, total - (index - 1) * 30)
+        rows = [item("02/01/2020", "VNM", proprietary) for _ in range(count)]
+        if index * 30 >= total:
+            rows[-1] = item("31/12/2020", "VNM", proprietary)
+        return page(rows, proprietary, total=total)
+    monkeypatch.setattr(ingest, "_request_json", request)
+    fetch = ingest.fetch_prop_ticker if proprietary else ingest.fetch_foreign_ticker
+    if total > 2160:
+        with pytest.raises(ValueError, match="pagination limit exhausted"):
+            fetch("VNM", 2020, 2020)
+        assert calls == list(range(1, 73))
+    else:
+        frame = fetch("VNM", 2020, 2020)[1]
+        assert calls == list(range(1, (total + 29) // 30 + 1))
+        assert frame.trading_date.tolist() == ["2020-01-02", "2020-12-31"]
+        assert frame.ticker.eq("VNM").all()
+        assert frame.price_scale.eq("VND_FULL").all()
+        assert not frame.historical_pit_verified.any()
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+@pytest.mark.parametrize("failure", ["changed_total", "empty_page", "count_overflow"])
+def test_cafef_late_pagination_faults(monkeypatch, clock, kind, failure):
+    proprietary = kind == "proprietary"
+    calls = []
+    def request(url):
+        query = ingest.urllib.parse.parse_qs(ingest.urllib.parse.urlsplit(url).query)
+        index = int(query["PageIndex"][0])
+        calls.append(index)
+        count, total = 30, 1702
+        if index == 49:
+            if failure == "changed_total":
+                total = 1703
+            elif failure == "empty_page":
+                count = 0
+            else:
+                count = 263
+        return page([item("02/01/2020", "VNM", proprietary) for _ in range(count)],
+                    proprietary, total=total)
+    monkeypatch.setattr(ingest, "_request_json", request)
+    with pytest.raises(ValueError, match="pagination changed|Incomplete CafeF pagination"):
+        ingest._fetch_flow("VNM", kind, ingest._history_windows(2020, 2020))
+    assert calls == list(range(1, 50))
+
+
+@pytest.mark.parametrize("kind", ["foreign", "proprietary"])
+@pytest.mark.parametrize("total", [21600, 21601, None, True, -1, "1702", [], float("nan"), float("inf"), -float("inf"), 10**13])
+def test_cafef_total_bound(monkeypatch, kind, total):
+    payload = page([], kind == "proprietary", total=0)
+    payload["Data"]["TotalCount"] = total
+    monkeypatch.setattr(ingest, "_request_json", lambda url: payload)
+    args = (kind, "VNM", 1, pd.Timestamp("2020-01-01"), pd.Timestamp("2020-12-31"))
+    if type(total) is int and total == 21600:
+        assert ingest._cafef_page(*args) == (21600, [])
+    else:
+        with pytest.raises(ValueError, match="page schema"):
+            ingest._cafef_page(*args)
 
 
 @pytest.mark.parametrize("kind", ["foreign", "proprietary"])
