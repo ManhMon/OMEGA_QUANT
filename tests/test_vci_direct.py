@@ -41,6 +41,68 @@ def flow_lake_root():
         yield Path(directory)
 
 
+@pytest.mark.parametrize("kind,source,day,symbol", [
+    ("foreign", "CAFEF", "2015-01-05", "OLD"),
+    ("foreign", "SSI_MCP", "2015-01-05", "HPG"),
+    ("proprietary", "PROPRIETARY", "2015-01-05", "OLD"),
+    ("derivatives", "VNDIRECT", "2017-08-10", "VN30F1M"),
+    ("derivatives", "SSI_MCP", "2017-08-10", "VN30F1M"),
+])
+def test_lakehouse_historical_sources_pit_roundtrip(flow_lake_root, kind, source, day, symbol):
+    from omega.data.market_flow import MarketFlowLakehouse
+    event = pd.Timestamp(day, tz="Asia/Ho_Chi_Minh") + pd.Timedelta(hours=15, minutes=30)
+    available = pd.Timestamp("2026-10-16T09:00:00Z")
+    row = dict(time=pd.Timestamp(day), ticker=symbol, as_of=event, available_at=available,
+               source=source, historical_pit_verified=False)
+    if kind == "derivatives":
+        row.update(open=700., high=710., low=690., close=705., volume=1000,
+                   price_scale="points", volume_unit="contracts", adjusted="provider_adjusted",
+                   rebuild_date="2026-10-16")
+    else:
+        from omega.data.vci_direct import FOREIGN_FLOW_COLUMNS, PROP_FLOW_COLUMNS
+        names = PROP_FLOW_COLUMNS if kind == "proprietary" else FOREIGN_FLOW_COLUMNS
+        row.update(dict(zip(names, (day, 1000., 400., 600., 10., 4., 6.))))
+        row.update(price_scale="VND_FULL", volume_unit="shares")
+    frame = pd.DataFrame([row])
+    lake = MarketFlowLakehouse(flow_lake_root)
+    lake._validate_partition(frame, kind, symbol)
+    if source == "VNDIRECT":
+        prelaunch = frame.copy()
+        prelaunch["time"] = pd.Timestamp("2017-08-09")
+        prelaunch["as_of"] = pd.Timestamp("2017-08-09T15:30:00+07:00")
+        with pytest.raises(ValueError):
+            lake._validate_partition(prelaunch, kind, symbol)
+    frame.to_parquet(flow_lake_root / f"{kind}_{symbol}.parquet", index=False)
+    assert lake.read(kind, symbol, as_of=(available - pd.Timedelta(nanoseconds=1)).isoformat()).empty
+    assert len(lake.read(kind, symbol, as_of=available.isoformat())) == 1
+    for field, value in (("source", "UNKNOWN"), ("historical_pit_verified", True),
+                         ("historical_pit_verified", "false"), ("available_at", event - pd.Timedelta(seconds=1)),
+                         ("as_of", event - pd.Timedelta(seconds=1))):
+        invalid = frame.copy()
+        invalid[field] = value
+        with pytest.raises(ValueError):
+            lake._validate_partition(invalid, kind, symbol)
+
+
+def test_lakehouse_historical_foreign_long_partition(flow_lake_root):
+    from omega.data.market_flow import MarketFlowLakehouse
+    dates = [day for day in pd.date_range("2015-01-05", "2019-12-31") if VNTradingCalendar.is_trading_day(day)]
+    frame = pd.DataFrame(dict(trading_date=[day.date().isoformat() for day in dates], time=dates,
+        ticker="OLD", fr_buy_value_total=1000., fr_sell_value_total=400., fr_net_value_total=600.,
+        fr_buy_volume_total=10., fr_sell_volume_total=4., fr_net_volume_total=6.,
+        as_of=[day.tz_localize("Asia/Ho_Chi_Minh") + pd.Timedelta(hours=15, minutes=30) for day in dates],
+        available_at=pd.Timestamp("2026-10-16T09:00:00Z"), source="CAFEF", price_scale="VND_FULL",
+        volume_unit="shares", historical_pit_verified=False))
+    assert len(frame) > 731
+    MarketFlowLakehouse._validate_partition(frame, "foreign", "OLD")
+    frame.loc[frame.index[-1], "source"] = "SSI_MCP"
+    MarketFlowLakehouse._validate_partition(frame, "foreign", "OLD")
+    invalid = frame.copy()
+    invalid.loc[invalid.index[0], "fr_net_value_total"] = 0
+    with pytest.raises(ValueError):
+        MarketFlowLakehouse._validate_partition(invalid, "foreign", "OLD")
+
+
 def test_lakehouse_ssi_derivatives_points_contracts_and_foreign_vnd(flow_lake_root):
     from omega.data.market_flow import MarketFlowLakehouse
     calls = []
@@ -620,7 +682,14 @@ def test_f007_ssi_pagination_is_bounded_and_atomic(failure):
 
 
 @pytest.mark.parametrize("time", ["08:29:59", "08:30:00", "08:30:01"])
-def test_f007_live_foreign_board_cutoff_and_provenance(time):
+def test_f007_live_foreign_board_cutoff_and_provenance(time, monkeypatch):
+    timestamp = pd.Timestamp
+    class FixedTimestamp(timestamp):
+        @classmethod
+        def now(cls, tz=None):
+            value = timestamp("2026-10-16T09:00:00Z")
+            return value.tz_convert(tz) if tz is not None else value.tz_localize(None)
+    monkeypatch.setattr(pd, "Timestamp", FixedTimestamp)
     today = pd.Timestamp.now(tz="Asia/Ho_Chi_Minh").date().isoformat()
     row = _board_row()
     row["matchPrice"].update(time=today + "T" + time + "Z", foreignBuyValue=1000, foreignSellValue=400,

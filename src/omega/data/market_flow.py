@@ -15,7 +15,7 @@ from filelock import FileLock
 import pandas as pd
 
 from omega.data.vci_direct import (DirectVCIClient, FOREIGN_FLOW_COLUMNS, PROP_FLOW_COLUMNS,
-                                   flow_date_range, validate_flow_frame)
+                                   flow_date_range, flow_number, validate_flow_frame)
 from omega.data.vnstock_client import Trading
 
 class FlowRateLimiter:
@@ -222,9 +222,11 @@ class MarketFlowLakehouse:
                 or not frame["ticker"].eq(ticker).all() or frame.duplicated(["ticker", "time"]).any()):
             raise ValueError("Invalid derivatives identity")
         for column, expected in (("price_scale", "points"), ("volume_unit", "contracts"),
-                                 ("source", "SSI_MCP"), ("adjusted", "provider_adjusted")):
+                                 ("adjusted", "provider_adjusted")):
             if frame[column].isna().any() or not frame[column].eq(expected).all():
                 raise ValueError("Invalid derivatives units or provenance")
+        if not frame["source"].isin({"SSI_MCP", "VNDIRECT"}).all():
+            raise ValueError("Invalid derivatives source provenance")
         verified = frame["historical_pit_verified"]
         if not pd.api.types.is_bool_dtype(verified) or verified.isna().any() or verified.any():
             raise ValueError("Invalid derivatives historical provenance")
@@ -249,6 +251,7 @@ class MarketFlowLakehouse:
                         or day != day.normalize() or event.tzinfo is None or available.tzinfo is None
                         or event != day.tz_localize("Asia/Ho_Chi_Minh") + pd.Timedelta(hours=15, minutes=30)
                         or event > available or available > pd.Timestamp.now(tz="UTC")
+                        or row["source"] == "VNDIRECT" and day < pd.Timestamp("2017-08-10")
                         or not VNTradingCalendar.is_trading_day(day.to_pydatetime())
                         or row["rebuild_date"] != available.date().isoformat()):
                     raise ValueError
@@ -260,6 +263,8 @@ class MarketFlowLakehouse:
         if kind == "derivatives":
             MarketFlowLakehouse._validate_derivatives(frame, ticker)
             return
+        if kind not in ("foreign", "proprietary"):
+            raise ValueError("Invalid Lakehouse dataset")
         from omega.data.calendar import VNTradingCalendar
         required = PROP_FLOW_COLUMNS if kind == "proprietary" else FOREIGN_FLOW_COLUMNS
         optional = ({f"percent_{side}_trade_{unit}" for side in ("buy", "sell", "net")
@@ -274,8 +279,9 @@ class MarketFlowLakehouse:
         if (frame[list(metadata)].isna().any().any() or not frame["ticker"].eq(ticker).all()
                 or frame.duplicated(["ticker", "time"]).any()):
             raise ValueError("Invalid Lakehouse flow identity")
-        sources = {"PROP_CALL", "VNSTOCK_VCI", "PROPRIETARY"} if kind == "proprietary" else {"SSI_MCP"}
-        if (not frame["source"].isin(sources).all() or frame["source"].nunique() != 1
+        sources = {"PROP_CALL", "VNSTOCK_VCI", "PROPRIETARY"} if kind == "proprietary" else {"SSI_MCP", "CAFEF"}
+        if (not frame["source"].isin(sources).all()
+                or kind == "proprietary" and frame["source"].nunique() != 1
                 or not frame["price_scale"].eq("VND_FULL").all()
                 or not frame["volume_unit"].eq("shares").all()):
             raise ValueError("Invalid Lakehouse flow units or provenance")
@@ -291,7 +297,18 @@ class MarketFlowLakehouse:
         if not dates.map(lambda value: isinstance(value, str) and
                          re.fullmatch(r"\d{4}-\d{2}-\d{2}", value) is not None).all():
             raise ValueError("Invalid Lakehouse flow trading dates")
-        validate_flow_frame(frame, ticker, dates.min(), dates.max(), proprietary=kind == "proprietary")
+        # Lakehouse history is not the provider's rolling 730-day request window.
+        DirectVCIClient._ticker(ticker)
+        if len(frame) > 5000:
+            raise ValueError("Lakehouse history exceeds row limit")
+        for column in set(frame.columns) - metadata - {"trading_date"}:
+            values = frame[column].map(lambda value: flow_number(value, signed="net" in column))
+            if "volume" in column and not column.startswith("percent_") and not values.map(float.is_integer).all():
+                raise ValueError("Lakehouse flow volume must be integral")
+        for buy, sell, net in ((required[1], required[2], required[3]), (required[4], required[5], required[6])):
+            calculated = frame[buy] - frame[sell]
+            if not calculated.map(math.isfinite).all() or not frame[net].eq(calculated).all():
+                raise ValueError("Inconsistent Lakehouse flow net fields")
         now = pd.Timestamp.now(tz="UTC")
         for _, row in frame.iterrows():
             try:
@@ -378,13 +395,12 @@ class MarketFlowLakehouse:
                     raise ValueError("Lakehouse schema drift")
                 if previous.duplicated(["ticker", "time"]).any() or not previous["ticker"].eq(ticker).all():
                     raise ValueError("Lakehouse partition identity invalid")
-                for column in ("price_scale", "volume_unit", "source", "historical_pit_verified"):
+                for column in ("price_scale", "volume_unit", "historical_pit_verified"):
                     if not previous[column].eq(frame[column].iloc[0]).all():
                         raise ValueError("Lakehouse provenance or units invalid")
                 self._validate_partition(previous, kind, ticker)
                 frame = pd.concat([previous, frame], ignore_index=True).drop_duplicates(["ticker", "time"], keep="last")
-            if kind == "derivatives":
-                self._validate_derivatives(frame, ticker)
+            self._validate_partition(frame, kind, ticker)
             try:
                 atomic_write_with_backup(frame, target)
             except Exception as exc:
