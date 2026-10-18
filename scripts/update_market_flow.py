@@ -10,6 +10,7 @@ import math
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import time
@@ -19,6 +20,7 @@ import urllib.request
 from pathlib import Path
 
 import pandas as pd
+import pyarrow.parquet as pq
 from filelock import FileLock
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -30,8 +32,9 @@ from omega.data.market_flow import MarketFlowLakehouse, is_market_flow_trading_d
 HEADERS = {"User-Agent": "Mozilla/5.0"}
 DATA_DIR = REPO_ROOT / "data"
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
-MAX_FILE_BYTES = 64 * 1024 * 1024
-MAX_ROWS = 200_000
+MAX_FILE_BYTES = 256 * 1024 * 1024
+MAX_ROWS = 3_000_000
+MAX_UNIVERSE_CHUNK_BYTES = 65536
 PAGE_SIZE = 300
 MAX_PAGES = 72
 MAX_ATTEMPTS = 3
@@ -51,7 +54,7 @@ def _now() -> pd.Timestamp:
 
 def _symbols(symbols: list[str], *, derivatives: bool = False) -> list[str]:
     pattern = r"VN30F(?:[12]M|[12]Q|\d{4})" if derivatives else r"[A-Z][A-Z0-9]{1,9}"
-    if (not isinstance(symbols, list) or not 1 <= len(symbols) <= 100
+    if (not isinstance(symbols, list) or not 1 <= len(symbols) <= 1000
             or any(not isinstance(s, str) or re.fullmatch(pattern, s) is None for s in symbols)
             or len(set(symbols)) != len(symbols)):
         raise ValueError("Invalid or duplicate symbols")
@@ -435,20 +438,56 @@ def ingest_foreign(symbols: list[str], start_year: int = 2015, end_year: int | N
                     "foreign", dry_run, workers)
 
 
+def _full_universe() -> list[str]:
+    """Current snapshot membership only; not a historical PIT universe."""
+    path = DATA_DIR / "hybrid_eval_full_703.parquet"
+    if not path.resolve().is_relative_to(REPO_ROOT.resolve()):
+        raise ValueError("Universe must be repo-local")
+    _regular(path)
+    symbols = set()
+    with path.open("rb") as source:
+        opened = os.fstat(source.fileno())
+        _regular(path)
+        if (not stat.S_ISREG(opened.st_mode) or opened.st_size > MAX_FILE_BYTES
+                or not os.path.samestat(opened, path.stat())):
+            raise ValueError("Invalid universe file")
+        parquet = pq.ParquetFile(source)
+        if not 1 <= parquet.metadata.num_rows <= MAX_ROWS:
+            raise ValueError("Invalid universe row count")
+        columns = [i for i in range(len(parquet.metadata.schema))
+                   if parquet.metadata.schema.column(i).path.split(".")[0] == "symbol"]
+        if len(columns) != 1 or parquet.metadata.schema.column(columns[0]).path != "symbol":
+            raise ValueError("Invalid universe symbol column")
+        for i in range(parquet.metadata.num_row_groups):
+            chunk = parquet.metadata.row_group(i).column(columns[0])
+            if not 0 <= chunk.total_uncompressed_size <= MAX_UNIVERSE_CHUNK_BYTES:
+                raise ValueError("Universe symbol chunk exceeds uncompressed byte limit")
+        for batch in parquet.iter_batches(columns=["symbol"], batch_size=1000):
+            for symbol in batch.column("symbol").to_pylist():
+                _symbols([symbol])
+                symbols.add(symbol)
+            _symbols(list(symbols))
+    return _symbols(sorted(symbols))
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kind", choices=["all", "derivatives", "proprietary", "foreign"], default="all")
-    parser.add_argument("--symbols", help="Comma-separated ticker list; derivatives use futures symbols")
+    parser.add_argument("--symbols", help="Comma-separated ticker list; overrides --universe")
+    parser.add_argument("--universe", choices=["vn30", "full"], default="vn30",
+                        help="Equity universe; full uses the current local 703-symbol snapshot")
     parser.add_argument("--start-year", type=int, default=2015)
     parser.add_argument("--end-year", type=int)
     parser.add_argument("--workers", type=int, default=4, choices=range(1, 17))
     parser.add_argument("--dry-run", action="store_true", help="Validate without writing")
     args = parser.parse_args(argv)
     try:
-        symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols else VN30_TICKERS
+        symbols = [s.strip().upper() for s in args.symbols.split(",")] if args.symbols is not None else None
         if args.kind == "derivatives":
-            ingest_derivatives(symbols if args.symbols else ["VN30F1M", "VN30F2M"], args.dry_run, args.workers)
+            ingest_derivatives(symbols if symbols is not None else ["VN30F1M", "VN30F2M"], args.dry_run, args.workers)
         else:
+            if symbols is None:
+                symbols = _full_universe() if args.universe == "full" else VN30_TICKERS
             _symbols(symbols)
             if args.kind == "all":
                 ingest_derivatives(["VN30F1M", "VN30F2M"], args.dry_run, args.workers)

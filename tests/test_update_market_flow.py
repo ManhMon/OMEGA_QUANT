@@ -753,6 +753,338 @@ def test_bounded_input_files_and_duplicate_shards(monkeypatch, clock, storage):
     assert target.read_bytes() == before
 
 
+def test_full_universe_limits():
+    assert ingest.MAX_ROWS == 3_000_000
+    assert ingest.MAX_FILE_BYTES == 256 * 1024 * 1024
+    assert ingest.MAX_UNIVERSE_CHUNK_BYTES == 65536
+    symbols = [f"S{i:03}" for i in range(1001)]
+    assert ingest._symbols(symbols[:703]) == symbols[:703]
+    assert ingest._symbols(symbols[:1000]) == symbols[:1000]
+    with pytest.raises(ValueError):
+        ingest._symbols(symbols)
+
+
+@pytest.mark.parametrize("count", [703, 1000, 1001])
+def test_full_universe_selection_and_bounds(monkeypatch, storage, count):
+    symbols = [f"S{i:03}" for i in range(count)]
+    pd.DataFrame({"symbol": symbols[::-1] * 2, "unused": "ignored"}).to_parquet(
+        storage / "hybrid_eval_full_703.parquet", index=False)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    if count > 1000:
+        with pytest.raises(ValueError):
+            ingest._full_universe()
+    else:
+        assert ingest._full_universe() == symbols
+
+
+@pytest.mark.parametrize("bad", [None, "", "nan", "NaN", "Inf", "-Inf", "--kind", "../HPG",
+                                  "HPG&x=1", " hpg ", "A" * 11, 10**13, float("nan"),
+                                  float("inf"), -float("inf"), [], True])
+def test_full_universe_rejects_invalid_symbols(monkeypatch, storage, bad):
+    pd.DataFrame({"symbol": [bad]}).to_parquet(storage / "hybrid_eval_full_703.parquet", index=False)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    with pytest.raises((ValueError, TypeError)):
+        ingest._full_universe()
+
+
+@pytest.mark.parametrize("failure", ["missing", "directory", "corrupt", "schema", "empty", "rows", "bytes"])
+def test_full_universe_fail_closed_before_ingestion(monkeypatch, capsys, storage, failure):
+    path = storage / "hybrid_eval_full_703.parquet"
+    if failure == "directory":
+        path.mkdir()
+    elif failure == "corrupt":
+        path.write_bytes(b"not parquet\r\n")
+    elif failure not in ("missing", "directory"):
+        data = {"ticker": ["HPG"]} if failure == "schema" else {"symbol": [] if failure == "empty" else ["HPG"]}
+        pd.DataFrame(data).to_parquet(path, index=False)
+    if failure == "rows":
+        monkeypatch.setattr(ingest, "MAX_ROWS", 0)
+    if failure == "bytes":
+        monkeypatch.setattr(ingest, "MAX_FILE_BYTES", path.stat().st_size - 1)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    calls = []
+    for kind in ("derivatives", "proprietary", "foreign"):
+        monkeypatch.setattr(ingest, f"ingest_{kind}", lambda *args: calls.append(args))
+    before = path.read_bytes() if path.is_file() else None
+    assert ingest.main(["--universe", "full"]) == 1
+    assert not calls
+    assert "Market flow ingestion failed" in capsys.readouterr().err
+    if before is not None:
+        assert path.read_bytes() == before
+    assert not list(storage.glob("*.tmp"))
+
+
+def test_full_universe_file_and_row_bounds_inclusive(monkeypatch, storage):
+    path = storage / "hybrid_eval_full_703.parquet"
+    pd.DataFrame({"symbol": ["HPG"]}).to_parquet(path, index=False)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    monkeypatch.setattr(ingest, "MAX_ROWS", 1)
+    monkeypatch.setattr(ingest, "MAX_FILE_BYTES", path.stat().st_size)
+    assert ingest._full_universe() == ["HPG"]
+    monkeypatch.setattr(ingest, "MAX_ROWS", 0)
+    with pytest.raises(ValueError, match="row count"):
+        ingest._full_universe()
+    monkeypatch.setattr(ingest, "MAX_ROWS", 1)
+    monkeypatch.setattr(ingest, "MAX_FILE_BYTES", path.stat().st_size - 1)
+    with pytest.raises(ValueError):
+        ingest._full_universe()
+
+
+@pytest.mark.parametrize("oversized_group", [0, 1])
+def test_full_universe_rejects_compressed_symbol_chunk_before_decode(monkeypatch, capsys, storage, oversized_group):
+    path = storage / "hybrid_eval_full_703.parquet"
+    symbols = ["HPG", "OLD"]
+    symbols[oversized_group] = "A" * 65536
+    pd.DataFrame({"unused": [1, 2], "symbol": symbols}).to_parquet(
+        path, index=False, compression="gzip", use_dictionary=False, row_group_size=1)
+    original = ingest.pq.ParquetFile
+    metadata = original(path).metadata
+    assert path.stat().st_size < 65536
+    assert metadata.row_group(oversized_group).column(1).total_uncompressed_size > 65536
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    calls = []
+    class Parquet:
+        def __init__(self, source):
+            self.metadata = original(source).metadata
+        def iter_batches(self, **kwargs):
+            calls.append(kwargs)
+            raise AssertionError("Oversized chunk reached decoder")
+    monkeypatch.setattr(ingest.pq, "ParquetFile", Parquet)
+    for kind in ("derivatives", "proprietary", "foreign"):
+        monkeypatch.setattr(ingest, f"ingest_{kind}", lambda *args: calls.append(args))
+    before = path.read_bytes()
+    with pytest.raises(ValueError, match="uncompressed"):
+        ingest._full_universe()
+    assert ingest.main(["--universe", "full"]) == 1
+    assert "Market flow ingestion failed (ValueError)" in capsys.readouterr().err
+    assert calls == []
+    assert path.read_bytes() == before
+    assert not list(storage.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("size", [-1, 0, 65535, 65536, 65537, 10**13])
+def test_full_universe_uncompressed_metadata_boundary(monkeypatch, storage, size):
+    from types import SimpleNamespace
+
+    path = storage / "hybrid_eval_full_703.parquet"
+    pd.DataFrame({"symbol": ["HPG", "OLD"]}).to_parquet(path, index=False, row_group_size=1)
+    original = ingest.pq.ParquetFile
+    calls = []
+    class Parquet:
+        def __init__(self, source):
+            self.file = original(source)
+            metadata = self.file.metadata
+            self.metadata = SimpleNamespace(
+                num_rows=metadata.num_rows, num_row_groups=metadata.num_row_groups,
+                schema=metadata.schema,
+                row_group=lambda i: SimpleNamespace(column=lambda j: SimpleNamespace(
+                    path_in_schema="symbol",
+                    total_uncompressed_size=size if i == 1 else 10)))
+        def iter_batches(self, **kwargs):
+            calls.append(kwargs)
+            return self.file.iter_batches(**kwargs)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    monkeypatch.setattr(ingest.pq, "ParquetFile", Parquet)
+    if 0 <= size <= 65536:
+        assert ingest._full_universe() == ["HPG", "OLD"]
+        assert calls == [{"columns": ["symbol"], "batch_size": 1000}]
+    else:
+        with pytest.raises(ValueError, match="uncompressed"):
+            ingest._full_universe()
+        assert calls == []
+
+
+@pytest.mark.parametrize("schema", ["missing", "duplicate", "nested", "mixed"])
+def test_full_universe_rejects_ambiguous_symbol_schema_before_decode(monkeypatch, storage, schema):
+    import pyarrow as pa
+
+    path = storage / "hybrid_eval_full_703.parquet"
+    if schema == "duplicate":
+        table = pa.Table.from_arrays([pa.array(["HPG"]), pa.array(["OLD"])], names=["symbol", "symbol"])
+    elif schema == "nested":
+        table = pa.table({"parent": pa.array([{"symbol": "HPG"}])})
+    elif schema == "mixed":
+        table = pa.Table.from_arrays(
+            [pa.array(["HPG"]), pa.array([{"child": "OLD"}])], names=["symbol", "symbol"])
+    else:
+        table = pa.table({"ticker": ["HPG"]})
+    ingest.pq.write_table(table, path)
+    original = ingest.pq.ParquetFile
+    class Parquet:
+        def __init__(self, source):
+            self.metadata = original(source).metadata
+        def iter_batches(self, **kwargs):
+            raise AssertionError("Ambiguous schema reached decoder")
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    monkeypatch.setattr(ingest.pq, "ParquetFile", Parquet)
+    with pytest.raises(ValueError, match="symbol"):
+        ingest._full_universe()
+
+
+@pytest.mark.parametrize("failure", ["metadata", "decode"])
+def test_full_universe_read_failure_prevents_publication(monkeypatch, capsys, storage, failure):
+    from types import SimpleNamespace
+
+    path = storage / "hybrid_eval_full_703.parquet"
+    pd.DataFrame({"symbol": ["HPG"]}).to_parquet(path, index=False)
+    original = ingest.pq.ParquetFile
+    calls = []
+    def fail(*args, **kwargs):
+        raise RuntimeError("injected read failure")
+    class Parquet:
+        def __init__(self, source):
+            metadata = original(source).metadata
+            self.metadata = SimpleNamespace(
+                num_rows=metadata.num_rows, num_row_groups=metadata.num_row_groups,
+                schema=metadata.schema, row_group=fail if failure == "metadata" else metadata.row_group)
+        def iter_batches(self, **kwargs):
+            calls.append("decode")
+            return fail()
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    monkeypatch.setattr(ingest.pq, "ParquetFile", Parquet)
+    for kind in ("derivatives", "proprietary", "foreign"):
+        monkeypatch.setattr(ingest, f"ingest_{kind}", lambda *args: calls.append("publish"))
+    before = path.read_bytes()
+    assert ingest.main(["--universe", "full"]) == 1
+    assert "Market flow ingestion failed (RuntimeError)" in capsys.readouterr().err
+    assert calls == ([] if failure == "metadata" else ["decode"])
+    assert path.read_bytes() == before
+    assert not list(storage.glob("*.tmp"))
+
+
+def test_full_universe_chunk_limit_is_per_selected_column(monkeypatch, storage):
+    path = storage / "hybrid_eval_full_703.parquet"
+    pd.DataFrame({"unused": ["A" * 100] * 10000, "symbol": ["HPG"] * 10000}).to_parquet(
+        path, index=False, compression="gzip", use_dictionary=False, row_group_size=5000)
+    metadata = ingest.pq.ParquetFile(path).metadata
+    sizes = [metadata.row_group(i).column(1).total_uncompressed_size
+             for i in range(metadata.num_row_groups)]
+    assert max(sizes) <= 65536 < sum(sizes)
+    assert metadata.row_group(0).column(0).total_uncompressed_size > 65536
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    assert ingest._full_universe() == ["HPG"]
+
+
+def test_full_universe_reads_only_symbol_batches(monkeypatch, storage):
+    path = storage / "hybrid_eval_full_703.parquet"
+    pd.DataFrame({"symbol": ["HPG", "OLD"], "unused": ["secret", "secret"]}).to_parquet(path, index=False)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    original = ingest.pq.ParquetFile
+    calls = []
+    class Parquet:
+        def __init__(self, source):
+            self.file = original(source)
+            self.metadata = self.file.metadata
+        def iter_batches(self, **kwargs):
+            calls.append(kwargs)
+            return self.file.iter_batches(**kwargs)
+    monkeypatch.setattr(ingest.pq, "ParquetFile", Parquet)
+    monkeypatch.setattr(ingest, "MAX_ROWS", 1)
+    with pytest.raises(ValueError, match="row count"):
+        ingest._full_universe()
+    assert calls == []
+    monkeypatch.setattr(ingest, "MAX_ROWS", 2)
+    assert ingest._full_universe() == ["HPG", "OLD"]
+    assert calls == [{"columns": ["symbol"], "batch_size": 1000}]
+
+
+def test_full_universe_rejects_repo_escape(monkeypatch, storage):
+    monkeypatch.setattr(ingest, "REPO_ROOT", storage / "nested")
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    with pytest.raises(ValueError, match="repo-local"):
+        ingest._full_universe()
+
+
+@pytest.mark.parametrize("failure", ["symlink", "identity", "type", "bytes"])
+def test_full_universe_rejects_opened_file_mutation(monkeypatch, storage, failure):
+    from types import SimpleNamespace
+    path = storage / "hybrid_eval_full_703.parquet"
+    pd.DataFrame({"symbol": ["HPG"]}).to_parquet(path, index=False)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    if failure == "symlink":
+        original = Path.is_symlink
+        calls = []
+        def swapped(candidate):
+            if candidate == path:
+                calls.append(candidate)
+                return len(calls) > 1
+            return original(candidate)
+        monkeypatch.setattr(Path, "is_symlink", swapped)
+    elif failure == "identity":
+        monkeypatch.setattr(ingest.os.path, "samestat", lambda *args: False)
+    else:
+        opened = path.stat()
+        monkeypatch.setattr(ingest.os, "fstat", lambda fd: SimpleNamespace(
+            st_mode=ingest.stat.S_IFDIR if failure == "type" else opened.st_mode,
+            st_size=ingest.MAX_FILE_BYTES + 1 if failure == "bytes" else opened.st_size))
+    with pytest.raises(ValueError):
+        ingest._full_universe()
+
+
+@pytest.mark.parametrize("boundary", ["incoming", "merged", "candidate"])
+def test_full_universe_row_overflow_preserves_old(monkeypatch, clock, storage, boundary):
+    old = foreign(monkeypatch, clock, symbol="OLD")
+    new = foreign(monkeypatch, clock)
+    target = storage / "foreign_flow_2015_now.parquet"
+    ingest.atomic_write(old, target, kind="foreign")
+    before = target.read_bytes()
+    monkeypatch.setattr(ingest, "MAX_ROWS", 1)
+    if boundary == "incoming":
+        new = pd.concat([old, new], ignore_index=True)
+    elif boundary == "candidate":
+        new = old.copy()
+        read = ingest.pd.read_parquet
+        def corrupt_candidate(path, *args, **kwargs):
+            frame = read(path, *args, **kwargs)
+            return pd.concat([frame, frame], ignore_index=True) if str(path).endswith(".tmp") else frame
+        monkeypatch.setattr(ingest.pd, "read_parquet", corrupt_candidate)
+    with pytest.raises(ValueError):
+        ingest.atomic_write(new, target, kind="foreign")
+    assert target.read_bytes() == before
+    assert not list(storage.glob("*.tmp"))
+
+
+@pytest.mark.parametrize("kind", ["all", "foreign", "proprietary"])
+def test_cli_full_universe_forwarded(monkeypatch, storage, kind):
+    symbols = [f"S{i:03}" for i in range(703)]
+    pd.DataFrame({"symbol": symbols}).to_parquet(storage / "hybrid_eval_full_703.parquet", index=False)
+    monkeypatch.setattr(ingest, "DATA_DIR", storage)
+    calls = {}
+    for name in ("derivatives", "proprietary", "foreign"):
+        monkeypatch.setattr(ingest, f"ingest_{name}", lambda *args, name=name: calls.update({name: args}))
+    assert ingest.main(["--kind", kind, "--universe", "full", "--start-year", "2020",
+                        "--end-year", "2025", "--workers", "2", "--dry-run"]) == 0
+    if kind in ("all", "foreign"):
+        assert calls["foreign"] == (symbols, 2020, 2025, True, 2)
+    if kind in ("all", "proprietary"):
+        assert calls["proprietary"] == (symbols, True, 2, 2020, 2025)
+    if kind == "all":
+        assert calls["derivatives"] == (["VN30F1M", "VN30F2M"], True, 2)
+    else:
+        assert set(calls) == {kind}
+
+
+@pytest.mark.parametrize("kind,extra,expected", [
+    ("foreign", [], ingest.VN30_TICKERS),
+    ("foreign", ["--universe", "full", "--symbols", " hpg,old "], ["HPG", "OLD"]),
+    ("derivatives", ["--universe", "full"], ["VN30F1M", "VN30F2M"]),
+    ("derivatives", ["--universe", "full", "--symbols", "VN30F2M"], ["VN30F2M"]),
+])
+def test_cli_universe_precedence_no_read(monkeypatch, kind, extra, expected):
+    def unexpected_read():
+        pytest.fail("Universe should not be read")
+    monkeypatch.setattr(ingest, "_full_universe", unexpected_read)
+    calls = []
+    monkeypatch.setattr(ingest, f"ingest_{kind}", lambda *args: calls.append(args))
+    assert ingest.main(["--kind", kind, "--dry-run", *extra]) == 0
+    assert calls[0][0] == expected
+
+
+def test_cli_empty_symbols_do_not_fall_back(monkeypatch):
+    monkeypatch.setattr(ingest, "_full_universe", lambda: pytest.fail("Unexpected fallback"))
+    assert ingest.main(["--kind", "foreign", "--universe", "full", "--symbols", ""]) == 1
+
+
 def test_cli_fail_closed_and_derivative_symbols(monkeypatch, capsys):
     def fail(*args, **kwargs):
         raise RuntimeError("https://user:secret@example.com")
