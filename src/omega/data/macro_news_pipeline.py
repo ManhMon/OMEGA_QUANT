@@ -339,11 +339,13 @@ def historical_news_outcome(rows: int) -> dict[str, Any]:
 
 
 CAFEF_VERSION = "cafef-url-ict-v1"
-CAFEF_STAMP = re.compile(r"-188(\d{12})\d{3}\.chn$")
+CAFEF_STAMP = re.compile(r"-(?:188([0-9]{12})[0-9]{3}|([0-9]{14})(?:[0-9]{3})?)\.chn$")
 
 
 def _cafef_url(url: str) -> str:
     try:
+        if not isinstance(url, str):
+            raise ValueError
         parts = urlsplit(url)
         if (parts.scheme != "https" or parts.netloc not in {"cafef.vn", "www.cafef.vn"}
                 or parts.username is not None or parts.password is not None
@@ -366,17 +368,18 @@ def _cafef_url(url: str) -> str:
 
 
 def parse_cafef_timestamp(url: str) -> datetime:
-    """Decode the publisher's exact YYMMDDHHMMSS URL clock as ICT, not availability."""
+    """Decode modern/legacy CafeF ICT timestamps to second precision, not availability."""
     _cafef_url(url)
     parts = urlsplit(url)
     match = CAFEF_STAMP.search(parts.path)
     if not match:
         raise ValueError("CafeF publication timestamp missing")
     try:
-        value = datetime.strptime("20" + match[1], "%Y%m%d%H%M%S")
-    except ValueError:
+        stamp = "20" + match[1] if match[1] else match[2]
+        value = datetime.strptime(stamp, "%Y%m%d%H%M%S")
+        return value.replace(tzinfo=timezone(timedelta(hours=7))).astimezone(timezone.utc)
+    except (ValueError, OverflowError):
         raise ValueError("CafeF publication timestamp invalid") from None
-    return value.replace(tzinfo=timezone(timedelta(hours=7))).astimezone(timezone.utc)
 
 
 class _CafeFPage(HTMLParser):
@@ -488,6 +491,8 @@ class CafeFHistoricalCrawler:
             raise ValueError("invalid CafeF member")
         if any(not isinstance(t, datetime) or t.tzinfo is None or t.utcoffset() is None for t in (start, end)) or start > end:
             raise ValueError("invalid CafeF aware date range")
+        ict = timezone(timedelta(hours=7))
+        first_year, last_year = start.astimezone(ict).year, end.astimezone(ict).year
         url = f"https://cafef.vn/tim-kiem.chn?keywords={symbol}"
         pages, articles = set(), set()
         for _ in range(self.max_pages):
@@ -513,6 +518,10 @@ class CafeFHistoricalCrawler:
             if not candidates and "không tìm thấy" not in payload.decode("utf-8").casefold():
                 raise ValueError("CafeF unknown empty listing incomplete")
             for article_url in sorted(candidates):
+                stamp = CAFEF_STAMP.search(urlsplit(article_url).path)
+                year = int("20" + stamp[1][:2] if stamp[1] else stamp[2][:4])
+                if not first_year <= year <= last_year:
+                    continue
                 published = parse_cafef_timestamp(article_url)
                 if article_url in articles or not start <= published <= end:
                     continue
@@ -526,7 +535,7 @@ class CafeFHistoricalCrawler:
                     raise ValueError("CafeF observation timestamp rejected")
                 record = _record("cafef_historical", "CafeF", "cafef_historical", title, None, article_url, published, fetched,
                                  source_record_id=urlsplit(article_url).path, origin_ticker=symbol, origin_exchange=exchange,
-                                 raw_timestamp=CAFEF_STAMP.search(urlsplit(article_url).path)[1], payload=detail, source_delay_minutes=0)
+                                 raw_timestamp=next(group for group in CAFEF_STAMP.search(urlsplit(article_url).path).groups() if group), payload=detail, source_delay_minutes=0)
                 record["available_at"] = fetched
                 record["adapter_version"] = CAFEF_VERSION
                 records.append(record)

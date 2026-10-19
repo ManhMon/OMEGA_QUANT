@@ -451,6 +451,7 @@ def build_historical_news_sentiment(
     *,
     crawler=None,
     resume: bool = False,
+    workers: int = 1,
 ) -> dict:
     """Collect research-only page shards; callers must check returned status.
 
@@ -463,6 +464,10 @@ def build_historical_news_sentiment(
         CAFEF_VERSION, load_universe_snapshot,
     )
 
+    if type(workers) is not int or not 1 <= workers <= 16:
+        raise ValueError("historical workers must be an integer within 1..16")
+    if workers > 1 and crawler is not None:
+        raise ValueError("historical parallel workers require isolated default crawlers")
     cutoff = datetime.fromisoformat(as_of) if isinstance(as_of, str) else as_of
     if not isinstance(cutoff, datetime) or cutoff.tzinfo is None or cutoff.utcoffset() is None:
         raise ValueError("historical as_of must be timezone-aware")
@@ -517,7 +522,7 @@ def build_historical_news_sentiment(
         destination.mkdir(exist_ok=False)
     from omega.data.macro_news_pipeline import _writer_lock
     with _writer_lock(destination / "batch", timeout=0):
-        return _collect_historical_batch(manifest, destination, output_path, crawler, resume)
+        return _collect_historical_batch(manifest, destination, output_path, crawler, resume, workers)
 
 
 def _validate_historical_configuration(expected: dict, recovered: dict) -> None:
@@ -545,10 +550,92 @@ def _publish_historical_state(manifest: dict, destination: Path, name: str) -> N
         temporary.unlink(missing_ok=True)
 
 
-def _collect_historical_batch(manifest, destination, output_path, crawler, resume):
+def _collect_historical_symbol(symbol, exchange, lower, upper, destination, crawler):
+    from omega.data.macro_news_pipeline import CAFEF_VERSION, SCHEMA as RAW_SCHEMA, CafeFHistoricalCrawler, MacroNewsPipeline, historical_news_outcome
+
+    outcome = {"symbol": symbol, "exchange": exchange, "status": "running", "rows": 0, "pages": 0,
+               "terminal_reason": None, "full_history_verified": False}
+    shards, failures = [], []
+    collector = None
+    try:
+        collector = crawler if crawler is not None else CafeFHistoricalCrawler(max_pages=500)
+        for page_number, records in enumerate(collector.crawl_symbol(symbol, exchange, lower, upper), 1):
+            if page_number > 500 or not isinstance(records, list) or len(records) > 100:
+                raise ValueError("historical page bounds rejected")
+            projected = []
+            for record in records:
+                if not isinstance(record, dict) or set(record) != set(RAW_SCHEMA):
+                    raise ValueError("historical raw schema rejected")
+                published, retrieved, available = (record[key] for key in ("published_at", "ingested_at", "available_at"))
+                if any(not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None for value in (published, retrieved, available)):
+                    raise ValueError("historical timestamps must be aware")
+                if not lower <= published <= upper or not published <= retrieved <= available:
+                    raise ValueError("historical timestamp ordering rejected")
+                if record["origin_ticker"] != symbol or record["origin_exchange"] != exchange or record["adapter_version"] != CAFEF_VERSION or record["source_kind"] != "cafef_historical":
+                    raise ValueError("historical provenance rejected")
+                title = record["title"]
+                if not isinstance(title, str) or not title.strip():
+                    raise ValueError("historical title rejected")
+                score = score_sentiment(title)
+                scored_at = datetime.now(timezone.utc)
+                projected.append({
+                    "symbol": symbol, "title": title, "publish_time": published,
+                    "sentiment_score": score, "available_at": max(available, scored_at),
+                    "url": record["canonical_url"], "source": record["source_name"],
+                    "fetched_at": retrieved, "raw_timestamp": record["raw_timestamp"],
+                    "payload_sha256": record["payload_sha256"],
+                    "parser_version": record["adapter_version"], "legacy_row": False,
+                })
+            raw_table = pa.Table.from_pandas(MacroNewsPipeline._frame(records), preserve_index=False)
+            prefix = f"{symbol}-{exchange}-{page_number:04d}"
+            projected_table = pa.Table.from_pylist(projected, schema=SCHEMA)
+            _validate_historical_pair(raw_table, projected_table, symbol, exchange, lower, upper)
+            _write_historical_shard(raw_table, destination / f"{prefix}-raw.parquet", shards)
+            _write_historical_shard(projected_table, destination / f"{prefix}-v10.parquet", shards)
+            outcome["rows"] += len(records)
+            outcome["pages"] = page_number
+        if not outcome["pages"]:
+            raise ValueError("historical collection no observed pages")
+        outcome.update(historical_news_outcome(outcome["rows"]))
+    except Exception as exc:
+        outcome.update(status="failed", terminal_reason="not_attempted" if collector is None else
+                       "collection_error" if outcome["pages"] else "no_pages_observed")
+        # Provider exception messages may contain credentials or URLs.
+        failures.append({"symbol": symbol, "error": type(exc).__name__})
+    return outcome, shards, failures
+
+
+def _historical_symbol_results(members, lower, upper, destination, crawler, workers):
+    if workers == 1:
+        for symbol, exchange in members:
+            yield _collect_historical_symbol(symbol, exchange, lower, upper, destination, crawler)
+        return
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    pending_members = iter(members)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = set()
+        try:
+            for _ in range(workers):
+                member = next(pending_members, None)
+                if member is not None:
+                    pending.add(pool.submit(_collect_historical_symbol, *member, lower, upper, destination, None))
+            while pending:
+                done, pending = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    yield future.result()
+                    member = next(pending_members, None)
+                    if member is not None:
+                        pending.add(pool.submit(_collect_historical_symbol, *member, lower, upper, destination, None))
+        finally:
+            for future in pending:
+                future.cancel()
+
+
+def _collect_historical_batch(manifest, destination, output_path, crawler, resume, workers):
     import copy
     import re
-    from omega.data.macro_news_pipeline import CAFEF_VERSION, SCHEMA as RAW_SCHEMA, CafeFHistoricalCrawler, MacroNewsPipeline, historical_news_outcome
+    from contextlib import closing
 
     if resume:
         recovered = read_historical_manifest(output_path, checkpoint=True)
@@ -572,72 +659,28 @@ def _collect_historical_batch(manifest, destination, output_path, crawler, resum
         _publish_historical_state(manifest, destination, "checkpoint.json")
     checkpoint = copy.deepcopy(manifest)
     lower, upper = (datetime.fromisoformat(manifest[key]) for key in ("publication_start", "publication_end"))
+    members = [member for member in manifest["members"] if member[0] not in completed]
     try:
-        collector = crawler
-        if collector is None and len(completed) < len(manifest["members"]):
-            collector = CafeFHistoricalCrawler(max_pages=500)
-        for symbol, exchange in manifest["members"]:
-            if symbol in completed:
-                continue
-            outcome = {"symbol": symbol, "exchange": exchange, "status": "running", "rows": 0, "pages": 0,
-                       "terminal_reason": None, "full_history_verified": False}
-            manifest["symbols"].append(outcome)
-            try:
-                for page_number, records in enumerate(collector.crawl_symbol(symbol, exchange, lower, upper), 1):
-                    if page_number > 500 or not isinstance(records, list) or len(records) > 100:
-                        raise ValueError("historical page bounds rejected")
-                    projected = []
-                    for record in records:
-                        if not isinstance(record, dict) or set(record) != set(RAW_SCHEMA):
-                            raise ValueError("historical raw schema rejected")
-                        published, retrieved, available = (record[key] for key in ("published_at", "ingested_at", "available_at"))
-                        if any(not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None for value in (published, retrieved, available)):
-                            raise ValueError("historical timestamps must be aware")
-                        if not lower <= published <= upper or not published <= retrieved <= available:
-                            raise ValueError("historical timestamp ordering rejected")
-                        if record["origin_ticker"] != symbol or record["origin_exchange"] != exchange or record["adapter_version"] != CAFEF_VERSION or record["source_kind"] != "cafef_historical":
-                            raise ValueError("historical provenance rejected")
-                        title = record["title"]
-                        if not isinstance(title, str) or not title.strip():
-                            raise ValueError("historical title rejected")
-                        score = score_sentiment(title)
-                        scored_at = datetime.now(timezone.utc)
-                        projected.append({
-                            "symbol": symbol, "title": title, "publish_time": published,
-                            "sentiment_score": score, "available_at": max(available, scored_at),
-                            "url": record["canonical_url"], "source": record["source_name"],
-                            "fetched_at": retrieved, "raw_timestamp": record["raw_timestamp"],
-                            "payload_sha256": record["payload_sha256"],
-                            "parser_version": record["adapter_version"], "legacy_row": False,
-                        })
-                    raw_table = pa.Table.from_pandas(MacroNewsPipeline._frame(records), preserve_index=False)
-                    prefix = f"{symbol}-{exchange}-{page_number:04d}"
-                    projected_table = pa.Table.from_pylist(projected, schema=SCHEMA)
-                    _validate_historical_pair(raw_table, projected_table, symbol, exchange, lower, upper)
-                    _write_historical_shard(raw_table, destination / f"{prefix}-raw.parquet", manifest["shards"])
-                    _write_historical_shard(projected_table, destination / f"{prefix}-v10.parquet", manifest["shards"])
-                    outcome["rows"] += len(records)
-                    outcome["pages"] = page_number
-                if not outcome["pages"]:
-                    raise ValueError("historical collection has no observed pages")
-                outcome.update(historical_news_outcome(outcome["rows"]))
-            except Exception as exc:
-                outcome.update(status="failed", terminal_reason="collection_error" if outcome["pages"] else "no_pages_observed")
-                # Provider exception messages may contain credentials or URLs.
-                manifest["failures"].append({"symbol": symbol, "error": type(exc).__name__})
-            else:
-                candidate = copy.deepcopy(checkpoint)
-                candidate["symbols"].append(copy.deepcopy(outcome))
-                candidate["symbols"].sort(key=lambda entry: entry["symbol"])
-                prefix = f"{symbol}-{exchange}-"
-                candidate["shards"].extend(copy.deepcopy([entry for entry in manifest["shards"] if entry["path"].startswith(prefix)]))
-                candidate["shard_count"] = len(candidate["shards"])
-                candidate["status"] = "incomplete" if any(not entry["rows"] for entry in candidate["symbols"]) else "results_only"
-                _publish_historical_state(candidate, destination, "checkpoint.json")
-                checkpoint = candidate
+        with closing(_historical_symbol_results(members, lower, upper, destination, crawler, workers)) as results:
+            for outcome, shards, failures in results:
+                manifest["symbols"].append(outcome)
+                manifest["shards"].extend(shards)
+                manifest["failures"].extend(failures)
+                if not failures:
+                    candidate = copy.deepcopy(checkpoint)
+                    candidate["symbols"].append(copy.deepcopy(outcome))
+                    candidate["symbols"].sort(key=lambda entry: entry["symbol"])
+                    candidate["shards"].extend(copy.deepcopy(shards))
+                    candidate["shards"].sort(key=lambda entry: entry["path"])
+                    candidate["shard_count"] = len(candidate["shards"])
+                    candidate["status"] = "incomplete" if any(not entry["rows"] for entry in candidate["symbols"]) else "results_only"
+                    _publish_historical_state(candidate, destination, "checkpoint.json")
+                    checkpoint = candidate
     except Exception as exc:
         manifest["failures"].append({"error": type(exc).__name__})
     manifest["symbols"].sort(key=lambda entry: entry["symbol"])
+    manifest["shards"].sort(key=lambda entry: entry["path"])
+    manifest["failures"].sort(key=lambda entry: (entry.get("symbol", ""), entry["error"]))
     accounted = {entry["symbol"] for entry in manifest["symbols"]}
     for symbol, exchange in manifest["members"]:
         if symbol not in accounted:
@@ -657,6 +700,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--historical", action="store_true")
     parser.add_argument("--resume", action="store_true", help="Validate a committed run or resume unfinished symbols from batch checkpoints")
+    parser.add_argument("--workers", type=int, help="Historical symbol workers (1..16; default 1)")
     parser.add_argument("--universe", type=Path)
     parser.add_argument("--start")
     parser.add_argument("--end")
@@ -672,15 +716,18 @@ def main() -> None:
             parser.error("--historical requires --universe --start --end --as-of --output DIRECTORY")
         if args.incremental or args.listing_path is not None or args.checkpoint_path != CHECKPOINT_PATH or args.hours_back != DEFAULT_HOURS_BACK or args.max_articles_per_source != 100000:
             parser.error("legacy options cannot be combined with --historical")
+        if args.workers is not None and not 1 <= args.workers <= 16:
+            parser.error("--workers must be within 1..16")
         try:
-            manifest = build_historical_news_sentiment(args.universe, args.start, args.end, args.as_of, args.output, **({"resume": True} if args.resume else {}))
+            manifest = build_historical_news_sentiment(args.universe, args.start, args.end, args.as_of, args.output,
+                **({"resume": True} if args.resume else {}), **({"workers": args.workers} if args.workers is not None else {}))
         except Exception as exc:
             parser.exit(1, f"historical collection failed: {type(exc).__name__}\n")
         if manifest["status"] != "results_only":
             parser.exit(1, "historical collection incomplete or failed; inspect output manifest.json\n")
         return
-    if args.resume or any(value is not None for value in (args.universe, args.start, args.end, args.as_of)):
-        parser.error("--universe --start --end --as-of --resume require --historical")
+    if args.resume or any(value is not None for value in (args.universe, args.start, args.end, args.as_of, args.workers)):
+        parser.error("--universe --start --end --as-of --resume --workers require --historical")
     build_news_sentiment(args.output or OUTPUT_PATH, hours_back=args.hours_back, incremental=args.incremental, checkpoint_path=args.checkpoint_path, listing_path=args.listing_path, max_articles_per_source=args.max_articles_per_source)
 
 

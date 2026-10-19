@@ -371,12 +371,13 @@ def test_cafef_url_ict_exact_timestamp_and_close_boundary():
 
 @pytest.mark.parametrize("url", [
     None, "", "https://cafef.vn/x-188150230153000123.chn",
-    "https://cafef.vn/x-18815010115300012.chn", "https://cafef.vn/x-20150101153000123.chn",
+    "https://cafef.vn/x-18815010115300012.chn", "https://cafef.vn/x-2015010115300012.chn",
     "https://secret:password@cafef.vn/x-188150101153000123.chn",
     "https://127.0.0.1/x-188150101153000123.chn", "https://2130706433/x-188150101153000123.chn",
     "https://[::ffff:127.0.0.1]/x-188150101153000123.chn",
     "https://cafef.vn.evil.test/x-188150101153000123.chn",
-])
+], ids=["none", "empty", "invalid-calendar", "short-modern", "invalid-legacy-length",
+    "userinfo", "literal-ipv4", "legacy-ipv4", "embedded-ipv4", "untrusted-host"])
 def test_cafef_timestamp_rejects_malformed_or_untrusted_url(url):
     with pytest.raises(ValueError) as error:
         parse_cafef_timestamp(url)
@@ -391,13 +392,13 @@ def test_cafef_controls_fail_before_network(kwargs):
         CafeFHistoricalCrawler(**kwargs)
 
 
-def _cafef_fake(monkeypatch, listings, *, max_pages=500):
+def _cafef_fake(monkeypatch, listings, *, max_pages=500, article=CAFEF_ARTICLE):
     crawler = CafeFHistoricalCrawler(max_pages=max_pages, sleeper=lambda _: None, clock=lambda: CAFEF_FETCHED)
     calls = []
 
     def request(url):
         calls.append(url)
-        return b"<h1>Tang truong</h1>" if url == CAFEF_ARTICLE else listings[len([c for c in calls if 'tim-kiem' in c]) - 1]
+        return b"<h1>Tang truong</h1>" if url == article else listings[len([c for c in calls if 'tim-kiem' in c]) - 1]
 
     monkeypatch.setattr(crawler, "_request", request)
     return crawler, calls
@@ -478,19 +479,23 @@ def test_cafef_http_failures_close_connections_and_exhaust(monkeypatch, status):
     assert len(closes) == len(calls) == (3 if status in {429, 503} else 1)
 
 
+@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "20150101153000123"])
 @pytest.mark.parametrize("field,value", [("available_at", datetime(2015, 1, 1, 8, 30, tzinfo=timezone.utc)), ("origin_ticker", None), ("origin_exchange", "UPCOM"), ("universe_id", "unverified"), ("published_at", CAFEF_FETCHED)])
-def test_cafef_unverified_provenance_cannot_inherit_pit(monkeypatch, field, value):
-    crawler, _ = _cafef_fake(monkeypatch, [f'<a href="{CAFEF_ARTICLE}">Story</a>'.encode()])
+def test_cafef_unverified_provenance_cannot_inherit_pit(monkeypatch, field, value, stamp):
+    article = f"https://cafef.vn/story-{stamp}.chn"
+    crawler, _ = _cafef_fake(monkeypatch, [f'<a href="{article}">Story</a>'.encode()], article=article)
     record = list(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED))[0][0]
     record[field] = value
     with pytest.raises(ValueError):
         MacroNewsPipeline._frame([record])
 
 
+@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "20150101153000123"])
 @pytest.mark.parametrize("fault", ["write", "replace"])
-def test_cafef_persist_fault_keeps_prior_store(tmp_path, monkeypatch, fault):
+def test_cafef_persist_fault_keeps_prior_store(tmp_path, monkeypatch, fault, stamp):
     import omega.data.macro_news_pipeline as module
-    crawler, _ = _cafef_fake(monkeypatch, [f'<a href="{CAFEF_ARTICLE}">Story</a>'.encode()])
+    article = f"https://cafef.vn/story-{stamp}.chn"
+    crawler, _ = _cafef_fake(monkeypatch, [f'<a href="{article}">Story</a>'.encode()], article=article)
     records = list(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED))[0]
     frame = MacroNewsPipeline._frame(records)
     output = tmp_path / "research.parquet"
@@ -549,10 +554,12 @@ def test_cafef_historical_cli_projection_manifest_and_collision(tmp_path, monkey
         cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED, "data/historical_news/run", crawler=crawler)
 
 
+@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "20150101153000123"])
 @pytest.mark.parametrize("fault", ["crawl", "write", "fsync", "replace", "identity"])
-def test_cafef_historical_cli_faults_never_publish_success(tmp_path, monkeypatch, fault):
+def test_cafef_historical_cli_faults_never_publish_success(tmp_path, monkeypatch, fault, stamp):
     cli = _historical_cli_fixture(tmp_path, monkeypatch)
-    crawler, _ = _cafef_fake(monkeypatch, [f'<a href="{CAFEF_ARTICLE}">Story</a>'.encode()])
+    article = f"https://cafef.vn/story-{stamp}.chn"
+    crawler, _ = _cafef_fake(monkeypatch, [f'<a href="{article}">Story</a>'.encode()], article=article)
     def fail(*a, **k): raise OSError("https://secret:password@cafef.vn/?token=SECRET")
     if fault == "crawl":
         monkeypatch.setattr(crawler, "crawl_symbol", fail)
@@ -1524,3 +1531,245 @@ def test_historical_legacy_rationale_resume_is_read_only(committed_historical_ru
     before = {p.name: p.read_bytes() for p in root.iterdir()}
     assert _run_batch(cli, resume=True) == manifest
     assert {p.name: p.read_bytes() for p in root.iterdir()} == before
+
+
+@pytest.mark.parametrize("suffix", ["", "000", "123", "999"])
+@pytest.mark.parametrize("stamp, expected", [
+    ("20150101153000", datetime(2015, 1, 1, 8, 30, tzinfo=timezone.utc)),
+    ("20160229000000", datetime(2016, 2, 28, 17, tzinfo=timezone.utc)),
+    ("18820101153000", datetime(1882, 1, 1, 8, 30, tzinfo=timezone.utc)),
+    ("20261018235959", datetime(2026, 10, 18, 16, 59, 59, tzinfo=timezone.utc)),
+    ("20261019170243", datetime(2026, 10, 19, 10, 2, 43, tzinfo=timezone.utc)),
+])
+def test_cafef_legacy_timestamp_ict_calendar(stamp, expected, suffix):
+    assert parse_cafef_timestamp(f"https://cafef.vn/story-{stamp}{suffix}.chn") == expected
+
+
+@pytest.mark.parametrize("value", [None, [], {}, 0, True, float("nan"), float("inf"), -float("inf"), 10**20,
+    "https://cafef.vn/story-00010101000000.chn", "https://cafef.vn/story-00000101000000.chn",
+    "https://cafef.vn/story-20150229153000.chn", "https://cafef.vn/story-20150101240000.chn",
+    "https://cafef.vn/story-20150101153060.chn", "https://cafef.vn/story-2015010115300.chn",
+    "https://cafef.vn/story-201501011530000.chn", "https://cafef.vn/story-２０１５０１０１１５３０００.chn",
+    "https://cafef.vn/story-20150101153000.chn?token=SECRET",
+    "https://secret:password@cafef.vn/story-20150101153000.chn"],
+    ids=["none", "list-input", "dict", "zero", "bool", "nan", "inf", "negative-inf", "overflow",
+        "early-year", "zero-year", "non-leap-day", "hour-overflow", "second-overflow",
+        "short-stamp", "long-stamp", "unicode-digits", "query", "userinfo"])
+def test_cafef_legacy_timestamp_rejects_untrusted_values(value):
+    with pytest.raises(ValueError) as error:
+        parse_cafef_timestamp(value)
+    assert all(secret not in str(error.value) for secret in ("SECRET", "password", "secret:"))
+
+
+@pytest.mark.parametrize("suffix", ["", "000", "123", "999"])
+@pytest.mark.parametrize("boundary", ["start", "end"])
+@pytest.mark.parametrize("offset", [-1, 0, 1])
+def test_cafef_legacy_discovery_raw_stamp_cutoff(monkeypatch, suffix, boundary, offset):
+    article = f"https://cafef.vn/story-20150101153000{suffix}.chn"
+    crawler, calls = _cafef_fake(monkeypatch, [f'<a href="{article}">Story</a>'.encode()], article=article)
+    published = datetime(2015, 1, 1, 8, 30, tzinfo=timezone.utc)
+    start, end = published - timedelta(days=1), published + timedelta(days=1)
+    if boundary == "start": start = published + timedelta(microseconds=offset)
+    else: end = published + timedelta(microseconds=offset)
+    rows = [row for page in crawler.crawl_symbol("AAA", "UPCOM", start, end) for row in page]
+    expected = int(offset <= 0 if boundary == "start" else offset >= 0)
+    assert len(rows) == expected
+    assert calls.count(article) == expected
+    if rows:
+        assert rows[0]["raw_timestamp"] == "20150101153000"
+        assert rows[0]["published_at"] == published
+        assert rows[0]["available_at"] == rows[0]["ingested_at"] == CAFEF_FETCHED
+        assert rows[0]["timestamp_precision"] == "second"
+        assert rows[0]["canonical_url"] == article
+        assert rows[0]["source_record_id"] == f"/story-20150101153000{suffix}.chn"
+        assert rows[0]["origin_exchange"] == "UPCOM"
+        MacroNewsPipeline._frame(rows)
+
+
+@pytest.mark.parametrize("suffix", ["", "123"])
+@pytest.mark.parametrize("stamp", ["00010101000000", "00000101000000", "20150229153000", "20151301153000",
+    "20150132153000", "20150101240000", "20150101156000", "20150101153060"])
+def test_cafef_legacy_timestamp_rejects_invalid_calendar(stamp, suffix):
+    with pytest.raises(ValueError, match="CafeF publication timestamp invalid"):
+        parse_cafef_timestamp(f"https://cafef.vn/story-{stamp}{suffix}.chn")
+
+
+@pytest.mark.parametrize("tail", ["0", "00", "0000", "000000", "12x", "１２３", "123.chn/extra", "123.chn\n",
+    "123.chn?token=SECRET", "123.chn#SECRET", "123.chn\t", "123.chn\\extra"],
+    ids=["one-digit", "two-digits", "four-digits", "six-digits", "non-digit", "unicode-digits",
+        "extra-path", "newline", "query", "fragment", "tab", "backslash"])
+def test_cafef_legacy_timestamp_suffix_rejects_malformed_url(tail):
+    with pytest.raises(ValueError) as error:
+        parse_cafef_timestamp(f"https://cafef.vn/story-20150101153000{tail}.chn" if ".chn" not in tail
+            else f"https://cafef.vn/story-20150101153000{tail}")
+    assert "SECRET" not in str(error.value)
+
+
+@pytest.mark.parametrize("stamp, instant", [
+    ("18820101153000123", datetime(1882, 1, 1, 8, 30, tzinfo=timezone.utc)),
+    ("20150101000000123", datetime(2014, 12, 31, 17, tzinfo=timezone.utc)),
+    ("188150101000000123", datetime(2014, 12, 31, 17, tzinfo=timezone.utc)),
+])
+def test_cafef_discovery_year_prefilter_preserves_ict_boundary(monkeypatch, stamp, instant):
+    article = f"https://cafef.vn/story-{stamp}.chn"
+    crawler, calls = _cafef_fake(monkeypatch, [f'<a href="{article}">Story</a>'.encode()], article=article)
+    rows = [row for page in crawler.crawl_symbol("AAA", "HSX", instant, instant) for row in page]
+    assert len(rows) == 1
+    assert rows[0]["published_at"] == instant
+    assert calls.count(article) == 1
+
+
+@pytest.mark.parametrize("stamp", ["18825030421541886", "20150230153000", "20150230153000123"])
+@pytest.mark.parametrize("year", [1882, 2015, 2026])
+def test_cafef_discovery_year_prefilter_invalid_calendar(monkeypatch, stamp, year):
+    article = f"https://cafef.vn/story-{stamp}.chn"
+    crawler, calls = _cafef_fake(monkeypatch, [f'<a href="{article}">Story</a>'.encode()], article=article)
+    start, end = datetime(year, 1, 1, tzinfo=timezone.utc), datetime(year, 12, 30, tzinfo=timezone.utc)
+    if int(stamp[:4]) == year:
+        with pytest.raises(ValueError, match="CafeF publication timestamp invalid"):
+            list(crawler.crawl_symbol("AAA", "HSX", start, end))
+    else:
+        assert list(crawler.crawl_symbol("AAA", "HSX", start, end)) == [[]]
+    assert article not in calls
+
+
+def test_cafef_legacy_suffix_identity_parquet_roundtrip(tmp_path, monkeypatch):
+    articles = [f"https://cafef.vn/story-20150101153000{suffix}.chn" for suffix in ("", "000", "123", "999")]
+    crawler = CafeFHistoricalCrawler(sleeper=lambda _: None, clock=lambda: CAFEF_FETCHED)
+    monkeypatch.setattr(crawler, "_request", lambda url: "".join(f'<a href="{article}">Story</a>' for article in articles).encode()
+        if "tim-kiem" in url else b"<h1>Story</h1>")
+    records = [row for page in crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED) for row in page]
+    frame = MacroNewsPipeline._frame(records)
+    assert len(frame) == frame["raw_record_id"].nunique() == frame["source_record_id"].nunique() == 4
+    assert set(frame["raw_timestamp"]) == {"20150101153000"}
+    assert set(frame["canonical_url"]) == set(articles)
+    assert set(frame["published_at"]) == {pd.Timestamp("2015-01-01T08:30:00Z")}
+    output = tmp_path / "research.parquet"
+    MacroNewsPipeline.persist(frame, output)
+    MacroNewsPipeline.persist(frame, output)
+    stored = pd.read_parquet(output)
+    MacroNewsPipeline._validate(stored)
+    assert len(stored) == 4
+    assert set(stored["canonical_url"]) == set(articles)
+    assert (stored["available_at"] == stored["ingested_at"]).all()
+    assert (stored["available_at"] > stored["published_at"]).all()
+
+
+@pytest.mark.parametrize("workers", [None, True, "2", [], 0, -1, 1.5, 17, 10**20, float("nan"), float("inf"), -float("inf")])
+def test_historical_worker_bounds_before_mutation(tmp_path, monkeypatch, workers):
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    with pytest.raises(ValueError):
+        cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED,
+            "data/historical_news/run", workers=workers)
+    assert not (tmp_path / "data").exists()
+
+
+def test_historical_workers_reject_shared_crawler(tmp_path, monkeypatch):
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="isolated"):
+        cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED,
+            "data/historical_news/run", workers=2, crawler=object())
+    assert not (tmp_path / "data").exists()
+
+
+@pytest.mark.parametrize("stamp", ["20150101153000", "20150101153000123"])
+@pytest.mark.parametrize("fault", [None, "provider", "projection", "checkpoint", "manifest"])
+def test_historical_parallel_isolation_failure_resume(tmp_path, monkeypatch, fault, stamp):
+    import threading
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    members = [("AAA", "HSX"), ("BBB", "UPCOM"), ("CCC", "HNX"), ("DDD", "HSX")]
+    _batch_universe(tmp_path, members)
+    barrier, lock = threading.Barrier(2), threading.Lock()
+    article = f"https://cafef.vn/story-{stamp}.chn"
+    calls, collectors, active = [], [], set()
+    peak = [0]
+    class Provider:
+        def __init__(self, **kwargs): collectors.append(self)
+        def crawl_symbol(self, symbol, exchange, lower, upper):
+            with lock:
+                calls.append(symbol)
+                active.add(symbol)
+                peak[0] = max(peak[0], len(active))
+                first = len(calls) <= 2
+            try:
+                if first: barrier.wait(timeout=10)
+                if fault == "provider" and symbol == "BBB":
+                    raise TimeoutError("https://secret:password@cafef.vn/?token=SECRET")
+                crawler = CafeFHistoricalCrawler(sleeper=lambda _: None, clock=lambda: CAFEF_FETCHED)
+                crawler._request = lambda url: f'<a href="{article}">Story</a>'.encode() if "tim-kiem" in url else b"<h1>Story</h1>"
+                yield from crawler.crawl_symbol(symbol, exchange, lower, upper)
+            finally:
+                with lock: active.remove(symbol)
+    monkeypatch.setattr("omega.data.macro_news_pipeline.CafeFHistoricalCrawler", Provider)
+    publish, write = cli._publish_historical_state, cli._write_historical_shard
+    owner = threading.get_ident()
+    def publication(value, destination, name):
+        assert threading.get_ident() == owner
+        if (fault == "checkpoint" and name == "checkpoint.json" and value["symbols"]
+                or fault == "manifest" and name == "manifest.json"):
+            raise OSError("publication fault")
+        publish(value, destination, name)
+    def shard(table, path, entries):
+        if fault == "projection" and path.name == "BBB-UPCOM-0001-v10.parquet":
+            raise OSError("projection fault")
+        write(table, path, entries)
+    monkeypatch.setattr(cli, "_publish_historical_state", publication)
+    monkeypatch.setattr(cli, "_write_historical_shard", shard)
+    def run(workers, resume=False):
+        return cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED,
+            "data/historical_news/run", workers=workers, resume=resume)
+    if fault == "manifest":
+        with pytest.raises(OSError): run(2)
+    else:
+        result = run(2)
+        assert result["status"] == ("results_only" if fault is None else "failed")
+        assert all(secret not in str(result) for secret in ("password", "SECRET", "token="))
+    assert peak[0] == 2 and not active
+    assert len({id(collector) for collector in collectors}) == len(calls)
+    root = tmp_path / "data/historical_news/run"
+    assert not (root / "batch.lock").exists()
+    monkeypatch.setattr(cli, "_publish_historical_state", publish)
+    monkeypatch.setattr(cli, "_write_historical_shard", write)
+    committed = cli.read_historical_manifest("data/historical_news/run", checkpoint=True)
+    done = {entry["symbol"] for entry in committed["symbols"]}
+    resumed = []
+    class Recovery:
+        def __init__(self, **kwargs): pass
+        def crawl_symbol(self, symbol, exchange, lower, upper):
+            resumed.append(symbol)
+            crawler = CafeFHistoricalCrawler(sleeper=lambda _: None, clock=lambda: CAFEF_FETCHED)
+            crawler._request = lambda url: f'<a href="{article}">Story</a>'.encode() if "tim-kiem" in url else b"<h1>Story</h1>"
+            yield from crawler.crawl_symbol(symbol, exchange, lower, upper)
+    monkeypatch.setattr("omega.data.macro_news_pipeline.CafeFHistoricalCrawler", Recovery)
+    result = run(1, resume=True)
+    assert result["status"] == "results_only"
+    assert set(resumed) == {symbol for symbol, _ in members} - done
+    assert cli.read_historical_manifest("data/historical_news/run") == result
+    assert result["shard_count"] == 8
+
+
+@pytest.mark.parametrize("flags, expected", [(["--workers", "2"], 0), (["--workers", "16"], 0), (["--workers", "0"], 2),
+    (["--workers", "17"], 2), (["--workers", "nan"], 2), (["--workers", "--output"], 2)])
+def test_historical_workers_cli_validation(monkeypatch, flags, expected):
+    import sys
+    from scripts import fetch_news_sentiment as cli
+    calls = []
+    monkeypatch.setattr(cli, "build_historical_news_sentiment", lambda *args, **kwargs: calls.append(kwargs) or {"status": "results_only"})
+    monkeypatch.setattr(sys, "argv", ["fetch_news_sentiment.py", "--historical", "--universe", "universe.json",
+        "--start", "2015-01-01", "--end", "2026-10-18", "--as-of", CAFEF_FETCHED.isoformat(),
+        "--output", "data/historical_news/run", *flags])
+    if expected:
+        with pytest.raises(SystemExit) as error: cli.main()
+        assert error.value.code == expected and not calls
+    else:
+        cli.main()
+        assert calls == [{"workers": int(flags[1])}]
+
+
+def test_historical_workers_require_historical_cli(monkeypatch):
+    import sys
+    from scripts import fetch_news_sentiment as cli
+    monkeypatch.setattr(sys, "argv", ["fetch_news_sentiment.py", "--workers", "1"])
+    monkeypatch.setattr(cli, "build_news_sentiment", lambda *a, **k: pytest.fail("legacy collection must not run"))
+    with pytest.raises(SystemExit) as error: cli.main()
+    assert error.value.code == 2
