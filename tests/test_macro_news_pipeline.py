@@ -365,13 +365,20 @@ CAFEF_ARTICLE = "https://cafef.vn/story-188150101153000123.chn"
 CAFEF_FETCHED = datetime(2026, 10, 18, 16, 43, 57, tzinfo=timezone.utc)
 
 
-def test_cafef_url_ict_exact_timestamp_and_close_boundary():
-    assert parse_cafef_timestamp(CAFEF_ARTICLE) == datetime(2015, 1, 1, 8, 30, tzinfo=timezone.utc)
+@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "2015010115300012", "20150101153000123"])
+def test_cafef_url_ict_exact_timestamp_and_close_boundary(stamp):
+    assert parse_cafef_timestamp(f"https://cafef.vn/story-{stamp}.chn") == datetime(2015, 1, 1, 8, 30, tzinfo=timezone.utc)
+
+
+@pytest.mark.parametrize("stamp", ["201501011530001", "201501011530001234", "2015023015300012", "2015010124600012", "2015010115300012extra"])
+def test_cafef_timestamp_suffix_bounds_and_calendar(stamp):
+    with pytest.raises(ValueError):
+        parse_cafef_timestamp(f"https://cafef.vn/story-{stamp}.chn")
 
 
 @pytest.mark.parametrize("url", [
     None, "", "https://cafef.vn/x-188150230153000123.chn",
-    "https://cafef.vn/x-18815010115300012.chn", "https://cafef.vn/x-2015010115300012.chn",
+    "https://cafef.vn/x-18815010115300012.chn", "https://cafef.vn/x-201501011530001.chn",
     "https://secret:password@cafef.vn/x-188150101153000123.chn",
     "https://127.0.0.1/x-188150101153000123.chn", "https://2130706433/x-188150101153000123.chn",
     "https://[::ffff:127.0.0.1]/x-188150101153000123.chn",
@@ -417,6 +424,158 @@ def test_cafef_pagination_overlap_and_research_only_availability(monkeypatch):
     assert record["published_at"] == published
     assert record["origin_ticker"] == "AAA"
     assert len(calls) == 3
+
+
+@pytest.mark.parametrize("detail,listing,expected", [
+    ("<h1>Heading &amp; title</h1><meta property='og:title' content='Metadata'><title>Document</title>", "Listing", "Heading & title"),
+    ("<h1> \n </h1><meta property='og:title' content='  E-magazine &amp; title  '><title>Document</title>", "Listing", "E-magazine & title"),
+    ("<meta property='og:title' content=' '><meta name='OG:TITLE' content='Metadata'>", "Listing", "Metadata"),
+    ("<title> Document \n &amp; title </title>", "Listing", "Document & title"),
+    ("<html>no heading</html>", "  Listing &amp; title  ", "Listing & title"),
+    ("<html>no heading</html>", "", "Attribute title"),
+], ids=["heading", "metadata", "metadata_name", "document", "listing", "attribute"])
+def test_cafef_emag_title_fallback_precedence(monkeypatch, detail, listing, expected):
+    import hashlib
+    crawler = CafeFHistoricalCrawler(sleeper=lambda _: None, clock=lambda: CAFEF_FETCHED)
+    page = f'<a href="{CAFEF_ARTICLE}" title="Attribute title">{listing}</a><a href="{CAFEF_ARTICLE}"></a>'.encode()
+    calls = []
+    def request(url):
+        calls.append(url)
+        return page if "tim-kiem" in url else detail.encode()
+    monkeypatch.setattr(crawler, "_request", request)
+    published = parse_cafef_timestamp(CAFEF_ARTICLE)
+    record = list(crawler.crawl_symbol("AAA", "HSX", published, published))[0][0]
+    assert record["title"] == expected
+    assert record["payload_sha256"] == hashlib.sha256(detail.encode()).hexdigest()
+    assert record["available_at"] == record["ingested_at"] == CAFEF_FETCHED
+    assert len(calls) == 2
+    MacroNewsPipeline._frame([record])
+
+
+@pytest.mark.parametrize("source", ["h1", "metadata", "document", "listing", "missing"])
+@pytest.mark.parametrize("length", [100_000, 100_001])
+def test_cafef_emag_title_bounds_fail_closed(monkeypatch, source, length):
+    title = "x" * length
+    detail = {"h1": f"<h1>{title}</h1>", "metadata": f'<meta property="og:title" content="{title}">',
+              "document": f"<title>{title}</title>"}.get(source, "<h1> </h1><title> </title>")
+    listing = title if source == "listing" else "" if source == "missing" else "Valid fallback"
+    crawler = CafeFHistoricalCrawler(sleeper=lambda _: None, clock=lambda: CAFEF_FETCHED)
+    monkeypatch.setattr(crawler, "_request", lambda url: f'<a href="{CAFEF_ARTICLE}">{listing}</a>'.encode() if "tim-kiem" in url else detail.encode())
+    pages = crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED)
+    if source == "missing" or length > 100_000:
+        with pytest.raises(ValueError, match="detail title rejected"):
+            list(pages)
+    else:
+        assert list(pages)[0][0]["title"] == title
+
+
+@pytest.mark.parametrize("marker", [
+    "<p>KHÔNG <b>TÌM</b> THẤY</p>", "<p>Không&nbsp;tìm&#32;thấy tin bài</p>", "﻿<p>Không\r\n tìm thấy</p>",
+    "<p>Không có gì để hiển thị</p>", "<p>KHÔNG <b>CÓ GÌ</b> ĐỂ HIỂN THỊ</p>", "﻿<p>Không&nbsp;có&#32;gì\r\n để hiển thị</p>",
+    "<p>Không có gì</p>", "<p>KHÔNG <b>CÓ</b> GÌ</p>", "﻿<p>Không&nbsp;có&#32;gì\r\n</p>",
+], ids=["not-found-case", "not-found-entities", "not-found-bom", "nothing-display", "nothing-display-case",
+        "nothing-display-entities-bom", "nothing", "nothing-case", "nothing-entities-bom"])
+def test_cafef_empty_listing_normalizes_visible_text(monkeypatch, marker):
+    crawler, calls = _cafef_fake(monkeypatch, [marker.encode()])
+    assert list(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED)) == [[]]
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("payload", [b"", b"<html>blocked</html>", "<script>Không tìm thấy</script>".encode(), "<!--Không tìm thấy-->".encode(), "<style>Không tìm thấy</style>".encode()])
+def test_cafef_unknown_empty_listing_fails_closed(monkeypatch, payload):
+    crawler, _ = _cafef_fake(monkeypatch, [payload])
+    with pytest.raises(ValueError, match="unknown empty listing"):
+        list(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED))
+
+
+@pytest.mark.parametrize("marker", ["Không tìm thấy", "Không có gì để hiển thị", "Không có gì"],
+                         ids=["not-found", "nothing-display", "nothing"])
+@pytest.mark.parametrize("wrapper", ["<script>{}</script>", "<style>{}</style>", "<title>{}</title>", "<!--{}-->"],
+                         ids=["script", "style", "title", "comment"])
+def test_cafef_hidden_empty_markers_fail_closed(monkeypatch, marker, wrapper):
+    crawler, calls = _cafef_fake(monkeypatch, [wrapper.format(marker).encode()])
+    with pytest.raises(ValueError, match="CafeF unknown empty listing incomplete"):
+        list(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("marker", ["", "<p>Không có gì để hiển thị</p>", "<p>Không có gì</p>"],
+                         ids=["no-marker", "nothing-display", "nothing"])
+def test_cafef_empty_intermediate_listing_continues(monkeypatch, marker):
+    first = (marker + '<a rel="next" href="/tim-kiem.chn?keywords=AAA&amp;page=2">Next</a>').encode()
+    second = f'<a href="{CAFEF_ARTICLE}">Story</a>'.encode()
+    crawler, calls = _cafef_fake(monkeypatch, [first, second])
+    pages = list(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED))
+    assert list(map(len, pages)) == [0, 1]
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("marker", ["Không tìm thấy", "Không tìm thấy tin bài", "Không có gì để hiển thị", "Không có gì"],
+                         ids=["not-found", "not-found-articles", "nothing-display", "nothing"])
+@pytest.mark.parametrize("wrapper", ["<p>{} đáng lo</p><p>Maintenance</p>", "<p>Thông báo: {}</p>", '<p>"{}"</p>'],
+                         ids=["suffix", "prefix", "quoted"])
+def test_cafef_unrelated_empty_marker_prose_fails_closed(monkeypatch, marker, wrapper):
+    crawler, calls = _cafef_fake(monkeypatch, [wrapper.format(marker).encode()])
+    with pytest.raises(ValueError, match="CafeF unknown empty listing incomplete"):
+        list(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED))
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("markup,accepted", [
+    ('<div id="search_result_empty"><p>Không tìm thấy tin bài nào phù hợp với từ khóa AAA</p></div>', True),
+    ('<nav>Navigation</nav><div id="search_result_empty"><div><p>KHÔNG TÌM THẤY TIN BÀI NÀO PHÙ HỢP VỚI TỪ KHÓA aaa</p></div></div><footer>Footer</footer>', True),
+    ('<div id="search_result_empty"><p>Không tìm thấy tin bài nào phù hợp với từ khóa BBB</p></div>', False),
+    ('<div id="search_result_empty"><p>Không tìm thấy tin bài nào phù hợp với từ khóa AAA đáng lo</p></div>', False),
+    ('<div id="search_result_empty"><p>Thông báo: Không tìm thấy tin bài nào phù hợp với từ khóa AAA</p></div>', False),
+    ('<div id="other"><p>Không tìm thấy tin bài nào phù hợp với từ khóa AAA</p></div>', False),
+    ('<div id="search_result_empty"><script>Không tìm thấy tin bài nào phù hợp với từ khóa AAA</script></div>', False),
+    ('<div id="search_result_empty"><style>Không tìm thấy tin bài nào phù hợp với từ khóa AAA</style></div>', False),
+    ('<div id="search_result_empty"><title>Không tìm thấy tin bài nào phù hợp với từ khóa AAA</title></div>', False),
+    ('<div id="search_result_empty"><!--Không tìm thấy tin bài nào phù hợp với từ khóa AAA--></div>', False),
+    ('<div id="search_result_empty"></div><p>Không tìm thấy tin bài nào phù hợp với từ khóa AAA</p>', False),
+    ('<p>Khong co noi dung</p>', False),
+    ('<div id="search_result_empty"><p>Không tìm thấy tin bài nào phù hợp với từ khóa AAA</p>', False),
+    ('<div id="search_result_empty"><div>Không tìm thấy tin bài nào phù hợp với từ khóa AAA</div>', False),
+    ('<div id="search_result_empty">Không có gì', False),
+], ids=["bound", "nested-navigation", "wrong-ticker", "suffix", "prefix", "wrong-element", "script", "style", "title", "comment", "outside-element", "unrecognized", "unterminated", "unterminated-nested", "unterminated-generic"])
+def test_cafef_provider_empty_element_contract(monkeypatch, markup, accepted):
+    crawler, calls = _cafef_fake(monkeypatch, [markup.encode()])
+    pages = crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED)
+    if accepted:
+        assert list(pages) == [[]]
+    else:
+        with pytest.raises(ValueError, match="CafeF unknown empty listing incomplete"):
+            list(pages)
+    assert len(calls) == 1
+
+
+def test_cafef_partial_listing_rejects_unrecognized_terminal_page(monkeypatch):
+    first = f'<a href="{CAFEF_ARTICLE}">Story</a><a rel="next" href="/tim-kiem.chn?keywords=AAA&amp;page=2">Next</a>'.encode()
+    crawler, calls = _cafef_fake(monkeypatch, [first, "<p>Không có gì đáng lo</p><p>Maintenance</p>".encode()])
+    pages = crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED)
+    assert len(next(pages)) == 1
+    with pytest.raises(ValueError, match="CafeF unknown empty listing incomplete"):
+        next(pages)
+    assert len(calls) == 3
+
+
+def test_cafef_empty_listing_cycle_rejected_before_yield(monkeypatch):
+    first = b'<a rel="next" href="/tim-kiem.chn?keywords=AAA&amp;page=2">Next</a>'
+    second = b'<a rel="next" href="/tim-kiem.chn?keywords=AAA">Next</a><p>cycle</p>'
+    crawler, calls = _cafef_fake(monkeypatch, [first, second])
+    pages = crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED)
+    assert next(pages) == []
+    with pytest.raises(ValueError, match="pagination binding rejected"):
+        next(pages)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("next_link", ["https://secret:password@evil.test/", "/tim-kiem.chn?keywords=BBB&amp;page=2", "/tim-kiem.chn?keywords=AAA"])
+def test_cafef_empty_listing_unsafe_pagination_fails_closed(monkeypatch, next_link):
+    crawler, _ = _cafef_fake(monkeypatch, [f'<a rel="next" href="{next_link}">Next</a>'.encode()])
+    with pytest.raises(ValueError) as error:
+        next(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED))
+    assert not any(secret in str(error.value) for secret in ("secret", "password", "evil.test"))
 
 
 def test_cafef_shared_story_preserves_symbol_provenance(monkeypatch):
@@ -479,7 +638,7 @@ def test_cafef_http_failures_close_connections_and_exhaust(monkeypatch, status):
     assert len(closes) == len(calls) == (3 if status in {429, 503} else 1)
 
 
-@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "20150101153000123"])
+@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "2015010115300012", "20150101153000123"])
 @pytest.mark.parametrize("field,value", [("available_at", datetime(2015, 1, 1, 8, 30, tzinfo=timezone.utc)), ("origin_ticker", None), ("origin_exchange", "UPCOM"), ("universe_id", "unverified"), ("published_at", CAFEF_FETCHED)])
 def test_cafef_unverified_provenance_cannot_inherit_pit(monkeypatch, field, value, stamp):
     article = f"https://cafef.vn/story-{stamp}.chn"
@@ -490,7 +649,7 @@ def test_cafef_unverified_provenance_cannot_inherit_pit(monkeypatch, field, valu
         MacroNewsPipeline._frame([record])
 
 
-@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "20150101153000123"])
+@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "2015010115300012", "20150101153000123"])
 @pytest.mark.parametrize("fault", ["write", "replace"])
 def test_cafef_persist_fault_keeps_prior_store(tmp_path, monkeypatch, fault, stamp):
     import omega.data.macro_news_pipeline as module
@@ -513,7 +672,7 @@ def test_cafef_persist_fault_keeps_prior_store(tmp_path, monkeypatch, fault, sta
 def test_cafef_response_and_detail_faults_fail_closed(monkeypatch, fault):
     if fault in {"utf8", "title"}:
         crawler = CafeFHistoricalCrawler(sleeper=lambda _: None, clock=lambda: CAFEF_FETCHED)
-        monkeypatch.setattr(crawler, "_request", lambda url: f'<a href="{CAFEF_ARTICLE}">Story</a>'.encode() if "tim-kiem" in url else (b"\xff" if fault == "utf8" else b"<html>no title</html>"))
+        monkeypatch.setattr(crawler, "_request", lambda url: f'<a href="{CAFEF_ARTICLE}"></a>'.encode() if "tim-kiem" in url else (b"\xff" if fault == "utf8" else b"<html>no title</html>"))
         with pytest.raises((ValueError, UnicodeError)):
             list(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED))
         return
@@ -554,7 +713,7 @@ def test_cafef_historical_cli_projection_manifest_and_collision(tmp_path, monkey
         cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED, "data/historical_news/run", crawler=crawler)
 
 
-@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "20150101153000123"])
+@pytest.mark.parametrize("stamp", ["188150101153000123", "20150101153000", "2015010115300012", "20150101153000123"])
 @pytest.mark.parametrize("fault", ["crawl", "write", "fsync", "replace", "identity"])
 def test_cafef_historical_cli_faults_never_publish_success(tmp_path, monkeypatch, fault, stamp):
     cli = _historical_cli_fixture(tmp_path, monkeypatch)
@@ -606,6 +765,55 @@ def test_cafef_old_pinned_story_never_ends_pagination(monkeypatch):
     crawler, _ = _cafef_fake(monkeypatch, [listing, f'<a href="{CAFEF_ARTICLE}">Story</a>'.encode()])
     pages = list(crawler.crawl_symbol("AAA", "HSX", datetime(2015, 1, 1, tzinfo=timezone.utc), CAFEF_FETCHED))
     assert list(map(len, pages)) == [0, 1]
+
+
+@pytest.mark.parametrize("marker", ["Không có gì để hiển thị", "Không có gì"], ids=["nothing-display", "nothing"])
+def test_cafef_empty_marker_cli_remains_incomplete(tmp_path, monkeypatch, marker):
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    crawler, calls = _cafef_fake(monkeypatch, [f"<p>{marker}</p>".encode()])
+    monkeypatch.setattr("omega.data.macro_news_pipeline.CafeFHistoricalCrawler", lambda **kwargs: crawler)
+    monkeypatch.setattr(sys, "argv", ["fetch_news_sentiment", "--historical", "--universe", "universe.json", "--start", "2015-01-01", "--end", "2026-10-18", "--as-of", CAFEF_FETCHED.isoformat(), "--output", "data/historical_news/run"])
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 1
+    manifest = cli.read_historical_manifest("data/historical_news/run")
+    outcome = manifest["symbols"][0]
+    assert manifest["status"] == outcome["status"] == "incomplete"
+    assert outcome["pages"] == 1 and outcome["rows"] == 0
+    assert outcome["terminal_reason"] == "no_articles_observed_history_unverified"
+    assert not manifest["pit_verified"] and not manifest["full_history_verified"]
+    assert not outcome["full_history_verified"] and not manifest["failures"]
+    assert len(manifest["shards"]) == 2 and all(shard["rows"] == 0 for shard in manifest["shards"])
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("partial", [False, True], ids=["first-page", "after-records"])
+def test_cafef_unknown_terminal_cli_failure_and_recovery(tmp_path, monkeypatch, partial):
+    import json
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    first = f'<a href="{CAFEF_ARTICLE}">Story</a><a rel="next" href="/tim-kiem.chn?keywords=AAA&amp;page=2">Next</a>'.encode()
+    unknown = "<p>Không có gì đáng lo</p><p>Maintenance</p>".encode()
+    crawler, _ = _cafef_fake(monkeypatch, [first, unknown] if partial else [unknown])
+    monkeypatch.setattr("omega.data.macro_news_pipeline.CafeFHistoricalCrawler", lambda **kwargs: crawler)
+    monkeypatch.setattr(sys, "argv", ["fetch_news_sentiment", "--historical", "--universe", "universe.json", "--start", "2015-01-01", "--end", "2026-10-18", "--as-of", CAFEF_FETCHED.isoformat(), "--output", "data/historical_news/run"])
+    with pytest.raises(SystemExit) as error:
+        cli.main()
+    assert error.value.code == 1
+    root = tmp_path / "data/historical_news/run"
+    failed = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
+    outcome = failed["symbols"][0]
+    assert failed["status"] == outcome["status"] == "failed"
+    assert outcome["pages"] == outcome["rows"] == int(partial)
+    assert outcome["terminal_reason"] == ("collection_error" if partial else "no_pages_observed")
+    assert failed["failures"] == [{"symbol": "AAA", "error": "ValueError"}]
+    assert not failed["pit_verified"] and not failed["full_history_verified"]
+    checkpoint = json.loads((root / "checkpoint.json").read_text(encoding="utf-8"))
+    assert checkpoint["symbols"] == checkpoint["shards"] == []
+    replacement, _ = _cafef_fake(monkeypatch, [f'<a href="{CAFEF_ARTICLE}">Story</a>'.encode()])
+    recovered = cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED, "data/historical_news/run", crawler=replacement, resume=True)
+    assert recovered["status"] == "results_only" and not recovered["failures"]
+    assert recovered["symbols"][0]["rows"] == recovered["symbols"][0]["pages"] == 1
+    assert cli.read_historical_manifest("data/historical_news/run") == recovered
 
 
 def test_cafef_cli_exit_nonzero_for_failed_collection(tmp_path, monkeypatch):
@@ -1023,11 +1231,10 @@ def test_cafef_captured_responses_replay_production_crawler(monkeypatch, cafef_c
     monkeypatch.setattr("omega.data.macro_news_pipeline.socket.getaddrinfo", lambda *a, **k: pytest.fail("captured replay must stay offline"))
     monkeypatch.setattr(crawler, "_request", request)
     # Inclusive publication range isolates the one detail capture, not 17 fabricated responses.
-    if fault:
+    if fault and fault != "detail_title":
         error, message = {
             "listing_utf8": (UnicodeDecodeError, "utf-8"),
             "detail_utf8": (UnicodeDecodeError, "utf-8"),
-            "detail_title": (ValueError, "CafeF detail title rejected"),
             "detail_transport": (TimeoutError, "injected detail transport failure"),
         }[fault]
         with pytest.raises(error, match=message):
@@ -1046,7 +1253,8 @@ def test_cafef_captured_responses_replay_production_crawler(monkeypatch, cafef_c
     assert record["available_at"] == record["ingested_at"] == CAFEF_FETCHED
     assert record["published_at"] < record["available_at"]
     assert record["raw_timestamp"] == "261016210210"
-    assert record["payload_sha256"] == hashlib.sha256(article_bytes).hexdigest()
+    expected_payload = article_bytes.replace(b"<h1 ", b"<h2 ").replace(b"</h1>", b"</h2>") if fault == "detail_title" else article_bytes
+    assert record["payload_sha256"] == hashlib.sha256(expected_payload).hexdigest()
     assert (record["origin_ticker"], record["origin_exchange"]) == ("VCB", "HSX")
     assert record["source_kind"] == "cafef_historical"
     assert record["adapter_version"] == CAFEF_VERSION
@@ -1533,7 +1741,7 @@ def test_historical_legacy_rationale_resume_is_read_only(committed_historical_ru
     assert {p.name: p.read_bytes() for p in root.iterdir()} == before
 
 
-@pytest.mark.parametrize("suffix", ["", "000", "123", "999"])
+@pytest.mark.parametrize("suffix", ["", "00", "12", "99", "000", "123", "999"])
 @pytest.mark.parametrize("stamp, expected", [
     ("20150101153000", datetime(2015, 1, 1, 8, 30, tzinfo=timezone.utc)),
     ("20160229000000", datetime(2016, 2, 28, 17, tzinfo=timezone.utc)),
@@ -1561,7 +1769,7 @@ def test_cafef_legacy_timestamp_rejects_untrusted_values(value):
     assert all(secret not in str(error.value) for secret in ("SECRET", "password", "secret:"))
 
 
-@pytest.mark.parametrize("suffix", ["", "000", "123", "999"])
+@pytest.mark.parametrize("suffix", ["", "00", "12", "99", "000", "123", "999"])
 @pytest.mark.parametrize("boundary", ["start", "end"])
 @pytest.mark.parametrize("offset", [-1, 0, 1])
 def test_cafef_legacy_discovery_raw_stamp_cutoff(monkeypatch, suffix, boundary, offset):
@@ -1594,9 +1802,9 @@ def test_cafef_legacy_timestamp_rejects_invalid_calendar(stamp, suffix):
         parse_cafef_timestamp(f"https://cafef.vn/story-{stamp}{suffix}.chn")
 
 
-@pytest.mark.parametrize("tail", ["0", "00", "0000", "000000", "12x", "１２３", "123.chn/extra", "123.chn\n",
+@pytest.mark.parametrize("tail", ["0", "0000", "000000", "12x", "１２３", "123.chn/extra", "123.chn\n",
     "123.chn?token=SECRET", "123.chn#SECRET", "123.chn\t", "123.chn\\extra"],
-    ids=["one-digit", "two-digits", "four-digits", "six-digits", "non-digit", "unicode-digits",
+    ids=["one-digit", "four-digits", "six-digits", "non-digit", "unicode-digits",
         "extra-path", "newline", "query", "fragment", "tab", "backslash"])
 def test_cafef_legacy_timestamp_suffix_rejects_malformed_url(tail):
     with pytest.raises(ValueError) as error:

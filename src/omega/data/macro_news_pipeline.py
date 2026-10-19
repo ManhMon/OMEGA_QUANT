@@ -339,7 +339,7 @@ def historical_news_outcome(rows: int) -> dict[str, Any]:
 
 
 CAFEF_VERSION = "cafef-url-ict-v1"
-CAFEF_STAMP = re.compile(r"-(?:188([0-9]{12})[0-9]{3}|([0-9]{14})(?:[0-9]{3})?)\.chn$")
+CAFEF_STAMP = re.compile(r"-(?:188([0-9]{12})[0-9]{3}|([0-9]{14})(?:[0-9]{2,3})?)\.chn$")
 
 
 def _cafef_url(url: str) -> str:
@@ -388,31 +388,65 @@ class _CafeFPage(HTMLParser):
         self.links: list[tuple[str, str, str]] = []
         self.active: tuple[str, str] | None = None
         self.text: list[str] = []
+        self.link_title = ""
         self.title: list[str] = []
-        self.in_heading = False
+        self.meta_title = ""
+        self.document_title: list[str] = []
+        self.visible_text: list[str] = []
+        self.empty_text: list[str] = []
+        self.empty_depth = 0
+        self.in_heading = self.in_title = False
+        self.hidden: list[str] = []
         self.feed(page.decode("utf-8", errors="strict"))
         self.close()
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         fields = dict(attrs)
+        if tag in {"script", "style"}:
+            self.hidden.append(tag)
+        if self.hidden:
+            return
+        if tag == "div" and (self.empty_depth or fields.get("id") == "search_result_empty"):
+            self.empty_depth += 1
         if tag == "a":
             self.active = (fields.get("href") or "", fields.get("rel") or "")
             self.text = []
+            self.link_title = _text(fields.get("title"))
         if tag == "h1":
             self.in_heading = True
+        if tag == "title":
+            self.in_title = True
+        if tag == "meta" and not self.meta_title and (fields.get("property") or fields.get("name") or "").casefold() == "og:title":
+            self.meta_title = _text(fields.get("content"))
 
     def handle_endtag(self, tag: str) -> None:
+        if self.hidden:
+            if tag == self.hidden[-1]:
+                self.hidden.pop()
+            return
+        if tag == "div" and self.empty_depth:
+            self.empty_depth -= 1
         if tag == "a" and self.active:
-            self.links.append((*self.active, _text(" ".join(self.text))))
+            self.links.append((*self.active, _text(" ".join(self.text)) or self.link_title))
             self.active = None
         if tag == "h1":
             self.in_heading = False
+        if tag == "title":
+            self.in_title = False
 
     def handle_data(self, data: str) -> None:
+        if self.hidden:
+            return
+        if not self.in_title:
+            self.visible_text.append(data)
+            if self.empty_depth:
+                self.empty_text.append(data)
         if self.active:
             self.text.append(data)
         if self.in_heading:
             self.title.append(data)
+        if self.in_title:
+            self.document_title.append(data)
 
 
 class _CafeFConnection(http.client.HTTPSConnection):
@@ -494,8 +528,9 @@ class CafeFHistoricalCrawler:
         ict = timezone(timedelta(hours=7))
         first_year, last_year = start.astimezone(ict).year, end.astimezone(ict).year
         url = f"https://cafef.vn/tim-kiem.chn?keywords={symbol}"
-        pages, articles = set(), set()
+        pages, articles, visited = set(), set(), set()
         for _ in range(self.max_pages):
+            visited.add(url)
             payload = self._request(url)
             digest = hashlib.sha256(payload).hexdigest()
             if digest in pages:
@@ -507,15 +542,19 @@ class CafeFHistoricalCrawler:
                 candidate = urljoin(url, href)
                 if "next" in rel.split() or title.casefold() in {"trang sau", "sau", "next"}:
                     _cafef_url(candidate)
-                    if urlsplit(candidate).path != "/tim-kiem.chn" or f"keywords={symbol}" not in urlsplit(candidate).query.split("&"):
+                    if candidate in visited or urlsplit(candidate).path != "/tim-kiem.chn" or f"keywords={symbol}" not in urlsplit(candidate).query.split("&"):
                         raise ValueError("CafeF pagination binding rejected")
                     next_urls.add(candidate)
                 if CAFEF_STAMP.search(urlsplit(candidate).path):
                     _cafef_url(candidate)
-                    candidates[candidate] = title
+                    candidates[candidate] = candidates.get(candidate) or title
             if len(candidates) > 100 or len(next_urls) > 1:
                 raise ValueError("CafeF listing bounds rejected")
-            if not candidates and "không tìm thấy" not in payload.decode("utf-8").casefold():
+            if not candidates and not next_urls and (page.empty_depth or not (
+                    _text(" ".join(page.visible_text)).casefold().lstrip("﻿ ") in {
+                        "không tìm thấy", "không tìm thấy tin bài", "không có gì để hiển thị", "không có gì"}
+                    or _text(" ".join(page.empty_text)).casefold()
+                        == f"không tìm thấy tin bài nào phù hợp với từ khóa {symbol.casefold()}")):
                 raise ValueError("CafeF unknown empty listing incomplete")
             for article_url in sorted(candidates):
                 stamp = CAFEF_STAMP.search(urlsplit(article_url).path)
@@ -527,7 +566,9 @@ class CafeFHistoricalCrawler:
                     continue
                 articles.add(article_url)
                 detail = self._request(article_url)
-                title = _text(" ".join(_CafeFPage(detail).title))
+                detail_page = _CafeFPage(detail)
+                title = (_text(" ".join(detail_page.title)) or detail_page.meta_title
+                         or _text(" ".join(detail_page.document_title)) or candidates[article_url])
                 if not title or len(title) > 100_000:
                     raise ValueError("CafeF detail title rejected")
                 fetched = self.clock()
