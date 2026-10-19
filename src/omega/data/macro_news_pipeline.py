@@ -1,4 +1,10 @@
-"""Point-in-time-safe, provenance-preserving macro news ingestion."""
+"""Point-in-time-safe, provenance-preserving macro news ingestion.
+
+Historical cohorts are frozen collection scopes, not investable universes. The
+supplied 101-member cohort unions 100 liquid tickers ranked by traded value with
+VCB to ensure complete VN30 representation. Retain every snapshot member; this
+does not establish historical investability or historical index membership.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +12,10 @@ import hashlib
 import heapq
 import html
 import ipaddress
+import http.client
+import math
+import ssl
+from html.parser import HTMLParser
 import json
 import multiprocessing
 import os
@@ -21,7 +31,7 @@ from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any, Iterator, Mapping
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qs, urljoin, urlsplit, urlunsplit
 from xml.etree import ElementTree as ET
 
 import pandas as pd
@@ -35,7 +45,7 @@ V1_SCHEMA = ["source", "title", "summary", "url", "published_at", "available_at"
 DEFAULT_SOURCES = {"CafeF": ("rss", "https://cafef.vn/vi-mo-dau-tu.rss"), "Vietstock": ("rss", "https://vietstock.vn/kinh-te-vi-mo.rss"), "BaoChinhPhu": ("rss", "https://baochinhphu.vn/rss/kinh-te.rss"), "SBV": ("html", "https://www.sbv.gov.vn/webcenter/portal/vi/menu/trangchu/tin-tuc-su-kien"), "VCBS": ("html", "https://www.vcbs.com.vn/vn/Communication/Research"), "SSI": ("html", "https://www.ssi.com.vn/khach-hang-ca-nhan/bao-cao-phan-tich"), "VNDirect": ("html", "https://www.vndirect.com.vn/portal/bao-cao-phan-tich.shtml"), "VnEconomy": ("rss", "https://vneconomy.vn/rss/vi-mo.rss"), "BaoDauTu": ("rss", "https://baodautu.vn/rss/kinh-te.htm"), "TinNhanhChungKhoan": ("rss", "https://tinnhanhchungkhoan.vn/rss/vi-mo-kinh-te.rss")}
 USER_AGENT = "OMEGA_QUANT macro-news pipeline/2.0"
 SOURCE_TIERS = {"official", "multilateral", "institutional_research", "reputable_media", "aggregator"}
-SOURCE_KINDS = {"vnstock", "rss", "html", "pdf_research", "browser"}
+SOURCE_KINDS = {"vnstock", "rss", "html", "pdf_research", "browser", "cafef_historical"}
 ADAPTERS = {"vnstock", "rss", "html", "vcbs"}
 HOST_TOKEN = re.compile(r"(?:\*\.)?[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+")
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -318,6 +328,216 @@ def _record(source_id: str, source_name: str, source_kind: str, title: str, summ
     return {"schema_version": 2, "raw_record_id": _hash({"v": 1, "revision_id": revision_id, "provenance_id": provenance_id}), "article_id": article_id, "revision_id": revision_id, "provenance_id": provenance_id, "content_hash": content_hash, "story_hash": _hash({"title": title.lower()}), "source_id": source_id, "source_name": source_name, "source_tier": source_tier, "source_kind": source_kind, "origin_ticker": origin_ticker, "origin_exchange": origin_exchange, "universe_id": universe.universe_id if universe else None, "universe_version": universe.universe_version if universe else None, "universe_sha256": universe.universe_sha256 if universe else None, "universe_generated_at": universe.generated_at if universe else None, "universe_effective_from": universe.effective_from if universe else None, "universe_effective_to": universe.effective_to if universe else None, "source_record_id": source_record_id, "title": title, "summary": summary or None, "body_text": body_text or None, "url": url, "canonical_url": canonical_url, "language": "vi" if re.search(r"[À-ỹ]", title) else "unknown", "published_at": published_at, "source_updated_at": source_updated_at, "timestamp_precision": "second", "available_at": available_at, "ingested_at": ingested_at, "raw_timestamp": raw_timestamp or published_at.isoformat(), "payload_sha256": hashlib.sha256(payload or _canonical({"title": title, "url": url})).hexdigest(), "adapter_version": "macro_news_v2"}
 
 
+def historical_news_outcome(rows: int) -> dict[str, Any]:
+    """Accepted rows establish results, never verified historical absence."""
+    if type(rows) is not int or rows < 0:
+        raise ValueError("invalid historical accepted row count")
+    return {
+        "status": "results_only" if rows else "incomplete",
+        "terminal_reason": "provider_results_only" if rows else "no_articles_observed_history_unverified",
+        "full_history_verified": False,
+    }
+
+
+CAFEF_VERSION = "cafef-url-ict-v1"
+CAFEF_STAMP = re.compile(r"-188(\d{12})\d{3}\.chn$")
+
+
+def _cafef_url(url: str) -> str:
+    try:
+        parts = urlsplit(url)
+        if (parts.scheme != "https" or parts.netloc not in {"cafef.vn", "www.cafef.vn"}
+                or parts.username is not None or parts.password is not None
+                or parts.fragment or "\\" in url or any(ord(c) <= 32 for c in url)):
+            raise ValueError
+        if parts.path != "/tim-kiem.chn" and not CAFEF_STAMP.search(parts.path):
+            raise ValueError
+        if parts.path == "/tim-kiem.chn":
+            query = parse_qs(parts.query, keep_blank_values=True, strict_parsing=True)
+            if (set(query) not in ({"keywords"}, {"keywords", "page"})
+                    or any(len(values) != 1 for values in query.values())
+                    or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", query["keywords"][0])
+                    or "page" in query and not re.fullmatch(r"[1-9][0-9]{0,2}", query["page"][0])):
+                raise ValueError
+        elif parts.query:
+            raise ValueError
+    except (TypeError, ValueError):
+        raise ValueError("CafeF URL policy rejected") from None
+    return url
+
+
+def parse_cafef_timestamp(url: str) -> datetime:
+    """Decode the publisher's exact YYMMDDHHMMSS URL clock as ICT, not availability."""
+    _cafef_url(url)
+    parts = urlsplit(url)
+    match = CAFEF_STAMP.search(parts.path)
+    if not match:
+        raise ValueError("CafeF publication timestamp missing")
+    try:
+        value = datetime.strptime("20" + match[1], "%Y%m%d%H%M%S")
+    except ValueError:
+        raise ValueError("CafeF publication timestamp invalid") from None
+    return value.replace(tzinfo=timezone(timedelta(hours=7))).astimezone(timezone.utc)
+
+
+class _CafeFPage(HTMLParser):
+    def __init__(self, page: bytes) -> None:
+        super().__init__(convert_charrefs=True)
+        self.links: list[tuple[str, str, str]] = []
+        self.active: tuple[str, str] | None = None
+        self.text: list[str] = []
+        self.title: list[str] = []
+        self.in_heading = False
+        self.feed(page.decode("utf-8", errors="strict"))
+        self.close()
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        fields = dict(attrs)
+        if tag == "a":
+            self.active = (fields.get("href") or "", fields.get("rel") or "")
+            self.text = []
+        if tag == "h1":
+            self.in_heading = True
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "a" and self.active:
+            self.links.append((*self.active, _text(" ".join(self.text))))
+            self.active = None
+        if tag == "h1":
+            self.in_heading = False
+
+    def handle_data(self, data: str) -> None:
+        if self.active:
+            self.text.append(data)
+        if self.in_heading:
+            self.title.append(data)
+
+
+class _CafeFConnection(http.client.HTTPSConnection):
+    def __init__(self, host: str, address: str, timeout: float) -> None:
+        super().__init__(host, timeout=timeout, context=ssl.create_default_context())
+        self.address = address
+
+    def connect(self) -> None:
+        # Pin validated DNS destination; retain original hostname for TLS SNI/certificate checks.
+        raw = socket.create_connection((self.address, 443), self.timeout)
+        try:
+            self.sock = self._context.wrap_socket(raw, server_hostname=self.host)
+        except BaseException:
+            raw.close()
+            raise
+
+
+class CafeFHistoricalCrawler:
+    """Bounded listing traversal. Exhaustion proves provider results only, never archive completeness."""
+    def __init__(self, *, max_pages: int = 500, timeout: float = 15,
+                 interval: float = 1, max_bytes: int = 5_000_000,
+                 sleeper: Any = time.sleep, clock: Any = None) -> None:
+        for value, ceiling in ((max_pages, 500), (max_bytes, 5_000_000)):
+            if type(value) is not int or not 1 <= value <= ceiling:
+                raise ValueError("invalid CafeF integer bound")
+        for value, floor, ceiling in ((timeout, 0, 15), (interval, 1, 60)):
+            if type(value) not in {int, float} or not math.isfinite(value) or not floor <= value <= ceiling or value == 0:
+                raise ValueError("invalid CafeF timing bound")
+        self.max_pages, self.timeout, self.interval, self.max_bytes = max_pages, timeout, interval, max_bytes
+        self.sleep = sleeper
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
+
+    def _request(self, url: str) -> bytes:
+        _cafef_url(url)
+        for attempt in range(3):
+            connection = None
+            try:
+                self.sleep(self.interval)
+                parts = urlsplit(url)
+                addresses = {item[4][0] for item in socket.getaddrinfo(parts.hostname, 443, type=socket.SOCK_STREAM)}
+                if not addresses or not all(self._public_address(address) for address in addresses):
+                    raise ValueError("CafeF DNS policy rejected")
+                connection = _CafeFConnection(parts.hostname, sorted(addresses)[0], self.timeout)
+                connection.request("GET", parts.path + ("?" + parts.query if parts.query else ""), headers={"User-Agent": USER_AGENT})
+                response = connection.getresponse()
+                if response.status in {429, 500, 502, 503, 504}:
+                    if attempt < 2:
+                        self.sleep(min(30, 2 ** attempt))
+                        continue
+                    raise ValueError("CafeF retry exhausted")
+                # No implicit redirects: unknown provider routes must not widen this transport.
+                if response.status != 200:
+                    raise ValueError("CafeF HTTP request rejected")
+                if "text/html" not in (response.getheader("Content-Type") or "").lower():
+                    raise ValueError("CafeF content type rejected")
+                payload = response.read(self.max_bytes + 1)
+                if len(payload) > self.max_bytes:
+                    raise ValueError("CafeF response exceeds byte cap")
+                return payload
+            except (OSError, http.client.HTTPException):
+                if attempt == 2:
+                    raise ValueError("CafeF transport exhausted") from None
+            finally:
+                if connection is not None:
+                    connection.close()
+        raise ValueError("CafeF request incomplete")
+
+    @staticmethod
+    def _public_address(address: str) -> bool:
+        value = ipaddress.ip_address(address)
+        return value.is_global and not (isinstance(value, ipaddress.IPv6Address) and
+                (value.ipv4_mapped or value.sixtofour or value.teredo or value in ipaddress.ip_network("64:ff9b::/96")))
+
+    def crawl_symbol(self, symbol: str, exchange: str, start: datetime, end: datetime) -> Iterator[list[dict[str, Any]]]:
+        if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", symbol) or exchange not in {"HSX", "HNX"}:
+            raise ValueError("invalid CafeF member")
+        if any(not isinstance(t, datetime) or t.tzinfo is None or t.utcoffset() is None for t in (start, end)) or start > end:
+            raise ValueError("invalid CafeF aware date range")
+        url = f"https://cafef.vn/tim-kiem.chn?keywords={symbol}"
+        pages, articles = set(), set()
+        for _ in range(self.max_pages):
+            payload = self._request(url)
+            digest = hashlib.sha256(payload).hexdigest()
+            if digest in pages:
+                raise ValueError("CafeF repeated listing incomplete")
+            pages.add(digest)
+            page = _CafeFPage(payload)
+            records, next_urls, candidates = [], set(), {}
+            for href, rel, title in page.links:
+                candidate = urljoin(url, href)
+                if "next" in rel.split() or title.casefold() in {"trang sau", "sau", "next"}:
+                    _cafef_url(candidate)
+                    if urlsplit(candidate).path != "/tim-kiem.chn" or f"keywords={symbol}" not in urlsplit(candidate).query.split("&"):
+                        raise ValueError("CafeF pagination binding rejected")
+                    next_urls.add(candidate)
+                if CAFEF_STAMP.search(urlsplit(candidate).path):
+                    _cafef_url(candidate)
+                    candidates[candidate] = title
+            if len(candidates) > 100 or len(next_urls) > 1:
+                raise ValueError("CafeF listing bounds rejected")
+            if not candidates and "không tìm thấy" not in payload.decode("utf-8").casefold():
+                raise ValueError("CafeF unknown empty listing incomplete")
+            for article_url in sorted(candidates):
+                published = parse_cafef_timestamp(article_url)
+                if article_url in articles or not start <= published <= end:
+                    continue
+                articles.add(article_url)
+                detail = self._request(article_url)
+                title = _text(" ".join(_CafeFPage(detail).title))
+                if not title or len(title) > 100_000:
+                    raise ValueError("CafeF detail title rejected")
+                fetched = self.clock()
+                if not isinstance(fetched, datetime) or fetched.tzinfo is None or fetched < published:
+                    raise ValueError("CafeF observation timestamp rejected")
+                record = _record("cafef_historical", "CafeF", "cafef_historical", title, None, article_url, published, fetched,
+                                 source_record_id=urlsplit(article_url).path, origin_ticker=symbol, origin_exchange=exchange,
+                                 raw_timestamp=CAFEF_STAMP.search(urlsplit(article_url).path)[1], payload=detail, source_delay_minutes=0)
+                record["available_at"] = fetched
+                record["adapter_version"] = CAFEF_VERSION
+                records.append(record)
+            yield records
+            if not next_urls:
+                return
+            url = next_urls.pop()
+        raise ValueError("CafeF page cap incomplete")
+
+
 class RSSAdapter:
     def parse(self, source: str, url: str, content: bytes | str, ingested_at: datetime, **kwargs: Any) -> list[dict[str, Any]]:
         payload = content.encode() if isinstance(content, str) else content
@@ -525,7 +745,19 @@ class MacroNewsPipeline:
         hashes = ("raw_record_id", "article_id", "revision_id", "provenance_id", "content_hash", "story_hash", "payload_sha256")
         required_text = ("source_id", "source_name", "source_tier", "source_kind", "title", "language", "timestamp_precision", "adapter_version")
         vnstock = frame["source_kind"] == "vnstock"
-        if (frame["schema_version"] != 2).any() or any(value.isna().any() for value in dates.values()) or any(frame[column].isna().any() or not frame[column].map(lambda value: isinstance(value, str) and bool(SHA256.fullmatch(value))).all() for column in hashes) or any(frame[column].isna().any() or not frame[column].map(lambda value: isinstance(value, str) and bool(value.strip())).all() for column in required_text) or not frame["source_id"].map(lambda value: bool(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value))).all() or not frame["source_tier"].isin(SOURCE_TIERS).all() or not frame["source_kind"].isin(SOURCE_KINDS).all() or not frame["language"].isin({"vi", "en", "unknown"}).all() or not frame["timestamp_precision"].isin({"second", "minute", "date"}).all() or frame["raw_record_id"].duplicated().any() or (vnstock & (~frame["origin_ticker"].map(lambda value: isinstance(value, str) and bool(re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", value))) | ~frame["origin_exchange"].isin({"HSX", "HNX"}) | frame[["universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from"]].isna().any(axis=1))).any() or ((~vnstock) & frame[["origin_ticker", "origin_exchange", "universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from", "universe_effective_to"]].notna().any(axis=1)).any(): raise ValueError("Invalid macro news records")
+        if (frame["schema_version"] != 2).any() or any(value.isna().any() for value in dates.values()) or any(frame[column].isna().any() or not frame[column].map(lambda value: isinstance(value, str) and bool(SHA256.fullmatch(value))).all() for column in hashes) or any(frame[column].isna().any() or not frame[column].map(lambda value: isinstance(value, str) and bool(value.strip())).all() for column in required_text) or not frame["source_id"].map(lambda value: bool(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value))).all() or not frame["source_tier"].isin(SOURCE_TIERS).all() or not frame["source_kind"].isin(SOURCE_KINDS).all() or not frame["language"].isin({"vi", "en", "unknown"}).all() or not frame["timestamp_precision"].isin({"second", "minute", "date"}).all() or frame["raw_record_id"].duplicated().any() or (vnstock & (~frame["origin_ticker"].map(lambda value: isinstance(value, str) and bool(re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", value))) | ~frame["origin_exchange"].isin({"HSX", "HNX"}) | frame[["universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from"]].isna().any(axis=1))).any() or ((~vnstock & (frame["source_kind"] != "cafef_historical")) & frame[["origin_ticker", "origin_exchange", "universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from", "universe_effective_to"]].notna().any(axis=1)).any(): raise ValueError("Invalid macro news records")
+        historical = frame["source_kind"] == "cafef_historical"
+        if historical.any():
+            rows = frame.loc[historical]
+            if (not rows["origin_ticker"].map(lambda value: isinstance(value, str) and bool(re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", value))).all()
+                    or not rows["origin_exchange"].isin({"HSX", "HNX"}).all()
+                    or rows[["universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from", "universe_effective_to"]].notna().any().any()
+                    or not (rows["adapter_version"] == CAFEF_VERSION).all()
+                    or not (dates["available_at"][historical] >= dates["ingested_at"][historical]).all()):
+                raise ValueError("Invalid CafeF historical provenance")
+            for row in rows.itertuples(index=False):
+                if parse_cafef_timestamp(row.canonical_url) != pd.Timestamp(row.published_at).to_pydatetime():
+                    raise ValueError("Invalid CafeF publication binding")
         if not (dates["available_at"] >= dates["published_at"]).all(): raise ValueError("Macro news available_at precedes publication")
         for row in frame.itertuples(index=False):
             summary, body_text, source_record_id, canonical_url = (_null(value) for value in (row.summary, row.body_text, row.source_record_id, row.canonical_url))

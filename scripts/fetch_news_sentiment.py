@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import pyarrow as pa
@@ -261,16 +262,353 @@ def build_news_sentiment(
     return output_path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
+
+def _historical_path(path: Path | str) -> Path:
+    candidate = Path(path)
+    root = REPO_ROOT.resolve()
+    if candidate.is_absolute() or candidate.drive or candidate.root or ".." in candidate.parts or not candidate.parts or any(":" in part for part in candidate.parts):
+        raise ValueError("historical paths must be contained repository-relative paths")
+    resolved = (root / candidate).resolve()
+    if not resolved.is_relative_to(root):
+        raise ValueError("historical path escapes repository")
+    current = root
+    for part in candidate.parts:
+        current = current / part
+        if current.is_symlink() or (hasattr(current, "is_junction") and current.is_junction()):
+            raise ValueError("historical paths cannot contain links")
+    return resolved
+
+
+def _write_historical_shard(table: pa.Table, path: Path, shards: list[dict]) -> None:
+    entry = {"path": path.name, "rows": table.num_rows, "sha256": None, "durable": False,
+             "schema_sha256": hashlib.sha256(table.schema.serialize().to_pybytes()).hexdigest()}
+    with path.open("xb") as stream:
+        shards.append(entry)
+        pq.write_table(table, stream)
+        stream.flush()
+        with path.open("rb") as reader:
+            restored = pq.read_table(reader)
+        if not restored.schema.equals(table.schema, check_metadata=True) or not restored.equals(table):
+            raise ValueError("historical shard semantic readback rejected")
+        os.fsync(stream.fileno())
+    with path.open("rb") as stream:
+        entry["sha256"] = hashlib.file_digest(stream, "sha256").hexdigest()
+    entry["durable"] = True
+
+
+def _validate_historical_pair(raw, projected, symbol, exchange, lower, upper):
+    from omega.data.macro_news_pipeline import CAFEF_VERSION, MacroNewsPipeline
+
+    MacroNewsPipeline._validate(raw.to_pandas())
+    if not projected.schema.equals(SCHEMA, check_metadata=True) or raw.num_rows != projected.num_rows:
+        raise ValueError("historical shard pair schema rejected")
+    expected = []
+    for row in raw.to_pylist():
+        if (row["origin_ticker"] != symbol or row["origin_exchange"] != exchange
+                or row["source_kind"] != "cafef_historical" or row["adapter_version"] != CAFEF_VERSION
+                or not lower <= row["published_at"] <= upper
+                or not row["published_at"] <= row["ingested_at"] <= row["available_at"]):
+            raise ValueError("historical shard pair provenance rejected")
+        expected.append({
+            "symbol": symbol, "title": row["title"], "publish_time": row["published_at"],
+            "sentiment_score": score_sentiment(row["title"]), "url": row["canonical_url"],
+            "source": row["source_name"], "fetched_at": row["ingested_at"],
+            "raw_timestamp": row["raw_timestamp"], "payload_sha256": row["payload_sha256"],
+            "parser_version": row["adapter_version"], "legacy_row": False,
+        })
+    actual = projected.to_pylist()
+    # Pair order is publication/identity order, not provider listing order.
+    key = lambda row: json.dumps(row, sort_keys=True, default=str, allow_nan=False)
+    availability = {}
+    for row in raw.to_pylist():
+        identity = (row["title"], row["published_at"], row["canonical_url"], row["payload_sha256"])
+        availability[identity] = max(availability.get(identity, row["available_at"]), row["available_at"])
+    for row in actual:
+        available = row.pop("available_at")
+        identity = (row["title"], row["publish_time"], row["url"], row["payload_sha256"])
+        if identity not in availability or available is None or available < availability[identity]:
+            raise ValueError("historical projection availability rejected")
+    if sorted(map(key, actual)) != sorted(map(key, expected)):
+        raise ValueError("historical projection values rejected")
+
+
+def read_historical_manifest(output_path: Path | str) -> dict:
+    """Read only complete committed runs; never adopt temporary or orphan shards.
+
+    ponytail: interrupted pre-commit runs require a fresh directory, not cursor replay;
+    provider pagination is mutable. No production export or PIT certification.
+    """
+    import re
+    from omega.data.macro_news_pipeline import historical_news_outcome
+
+    destination = _historical_path(output_path)
+    root = _historical_path("data/historical_news")
+    if destination == root or not destination.is_relative_to(root):
+        raise ValueError("historical recovery directory rejected")
+    manifest_path = _historical_path(destination.relative_to(REPO_ROOT) / "manifest.json")
+    def unique_keys(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise ValueError("historical duplicate manifest key rejected")
+            value[key] = item
+        return value
+
+    if not manifest_path.is_file() or manifest_path.stat().st_size > 8 * 1024 * 1024:
+        raise ValueError("historical manifest file bounds rejected")
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"), object_pairs_hook=unique_keys)
+    legacy = type(manifest["schema_version"]) is int and manifest["schema_version"] == 1
+    if (type(manifest["schema_version"]) is not int or manifest["schema_version"] not in {1, 2}
+            or manifest["status"] not in ({"results_only"} if legacy else {"results_only", "incomplete"})
+            or manifest["purpose"] != "collection_not_investability"
+            or manifest["pit_verified"] is not False or manifest["full_history_verified"] is not False
+            or manifest["failures"] or manifest["shard_count"] != len(manifest["shards"])):
+        raise ValueError("historical committed manifest rejected")
+    lower, upper = (datetime.fromisoformat(manifest[key]) for key in ("publication_start", "publication_end"))
+    if lower.tzinfo is None or upper.tzinfo is None or lower > upper:
+        raise ValueError("historical recovery range rejected")
+    members = manifest["members"]
+    if (not members or len({tuple(member) for member in members}) != len(members)
+            or manifest["cohort_member_count"] != len(members)
+            or [(entry["symbol"], entry["exchange"]) for entry in manifest["symbols"]] != [tuple(member) for member in members]):
+        raise ValueError("historical recovery membership rejected")
+    shards = {}
+    for entry in manifest["shards"]:
+        name = entry["path"]
+        if (not isinstance(name, str) or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}-(?:HSX|HNX)-\d{4}-(?:raw|v10)\.parquet", name)
+                or name in shards or entry["durable"] is not True
+                or type(entry["rows"]) is not int or not 0 <= entry["rows"] <= 100
+                or not isinstance(entry["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
+            raise ValueError("historical recovery shard entry rejected")
+        path = _historical_path(destination.relative_to(REPO_ROOT) / name)
+        if not path.is_file() or path.stat().st_size > 64 * 1024 * 1024:
+            raise ValueError("historical shard file bounds rejected")
+        shards[name] = (path, entry)
+    accounted = set()
+    for outcome in manifest["symbols"]:
+        symbol, exchange = outcome["symbol"], outcome["exchange"]
+        if (not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", symbol) or exchange not in {"HSX", "HNX"}
+                or outcome["status"] not in ({"results_only", "empty"} if legacy else {"results_only", "incomplete"})
+                or type(outcome["pages"]) is not int or not 1 <= outcome["pages"] <= 500
+                or type(outcome["rows"]) is not int or outcome["rows"] < 0):
+            raise ValueError("historical recovery outcome rejected")
+        rows = 0
+        for page in range(1, outcome["pages"] + 1):
+            prefix = f"{symbol}-{exchange}-{page:04d}"
+            names = [f"{prefix}-raw.parquet", f"{prefix}-v10.parquet"]
+            if any(name not in shards for name in names):
+                raise ValueError("historical recovery shard pair missing")
+            tables = []
+            for name in names:
+                path, entry = shards[name]
+                with path.open("rb") as stream:
+                    if hashlib.file_digest(stream, "sha256").hexdigest() != entry["sha256"]:
+                        raise ValueError("historical recovery shard digest rejected")
+                    stream.seek(0)
+                    table = pq.read_table(stream)
+                if (table.num_rows != entry["rows"]
+                        or hashlib.sha256(table.schema.serialize().to_pybytes()).hexdigest() != entry["schema_sha256"]):
+                    raise ValueError("historical recovery shard schema or rows rejected")
+                tables.append(table)
+            raw, projected = tables
+            _validate_historical_pair(raw, projected, symbol, exchange, lower, upper)
+            rows += raw.num_rows
+            accounted.update(names)
+        expected = historical_news_outcome(rows)
+        if (rows != outcome["rows"]
+                or (legacy and outcome["status"] != ("results_only" if rows else "empty"))
+                or (not legacy and any(outcome.get(key) != value for key, value in expected.items()))
+                or (legacy and "terminal_reason" in outcome and outcome["terminal_reason"] != expected["terminal_reason"])
+                or ("full_history_verified" in outcome and outcome["full_history_verified"] is not False)):
+            raise ValueError("historical recovery outcome rows rejected")
+    if accounted != set(shards):
+        raise ValueError("historical recovery unaccounted shard rejected")
+    status = "incomplete" if any(not outcome["rows"] for outcome in manifest["symbols"]) else "results_only"
+    if not legacy and manifest["status"] != status:
+        raise ValueError("historical recovery aggregate outcome rejected")
+    # Legacy shard integrity is not evidence of externally observed empty history.
+    # Upgrade the returned view only; staged artifacts remain byte-for-byte intact.
+    for outcome in manifest["symbols"]:
+        outcome.update(historical_news_outcome(outcome["rows"]))
+    manifest.update(schema_version=2, status=status)
+    return manifest
+
+
+def build_historical_news_sentiment(
+    universe_path: Path | str,
+    start: str,
+    end: str,
+    as_of: datetime | str,
+    output_path: Path | str,
+    *,
+    crawler=None,
+    resume: bool = False,
+) -> dict:
+    """Collect research-only page shards; callers must check returned status.
+
+    The supplied 101-member cohort unions 100 liquid tickers ranked by traded
+    value with VCB to ensure complete VN30 representation. Retain every frozen
+    snapshot member, never trim to the Top100 gate label. This collection scope
+    does not establish historical investability or historical index membership.
+    Resume reads a complete committed manifest only; incomplete runs fail closed.
+    """
+    from omega.data.macro_news_pipeline import (
+        CAFEF_VERSION, SCHEMA as RAW_SCHEMA, CafeFHistoricalCrawler, MacroNewsPipeline, load_universe_snapshot,
+        historical_news_outcome,
+    )
+
+    cutoff = datetime.fromisoformat(as_of) if isinstance(as_of, str) else as_of
+    if not isinstance(cutoff, datetime) or cutoff.tzinfo is None or cutoff.utcoffset() is None:
+        raise ValueError("historical as_of must be timezone-aware")
+    cutoff = cutoff.astimezone(timezone.utc)
+    first, last = date.fromisoformat(start), date.fromisoformat(end)
+    if not date(2015, 1, 1) <= first <= last <= date(2026, 10, 18):
+        raise ValueError("historical dates must be ordered within 2015-01-01 through 2026-10-18")
+    ict = timezone(timedelta(hours=7))
+    lower = datetime.combine(first, time.min, ict).astimezone(timezone.utc)
+    upper = min(datetime.combine(last + timedelta(days=1), time.min, ict).astimezone(timezone.utc) - timedelta(microseconds=1), cutoff)
+    if upper < lower:
+        raise ValueError("historical as_of precedes start")
+    universe_file = _historical_path(universe_path)
+    destination = _historical_path(output_path)
+    historical_root = _historical_path(Path("data/historical_news"))
+    if not universe_file.is_file():
+        raise ValueError("historical universe must be a regular file")
+    if destination == historical_root or not destination.is_relative_to(historical_root) or (destination.exists() and not resume):
+        raise ValueError("historical output must be a new dedicated directory under data/historical_news")
+    raw_universe = universe_file.read_bytes()
+    snapshot = load_universe_snapshot(raw_universe, cutoff)
+    if snapshot.generated_at.tzinfo is None or snapshot.generated_at > cutoff:
+        raise ValueError("universe generated_at must be aware and no later than as_of")
+    lexicon = json.dumps({"bullish": sorted(BULLISH_KEYWORDS), "bearish": sorted(BEARISH_KEYWORDS)}, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    manifest = {
+        "schema_version": 2, "status": "running", "purpose": "collection_not_investability",
+        "full_history_verified": False, "pit_verified": False,
+        "start": first.isoformat(), "end": last.isoformat(), "as_of": cutoff.isoformat(),
+        "publication_start": lower.isoformat(), "publication_end": upper.isoformat(),
+        "universe_sha256": hashlib.sha256(raw_universe).hexdigest(),
+        "universe_id": snapshot.universe_id, "universe_version": snapshot.universe_version,
+        "universe_generated_at": snapshot.generated_at.isoformat(),
+        "cafef_version": CAFEF_VERSION, "scorer_version": "title-substring-clipped-v1",
+        "scorer_lexicon_sha256": hashlib.sha256(lexicon).hexdigest(),
+        "durability": "file_fsync_atomic_manifest; directory power-loss durability not guaranteed",
+        "members": [list(member) for member in snapshot.members],
+        "cohort_member_count": len(snapshot.members),
+        "cohort_rationale": "The supplied 101-member cohort is the union of 100 liquid tickers ranked by traded value and VCB to ensure complete VN30 representation; retain every frozen snapshot member. Collection scope only, not historical investability or historical index membership.",
+        "symbols": [], "shards": [], "failures": [],
+    }
+    if resume:
+        recovered = read_historical_manifest(output_path)
+        for key, value in manifest.items():
+            if key not in {"status", "symbols", "shards", "failures"} and recovered.get(key) != value:
+                raise ValueError("historical recovery configuration mismatch")
+        return recovered
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    destination.mkdir(exist_ok=False)
+    try:
+        collector = crawler if crawler is not None else CafeFHistoricalCrawler(max_pages=500)
+        for symbol, exchange in snapshot.members:
+            outcome = {"symbol": symbol, "exchange": exchange, "status": "running", "rows": 0, "pages": 0,
+                       "terminal_reason": None, "full_history_verified": False}
+            manifest["symbols"].append(outcome)
+            try:
+                for page_number, records in enumerate(collector.crawl_symbol(symbol, exchange, lower, upper), 1):
+                    if page_number > 500 or not isinstance(records, list) or len(records) > 100:
+                        raise ValueError("historical page bounds rejected")
+                    projected = []
+                    for record in records:
+                        if not isinstance(record, dict) or set(record) != set(RAW_SCHEMA):
+                            raise ValueError("historical raw schema rejected")
+                        published, retrieved, available = (record[key] for key in ("published_at", "ingested_at", "available_at"))
+                        if any(not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None for value in (published, retrieved, available)):
+                            raise ValueError("historical timestamps must be aware")
+                        if not lower <= published <= upper or not published <= retrieved <= available:
+                            raise ValueError("historical timestamp ordering rejected")
+                        if record["origin_ticker"] != symbol or record["origin_exchange"] != exchange or record["adapter_version"] != CAFEF_VERSION or record["source_kind"] != "cafef_historical":
+                            raise ValueError("historical provenance rejected")
+                        title = record["title"]
+                        if not isinstance(title, str) or not title.strip():
+                            raise ValueError("historical title rejected")
+                        score = score_sentiment(title)
+                        scored_at = datetime.now(timezone.utc)
+                        projected.append({
+                            "symbol": symbol, "title": title, "publish_time": published,
+                            "sentiment_score": score, "available_at": max(available, scored_at),
+                            "url": record["canonical_url"], "source": record["source_name"],
+                            "fetched_at": retrieved, "raw_timestamp": record["raw_timestamp"],
+                            "payload_sha256": record["payload_sha256"],
+                            "parser_version": record["adapter_version"], "legacy_row": False,
+                        })
+                    raw_table = pa.Table.from_pandas(MacroNewsPipeline._frame(records), preserve_index=False)
+                    prefix = f"{symbol}-{exchange}-{page_number:04d}"
+                    projected_table = pa.Table.from_pylist(projected, schema=SCHEMA)
+                    _validate_historical_pair(raw_table, projected_table, symbol, exchange, lower, upper)
+                    _write_historical_shard(raw_table, destination / f"{prefix}-raw.parquet", manifest["shards"])
+                    _write_historical_shard(projected_table, destination / f"{prefix}-v10.parquet", manifest["shards"])
+                    outcome["rows"] += len(records)
+                    outcome["pages"] = page_number
+                if not outcome["pages"]:
+                    raise ValueError("historical collection has no observed pages")
+                outcome.update(historical_news_outcome(outcome["rows"]))
+            except Exception as exc:
+                outcome.update(status="failed", terminal_reason="collection_error" if outcome["pages"] else "no_pages_observed")
+                # Provider exception messages may contain credentials or URLs.
+                manifest["failures"].append({"symbol": symbol, "error": type(exc).__name__})
+    except Exception as exc:
+        manifest["failures"].append({"error": type(exc).__name__})
+    accounted = {entry["symbol"] for entry in manifest["symbols"]}
+    for symbol, exchange in snapshot.members:
+        if symbol not in accounted:
+            manifest["symbols"].append({"symbol": symbol, "exchange": exchange, "status": "failed", "rows": 0, "pages": 0,
+                                        "terminal_reason": "not_attempted", "full_history_verified": False})
+            manifest["failures"].append({"symbol": symbol, "error": "not_attempted"})
+    manifest["status"] = ("failed" if manifest["failures"] else
+                          "incomplete" if any(entry["status"] == "incomplete" for entry in manifest["symbols"]) else "results_only")
+    manifest["shard_count"] = len(manifest["shards"])
+    manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
+    temporary = destination / "manifest.json.tmp"
+    with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+        json.dump(manifest, stream, ensure_ascii=False, sort_keys=True, indent=2)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
+    # Manifest is the only commit point; pre-commit leftovers are never adopted.
+    temporary.replace(destination / "manifest.json")
+    return manifest
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build historical news sentiment parquet")
-    parser.add_argument("--output", type=Path, default=OUTPUT_PATH)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--historical", action="store_true")
+    parser.add_argument("--resume", action="store_true", help="Read and validate a committed historical run without fetching")
+    parser.add_argument("--universe", type=Path)
+    parser.add_argument("--start")
+    parser.add_argument("--end")
+    parser.add_argument("--as-of")
     parser.add_argument("--hours-back", type=int, default=DEFAULT_HOURS_BACK)
     parser.add_argument("--max-articles-per-source", type=positive_int, default=100000)
     parser.add_argument("--incremental", action="store_true")
     parser.add_argument("--checkpoint-path", type=Path, default=CHECKPOINT_PATH)
     parser.add_argument("--listing-path", type=Path)
     args = parser.parse_args()
-    build_news_sentiment(args.output, hours_back=args.hours_back, incremental=args.incremental, checkpoint_path=args.checkpoint_path, listing_path=args.listing_path, max_articles_per_source=args.max_articles_per_source)
+    if args.historical:
+        if any(value is None for value in (args.universe, args.start, args.end, args.as_of, args.output)):
+            parser.error("--historical requires --universe --start --end --as-of --output DIRECTORY")
+        if args.incremental or args.listing_path is not None or args.checkpoint_path != CHECKPOINT_PATH or args.hours_back != DEFAULT_HOURS_BACK or args.max_articles_per_source != 100000:
+            parser.error("legacy options cannot be combined with --historical")
+        try:
+            manifest = build_historical_news_sentiment(args.universe, args.start, args.end, args.as_of, args.output, **({"resume": True} if args.resume else {}))
+        except Exception as exc:
+            parser.exit(1, f"historical collection failed: {type(exc).__name__}\n")
+        if manifest["status"] != "results_only":
+            parser.exit(1, "historical collection incomplete or failed; inspect output manifest.json\n")
+        return
+    if args.resume or any(value is not None for value in (args.universe, args.start, args.end, args.as_of)):
+        parser.error("--universe --start --end --as-of --resume require --historical")
+    build_news_sentiment(args.output or OUTPUT_PATH, hours_back=args.hours_back, incremental=args.incremental, checkpoint_path=args.checkpoint_path, listing_path=args.listing_path, max_articles_per_source=args.max_articles_per_source)
 
 
 if __name__ == "__main__":
