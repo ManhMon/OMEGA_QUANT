@@ -334,12 +334,8 @@ def _validate_historical_pair(raw, projected, symbol, exchange, lower, upper):
         raise ValueError("historical projection values rejected")
 
 
-def read_historical_manifest(output_path: Path | str) -> dict:
-    """Read only complete committed runs; never adopt temporary or orphan shards.
-
-    ponytail: interrupted pre-commit runs require a fresh directory, not cursor replay;
-    provider pagination is mutable. No production export or PIT certification.
-    """
+def read_historical_manifest(output_path: Path | str, *, checkpoint: bool = False) -> dict:
+    """Validate committed shard pairs before accepting final or batch state."""
     import re
     from omega.data.macro_news_pipeline import historical_news_outcome
 
@@ -347,7 +343,7 @@ def read_historical_manifest(output_path: Path | str) -> dict:
     root = _historical_path("data/historical_news")
     if destination == root or not destination.is_relative_to(root):
         raise ValueError("historical recovery directory rejected")
-    manifest_path = _historical_path(destination.relative_to(REPO_ROOT) / "manifest.json")
+    manifest_path = _historical_path(destination.relative_to(REPO_ROOT) / ("checkpoint.json" if checkpoint else "manifest.json"))
     def unique_keys(pairs):
         value = {}
         for key, item in pairs:
@@ -370,14 +366,24 @@ def read_historical_manifest(output_path: Path | str) -> dict:
     if lower.tzinfo is None or upper.tzinfo is None or lower > upper:
         raise ValueError("historical recovery range rejected")
     members = manifest["members"]
-    if (not members or len({tuple(member) for member in members}) != len(members)
-            or manifest["cohort_member_count"] != len(members)
-            or [(entry["symbol"], entry["exchange"]) for entry in manifest["symbols"]] != [tuple(member) for member in members]):
+    if (not isinstance(members, list) or not members
+            or any(not isinstance(member, list) or len(member) != 2
+                   or not isinstance(member[0], str) or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", member[0])
+                   or not isinstance(member[1], str) or member[1] not in {"HSX", "HNX", "UPCOM"} for member in members)
+            or len({member[0] for member in members}) != len(members)
+            or type(manifest["cohort_member_count"]) is not int or manifest["cohort_member_count"] != len(members)):
+        raise ValueError("historical recovery membership rejected")
+    completed = [(entry["symbol"], entry["exchange"]) for entry in manifest["symbols"]]
+    expected_members = [tuple(member) for member in members]
+    if checkpoint:
+        if legacy or completed != [member for member in expected_members if member in completed]:
+            raise ValueError("historical checkpoint membership rejected")
+    elif completed != expected_members:
         raise ValueError("historical recovery membership rejected")
     shards = {}
     for entry in manifest["shards"]:
         name = entry["path"]
-        if (not isinstance(name, str) or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}-(?:HSX|HNX)-\d{4}-(?:raw|v10)\.parquet", name)
+        if (not isinstance(name, str) or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}-(?:HSX|HNX|UPCOM)-\d{4}-(?:raw|v10)\.parquet", name)
                 or name in shards or entry["durable"] is not True
                 or type(entry["rows"]) is not int or not 0 <= entry["rows"] <= 100
                 or not isinstance(entry["sha256"], str) or not re.fullmatch(r"[0-9a-f]{64}", entry["sha256"])):
@@ -389,7 +395,7 @@ def read_historical_manifest(output_path: Path | str) -> dict:
     accounted = set()
     for outcome in manifest["symbols"]:
         symbol, exchange = outcome["symbol"], outcome["exchange"]
-        if (not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", symbol) or exchange not in {"HSX", "HNX"}
+        if (not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", symbol) or exchange not in {"HSX", "HNX", "UPCOM"}
                 or outcome["status"] not in ({"results_only", "empty"} if legacy else {"results_only", "incomplete"})
                 or type(outcome["pages"]) is not int or not 1 <= outcome["pages"] <= 500
                 or type(outcome["rows"]) is not int or outcome["rows"] < 0):
@@ -448,15 +454,13 @@ def build_historical_news_sentiment(
 ) -> dict:
     """Collect research-only page shards; callers must check returned status.
 
-    The supplied 101-member cohort unions 100 liquid tickers ranked by traded
-    value with VCB to ensure complete VN30 representation. Retain every frozen
-    snapshot member, never trim to the Top100 gate label. This collection scope
-    does not establish historical investability or historical index membership.
-    Resume reads a complete committed manifest only; incomplete runs fail closed.
+    Retain every frozen snapshot member; collection scope does not establish
+    historical investability or index membership. Resume skips completed symbols.
+    ponytail: mutable provider pagination prevents cursor replay; unfinished
+    symbols restart at page 1 using only validated symbol checkpoints.
     """
     from omega.data.macro_news_pipeline import (
-        CAFEF_VERSION, SCHEMA as RAW_SCHEMA, CafeFHistoricalCrawler, MacroNewsPipeline, load_universe_snapshot,
-        historical_news_outcome,
+        CAFEF_VERSION, load_universe_snapshot,
     )
 
     cutoff = datetime.fromisoformat(as_of) if isinstance(as_of, str) else as_of
@@ -496,20 +500,85 @@ def build_historical_news_sentiment(
         "durability": "file_fsync_atomic_manifest; directory power-loss durability not guaranteed",
         "members": [list(member) for member in snapshot.members],
         "cohort_member_count": len(snapshot.members),
-        "cohort_rationale": "The supplied 101-member cohort is the union of 100 liquid tickers ranked by traded value and VCB to ensure complete VN30 representation; retain every frozen snapshot member. Collection scope only, not historical investability or historical index membership.",
+        "cohort_rationale": f"Retain all {len(snapshot.members)} frozen snapshot members. Collection scope only, not historical investability or historical index membership.",
         "symbols": [], "shards": [], "failures": [],
     }
-    if resume:
-        recovered = read_historical_manifest(output_path)
-        for key, value in manifest.items():
-            if key not in {"status", "symbols", "shards", "failures"} and recovered.get(key) != value:
-                raise ValueError("historical recovery configuration mismatch")
-        return recovered
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.mkdir(exist_ok=False)
+    if resume and (destination / "manifest.json").exists():
+        final_path = _historical_path(Path(output_path) / "manifest.json")
+        if not final_path.is_file() or final_path.stat().st_size > 8 * 1024 * 1024:
+            raise ValueError("historical manifest file bounds rejected")
+        final = json.loads(final_path.read_text(encoding="utf-8"))
+        if final.get("status") != "failed":
+            recovered = read_historical_manifest(output_path)
+            _validate_historical_configuration(manifest, recovered)
+            return recovered
+    if not resume:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.mkdir(exist_ok=False)
+    from omega.data.macro_news_pipeline import _writer_lock
+    with _writer_lock(destination / "batch", timeout=0):
+        return _collect_historical_batch(manifest, destination, output_path, crawler, resume)
+
+
+def _validate_historical_configuration(expected: dict, recovered: dict) -> None:
+    for key, value in expected.items():
+        if key not in {"status", "symbols", "shards", "failures", "cohort_rationale"} and recovered.get(key) != value:
+            raise ValueError("historical recovery configuration mismatch")
+
+
+def _publish_historical_state(manifest: dict, destination: Path, name: str) -> None:
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", newline="\n", dir=destination, suffix=".tmp", delete=False) as stream:
+        temporary = Path(stream.name)
+        try:
+            json.dump(manifest, stream, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        except BaseException:
+            stream.close()
+            temporary.unlink(missing_ok=True)
+            raise
     try:
-        collector = crawler if crawler is not None else CafeFHistoricalCrawler(max_pages=500)
-        for symbol, exchange in snapshot.members:
+        temporary.replace(destination / name)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _collect_historical_batch(manifest, destination, output_path, crawler, resume):
+    import copy
+    import re
+    from omega.data.macro_news_pipeline import CAFEF_VERSION, SCHEMA as RAW_SCHEMA, CafeFHistoricalCrawler, MacroNewsPipeline, historical_news_outcome
+
+    if resume:
+        recovered = read_historical_manifest(output_path, checkpoint=True)
+        _validate_historical_configuration(manifest, recovered)
+        manifest = recovered
+        committed = {entry["path"] for entry in manifest["shards"]}
+        completed = {entry["symbol"] for entry in manifest["symbols"]}
+        pending = {f"{symbol}-{exchange}" for symbol, exchange in manifest["members"] if symbol not in completed}
+        leftovers = []
+        for path in destination.iterdir():
+            match = re.fullmatch(r"([A-Z][A-Z0-9]{2,9}-(?:HSX|HNX|UPCOM))-([0-9]{4})-(?:raw|v10)\.parquet", path.name)
+            if match and path.name not in committed:
+                if match[1] not in pending or not 1 <= int(match[2]) <= 500 or not path.is_file() or path.is_symlink():
+                    raise ValueError("historical uncommitted shard ownership rejected")
+                leftovers.append(_historical_path(path.relative_to(REPO_ROOT)))
+        for path in leftovers:
+            path.unlink()
+    else:
+        completed = set()
+        manifest.update(status="results_only", shard_count=0)
+        _publish_historical_state(manifest, destination, "checkpoint.json")
+    checkpoint = copy.deepcopy(manifest)
+    lower, upper = (datetime.fromisoformat(manifest[key]) for key in ("publication_start", "publication_end"))
+    try:
+        collector = crawler
+        if collector is None and len(completed) < len(manifest["members"]):
+            collector = CafeFHistoricalCrawler(max_pages=500)
+        for symbol, exchange in manifest["members"]:
+            if symbol in completed:
+                continue
             outcome = {"symbol": symbol, "exchange": exchange, "status": "running", "rows": 0, "pages": 0,
                        "terminal_reason": None, "full_history_verified": False}
             manifest["symbols"].append(outcome)
@@ -556,10 +625,21 @@ def build_historical_news_sentiment(
                 outcome.update(status="failed", terminal_reason="collection_error" if outcome["pages"] else "no_pages_observed")
                 # Provider exception messages may contain credentials or URLs.
                 manifest["failures"].append({"symbol": symbol, "error": type(exc).__name__})
+            else:
+                candidate = copy.deepcopy(checkpoint)
+                candidate["symbols"].append(copy.deepcopy(outcome))
+                candidate["symbols"].sort(key=lambda entry: entry["symbol"])
+                prefix = f"{symbol}-{exchange}-"
+                candidate["shards"].extend(copy.deepcopy([entry for entry in manifest["shards"] if entry["path"].startswith(prefix)]))
+                candidate["shard_count"] = len(candidate["shards"])
+                candidate["status"] = "incomplete" if any(not entry["rows"] for entry in candidate["symbols"]) else "results_only"
+                _publish_historical_state(candidate, destination, "checkpoint.json")
+                checkpoint = candidate
     except Exception as exc:
         manifest["failures"].append({"error": type(exc).__name__})
+    manifest["symbols"].sort(key=lambda entry: entry["symbol"])
     accounted = {entry["symbol"] for entry in manifest["symbols"]}
-    for symbol, exchange in snapshot.members:
+    for symbol, exchange in manifest["members"]:
         if symbol not in accounted:
             manifest["symbols"].append({"symbol": symbol, "exchange": exchange, "status": "failed", "rows": 0, "pages": 0,
                                         "terminal_reason": "not_attempted", "full_history_verified": False})
@@ -568,14 +648,7 @@ def build_historical_news_sentiment(
                           "incomplete" if any(entry["status"] == "incomplete" for entry in manifest["symbols"]) else "results_only")
     manifest["shard_count"] = len(manifest["shards"])
     manifest["finished_at"] = datetime.now(timezone.utc).isoformat()
-    temporary = destination / "manifest.json.tmp"
-    with temporary.open("x", encoding="utf-8", newline="\n") as stream:
-        json.dump(manifest, stream, ensure_ascii=False, sort_keys=True, indent=2)
-        stream.write("\n")
-        stream.flush()
-        os.fsync(stream.fileno())
-    # Manifest is the only commit point; pre-commit leftovers are never adopted.
-    temporary.replace(destination / "manifest.json")
+    _publish_historical_state(manifest, destination, "manifest.json")
     return manifest
 
 
@@ -583,7 +656,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Build historical news sentiment parquet")
     parser.add_argument("--output", type=Path)
     parser.add_argument("--historical", action="store_true")
-    parser.add_argument("--resume", action="store_true", help="Read and validate a committed historical run without fetching")
+    parser.add_argument("--resume", action="store_true", help="Validate a committed run or resume unfinished symbols from batch checkpoints")
     parser.add_argument("--universe", type=Path)
     parser.add_argument("--start")
     parser.add_argument("--end")

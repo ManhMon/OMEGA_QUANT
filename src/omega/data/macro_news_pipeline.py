@@ -1,8 +1,7 @@
 """Point-in-time-safe, provenance-preserving macro news ingestion.
 
-Historical cohorts are frozen collection scopes, not investable universes. The
-supplied 101-member cohort unions 100 liquid tickers ranked by traded value with
-VCB to ensure complete VN30 representation. Retain every snapshot member; this
+Historical cohorts are frozen collection scopes, not investable universes.
+Retain every supplied snapshot member across HSX, HNX, and UPCOM; collection
 does not establish historical investability or historical index membership.
 """
 
@@ -283,7 +282,7 @@ def _parse_universe_snapshot(raw: bytes, as_of: datetime) -> UniverseSnapshot:
     parsed_members: list[tuple[str, str]] = []
     seen: set[str] = set()
     for member in members:
-        if not isinstance(member, dict) or set(member) != {"ticker", "exchange"} or not isinstance(member["ticker"], str) or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", member["ticker"]) or member["exchange"] not in {"HSX", "HNX"} or member["ticker"] in seen:
+        if not isinstance(member, dict) or set(member) != {"ticker", "exchange"} or not isinstance(member["ticker"], str) or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", member["ticker"]) or not isinstance(member["exchange"], str) or member["exchange"] not in {"HSX", "HNX", "UPCOM"} or member["ticker"] in seen:
             raise ValueError("invalid or duplicate vnstock universe member")
         seen.add(member["ticker"]); parsed_members.append((member["ticker"], member["exchange"]))
     return UniverseSnapshot(data["universe_id"], data["universe_version"], hashlib.sha256(raw).hexdigest(), parsed["generated_at"], parsed["effective_from"], effective_to, tuple(sorted(parsed_members)))
@@ -485,7 +484,7 @@ class CafeFHistoricalCrawler:
                 (value.ipv4_mapped or value.sixtofour or value.teredo or value in ipaddress.ip_network("64:ff9b::/96")))
 
     def crawl_symbol(self, symbol: str, exchange: str, start: datetime, end: datetime) -> Iterator[list[dict[str, Any]]]:
-        if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", symbol) or exchange not in {"HSX", "HNX"}:
+        if not isinstance(symbol, str) or not re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", symbol) or not isinstance(exchange, str) or exchange not in {"HSX", "HNX", "UPCOM"}:
             raise ValueError("invalid CafeF member")
         if any(not isinstance(t, datetime) or t.tzinfo is None or t.utcoffset() is None for t in (start, end)) or start > end:
             raise ValueError("invalid CafeF aware date range")
@@ -745,12 +744,12 @@ class MacroNewsPipeline:
         hashes = ("raw_record_id", "article_id", "revision_id", "provenance_id", "content_hash", "story_hash", "payload_sha256")
         required_text = ("source_id", "source_name", "source_tier", "source_kind", "title", "language", "timestamp_precision", "adapter_version")
         vnstock = frame["source_kind"] == "vnstock"
-        if (frame["schema_version"] != 2).any() or any(value.isna().any() for value in dates.values()) or any(frame[column].isna().any() or not frame[column].map(lambda value: isinstance(value, str) and bool(SHA256.fullmatch(value))).all() for column in hashes) or any(frame[column].isna().any() or not frame[column].map(lambda value: isinstance(value, str) and bool(value.strip())).all() for column in required_text) or not frame["source_id"].map(lambda value: bool(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value))).all() or not frame["source_tier"].isin(SOURCE_TIERS).all() or not frame["source_kind"].isin(SOURCE_KINDS).all() or not frame["language"].isin({"vi", "en", "unknown"}).all() or not frame["timestamp_precision"].isin({"second", "minute", "date"}).all() or frame["raw_record_id"].duplicated().any() or (vnstock & (~frame["origin_ticker"].map(lambda value: isinstance(value, str) and bool(re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", value))) | ~frame["origin_exchange"].isin({"HSX", "HNX"}) | frame[["universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from"]].isna().any(axis=1))).any() or ((~vnstock & (frame["source_kind"] != "cafef_historical")) & frame[["origin_ticker", "origin_exchange", "universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from", "universe_effective_to"]].notna().any(axis=1)).any(): raise ValueError("Invalid macro news records")
+        if (frame["schema_version"] != 2).any() or any(value.isna().any() for value in dates.values()) or any(frame[column].isna().any() or not frame[column].map(lambda value: isinstance(value, str) and bool(SHA256.fullmatch(value))).all() for column in hashes) or any(frame[column].isna().any() or not frame[column].map(lambda value: isinstance(value, str) and bool(value.strip())).all() for column in required_text) or not frame["source_id"].map(lambda value: bool(re.fullmatch(r"[a-z][a-z0-9_]{0,63}", value))).all() or not frame["source_tier"].isin(SOURCE_TIERS).all() or not frame["source_kind"].isin(SOURCE_KINDS).all() or not frame["language"].isin({"vi", "en", "unknown"}).all() or not frame["timestamp_precision"].isin({"second", "minute", "date"}).all() or frame["raw_record_id"].duplicated().any() or (vnstock & (~frame["origin_ticker"].map(lambda value: isinstance(value, str) and bool(re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", value))) | ~frame["origin_exchange"].isin({"HSX", "HNX", "UPCOM"}) | frame[["universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from"]].isna().any(axis=1))).any() or ((~vnstock & (frame["source_kind"] != "cafef_historical")) & frame[["origin_ticker", "origin_exchange", "universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from", "universe_effective_to"]].notna().any(axis=1)).any(): raise ValueError("Invalid macro news records")
         historical = frame["source_kind"] == "cafef_historical"
         if historical.any():
             rows = frame.loc[historical]
             if (not rows["origin_ticker"].map(lambda value: isinstance(value, str) and bool(re.fullmatch(r"[A-Z][A-Z0-9]{2,9}", value))).all()
-                    or not rows["origin_exchange"].isin({"HSX", "HNX"}).all()
+                    or not rows["origin_exchange"].isin({"HSX", "HNX", "UPCOM"}).all()
                     or rows[["universe_id", "universe_version", "universe_sha256", "universe_generated_at", "universe_effective_from", "universe_effective_to"]].notna().any().any()
                     or not (rows["adapter_version"] == CAFEF_VERSION).all()
                     or not (dates["available_at"][historical] >= dates["ingested_at"][historical]).all()):

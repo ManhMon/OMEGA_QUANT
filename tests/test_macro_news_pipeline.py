@@ -773,9 +773,17 @@ def test_historical_precommit_crash_never_adopts_shards(tmp_path, monkeypatch, c
     root = tmp_path / "data/historical_news/run"
     assert not (root / "manifest.json").exists()
     before = {path.name: path.read_bytes() for path in root.iterdir()}
-    with pytest.raises((ValueError, OSError)):
-        cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED, "data/historical_news/run", resume=True)
-    assert {path.name: path.read_bytes() for path in root.iterdir()} == before
+    if crash in {"raw", "projection"}:
+        class Refetch:
+            def crawl_symbol(self, *args):
+                yield []
+        recovered = cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED, "data/historical_news/run", crawler=Refetch(), resume=True)
+        assert recovered["symbols"][0]["rows"] == 0  # Orphan article was not adopted.
+        assert recovered["status"] == "incomplete"
+    else:
+        with pytest.raises((ValueError, OSError)):
+            cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED, "data/historical_news/run", resume=True)
+        assert {path.name: path.read_bytes() for path in root.iterdir()} == before
 
 
 def test_historical_postcommit_crash_is_recoverable(tmp_path, monkeypatch):
@@ -785,7 +793,8 @@ def test_historical_postcommit_crash_is_recoverable(tmp_path, monkeypatch):
     replace = cli.Path.replace
     def interrupted(path, target):
         replace(path, target)
-        raise Crash()
+        if target.name == "manifest.json":
+            raise Crash()
     with monkeypatch.context() as patch:
         patch.setattr(cli.Path, "replace", interrupted)
         with pytest.raises(Crash):
@@ -805,7 +814,8 @@ def test_historical_101_member_cohort_retains_collection_scope(tmp_path, monkeyp
             yield []
     manifest = cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED, "data/historical_news/run", crawler=EmptyProvider())
     assert manifest["cohort_member_count"] == len(manifest["symbols"]) == 101
-    assert all(term in manifest["cohort_rationale"] for term in ("101", "100", "traded value", "VCB", "VN30"))
+    assert "101 frozen snapshot members" in manifest["cohort_rationale"]
+    assert all(term not in manifest["cohort_rationale"] for term in ("traded value", "VCB", "VN30"))
     assert manifest["status"] == "incomplete"
     assert all(entry["status"] == "incomplete" and entry["full_history_verified"] is False
                and entry["terminal_reason"] == "no_articles_observed_history_unverified" for entry in manifest["symbols"])
@@ -1325,3 +1335,192 @@ def test_news_concurrent_persist_retains_both_writers(tmp_path):
     assert all(len(result) == 1 for result in results)
     assert set(pd.read_parquet(output)["raw_record_id"]) == {record["raw_record_id"] for record in records}
     assert not output.with_name(output.name + ".lock").exists()
+
+
+def _batch_universe(tmp_path, members):
+    import json
+    path = tmp_path / "universe.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["members"] = [{"ticker": symbol, "exchange": exchange} for symbol, exchange in members]
+    path.write_text(json.dumps(data), encoding="utf-8")
+
+
+def _run_batch(cli, crawler=None, resume=False):
+    return cli.build_historical_news_sentiment("universe.json", "2015-01-01", "2026-10-18", CAFEF_FETCHED,
+                                             "data/historical_news/run", crawler=crawler, resume=resume)
+
+
+def test_historical_dynamic_703_three_exchange_collection(tmp_path, monkeypatch):
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    members = [(f"A{i:03d}", ("HSX", "HNX", "UPCOM")[i % 3]) for i in range(703)]
+    _batch_universe(tmp_path, members)
+    calls = []
+    class Empty:
+        def crawl_symbol(self, symbol, exchange, *args):
+            calls.append((symbol, exchange))
+            yield []
+    manifest = _run_batch(cli, Empty())
+    assert calls == members
+    assert manifest["cohort_member_count"] == len(manifest["symbols"]) == 703
+    assert manifest["shard_count"] == 1406
+    assert "703 frozen snapshot members" in manifest["cohort_rationale"]
+    assert manifest["status"] == "incomplete" and not manifest["pit_verified"]
+    assert cli.read_historical_manifest("data/historical_news/run") == manifest
+    class NoNetwork:
+        def crawl_symbol(self, *args): pytest.fail("committed run must not fetch")
+    assert _run_batch(cli, NoNetwork(), resume=True) == manifest
+
+
+def test_cafef_upcom_nonempty_provenance_roundtrip(tmp_path, monkeypatch):
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    _batch_universe(tmp_path, [("AAA", "UPCOM")])
+    crawler, _ = _cafef_fake(monkeypatch, [f'<a href="{CAFEF_ARTICLE}">Story</a>'.encode()])
+    manifest = _run_batch(cli, crawler)
+    assert manifest["status"] == "results_only"
+    assert manifest["symbols"][0]["exchange"] == "UPCOM"
+    assert cli.read_historical_manifest("data/historical_news/run") == manifest
+    raw = pd.read_parquet(tmp_path / "data/historical_news/run/AAA-UPCOM-0001-raw.parquet")
+    assert raw["origin_exchange"].tolist() == ["UPCOM"]
+
+
+@pytest.mark.parametrize("exchange", [None, "", "HOSE", "upcom", [], {}, float("nan"), float("inf"), -float("inf"), 10**13])
+def test_historical_exchange_validation_before_mutation(tmp_path, monkeypatch, exchange):
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    _batch_universe(tmp_path, [("AAA", exchange)])
+    with pytest.raises(ValueError): _run_batch(cli)
+    with pytest.raises(ValueError):
+        list(CafeFHistoricalCrawler().crawl_symbol("AAA", exchange, CAFEF_FETCHED, CAFEF_FETCHED))
+    assert not (tmp_path / "data").exists()
+
+
+@pytest.mark.parametrize("fault", ["raw", "projection", "checkpoint_write", "checkpoint_fsync", "checkpoint_replace", "checkpoint_after_replace", "provider"])
+def test_historical_partial_batch_resume_skips_committed_symbols(tmp_path, monkeypatch, fault):
+    import json
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    members = [("AAA", "HSX"), ("BBB", "UPCOM"), ("CCC", "HNX")]
+    _batch_universe(tmp_path, members)
+    class Crash(BaseException): pass
+    class Provider:
+        def crawl_symbol(self, symbol, *args):
+            if symbol == "BBB" and fault == "provider":
+                yield []
+                raise TimeoutError("https://secret:password@cafef.vn/?token=SECRET")
+            yield []
+    write, publish = cli._write_historical_shard, cli._publish_historical_state
+    def interrupted_shard(table, path, shards):
+        write(table, path, shards)
+        if path.name.startswith("BBB-") and path.name.endswith("-raw.parquet" if fault == "raw" else "-v10.parquet"):
+            raise Crash()
+    def interrupted_publish(value, destination, name):
+        if name == "checkpoint.json" and any(entry["symbol"] == "BBB" for entry in value["symbols"]):
+            if fault == "checkpoint_after_replace":
+                publish(value, destination, name)
+                raise Crash()
+            with monkeypatch.context() as patch:
+                if fault == "checkpoint_write": patch.setattr(cli.json, "dump", lambda *a, **k: (_ for _ in ()).throw(Crash()))
+                elif fault == "checkpoint_fsync": patch.setattr(cli.os, "fsync", lambda *a: (_ for _ in ()).throw(Crash()))
+                elif fault == "checkpoint_replace": patch.setattr(cli.Path, "replace", lambda *a: (_ for _ in ()).throw(Crash()))
+                publish(value, destination, name)
+                return
+        publish(value, destination, name)
+    with monkeypatch.context() as patch:
+        if fault in {"raw", "projection"}: patch.setattr(cli, "_write_historical_shard", interrupted_shard)
+        else: patch.setattr(cli, "_publish_historical_state", interrupted_publish)
+        if fault == "provider":
+            failed = _run_batch(cli, Provider())
+            assert failed["status"] == "failed" and "SECRET" not in str(failed)
+        else:
+            with pytest.raises(Crash): _run_batch(cli, Provider())
+    root = tmp_path / "data/historical_news/run"
+    checkpoint = json.loads((root / "checkpoint.json").read_text(encoding="utf-8"))
+    committed = {entry["path"]: (root / entry["path"]).read_bytes() for entry in checkpoint["shards"]}
+    (root / "unrelated.parquet").write_bytes(b"preserve")
+    calls = []
+    class Resume:
+        def crawl_symbol(self, symbol, exchange, *args):
+            calls.append((symbol, exchange))
+            yield []
+    result = _run_batch(cli, Resume(), resume=True)
+    assert calls == [member for member in members if member[0] not in {entry["symbol"] for entry in checkpoint["symbols"]}]
+    assert result["status"] == "incomplete"
+    assert len(result["symbols"]) == 3 and result["shard_count"] == 6
+    assert cli.read_historical_manifest("data/historical_news/run") == result
+    assert all((root / name).read_bytes() == data for name, data in committed.items())
+    assert (root / "unrelated.parquet").read_bytes() == b"preserve"
+    assert not (root / "batch.lock").exists()
+
+
+@pytest.mark.parametrize("mutation", ["digest", "missing", "pair", "duplicate", "members", "rows", "durable", "schema", "configuration", "duplicate_key", "directory", "bom", "utf8", "foreign_orphan", "committed_orphan"])
+def test_historical_partial_checkpoint_rejected_before_mutation(tmp_path, monkeypatch, mutation):
+    import json
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    _batch_universe(tmp_path, [("AAA", "HSX"), ("BBB", "UPCOM")])
+    class Crash(BaseException): pass
+    class Provider:
+        def crawl_symbol(self, symbol, *args):
+            if symbol == "BBB": raise Crash()
+            yield []
+    with pytest.raises(Crash): _run_batch(cli, Provider())
+    root = tmp_path / "data/historical_news/run"
+    path = root / "checkpoint.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if mutation == "digest": (root / data["shards"][0]["path"]).write_bytes(b"bad")
+    elif mutation == "missing": (root / data["shards"][0]["path"]).unlink()
+    elif mutation == "pair": data["shards"].pop(); data["shard_count"] -= 1
+    elif mutation == "duplicate": data["symbols"].append(data["symbols"][0])
+    elif mutation == "members": data["members"][1][1] = "HSX"
+    elif mutation == "rows": data["symbols"][0]["rows"] = float("inf")
+    elif mutation == "durable": data["shards"][0]["durable"] = False
+    elif mutation == "schema": data["shards"][0]["schema_sha256"] = "0" * 64
+    elif mutation == "configuration": data["scorer_lexicon_sha256"] = "0" * 64
+    elif mutation in {"foreign_orphan", "committed_orphan"}:
+        (root / ("ZZZ-HSX-0001-raw.parquet" if mutation == "foreign_orphan" else "AAA-HSX-0002-raw.parquet")).write_bytes(b"orphan")
+    path.write_text(json.dumps(data), encoding="utf-8")
+    if mutation == "duplicate_key": path.write_text('{"schema_version":2,' + path.read_text()[1:], encoding="utf-8")
+    elif mutation == "directory": path.unlink(); path.mkdir()
+    elif mutation == "bom": path.write_bytes(b"\xef\xbb\xbf" + path.read_bytes())
+    elif mutation == "utf8": path.write_bytes(b"\xff")
+    before = {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()}
+    class NoNetwork:
+        def crawl_symbol(self, *args): pytest.fail("corrupt checkpoint must not fetch")
+    with pytest.raises((ValueError, OSError)): _run_batch(cli, NoNetwork(), resume=True)
+    assert {p.name: p.read_bytes() for p in root.iterdir() if p.is_file()} == before
+
+
+def test_historical_partial_resume_lock_preserves_owner(tmp_path, monkeypatch):
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    root = tmp_path / "data/historical_news/run"
+    root.mkdir(parents=True)
+    lock = root / "batch.lock"
+    lock.write_bytes(b"owner")
+    with pytest.raises(TimeoutError): _run_batch(cli, resume=True)
+    assert lock.read_bytes() == b"owner"
+
+
+def test_historical_complete_checkpoint_final_publication_retry_without_provider(tmp_path, monkeypatch):
+    cli = _historical_cli_fixture(tmp_path, monkeypatch)
+    class Empty:
+        def crawl_symbol(self, *args): yield []
+    class Crash(BaseException): pass
+    publish = cli._publish_historical_state
+    def interrupted(value, destination, name):
+        if name == "manifest.json": raise Crash()
+        publish(value, destination, name)
+    with monkeypatch.context() as patch:
+        patch.setattr(cli, "_publish_historical_state", interrupted)
+        with pytest.raises(Crash): _run_batch(cli, Empty())
+    monkeypatch.setattr("omega.data.macro_news_pipeline.CafeFHistoricalCrawler", lambda **k: pytest.fail("all symbols already committed"))
+    result = _run_batch(cli, resume=True)
+    assert result["status"] == "incomplete"
+    assert cli.read_historical_manifest("data/historical_news/run") == result
+
+
+def test_historical_legacy_rationale_resume_is_read_only(committed_historical_run):
+    import json
+    cli, root, manifest = committed_historical_run
+    manifest["cohort_rationale"] = "Legacy 101 member VCB VN30 rationale"
+    path = root / "manifest.json"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in root.iterdir()}
+    assert _run_batch(cli, resume=True) == manifest
+    assert {p.name: p.read_bytes() for p in root.iterdir()} == before
