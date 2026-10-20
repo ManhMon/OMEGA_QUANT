@@ -34,11 +34,16 @@ class AlternativeDataFetcher:
     Fallback: OHLCV-derived proxies
     """
 
-    def __init__(self, use_api: bool = False, macro_rows=None):
+    def __init__(self, use_api: bool = False, macro_rows=None, earnings_ledger=None):
         self.use_api = use_api
         self.macro_rows = macro_rows
         self.fp_detector = VNFocalPointDetector()
         self.vsi_engine = VSIPortfolioEngine()
+        self.pead_engine = None
+        if earnings_ledger is not None:
+            from omega.quant.strategy.pead_drift import PEADDriftEngine
+
+            self.pead_engine = PEADDriftEngine(earnings_ledger)
 
     @staticmethod
     def _utc_timestamp(value) -> pd.Timestamp:
@@ -340,6 +345,12 @@ class AlternativeDataFetcher:
             
         return vsi_series, fss_series
 
+    def get_pead_features(self, panel: pd.DataFrame, as_of=None) -> pd.DataFrame:
+        """Issuer-specific, next-session PEAD; downstream execution lags stay intact."""
+        if self.pead_engine is None:
+            raise ValueError("PEAD requires an explicit earnings ledger")
+        return self.pead_engine.features(panel, as_of=as_of)
+
     def generate_all(self, panel: pd.DataFrame) -> pd.DataFrame:
         """
         Generate all alternative data signals.
@@ -359,6 +370,16 @@ class AlternativeDataFetcher:
         """
         # Memory optimization: reorder MultiIndex to [symbol, date] and sort
         # This makes all subsequent groupby(level='symbol') operations contiguous
+        pead = self.get_pead_features(panel) if self.pead_engine is not None else None
+        if pead is not None and not panel.columns.intersection(pead.columns).empty:
+            raise ValueError("panel already contains PEAD columns")
+        if panel.empty and pead is not None:
+            result = panel.copy()
+            for name in self.get_feature_names() + list(self.get_macro_bitemporal_features(panel).columns):
+                result[name] = pd.Series(index=panel.index, dtype="float64")
+            result[pead.columns] = pead
+            return result.reorder_levels(['date', 'symbol']).sort_index()
+
         panel = panel.reorder_levels(['symbol', 'date']).sort_index()
         
         # Memory optimization: work on narrow copy with only OHLCV columns
@@ -399,6 +420,8 @@ class AlternativeDataFetcher:
         )).tz_localize(None).normalize()
         macro = self.get_macro_bitemporal_features(panel, self.macro_rows)
         features[macro.columns] = macro.reindex(session_dates).to_numpy()
+        if pead is not None:
+            features[pead.columns] = pead.reorder_levels(['symbol', 'date'])
 
         # Join all features back to original panel
         result = panel.join(features)
@@ -418,4 +441,7 @@ class AlternativeDataFetcher:
             'vsi_score', 'focal_stress_score',
             'interbank_on_spread', 'term_structure_slope',
             'interbank_vol_5d', 'macro_monetary_regime',
-        ]
+        ] + ([
+            'pead_sue', 'pead_sec', 'pead_sue_drift', 'pead_sec_drift',
+            'pead_age_sessions',
+        ] if self.pead_engine is not None else [])
