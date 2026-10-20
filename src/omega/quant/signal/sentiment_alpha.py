@@ -4,13 +4,185 @@ from __future__ import annotations
 
 import math
 from datetime import datetime
+from numbers import Real
 from typing import Mapping
+
+from omega.data.llm_sentiment_scorer import (
+    FROZEN_LEXICON_SHA256,
+    FROZEN_LEXICON_VERSION,
+    JEVResult,
+    frozen_lexicon_score,
+)
 
 import numpy as np
 import pandas as pd
 
 
 MAX_AGE_DAYS = 90
+
+
+def _direct_number(value: object, name: str, *, positive: bool = False) -> float:
+    if (isinstance(value, (bool, np.bool_)) or not isinstance(value, Real)
+            or not 0 <= value <= 1e12 or not math.isfinite(value)
+            or (positive and value == 0)):
+        raise ValueError(f"invalid_{name}")
+    return float(value)
+
+
+def _direct_time(value: datetime, name: str) -> pd.Timestamp:
+    if not isinstance(value, (datetime, pd.Timestamp)) or pd.isna(value):
+        raise ValueError(f"invalid_{name}")
+    stamp = pd.Timestamp(value)
+    if stamp.tzinfo is None:
+        raise ValueError(f"invalid_{name}_timezone")
+    return stamp.tz_convert("UTC")
+
+
+def direct_news_features(
+    results: list[JEVResult], *, decision_time: datetime,
+    session_ages: Mapping[tuple[str, str], float], half_life_sessions: float = 3.0,
+) -> pd.DataFrame:
+    """Paired research baseline on one pinned run; ages are elapsed VN sessions.
+
+    Ages count completed sessions at decision_time (the run's bound reference).
+    Revisions replace an event, never increase its count. Both scores use the
+    same successful, ready events and confidence * attribution weights. Counts
+    include source-eligible events even when scoring failed. No history, calendar
+    or deployability is certified by this pure transform.
+    """
+    cutoff = _direct_time(decision_time, "decision_time")
+    half_life = _direct_number(half_life_sessions, "half_life_sessions", positive=True)
+    if type(results) is not list or len(results) > 100_000:
+        raise ValueError("invalid_direct_news_results")
+    if not isinstance(session_ages, Mapping) or len(session_ages) > 100_000:
+        raise ValueError("invalid_session_ages")
+    latest = {}
+    pin = None
+    seen = {}
+    for result in results:
+        if type(result) is not JEVResult:
+            raise ValueError("invalid_direct_news_result")
+        result.__post_init__()
+        request = result.request
+        current_pin = (result.run_id, result.registry_sha256,
+                       result.model.name, result.model.version,
+                       request.cutoff_at, request.decision_time, request.evidence_mode)
+        if pin is not None and pin != current_pin:
+            raise ValueError("mixed_direct_news_run")
+        pin = current_pin
+        if request.decision_time != cutoff or request.cutoff_at > cutoff:
+            raise ValueError("invalid_direct_news_cutoff")
+        identity = (request.issuer, request.event_id, request.revision_id)
+        if identity in seen and seen[identity] != result.replay_key:
+            raise ValueError("conflicting_direct_news_revision")
+        seen[identity] = result.replay_key
+        if request.source_available_at > request.cutoff_at:
+            continue
+        key = identity[:2]
+        previous = latest.get(key)
+        if previous is not None:
+            previous_time = previous.request.source_available_at
+            if request.source_available_at == previous_time and result.replay_key != previous.replay_key:
+                raise ValueError("ambiguous_direct_news_revision")
+            if request.source_available_at <= previous_time:
+                continue
+        latest[key] = result
+
+    rows = {}
+    for key, result in sorted(latest.items()):
+        issuer, _ = key
+        row = rows.setdefault(issuer, {
+            "news_count": 0, "scored_count": 0, "effective_weight": 0.0,
+            "scorer_mass": 0.0, "lexicon_mass": 0.0,
+        })
+        row["news_count"] += 1
+        if result.outcome.status != "ok" or result.available_at > result.request.cutoff_at:
+            continue
+        if key not in session_ages:
+            raise ValueError("missing_session_age")
+        age = _direct_number(session_ages[key], "session_age")
+        if not age.is_integer():
+            raise ValueError("invalid_session_age_integer")
+        # ponytail: caller supplies completed session ages; trusted calendar joins belong in the ledger.
+        with np.errstate(over="ignore", under="ignore"):
+            decay = float(np.exp2(-np.float64(age) / half_life))
+        weight = result.outcome.confidence * result.outcome.attribution * decay
+        row["scored_count"] += 1
+        row["effective_weight"] += weight
+        row["scorer_mass"] += weight * result.outcome.score
+        row["lexicon_mass"] += weight * frozen_lexicon_score(result.request.text)
+
+    columns = ["news_count", "scored_count", "effective_weight", "scorer_mass", "lexicon_mass",
+               "direct_news", "lexicon_news", "coverage", "status"]
+    for row in rows.values():
+        denominator = max(1.0, row["effective_weight"])
+        supported = row["effective_weight"] > 0
+        row["direct_news"] = row["scorer_mass"] / denominator if supported else np.nan
+        row["lexicon_news"] = row["lexicon_mass"] / denominator if supported else np.nan
+        row["coverage"] = row["scored_count"] / row["news_count"]
+        row["status"] = "ok" if supported else "unavailable"
+    frame = pd.DataFrame.from_dict(rows, orient="index", columns=columns).rename_axis("issuer")
+    frame.attrs.update({
+        "evidence_mode": pin[-1] if pin else "retrospective", "historical_eligible": False,
+        "half_life_sessions": half_life, "age_reference_time": cutoff.isoformat(),
+        "session_convention": "completed_caller_sessions",
+        "lexicon_version": FROZEN_LEXICON_VERSION,
+        "lexicon_sha256": FROZEN_LEXICON_SHA256, "pinned_run": pin,
+        "result_bindings": tuple(sorted(seen.values())),
+    })
+    return frame
+
+
+def news_count_surprise(
+    counts: pd.Series, *, available_at: pd.Series, decision_time: datetime,
+    window: int = 60, min_history: int = 20,
+) -> pd.DataFrame:
+    """Prior-session population moments, clipped at +/-5; unavailable warm-up.
+
+    One issuer, one explicit count per session (including zero-news sessions).
+    Delayed-publication semantics: each row is evaluated at available_at[t],
+    not at session time. Only the previous window sessions knowable then enter
+    moments. A delayed row must not be backdated to its session label for trading.
+    Missing/unknown sessions are not invented as zeros. Inputs are research data,
+    not proof of historical availability or an exchange-calendar certificate.
+    """
+    cutoff = _direct_time(decision_time, "decision_time")
+    if (type(window) is not int or not 2 <= window <= 252
+            or type(min_history) is not int or not 2 <= min_history <= window):
+        raise ValueError("invalid_count_history_window")
+    if (not isinstance(counts, pd.Series) or len(counts) > 100_000
+            or not isinstance(counts.index, pd.DatetimeIndex)
+            or counts.index.tz is None or counts.index.hasnans
+            or counts.index.has_duplicates or not counts.index.is_monotonic_increasing):
+        raise ValueError("invalid_count_sessions")
+    if (not isinstance(available_at, pd.Series) or not counts.index.equals(available_at.index)):
+        raise ValueError("invalid_count_availability_index")
+    values = np.array([_direct_number(value, "news_count") for value in counts], dtype=float)
+    if (values != np.floor(values)).any():
+        raise ValueError("invalid_news_count_integer")
+    times = pd.DatetimeIndex([_direct_time(value, "available_at") for value in available_at])
+    sessions = counts.index.tz_convert("UTC")
+    if len(times) and (times < sessions).any():
+        raise ValueError("invalid_count_time_order")
+    eligible = (sessions <= cutoff) & (times <= cutoff) if len(times) else np.array([], dtype=bool)
+    positions = np.flatnonzero(eligible)
+    rows = []
+    for position in positions:
+        start = max(0, position - window)
+        prior = values[start:position][times[start:position] <= times[position]]
+        mean = float(prior.mean()) if len(prior) else np.nan
+        sigma = float(prior.std(ddof=0)) if len(prior) else np.nan
+        status = "insufficient_history" if len(prior) < min_history else (
+            "zero_variance" if sigma <= 1e-12 else "ok")
+        surprise = float(np.clip((values[position] - mean) / sigma, -5, 5)) if status == "ok" else np.nan
+        rows.append((values[position], len(prior), mean, sigma, surprise, status, times[position]))
+    frame = pd.DataFrame(rows, index=counts.index[positions], columns=[
+        "news_count", "history_count", "prior_mean", "prior_std", "surprise", "status", "available_at",
+    ])
+    frame.attrs.update({"historical_eligible": False, "window": window,
+                        "min_history": min_history, "std_ddof": 0,
+                        "evaluation_time": "available_at"})
+    return frame
 
 
 class SentimentAlphaEngine:

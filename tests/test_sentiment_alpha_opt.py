@@ -6,7 +6,7 @@ import sys
 import pandas as pd
 import pytest
 
-from omega.quant.signal.sentiment_alpha import SentimentAlphaEngine
+from omega.quant.signal.sentiment_alpha import SentimentAlphaEngine, news_count_surprise
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(_REPO_ROOT / "scripts") not in sys.path:
@@ -153,3 +153,116 @@ def test_sector_neutralization_preserves_base_signal():
         sectors=pd.Series(["Consumer", "Consumer"], index=["VNM", "VIC"]), **TIMES,
     )
     assert result.to_dict() == pytest.approx({"VIC": 20.1, "VNM": 9.9})
+
+
+def _count_panel(values):
+    sessions = pd.date_range("2026-10-01", periods=len(values), tz="Asia/Ho_Chi_Minh")
+    counts = pd.Series(values, index=sessions, dtype=object)
+    available = pd.Series(sessions + pd.Timedelta(hours=15, minutes=30), index=sessions)
+    return counts, available
+
+
+def _surprise(counts, available, **kwargs):
+    return news_count_surprise(counts, available_at=available,
+                               decision_time=pd.Timestamp("2026-10-20T11:29:20Z"),
+                               window=3, min_history=2, **kwargs)
+
+
+def test_news_count_surprise_prior_only_population_moments():
+    counts, available = _count_panel([0, 2, 1, 10, 0])
+    result = _surprise(counts, available)
+    assert result.iloc[0]["status"] == "insufficient_history"
+    assert pd.isna(result.iloc[0]["surprise"])
+    assert result.iloc[2]["prior_mean"] == 1
+    assert result.iloc[2]["prior_std"] == 1
+    assert result.iloc[2]["surprise"] == 0
+    assert result.iloc[3]["surprise"] == 5
+    mutated = counts.copy()
+    mutated.iloc[-1] = 1e12
+    pd.testing.assert_frame_equal(result.iloc[:-1], _surprise(mutated, available).iloc[:-1])
+    changed_current = counts.copy()
+    changed_current.iloc[2] = 100
+    current = _surprise(changed_current, available)
+    assert current.iloc[2]["prior_mean"] == result.iloc[2]["prior_mean"]
+    assert current.iloc[2]["prior_std"] == result.iloc[2]["prior_std"]
+    assert result.attrs["historical_eligible"] is False
+
+
+def test_news_count_surprise_zero_history_and_clipping():
+    counts, available = _count_panel([2, 2, 100])
+    result = _surprise(counts, available)
+    assert result.iloc[-1]["status"] == "zero_variance"
+    assert pd.isna(result.iloc[-1]["surprise"])
+    counts, available = _count_panel([0, 2, 0])
+    assert _surprise(counts, available).iloc[-1]["surprise"] == -1
+    counts, available = _count_panel([1e12, 1e12 - 2, 0])
+    assert _surprise(counts, available).iloc[-1]["surprise"] == -5
+    assert _surprise(*_count_panel([])).empty
+
+
+def test_news_count_surprise_availability_cutoff_and_late_revision():
+    counts, available = _count_panel([0, 2, 1, 2])
+    # A delayed count cannot influence an earlier decision, even if loaded today.
+    available.iloc[1] = available.iloc[-1]
+    result = _surprise(counts, available)
+    assert result.iloc[2]["history_count"] == 1
+    assert result.iloc[2]["status"] == "insufficient_history"
+    exact = news_count_surprise(counts, available_at=available,
+                               decision_time=available.iloc[-1], window=3, min_history=2)
+    assert len(exact) == 4
+    before = news_count_surprise(counts, available_at=available,
+                                decision_time=available.iloc[-1] - pd.Timedelta(microseconds=1),
+                                window=3, min_history=2)
+    assert list(before.index) == [counts.index[0], counts.index[2]]
+    utc = available.dt.tz_convert("UTC")
+    pd.testing.assert_frame_equal(_surprise(counts, available), _surprise(counts, utc))
+
+
+@pytest.mark.parametrize("value", [None, "3", [], True, float("nan"), float("inf"), float("-inf"), -1, 0.5, 1e13, pytest.param(10**400, id="integer-overflow")])
+def test_news_count_surprise_invalid_counts(value):
+    counts, available = _count_panel([0, 2, value])
+    with pytest.raises(ValueError):
+        _surprise(counts, available)
+
+
+@pytest.mark.parametrize("change", ["duplicate", "unsorted", "naive", "nat", "availability_index", "availability_naive", "availability_nat", "time_order"])
+def test_news_count_surprise_rejects_malformed_sessions(change):
+    counts, available = _count_panel([0, 2, 1])
+    if change == "duplicate":
+        counts.index = pd.DatetimeIndex([counts.index[0]] * 3)
+    elif change == "unsorted":
+        counts = counts.iloc[::-1]
+    elif change == "naive":
+        counts.index = counts.index.tz_localize(None)
+    elif change == "nat":
+        counts.index = pd.DatetimeIndex([counts.index[0], pd.NaT, counts.index[-1]])
+    elif change == "availability_index":
+        available = available.iloc[::-1]
+    elif change == "availability_naive":
+        available = available.dt.tz_localize(None)
+    elif change == "availability_nat":
+        available.iloc[0] = pd.NaT
+    else:
+        available.iloc[0] = counts.index[0] - pd.Timedelta(microseconds=1)
+    with pytest.raises(ValueError):
+        _surprise(counts, available)
+
+
+@pytest.mark.parametrize(("window", "minimum"), [(0, 2), (-1, 2), (253, 2), (True, 2), (3, 1), (3, 4), (3, None)])
+def test_news_count_surprise_invalid_windows(window, minimum):
+    counts, available = _count_panel([0, 2, 1])
+    with pytest.raises(ValueError):
+        news_count_surprise(counts, available_at=available, decision_time=available.iloc[-1],
+                            window=window, min_history=minimum)
+
+
+def test_news_count_surprise_no_mutation_or_calendar_invention():
+    counts, available = _count_panel([0, 2, 1])
+    # Explicit Saturday/Sunday observations remain research inputs, not certified sessions.
+    counts.index = counts.index + pd.Timedelta(days=2)
+    available.index = counts.index
+    available = available + pd.Timedelta(days=2)
+    saved_counts, saved_available = counts.copy(deep=True), available.copy(deep=True)
+    _surprise(counts, available)
+    pd.testing.assert_series_equal(counts, saved_counts)
+    pd.testing.assert_series_equal(available, saved_available)

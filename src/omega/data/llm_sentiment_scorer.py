@@ -35,6 +35,43 @@ def _verify_lexicon_utf8() -> None:
 _verify_lexicon_utf8()
 
 
+FROZEN_LEXICON_VERSION = "count-lexicon-v1"
+_FROZEN_LEXICON_TERMS = (
+    ("tăng", 1),
+    ("tích cực", 1),
+    ("lợi nhuận", 1),
+    ("giảm", -1),
+    ("tiêu cực", -1),
+    ("thua lỗ", -1),
+)
+_FROZEN_LEXICON_CANONICAL = json.dumps(
+    {
+        "algorithm": "count_each_matching_term_once;sum_signs;clip_to_unit_interval",
+        "normalization": "str.lower;unicode_substring;no_tokenization",
+        "terms": _FROZEN_LEXICON_TERMS,
+        "version": FROZEN_LEXICON_VERSION,
+    },
+    sort_keys=True,
+    ensure_ascii=False,
+    separators=(",", ":"),
+).encode("utf-8")
+FROZEN_LEXICON_SHA256 = hashlib.sha256(_FROZEN_LEXICON_CANONICAL).hexdigest()
+
+
+def frozen_lexicon_score(text: str) -> float:
+    if type(text) is not str or not text.strip():
+        raise ValueError("invalid_jev_text")
+    try:
+        raw = text.encode("utf-8")
+    except UnicodeError:
+        raise ValueError("invalid_jev_text_encoding") from None
+    if len(raw) > 1024 * 1024 or text.startswith("﻿") or "\r" in text:
+        raise ValueError("invalid_jev_text_encoding_or_size")
+    lowered = text.lower()
+    score = sum(polarity for term, polarity in _FROZEN_LEXICON_TERMS if term in lowered)
+    return float(max(-1, min(1, score)))
+
+
 @dataclass(frozen=True)
 class SentimentProvenance:
     schema_version: int
