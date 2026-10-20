@@ -82,10 +82,466 @@ def test_decision_round_trips_jev_dimension_focus_and_digest(tmp_path):
         load_decision(path, hashlib.sha256(path.read_bytes()).hexdigest())
 
 
+def _safe_inventory_path(root, value):
+    from pathlib import PureWindowsPath
+
+    assert isinstance(value, str) and value and "\\" not in value
+    path = Path(value)
+    assert not path.is_absolute() and not PureWindowsPath(value).drive
+    assert all(part not in ("", ".", "..") for part in value.split("/"))
+    candidate = root / path
+    assert not candidate.is_symlink() and not any(parent.is_symlink() for parent in candidate.parents)
+    resolved = candidate.resolve()
+    assert resolved.is_relative_to(root.resolve())
+    return resolved
+
+
+def _inventory_sha(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _validate_inventory_fixture(root, records, expected_paths):
+    assert len(records) == len(expected_paths) == len({item["path"] for item in records})
+    assert {item["path"] for item in records} == set(expected_paths)
+    for item in records:
+        path = _safe_inventory_path(root, item["path"])
+        assert path.is_file()
+        assert type(item["rows"]) is int and item["rows"] >= 0
+        assert _inventory_sha(path) == item["sha256"]
+        import pyarrow.parquet as pq
+        parquet = pq.ParquetFile(path)
+        assert item["rows"] == parquet.metadata.num_rows
+        assert item["schema_sha256"] == hashlib.sha256(parquet.schema_arrow.serialize().to_pybytes()).hexdigest()
+        assert item.get("pit_verified", False) is False
+        assert isinstance(item["clock_violations"], dict) and not any(item["clock_violations"].values())
+        assert isinstance(item["clock_columns"], dict)
+        assert item["kind"] in ("raw", "v10")
+
+
+def _validate_inventory_clocks(row, cutoff):
+    from datetime import timezone
+
+    def parse(value):
+        assert isinstance(value, str)
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        assert result.tzinfo is not None and result.utcoffset() is not None
+        return result.astimezone(timezone.utc)
+
+    cutoff = parse(cutoff)
+    published, ingested, available = (parse(row[key]) for key in ("published_at", "ingested_at", "available_at"))
+    assert published <= ingested <= available
+    assert available <= cutoff
+    return True
+
+
+def test_inventory_fixture_validation_rejects_mutations(tmp_path):
+    import copy
+
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "shard.parquet"
+    pq.write_table(pa.table({"value": [1]}), path)
+    valid = {"path": "shard.parquet", "rows": 1, "sha256": _inventory_sha(path),
+             "schema_sha256": hashlib.sha256(pq.ParquetFile(path).schema_arrow.serialize().to_pybytes()).hexdigest(),
+             "clock_violations": {}, "clock_columns": {key: key for key in ("published_at", "ingested_at", "available_at")}, "kind": "raw"}
+    _validate_inventory_fixture(tmp_path, [valid], ["shard.parquet"])
+    for bad_rows in (None, True, -1, 1e13, float("nan"), float("inf"), -float("inf"), "1", []):
+        malformed = copy.deepcopy(valid)
+        malformed["rows"] = bad_rows
+        with pytest.raises(AssertionError):
+            _validate_inventory_fixture(tmp_path, [malformed], ["shard.parquet"])
+    for mutation in ("hash", "schema", "rows", "missing", "extra", "duplicate", "pit_promotion"):
+        records = copy.deepcopy([valid])
+        if mutation == "hash": records[0]["sha256"] = "0" * 64
+        elif mutation == "schema": records[0]["schema_sha256"] = "0" * 64
+        elif mutation == "rows": records[0]["rows"] = True
+        elif mutation == "missing": records = []
+        elif mutation == "extra": records[0]["path"] = "other.json"
+        elif mutation == "duplicate": records.append(copy.deepcopy(records[0]))
+        else: records[0]["pit_verified"] = True
+        with pytest.raises((AssertionError, KeyError)):
+            _validate_inventory_fixture(tmp_path, records, ["shard.parquet"])
+
+
+def test_inventory_clock_cutoff_is_inclusive_and_ordered():
+    assert _validate_inventory_clocks({"published_at": "2026-10-20T04:14:02Z", "ingested_at": "2026-10-20T04:14:02Z", "available_at": "2026-10-20T04:14:02Z"}, "2026-10-20T04:14:03Z")
+    with pytest.raises(AssertionError):
+        _validate_inventory_clocks({key: "2026-10-20T04:14:04Z" for key in ("published_at", "ingested_at", "available_at")}, "2026-10-20T04:14:03Z")
+    assert _validate_inventory_clocks({"published_at": "2026-10-20T04:14:03Z", "ingested_at": "2026-10-20T04:14:03Z",
+                                      "available_at": "2026-10-20T04:14:03Z"}, "2026-10-20T04:14:03Z")
+    for bad in ({"published_at": "2026-10-20T04:14:04Z", "ingested_at": "2026-10-20T04:14:03Z", "available_at": "2026-10-20T04:14:03Z"},
+                {"published_at": "2026-10-20T04:14:03", "ingested_at": "2026-10-20T04:14:03Z", "available_at": "2026-10-20T04:14:03Z"},
+                {"published_at": "2026-10-20T04:14:03Z", "ingested_at": "2026-10-20T04:14:03Z", "available_at": "2026-10-20T04:14:02Z"}):
+        with pytest.raises(AssertionError):
+            _validate_inventory_clocks(bad, "2026-10-20T04:14:03Z")
+
+
+def test_inventory_path_rejects_windows_and_symlink_paths(tmp_path):
+    for value in ("C:/outside/file", "C:\\\\outside\\\\file", "\\\\server\\\\share", "./file", "a//b"):
+        with pytest.raises(AssertionError):
+            _safe_inventory_path(tmp_path, value)
+    outside = tmp_path.parent / "outside-inventory"
+    outside.mkdir()
+    try:
+        (tmp_path / "link").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        if sys.platform == "win32" and getattr(exc, "winerror", None) == 1314:
+            pytest.skip("Windows symlink creation requires an unavailable privilege")
+        raise
+    with pytest.raises(AssertionError):
+        _safe_inventory_path(tmp_path, "link/file")
+
+
+def _inspect_inventory_parquet(path, observed, cutoff=None):
+    from datetime import date, timezone
+    import pyarrow.parquet as pq
+
+    def parse(value):
+        if value is None:
+            return None
+        if isinstance(value, date) and not isinstance(value, datetime):
+            return None
+        try:
+            result = value if isinstance(value, datetime) else datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if result.tzinfo is None or result.utcoffset() is None:
+                return None
+            return result.astimezone(timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            return None
+
+    assert parse(observed) is not None
+    assert cutoff is None or parse(cutoff) is not None
+    observed = parse(observed)
+    cutoff = parse(cutoff)
+    with pq.ParquetFile(path) as parquet:
+        schema = parquet.schema_arrow
+        names = {name.lower(): name for name in schema.names}
+
+        def column(*aliases):
+            return next((names[name] for name in aliases if name in names), None)
+
+        columns = {
+            "published_at": column("published_at", "publish_time", "published_time"),
+            "ingested_at": column("ingested_at", "ingest_time", "fetched_at"),
+            "available_at": column("available_at"),
+            "scoring_clock": column("scored_at", "scoring_at", "scoring_time", "score_time"),
+        }
+        stats = {key: {"missing": 0, "invalid": 0, "future": 0, "min": None, "max": None}
+                 for key, name in columns.items() if name}
+        violations = {"future_clock_rows": 0, "published_after_ingested": 0,
+                      "ingested_after_available": 0, "scored_before_scoring_clock": 0}
+        gaps = [key for key, name in columns.items() if not name]
+        if "available_at" in gaps:
+            violations["missing_required_available_at"] = 1
+        rows_read = eligible = 0
+        symbol = column("symbol", "ticker")
+        symbols = {}
+        read_columns = list(dict.fromkeys([name for name in columns.values() if name] + ([symbol] if symbol else [])))
+        for batch in parquet.iter_batches(batch_size=8192, columns=read_columns):
+            arrays = batch.to_pydict()
+            rows_read += batch.num_rows
+            for index in range(batch.num_rows):
+                times = {}
+                for key, name in columns.items():
+                    if not name:
+                        continue
+                    raw = arrays[name][index]
+                    value = parse(raw)
+                    stat = stats[key]
+                    if raw is None:
+                        stat["missing"] += 1
+                    elif value is None:
+                        stat["invalid"] += 1
+                    else:
+                        text = value.isoformat().replace("+00:00", "Z")
+                        stat["min"] = text if stat["min"] is None else min(stat["min"], text)
+                        stat["max"] = text if stat["max"] is None else max(stat["max"], text)
+                        if value > observed:
+                            stat["future"] += 1
+                            violations["future_clock_rows"] += 1
+                        times[key] = value
+                for first, second, label in (
+                    ("published_at", "ingested_at", "published_after_ingested"),
+                    ("ingested_at", "available_at", "ingested_after_available"),
+                    ("scoring_clock", "available_at", "scored_before_scoring_clock"),
+                ):
+                    if first in times and second in times and times[first] > times[second]:
+                        violations[label] += 1
+                if symbol:
+                    key = str(arrays[symbol][index]) if arrays[symbol][index] is not None else "<missing>"
+                    symbols[key] = symbols.get(key, 0) + 1
+                if (cutoff is not None and all(key in times for key in ("published_at", "ingested_at", "available_at"))
+                        and times["published_at"] <= times["ingested_at"] <= times["available_at"] <= cutoff
+                        and (not columns["scoring_clock"] or "scoring_clock" in times
+                             and times["scoring_clock"] <= times["available_at"])):
+                    eligible += 1
+        for key, stat in stats.items():
+            violations[key + "_missing_or_invalid"] = stat["missing"] + stat["invalid"]
+        if rows_read != parquet.metadata.num_rows:
+            raise ValueError("parquet_footer_rows_mismatch")
+        return {"rows": rows_read, "schema_sha256": hashlib.sha256(schema.serialize().to_pybytes()).hexdigest(),
+                "kind": "v10" if path.name.endswith("-v10.parquet") else "raw", "clock_columns": columns,
+                "clock_violations": violations, "clock_details": stats, "clock_gaps": gaps,
+                "symbol_row_counts": symbols, "eligible_at_cutoff_rows": eligible}
+
+
+def _validate_live_news_matrix(root, manifest, matrix):
+    assert isinstance(matrix, dict)
+    assert matrix["schema_version"] == "news-missing-data-matrix/v1"
+    assert matrix["session_id"] == "l4_role15_p0_inventory_20261020"
+    assert matrix["gate"] == "GATE_NEWS_SENTIMENT_MACRO_ALPHA_P0_INVENTORY_20261020"
+    cutoff = datetime.fromisoformat(matrix["session_cutoff"].replace("Z", "+00:00"))
+    observed = datetime.fromisoformat(matrix["observed_at"].replace("Z", "+00:00"))
+    assert matrix["session_cutoff"] == "2026-10-20T04:14:03Z"
+    assert cutoff.tzinfo is not None and observed.tzinfo is not None and observed >= cutoff
+
+    snapshot = matrix["w0_manifest"]
+    snapshot_path = _safe_inventory_path(root, snapshot["path"])
+    assert snapshot_path == _safe_inventory_path(root, ".ly_state/session/jev_deep_integration_20260926/W0/input_manifest.json")
+    assert _inventory_sha(snapshot_path) == snapshot["sha256"]
+
+    expected = {item["path"]: item for item in manifest["datasets"]}
+    assert isinstance(matrix["datasets"], list)
+    seen = set()
+    for item in matrix["datasets"]:
+        assert isinstance(item, dict)
+        path = item["path"]
+        assert path in expected and path not in seen
+        seen.add(path)
+        w0 = expected[path]
+        assert item["w0_rows"] == w0.get("rows")
+        assert item["w0_sha256"] == w0.get("sha256", w0.get("current_sha256"))
+        live_path = _safe_inventory_path(root, path)
+        assert _inventory_sha(live_path) == item["current_sha256"]
+        if path.endswith(".parquet"):
+            import pyarrow.parquet as pq
+            parquet = pq.ParquetFile(live_path)
+            assert parquet.metadata.num_rows == item["current_rows"]
+            actual = _inspect_inventory_parquet(live_path, observed)
+            for field in ("clock_columns", "clock_violations", "clock_details", "clock_gaps"):
+                assert item[field] == actual[field]
+        else:
+            assert item["clock_columns"] is None and item["clock_violations"] is None
+            assert item["current_rows"] is None
+    assert seen == set(expected)
+
+    history = matrix["historical_news"]
+    history_root = _safe_inventory_path(root, history["root"])
+    checkpoint_path = _safe_inventory_path(root, f'{history["root"]}/checkpoint.json')
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert _inventory_sha(checkpoint_path) == history["checkpoint_sha256"]
+    assert _inventory_sha(_safe_inventory_path(root, f'{history["root"]}/manifest.json')) == history["manifest_sha256"]
+    crawl_manifest = json.loads((history_root / "manifest.json").read_text(encoding="utf-8"))
+    assert crawl_manifest["shards"] == checkpoint["shards"]
+    shards = history["shards"]
+    expected_shards = {history["root"] + "/" + entry["path"]: entry for entry in checkpoint["shards"]}
+    assert len(shards) == len(expected_shards) == history["manifest_shard_count"] == 1406
+    assert {shard["path"] for shard in shards} == set(expected_shards)
+    assert {p.relative_to(root).as_posix() for p in history_root.glob("*.parquet")} == set(expected_shards)
+    for shard in shards:
+        path = _safe_inventory_path(root, shard["path"])
+        actual = _inspect_inventory_parquet(path, observed, cutoff)
+        entry = expected_shards[shard["path"]]
+        assert shard["sha256"] == entry["sha256"] == _inventory_sha(path)
+        for field in ("rows", "schema_sha256"):
+            assert shard[field] == entry[field] == actual[field]
+        for field in ("kind", "clock_columns", "clock_violations", "clock_details", "clock_gaps", "eligible_at_cutoff_rows"):
+            assert shard[field] == actual[field]
+        assert not any(shard["clock_violations"].values())
+    assert all(shard["path"].startswith(history["root"] + "/") for shard in shards)
+    assert history["physical_shard_count"] == len(shards)
+    assert history["verified_shards"] == len(shards)
+    assert history["raw_rows"] == sum(s["rows"] for s in shards if s["kind"] == "raw")
+    assert history["scored_rows"] == sum(s["rows"] for s in shards if s["kind"] == "v10")
+    assert history["errors"] == []
+    assert history["pit_verified"] is False
+    assert history["full_history_verified"] is False
+    assert history_root.is_dir()
+
+
+@pytest.mark.parametrize("artifact", ["absent", "poisoned"])
+def test_inventory_validation_never_executes_session_artifacts(tmp_path, artifact):
+    snapshot = tmp_path / ".ly_state/session/jev_deep_integration_20260926/W0/input_manifest.json"
+    snapshot.parent.mkdir(parents=True)
+    snapshot.write_text("{}", encoding="utf-8")
+    if artifact == "poisoned":
+        (tmp_path / ".ly_state/session/l4_role15_p0_inventory_20261020_inventory.py").write_text(
+            "raise RuntimeError('session code executed')", encoding="utf-8")
+    matrix = {"schema_version": "news-missing-data-matrix/v1", "session_id": "l4_role15_p0_inventory_20261020",
+              "gate": "GATE_NEWS_SENTIMENT_MACRO_ALPHA_P0_INVENTORY_20261020",
+              "session_cutoff": "2026-10-20T04:14:03Z", "observed_at": "2026-10-20T04:14:03Z",
+              "w0_manifest": {"path": snapshot.relative_to(tmp_path).as_posix(), "sha256": _inventory_sha(snapshot)},
+              "datasets": []}
+    with pytest.raises(KeyError, match="historical_news"):
+        _validate_live_news_matrix(tmp_path, {"datasets": []}, matrix)
+
+
+@pytest.mark.parametrize("value", [None, "", "not-a-time", "2026-10-20T08:30:00", "2026-10-20",
+                                  "NaN", "Inf", "-Inf", "0", "-1", "10000000000000"])
+def test_inventory_parquet_invalid_clocks_fail_closed(tmp_path, value):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "shard.parquet"
+    pq.write_table(pa.table({key: pa.array([value], type=pa.string())
+                            for key in ("published_at", "ingested_at", "available_at", "scored_at")}), path)
+    clock = datetime.fromisoformat("2026-10-20T08:30:00+00:00")
+    actual = _inspect_inventory_parquet(path, clock, clock)
+    assert actual["eligible_at_cutoff_rows"] == 0
+    for key in ("published_at", "ingested_at", "available_at", "scoring_clock"):
+        assert actual["clock_violations"][key + "_missing_or_invalid"] == 1
+        assert actual["clock_details"][key]["missing" if value is None else "invalid"] == 1
+
+
+@pytest.mark.parametrize("aliases", [False, True])
+@pytest.mark.parametrize("case", ["equal", "future", "published_order", "ingested_order", "scoring_order", "after_cutoff"])
+def test_inventory_parquet_clock_boundaries_and_aliases(tmp_path, aliases, case):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    names = ("Published_Time", "Fetched_At", "Available_At", "Score_Time") if aliases else (
+        "published_at", "ingested_at", "available_at", "scored_at")
+    values = ["2026-10-20T15:30:00+07:00"] * 4
+    if case in ("future", "after_cutoff"):
+        values = ["2026-10-20T08:30:01Z"] * 4
+    elif case.endswith("_order"):
+        values[{"published_order": 0, "ingested_order": 1, "scoring_order": 3}[case]] = "2026-10-20T08:30:01Z"
+    path = tmp_path / "shard-v10.parquet"
+    table = pa.table({name: [value] for name, value in zip(names, values)})
+    pq.write_table(table, path)
+    cutoff = datetime.fromisoformat("2026-10-20T08:30:00+00:00")
+    observed = datetime.fromisoformat("2026-10-20T08:30:02+00:00") if case == "after_cutoff" else cutoff
+    actual = _inspect_inventory_parquet(path, observed, cutoff)
+    assert actual["rows"] == 1 and actual["kind"] == "v10"
+    assert actual["schema_sha256"] == hashlib.sha256(table.schema.serialize().to_pybytes()).hexdigest()
+    assert actual["clock_columns"] == dict(zip(("published_at", "ingested_at", "available_at", "scoring_clock"), names))
+    assert actual["clock_gaps"] == []
+    assert actual["eligible_at_cutoff_rows"] == (1 if case == "equal" else 0)
+    assert actual["clock_violations"]["future_clock_rows"] == (4 if case == "future" else int(case.endswith("_order")))
+    if case.endswith("_order"):
+        label = {"published_order": "published_after_ingested", "ingested_order": "ingested_after_available",
+                 "scoring_order": "scored_before_scoring_clock"}[case]
+        assert actual["clock_violations"][label] == 1
+
+
+@pytest.mark.parametrize("symbol_column", ["symbol", "Ticker"])
+def test_inventory_parquet_optional_scoring_and_symbol_counts(tmp_path, symbol_column):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "shard.parquet"
+    pq.write_table(pa.table({**{key: ["2026-10-20T15:30:00+07:00"] * 3
+                               for key in ("published_at", "ingested_at", "available_at")},
+                             symbol_column: ["VNM", None, "VNM"]}), path)
+    clock = datetime.fromisoformat("2026-10-20T08:30:00+00:00")
+    actual = _inspect_inventory_parquet(path, clock, clock)
+    assert actual["eligible_at_cutoff_rows"] == 3
+    assert actual["clock_gaps"] == ["scoring_clock"]
+    assert not any(actual["clock_violations"].values())
+    assert actual["symbol_row_counts"] == {"VNM": 2, "<missing>": 1}
+
+
+@pytest.mark.parametrize("columns", [[], ["available_at"], ["published_at", "ingested_at"]])
+@pytest.mark.parametrize("empty", [False, True])
+def test_inventory_parquet_missing_columns_and_empty_rows(tmp_path, columns, empty):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "shard.parquet"
+    values = [] if empty else ["2026-10-20T08:30:00Z"]
+    table = pa.table({name: pa.array(values, type=pa.string()) for name in columns} or {"value": values})
+    pq.write_table(table, path)
+    clock = datetime.fromisoformat("2026-10-20T08:30:00+00:00")
+    actual = _inspect_inventory_parquet(path, clock, clock)
+    assert actual["rows"] == len(values)
+    assert actual["eligible_at_cutoff_rows"] == 0
+    assert actual["clock_violations"].get("missing_required_available_at", 0) == int("available_at" not in columns)
+    assert set(actual["clock_gaps"]) == {"published_at", "ingested_at", "available_at", "scoring_clock"} - set(columns)
+
+
+@pytest.mark.parametrize("clock_type", ["aware", "naive", "date"])
+def test_inventory_parquet_typed_clocks_across_batches(tmp_path, clock_type):
+    from datetime import date
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    clock = datetime.fromisoformat("2026-10-20T08:30:00+00:00")
+    value, arrow_type = {
+        "aware": (clock, pa.timestamp("us", tz="UTC")),
+        "naive": (clock.replace(tzinfo=None), pa.timestamp("us")),
+        "date": (date(2026, 10, 20), pa.date32()),
+    }[clock_type]
+    path = tmp_path / "shard.parquet"
+    pq.write_table(pa.table({key: pa.array([value] * 8193, type=arrow_type)
+                            for key in ("published_at", "ingested_at", "available_at")}), path)
+    actual = _inspect_inventory_parquet(path, clock, clock)
+    assert actual["rows"] == 8193
+    assert actual["eligible_at_cutoff_rows"] == (8193 if clock_type == "aware" else 0)
+    assert actual["clock_violations"]["available_at_missing_or_invalid"] == (0 if clock_type == "aware" else 8193)
+
+
+@pytest.mark.parametrize("bad_clock", [None, "", "bad", "2026-10-20T08:30:00", 0, -1, 1e13,
+                                      float("nan"), float("inf"), -float("inf")])
+def test_inventory_parquet_rejects_invalid_clock_arguments(tmp_path, bad_clock):
+    clock = datetime.fromisoformat("2026-10-20T08:30:00+00:00")
+    with pytest.raises(AssertionError):
+        _inspect_inventory_parquet(tmp_path / "missing.parquet", bad_clock, clock)
+    if bad_clock is not None:
+        with pytest.raises(AssertionError):
+            _inspect_inventory_parquet(tmp_path / "missing.parquet", clock, bad_clock)
+
+
+def test_inventory_parquet_observation_clocks_are_isolated(tmp_path):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "shard.parquet"
+    pq.write_table(pa.table({"available_at": ["2026-10-20T08:30:01Z"]}), path)
+    clocks = [datetime.fromisoformat(value) for value in ("2026-10-20T08:30:00+00:00", "2026-10-20T08:30:02+00:00")]
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda clock: _inspect_inventory_parquet(path, clock), clocks))
+    assert [result["clock_violations"]["future_clock_rows"] for result in results] == [1, 0]
+
+
+@pytest.mark.parametrize("failure", ["missing", "directory", "corrupt", "footer", "read"])
+def test_inventory_parquet_io_failures_propagate(tmp_path, monkeypatch, failure):
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+
+    path = tmp_path / "shard.parquet"
+    if failure == "directory":
+        path.mkdir()
+    elif failure == "corrupt":
+        path.write_bytes(b"not parquet")
+    elif failure in ("footer", "read"):
+        pq.write_table(pa.table({"available_at": ["2026-10-20T08:30:00Z"]}), path)
+        if failure == "footer":
+            monkeypatch.setattr(pq.ParquetFile, "iter_batches", lambda *args, **kwargs: iter(()))
+        else:
+            def fail_read(*args, **kwargs):
+                raise OSError("injected parquet read failure")
+            monkeypatch.setattr(pq.ParquetFile, "iter_batches", fail_read)
+    clock = datetime.fromisoformat("2026-10-20T08:30:00+00:00")
+    with pytest.raises((OSError, ValueError)):
+        _inspect_inventory_parquet(path, clock, clock)
+
+
+@pytest.mark.parametrize("bad_path", ["../escape", "C:\\\\outside\\\\file.json", "\\\\server\\\\share\\\\file.json"])
+def test_live_inventory_matrix_rejects_unsafe_paths(tmp_path, bad_path):
+    with pytest.raises(AssertionError):
+        _safe_inventory_path(tmp_path, bad_path)
+
+
+
+
 def test_w0_inventory_binds_sources_consumers_and_market_release():
     import pyarrow.parquet as pq
 
     root = Path(__file__).resolve().parents[1]
+    manifest = json.loads((root / ".ly_state/session/jev_deep_integration_20260926/W0/input_manifest.json").read_text(encoding="utf-8"))
+    matrix = json.loads((root / ".ly_state/session/missing_data_matrix.json").read_text(encoding="utf-8"))
+    _validate_live_news_matrix(root, manifest, matrix)
     manifest = json.loads((root / ".ly_state/session/jev_deep_integration_20260926/W0/input_manifest.json").read_text(encoding="utf-8"))
     gates = json.loads((root / ".ly_state/session/phase_gates.json").read_text(encoding="utf-8"))
     assert manifest["repo_commit"] == "74a3b507776b78cf361e8f7f0f4ac0c7efe9e3ae"
@@ -108,15 +564,12 @@ def test_w0_inventory_binds_sources_consumers_and_market_release():
     consumers = {entry["path"]: entry["call"] for entry in manifest["consumers"]}
     assert "classify_jev(domain=copilot-router-v1)" in consumers["src/omega/data/smart_llm_router.py"]
     assert "evaluate_model_decision" in consumers["scripts/sod_pipeline.py"]
-    release, canonical = manifest["datasets"][:2]
+    release = manifest["datasets"][0]
     assert hashlib.sha256((root / release["path"]).read_bytes()).hexdigest() == release["sha256"]
     assert pq.ParquetFile(root / release["path"]).metadata.num_rows == release["rows"]
-    assert hashlib.sha256((root / canonical["path"]).read_bytes()).hexdigest() == canonical["current_sha256"]
+    canonical = manifest["datasets"][1]
     assert canonical["current_sha256"] != canonical["release_manifest_canonical_sha256"]
-    for item in manifest["datasets"][2:8]:
-        assert pq.ParquetFile(root / item["path"]).metadata.num_rows == item["rows"]
     checkpoint = manifest["datasets"][-1]
-    assert json.loads((root / checkpoint["path"]).read_text(encoding="utf-8"))["symbols_count"] == checkpoint["symbols_count_manifest"]
     assert json.loads((root / checkpoint["routing_plan"]).read_text(encoding="utf-8"))["llm_mode"] == "off"
 
 
