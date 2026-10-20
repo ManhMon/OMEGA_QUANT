@@ -5,7 +5,11 @@ from datetime import datetime, timedelta, timezone
 import pytest
 import pandas as pd
 
-from omega.quant.signal.sentiment_alpha import SentimentAlphaEngine, direct_news_features
+from omega.quant.signal.sentiment_alpha import (
+    SentimentAlphaEngine,
+    direct_news_features,
+    ecosystem_sentiment_spillover,
+)
 from omega.data.registry import ScoringModel, ScoringRegistrySnapshot
 from omega.data.llm_sentiment_scorer import (
     FROZEN_LEXICON_SHA256,
@@ -362,3 +366,215 @@ def test_direct_news_no_graph_macro_dependency():
             names = [alias.name for alias in node.names] if isinstance(node, ast.Import) else (
                 [node.module or ""] if isinstance(node, ast.ImportFrom) else [])
             assert not any("graph" in name or "macro" in name for name in names)
+
+
+_SPILLOVER_LAG = datetime(2026, 10, 20, 8, 30, tzinfo=timezone.utc)
+_SPILLOVER_DECISION = datetime(2026, 10, 20, 9, 0, tzinfo=timezone.utc)
+
+
+def _spill_news(rows):
+    defaults = {
+        "observed": 0.0,
+        "expected": 0.0,
+        "sector": "S",
+        "as_of": _SPILLOVER_LAG - timedelta(hours=2),
+        "available_at": _SPILLOVER_LAG - timedelta(hours=1),
+        "expected_available_at": _SPILLOVER_LAG - timedelta(hours=3),
+    }
+    return pd.DataFrame(
+        [{**defaults, **row} for row in rows],
+        columns=["issuer", "observed", "expected", "sector", "as_of",
+                 "available_at", "expected_available_at"],
+    )
+
+
+def _spill_edges(rows):
+    defaults = {
+        "weight": 1.0,
+        "as_of": _SPILLOVER_LAG - timedelta(hours=2),
+        "available_at": _SPILLOVER_LAG - timedelta(hours=1),
+        "valid_until": None,
+    }
+    return pd.DataFrame(
+        [{**defaults, **row} for row in rows],
+        columns=["source", "target", "weight", "as_of", "available_at", "valid_until"],
+    )
+
+
+def _spill(news, edges, *, graph_complete=True, decision_time=_SPILLOVER_DECISION,
+           lag_time=_SPILLOVER_LAG):
+    return ecosystem_sentiment_spillover(
+        news, edges, decision_time=decision_time, lag_time=lag_time,
+        graph_complete=graph_complete,
+    )
+
+
+def test_ecosystem_spillover_orientation_is_directed_and_one_hop():
+    news = _spill_news([
+        {"issuer": "VNM", "observed": 0.9, "expected": 0.1},
+        {"issuer": "HPG", "observed": -0.5, "expected": -0.2},
+    ])
+    result = _spill(news, _spill_edges([
+        {"source": "VNM", "target": "HPG", "weight": 0.5},
+        {"source": "HPG", "target": "VNM", "weight": 0.25},
+    ]))
+
+    assert result.loc["VNM", "innovation"] == pytest.approx(0.8)
+    assert result.loc["HPG", "innovation"] == pytest.approx(-0.3)
+    assert result.loc["HPG", "spillover"] == pytest.approx(0.4)
+    assert result.loc["VNM", "spillover"] == pytest.approx(-0.075)
+    assert result.attrs["orientation"] == "A[target,source]"
+    assert result.attrs["hops"] == 1
+    assert result.attrs["historical_eligible"] is False
+
+
+def test_ecosystem_spillover_incoming_denominator_floor_and_clipping():
+    news = _spill_news([
+        {"issuer": "VNM", "observed": 0.9, "expected": 0.1},
+        {"issuer": "VIC", "observed": 1.0, "expected": -1.0},
+        {"issuer": "HPG"}, {"issuer": "HNX"},
+    ])
+    result = _spill(news, _spill_edges([
+        {"source": "VNM", "target": "HPG", "weight": 0.8},
+        {"source": "VIC", "target": "HPG", "weight": 0.8},
+        {"source": "VNM", "target": "HNX", "weight": 0.25},
+        {"source": "VIC", "target": "HNX", "weight": 0.5},
+    ]))
+
+    assert result.loc["VIC", "innovation"] == 1.0
+    assert result.loc["HPG", "spillover"] == pytest.approx(0.9)  # divide by 1.6
+    assert result.loc["HNX", "spillover"] == pytest.approx(0.7)  # denominator stays 1
+
+
+def test_ecosystem_spillover_edge_vintages_retirement_expiry_and_self_loop():
+    lag = _SPILLOVER_LAG
+    news = _spill_news([
+        {"issuer": "VNM", "observed": 0.9, "expected": 0.1},
+        {"issuer": "VIC", "observed": 0.5, "expected": 0.0},
+        {"issuer": "HPG"}, {"issuer": "SSI"},
+    ])
+    edges = _spill_edges([
+        {"source": "VNM", "target": "HPG", "weight": 0.9,
+         "available_at": lag - timedelta(minutes=10)},
+        {"source": "VNM", "target": "HPG", "weight": 0.25,
+         "available_at": lag},
+        {"source": "VNM", "target": "HPG", "weight": 0.75,
+         "available_at": lag + timedelta(microseconds=1)},
+        {"source": "VIC", "target": "HPG", "weight": 0.7,
+         "valid_until": lag},
+        {"source": "HPG", "target": "HPG", "weight": 100.0},
+    ])
+    result = _spill(news, edges)
+    assert result.loc["HPG", "spillover"] == pytest.approx(0.2)
+
+    retired = _spill(news, _spill_edges([
+        {"source": "VNM", "target": "HPG", "weight": 0.5,
+         "available_at": lag - timedelta(hours=1)},
+        {"source": "VNM", "target": "HPG", "weight": 0.0,
+         "available_at": lag},
+    ]))
+    assert retired.loc["HPG", "spillover"] == 0.0
+    expired = _spill(news, _spill_edges([
+        {"source": "VNM", "target": "HPG", "weight": 0.5,
+         "available_at": lag - timedelta(hours=1)},
+        {"source": "VNM", "target": "HPG", "weight": 0.8,
+         "available_at": lag - timedelta(minutes=1), "valid_until": lag},
+    ]))
+    assert expired.loc["HPG", "spillover"] == 0.0
+    with pytest.raises(ValueError, match="duplicate_spillover_edge_vintage"):
+        _spill(news, _spill_edges([
+            {"source": "VNM", "target": "HPG"},
+            {"source": "VNM", "target": "HPG", "weight": 0.5},
+        ]))
+
+
+def test_ecosystem_spillover_missing_source_and_coverage_states():
+    news = _spill_news([
+        {"issuer": "VNM", "observed": None},
+        {"issuer": "HPG", "observed": 0.4, "expected": 0.1},
+        {"issuer": "VIC", "observed": 0.8, "expected": 0.2},
+        {"issuer": "SSI", "observed": 0.1, "expected": 0.0},
+    ])
+    edges = _spill_edges([
+        {"source": "VNM", "target": "HPG"},
+        {"source": "VIC", "target": "VNM"},
+    ])
+    complete = _spill(news, edges, graph_complete=True)
+    assert pd.isna(complete.loc["HPG", "spillover"])
+    assert complete.loc["VNM", "spillover"] == pytest.approx(0.6)
+    assert complete.loc["SSI", "spillover"] == 0.0
+    assert _spill(news, edges, graph_complete=False)["spillover"].isna().all()
+    assert (_spill(news, _spill_edges([]), graph_complete=True)["spillover"] == 0).all()
+
+
+def test_ecosystem_spillover_direct_sector_and_degree_preserving_swap_ablations():
+    news = _spill_news([
+        {"issuer": "A", "observed": 0.9, "expected": 0.1},
+        {"issuer": "B", "observed": 0.2, "expected": 0.1},
+        {"issuer": "C", "observed": -0.5, "expected": 0.1},
+        {"issuer": "D", "observed": -0.8, "expected": 0.1},
+    ])
+    original_edges = _spill_edges([
+        {"source": "A", "target": "B"}, {"source": "C", "target": "D"},
+    ])
+    swapped_edges = _spill_edges([
+        {"source": "A", "target": "D"}, {"source": "C", "target": "B"},
+    ])
+    original = _spill(news, original_edges)
+    swapped = _spill(news, swapped_edges)
+
+    assert original_edges["source"].value_counts().to_dict() == swapped_edges["source"].value_counts().to_dict()
+    assert original_edges["target"].value_counts().to_dict() == swapped_edges["target"].value_counts().to_dict()
+    assert original.loc["B", "spillover"] == pytest.approx(0.8)
+    assert original.loc["D", "spillover"] == pytest.approx(-0.6)
+    assert swapped.loc["B", "spillover"] == pytest.approx(-0.6)
+    assert swapped.loc["D", "spillover"] == pytest.approx(0.8)
+    assert original.loc["B", "spillover"] != original.loc["B", "direct_news"]
+    assert original.loc["B", "spillover"] != original.loc["B", "sector_news"]
+
+
+def test_ecosystem_spillover_permutation_unrelated_node_and_input_immutability():
+    news = _spill_news([
+        {"issuer": "VNM", "observed": 0.9, "expected": 0.1},
+        {"issuer": "HPG", "observed": 0.2, "expected": 0.1},
+    ])
+    edges = _spill_edges([{"source": "VNM", "target": "HPG", "weight": 0.5}])
+    news_before, edges_before = news.copy(deep=True), edges.copy(deep=True)
+    baseline = _spill(news, edges)
+    reordered = _spill(
+        _spill_news([
+            {"issuer": "ZZZ", "observed": -0.2, "sector": "OTHER"},
+            {"issuer": "HPG", "observed": 0.2, "expected": 0.1},
+            {"issuer": "VNM", "observed": 0.9, "expected": 0.1},
+        ]),
+        _spill_edges([{"source": "VNM", "target": "HPG", "weight": 0.5}]),
+    )
+    pd.testing.assert_frame_equal(baseline, reordered.loc[baseline.index])
+    pd.testing.assert_frame_equal(news, news_before)
+    pd.testing.assert_frame_equal(edges, edges_before)
+
+
+def test_ecosystem_spillover_inclusive_lag_and_timezone_equivalence():
+    local_lag = datetime(2026, 10, 20, 15, 30, tzinfo=timezone(timedelta(hours=7)))
+    news = _spill_news([{
+        "issuer": "VNM", "observed": 0.9, "expected": 0.1,
+        "available_at": _SPILLOVER_LAG,
+    }, {"issuer": "HPG"}])
+    edges = _spill_edges([{
+        "source": "VNM", "target": "HPG", "weight": 0.5,
+        "available_at": _SPILLOVER_LAG,
+    }])
+    utc_result = _spill(news, edges)
+    local_result = _spill(news, edges, lag_time=local_lag,
+                           decision_time=datetime(2026, 10, 20, 16, 0,
+                                                  tzinfo=timezone(timedelta(hours=7))))
+
+    assert utc_result.loc["HPG", "spillover"] == pytest.approx(0.4)
+    pd.testing.assert_frame_equal(utc_result, local_result)
+    assert utc_result.attrs["historical_eligible"] is False
+    assert utc_result.attrs["lag_time"] == local_result.attrs["lag_time"]
+    assert utc_result.attrs["decision_time"] == local_result.attrs["decision_time"]
+    assert utc_result.attrs["edge_vintages"] == local_result.attrs["edge_vintages"]
+    assert utc_result.attrs["graph_complete"] is True
+    assert utc_result.attrs["edge_vintages"][0][-1] == 0.5
+    assert len(utc_result.attrs["edge_vintages"]) == 1

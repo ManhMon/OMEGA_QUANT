@@ -133,6 +133,109 @@ def direct_news_features(
     return frame
 
 
+def ecosystem_sentiment_spillover(
+    news: pd.DataFrame, edges: pd.DataFrame, *, decision_time: datetime,
+    lag_time: datetime, graph_complete: bool = False,
+) -> pd.DataFrame:
+    """Research-only one-hop baseline: A[target, source], incoming rows <= 1.
+
+    News is one caller-supplied snapshot per issuer at the previous session cutoff.
+    Expected news must be training-fitted before that observation. Edge vintages
+    are full replacements per pair, active on [as_of, valid_until). Zero weights
+    can retire edges. Unknown inputs/coverage stay unavailable, never known zero.
+    No propagated value is reused as direct news; diagonal edges are discarded.
+    Caller dates, sectors and completeness do not certify historical provenance.
+    """
+    cutoff = _direct_time(decision_time, "decision_time")
+    lag = _direct_time(lag_time, "lag_time")
+    if lag >= cutoff or type(graph_complete) is not bool:
+        raise ValueError("invalid_spillover_cutoff_or_coverage")
+    news_columns = {"issuer", "observed", "expected", "sector", "as_of",
+                    "available_at", "expected_available_at"}
+    edge_columns = {"source", "target", "weight", "as_of", "available_at", "valid_until"}
+    for frame, columns, limit in ((news, news_columns, 10_000), (edges, edge_columns, 100_000)):
+        if (not isinstance(frame, pd.DataFrame) or not frame.columns.is_unique
+                or set(frame.columns) != columns or len(frame) > limit):
+            raise ValueError("invalid_spillover_schema_or_size")
+    news, edges = news.copy(), edges.copy()
+    for frame, columns in ((news, ("issuer", "sector")), (edges, ("source", "target"))):
+        for column in columns:
+            if any(not isinstance(value, str) or not value.strip() or len(value) > 128
+                   or value != value.strip() or any(ord(char) < 32 for char in value)
+                   for value in frame[column]):
+                raise ValueError("invalid_spillover_identifier")
+    if news["issuer"].duplicated().any():
+        raise ValueError("duplicate_spillover_issuer")
+    for frame in (news, edges):
+        for column in ("as_of", "available_at"):
+            frame[column] = pd.to_datetime([_direct_time(value, column) for value in frame[column]], utc=True)
+        if (frame["as_of"] > frame["available_at"]).any():
+            raise ValueError("invalid_spillover_time_order")
+    news["expected_available_at"] = pd.to_datetime(
+        [_direct_time(value, "expected_available_at") for value in news["expected_available_at"]], utc=True)
+    if (news["expected_available_at"] >= news["as_of"]).any():
+        raise ValueError("invalid_spillover_expectation_time")
+    for column in ("observed", "expected"):
+        values = []
+        for value in news[column]:
+            if value is None or value is pd.NA or (isinstance(value, (float, np.floating)) and np.isnan(value)):
+                values.append(np.nan)
+            elif (isinstance(value, (bool, np.bool_)) or not isinstance(value, Real)
+                  or not -1 <= value <= 1 or not math.isfinite(value)):
+                raise ValueError("invalid_spillover_score")
+            else:
+                values.append(float(value))
+        news[column] = np.asarray(values, dtype=float)
+    edges["weight"] = np.asarray([_direct_number(value, "edge_weight") for value in edges["weight"]])
+    edges["valid_until"] = pd.to_datetime([
+        pd.NaT if value is None or value is pd.NaT else _direct_time(value, "valid_until")
+        for value in edges["valid_until"]], utc=True)
+    if (edges["valid_until"] <= edges["as_of"]).any():
+        raise ValueError("invalid_spillover_edge_interval")
+    if edges.duplicated(["source", "target", "available_at"]).any():
+        raise ValueError("duplicate_spillover_edge_vintage")
+    edges = edges.loc[edges["available_at"] <= lag].sort_values("available_at")
+    edges = edges.drop_duplicates(["source", "target"], keep="last")
+    edges = edges.loc[(edges["valid_until"].isna() | (lag < edges["valid_until"]))
+                      & (edges["source"] != edges["target"]) & (edges["weight"] > 0)]
+    issuers = pd.Index(sorted(set(news["issuer"]) | set(edges["source"]) | set(edges["target"])), name="issuer")
+    if len(issuers) > 10_000 or (edges.groupby("target").size() > 1_000).any():
+        raise ValueError("invalid_spillover_graph_size")
+    ready = news["available_at"] <= lag
+    panel = news.set_index("issuer").reindex(issuers)
+    direct = news.set_index("issuer")["observed"].where(ready.to_numpy()).reindex(issuers)
+    expected = panel["expected"]
+    innovation = (direct - expected).clip(-1.0, 1.0)
+    sector_news = direct.groupby(panel["sector"]).transform("mean")
+    incomplete_sector = direct.isna().groupby(panel["sector"]).transform("any").fillna(True)
+    sector_news = sector_news.mask(incomplete_sector)
+    denominator = edges.groupby("target")["weight"].transform("sum").clip(lower=1.0)
+    edges["normalized_weight"] = edges["weight"] / denominator
+    edges["innovation"] = edges["source"].map(innovation)
+    spillover = (edges["normalized_weight"] * edges["innovation"]).groupby(edges["target"]).sum()
+    missing = edges["innovation"].isna().groupby(edges["target"]).any()
+    spillover = spillover.reindex(issuers, fill_value=0.0).mask(missing.reindex(issuers, fill_value=False))
+    if not graph_complete:
+        spillover[:] = np.nan
+    if (spillover.abs() > 1.0 + 1e-12).any():
+        raise ValueError("invalid_spillover_bound")
+    result = pd.DataFrame({"direct_news": direct, "innovation": innovation,
+                           "sector_news": sector_news, "spillover": spillover.clip(-1.0, 1.0)})
+    # ponytail: caller certifies prior-session lag/coverage; ledger integration must verify both.
+    result.attrs.update({"historical_eligible": False, "decision_time": cutoff.isoformat(),
+                         "lag_time": lag.isoformat(), "graph_complete": graph_complete,
+                         "lag_convention": "caller_previous_session_cutoff",
+                         "training_provenance_verified": False,
+                         "orientation": "A[target,source]", "hops": 1,
+                         "news_vintages": tuple(news[["issuer", "as_of", "available_at",
+                                                       "expected_available_at"]]
+                                                .sort_values("issuer").itertuples(index=False, name=None)),
+                         "edge_vintages": tuple(edges[["source", "target", "as_of", "available_at",
+                                                        "valid_until", "normalized_weight"]]
+                                                .sort_values(["target", "source"]).itertuples(index=False, name=None))})
+    return result
+
+
 def news_count_surprise(
     counts: pd.Series, *, available_at: pd.Series, decision_time: datetime,
     window: int = 60, min_history: int = 20,
