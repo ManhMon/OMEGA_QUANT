@@ -16,11 +16,425 @@ import shutil
 import pickle
 import joblib
 import hashlib
+import re
+import stat
 import pandas as pd
 import numpy as np
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Dict, Any, List, Optional, Union
 from pathlib import Path
+
+
+_SCORING_IDENTIFIER_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_SCORING_SEMVER_RE = re.compile(r"v(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\Z")
+_SCORING_SHA256_RE = re.compile(r"[0-9a-f]{64}\Z")
+_SCORING_TIMESTAMP_RE = re.compile(
+    r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]+)?(?:Z|[+-][0-9]{2}:[0-9]{2})\Z"
+)
+_SCORING_FIELDS = (
+    "provider", "model_revision", "languages", "task", "schema_version", "rights",
+    "training_cutoff_at", "training_evidence_sha256", "model_available_at",
+    "prompt_version", "calibration_version", "calibration_sha256",
+    "calibration_available_at", "preprocessing_version",
+)
+_SCORING_METADATA_FIELDS = frozenset(_SCORING_FIELDS)
+_SCORING_MAX_ARTIFACT_BYTES = 64 * 1024 * 1024
+_SCORING_MAX_METADATA_BYTES = 8 * 1024 * 1024
+
+
+def _scoring_error(code: str, field_name: str) -> None:
+    safe_field = field_name if type(field_name) is str and re.fullmatch(r"[A-Z][A-Z0-9_]{0,63}", field_name) else "FIELD"
+    raise ValueError(f"{code}:{safe_field}") from None
+
+
+def _scoring_identifier(value: str, field: str) -> str:
+    if type(value) is not str or _SCORING_IDENTIFIER_RE.fullmatch(value) is None:
+        _scoring_error("SCORING_INVALID_IDENTIFIER", field)
+    return value
+
+
+def _scoring_timestamp(value: datetime, field: str) -> datetime:
+    if type(value) is not datetime or value.tzinfo is None or value.utcoffset() is None:
+        _scoring_error("SCORING_INVALID_TIMESTAMP", field)
+    try:
+        return value.astimezone(timezone.utc)
+    except (ValueError, OverflowError):
+        _scoring_error("SCORING_INVALID_TIMESTAMP", field)
+
+
+def _scoring_parse_timestamp(value: Any, field: str) -> datetime:
+    if type(value) is not str or _SCORING_TIMESTAMP_RE.fullmatch(value) is None:
+        _scoring_error("SCORING_INVALID_TIMESTAMP", field)
+    try:
+        parsed = datetime.fromisoformat(value[:-1] + "+00:00" if value.endswith("Z") else value)
+    except (ValueError, OverflowError):
+        _scoring_error("SCORING_INVALID_TIMESTAMP", field)
+    return _scoring_timestamp(parsed, field)
+
+
+def _scoring_sha256(value: str, field: str) -> str:
+    if type(value) is not str or _SCORING_SHA256_RE.fullmatch(value) is None:
+        _scoring_error("SCORING_INVALID_SHA256", field)
+    return value
+
+
+def _scoring_canonical_sha256(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True)
+class ScoringModel:
+    name: str
+    version: str
+    provider: str
+    model_revision: str
+    artifact_sha256: str
+    languages: tuple[str, ...]
+    task: str
+    schema_version: str
+    rights: str
+    training_cutoff_at: datetime
+    training_evidence_sha256: str
+    model_available_at: datetime
+    prompt_version: str
+    calibration_version: str
+    calibration_sha256: str
+    calibration_available_at: datetime
+    preprocessing_version: str
+    artifact: bytes = field(repr=False)
+
+    def __post_init__(self) -> None:
+        for name in ("name", "provider", "model_revision", "prompt_version", "calibration_version", "preprocessing_version"):
+            _scoring_identifier(getattr(self, name), name.upper())
+        if type(self.version) is not str or _SCORING_SEMVER_RE.fullmatch(self.version) is None:
+            _scoring_error("SCORING_INVALID_SEMVER", "VERSION")
+        for name in ("artifact_sha256", "training_evidence_sha256", "calibration_sha256"):
+            _scoring_sha256(getattr(self, name), name.upper())
+        if type(self.languages) is not tuple or not 1 <= len(self.languages) <= 16:
+            _scoring_error("SCORING_INVALID_LANGUAGES", "LANGUAGES")
+        for language in self.languages:
+            _scoring_identifier(language, "LANGUAGES")
+        if len(set(self.languages)) != len(self.languages):
+            _scoring_error("SCORING_INVALID_LANGUAGES", "LANGUAGES")
+        if type(self.task) is not str or self.task != "sentiment":
+            _scoring_error("SCORING_INVALID_TASK", "TASK")
+        if type(self.schema_version) is not str or self.schema_version != "jev-sentiment-v1":
+            _scoring_error("SCORING_INVALID_SCHEMA", "SCHEMA_VERSION")
+        if type(self.rights) is not str or self.rights not in ("research-only", "licensed"):
+            _scoring_error("SCORING_INVALID_RIGHTS", "RIGHTS")
+        for name in ("training_cutoff_at", "model_available_at", "calibration_available_at"):
+            object.__setattr__(self, name, _scoring_timestamp(getattr(self, name), name.upper()))
+        if self.training_cutoff_at > self.model_available_at:
+            _scoring_error("SCORING_INVALID_TIME_ORDER", "TRAINING_CUTOFF_AT")
+        if type(self.artifact) is not bytes or len(self.artifact) > _SCORING_MAX_ARTIFACT_BYTES:
+            _scoring_error("SCORING_INVALID_ARTIFACT", "ARTIFACT")
+        if hashlib.sha256(self.artifact).hexdigest() != self.artifact_sha256:
+            _scoring_error("SCORING_ARTIFACT_CHECKSUM_MISMATCH", "ARTIFACT_SHA256")
+
+    @property
+    def lineage_sha256(self) -> str:
+        identity = {
+            "name": self.name,
+            "version": self.version,
+            "provider": self.provider,
+            "model_revision": self.model_revision,
+            "artifact_sha256": self.artifact_sha256,
+            "languages": list(self.languages),
+            "task": self.task,
+            "schema_version": self.schema_version,
+            "rights": self.rights,
+            "training_cutoff_at": self.training_cutoff_at.isoformat(),
+            "training_evidence_sha256": self.training_evidence_sha256,
+            "model_available_at": self.model_available_at.isoformat(),
+            "prompt_version": self.prompt_version,
+            "calibration_version": self.calibration_version,
+            "calibration_sha256": self.calibration_sha256,
+            "calibration_available_at": self.calibration_available_at.isoformat(),
+            "preprocessing_version": self.preprocessing_version,
+        }
+        return _scoring_canonical_sha256(identity)
+
+
+@dataclass(frozen=True)
+class ScoringRegistrySnapshot:
+    models: tuple[ScoringModel, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.models) is not tuple or not 1 <= len(self.models) <= 16:
+            _scoring_error("SCORING_INVALID_SNAPSHOT", "MODELS")
+        if any(type(model) is not ScoringModel for model in self.models):
+            _scoring_error("SCORING_INVALID_SNAPSHOT", "MODELS")
+        if sum(len(model.artifact) for model in self.models) > _SCORING_MAX_ARTIFACT_BYTES:
+            _scoring_error("SCORING_INVALID_SNAPSHOT", "MODELS")
+        pairs = [(model.name, model.version) for model in self.models]
+        if len(set(pairs)) != len(pairs):
+            _scoring_error("SCORING_DUPLICATE_MODEL", "MODELS")
+
+    @property
+    def snapshot_sha256(self) -> str:
+        identity = [
+            {"name": model.name, "version": model.version, "lineage_sha256": model.lineage_sha256}
+            for model in sorted(self.models, key=lambda item: (item.name, item.version))
+        ]
+        return _scoring_canonical_sha256(identity)
+
+    def get_model(self, name: str, version: str) -> ScoringModel:
+        _scoring_identifier(name, "NAME")
+        if type(version) is not str or _SCORING_SEMVER_RE.fullmatch(version) is None:
+            _scoring_error("SCORING_INVALID_SEMVER", "VERSION")
+        for model in self.models:
+            if model.name == name and model.version == version:
+                return model
+        _scoring_error("SCORING_MODEL_NOT_FOUND", "MODEL_VERSION")
+
+
+def _scoring_open_windows_handle(path: Path, directory: bool, field_name: str) -> int:
+    import ctypes
+    from ctypes import wintypes
+
+    class FileAttributeTagInfo(ctypes.Structure):
+        _fields_ = (("attributes", wintypes.DWORD), ("reparse_tag", wintypes.DWORD))
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateFileW.argtypes = (
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    )
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.GetFileInformationByHandleEx.argtypes = (
+        wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+    )
+    kernel32.GetFileInformationByHandleEx.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+    handle = kernel32.CreateFileW(
+        str(path),
+        0x80000000 | 0x80 if not directory else 0x80 | 0x1,
+        0x1 | 0x2,  # Share read/write, deny delete while the path is in use.
+        None,
+        3,
+        0x00200000 | (0x02000000 if directory else 0),
+        None,
+    )
+    if handle == ctypes.c_void_p(-1).value:
+        raise ctypes.WinError(ctypes.get_last_error())
+    info = FileAttributeTagInfo()
+    if not kernel32.GetFileInformationByHandleEx(handle, 9, ctypes.byref(info), ctypes.sizeof(info)):
+        error = ctypes.WinError(ctypes.get_last_error())
+        kernel32.CloseHandle(handle)
+        raise error
+    if info.attributes & 0x400:
+        kernel32.CloseHandle(handle)
+        _scoring_error("SCORING_SYMLINK_PATH", field_name)
+    if bool(info.attributes & 0x10) != directory:
+        kernel32.CloseHandle(handle)
+        _scoring_error("SCORING_INVALID_PATH" if directory else "SCORING_INVALID_FILE", field_name)
+    return handle
+
+
+def _scoring_close_windows_handle(handle: int) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle(handle)
+
+
+def _scoring_read_regular(path: Path, root: Path, limit: int, field_name: str) -> bytes:
+    try:
+        absolute = Path(os.path.abspath(path))
+        absolute_root = Path(os.path.abspath(root))
+        relative = absolute.relative_to(absolute_root)
+        if not relative.parts:
+            _scoring_error("SCORING_INVALID_PATH", field_name)
+        initial_info = absolute.lstat()
+        is_reparse = bool(
+            getattr(initial_info, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        )
+        if stat.S_ISLNK(initial_info.st_mode) or is_reparse:
+            _scoring_error("SCORING_SYMLINK_PATH", field_name)
+        if not stat.S_ISREG(initial_info.st_mode):
+            _scoring_error("SCORING_INVALID_FILE", field_name)
+        if initial_info.st_size > limit:
+            _scoring_error("SCORING_FILE_TOO_LARGE", field_name)
+
+        if os.name == "nt":
+            import msvcrt
+
+            handles: list[int] = []
+            fd = -1
+            try:
+                parts = absolute.parts
+                current = Path(parts[0])
+                handles.append(_scoring_open_windows_handle(current, True, field_name))
+                for part in parts[1:-1]:
+                    current = current / part
+                    handles.append(_scoring_open_windows_handle(current, True, field_name))
+                leaf_handle = _scoring_open_windows_handle(absolute, False, field_name)
+                handles.append(leaf_handle)
+                fd = msvcrt.open_osfhandle(leaf_handle, os.O_RDONLY | os.O_BINARY)
+                handles.pop()  # The CRT descriptor now owns this handle.
+                opened_info = os.fstat(fd)
+                if not stat.S_ISREG(opened_info.st_mode):
+                    _scoring_error("SCORING_INVALID_FILE", field_name)
+                if (opened_info.st_dev, opened_info.st_ino) != (initial_info.st_dev, initial_info.st_ino):
+                    _scoring_error("SCORING_CHANGED_FILE", field_name)
+                if opened_info.st_size > limit:
+                    _scoring_error("SCORING_FILE_TOO_LARGE", field_name)
+                with os.fdopen(fd, "rb") as stream:
+                    fd = -1
+                    data = stream.read(limit + 1)
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+                for handle in reversed(handles):
+                    _scoring_close_windows_handle(handle)
+        else:
+            directory_flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0)
+            if not getattr(os, "O_DIRECTORY", 0) or not getattr(os, "O_NOFOLLOW", 0) or os.open not in os.supports_dir_fd:
+                _scoring_error("SCORING_INVALID_PATH", field_name)
+            directory_fds: list[int] = []
+            fd = -1
+            try:
+                parts = absolute.parts
+                directory_fds.append(os.open(parts[0], directory_flags))
+                for part in parts[1:-1]:
+                    next_fd = os.open(part, directory_flags, dir_fd=directory_fds[-1])
+                    if not stat.S_ISDIR(os.fstat(next_fd).st_mode):
+                        os.close(next_fd)
+                        _scoring_error("SCORING_INVALID_PATH", field_name)
+                    directory_fds.append(next_fd)
+                fd = os.open(parts[-1], os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory_fds[-1])
+                opened_info = os.fstat(fd)
+                if not stat.S_ISREG(opened_info.st_mode):
+                    _scoring_error("SCORING_INVALID_FILE", field_name)
+                if (opened_info.st_dev, opened_info.st_ino) != (initial_info.st_dev, initial_info.st_ino):
+                    _scoring_error("SCORING_CHANGED_FILE", field_name)
+                if opened_info.st_size > limit:
+                    _scoring_error("SCORING_FILE_TOO_LARGE", field_name)
+                with os.fdopen(fd, "rb") as stream:
+                    fd = -1
+                    data = stream.read(limit + 1)
+            finally:
+                if fd >= 0:
+                    os.close(fd)
+                for directory_fd in reversed(directory_fds):
+                    os.close(directory_fd)
+
+        if len(data) > limit:
+            _scoring_error("SCORING_FILE_TOO_LARGE", field_name)
+        return data
+    except ValueError as error:
+        if str(error).startswith("SCORING_"):
+            raise
+        _scoring_error("SCORING_INVALID_PATH", field_name)
+    except (OSError, TypeError, OverflowError):
+        _scoring_error("SCORING_INVALID_PATH", field_name)
+
+
+def _scoring_reject_constant(_value: str) -> None:
+    _scoring_error("SCORING_INVALID_JSON", "REGISTRY_METADATA")
+
+
+def _scoring_unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            _scoring_error("SCORING_DUPLICATE_JSON_KEY", "REGISTRY_METADATA")
+        result[key] = value
+    return result
+
+
+def _scoring_parse_metadata(data: bytes) -> dict[str, Any]:
+    try:
+        parsed = json.loads(
+            data.decode("utf-8", errors="strict"),
+            object_pairs_hook=_scoring_unique_object,
+            parse_constant=_scoring_reject_constant,
+        )
+    except ValueError as error:
+        if str(error).startswith("SCORING_"):
+            raise
+        _scoring_error("SCORING_INVALID_JSON", "REGISTRY_METADATA")
+    except (UnicodeDecodeError, RecursionError, TypeError):
+        _scoring_error("SCORING_INVALID_JSON", "REGISTRY_METADATA")
+    if type(parsed) is not dict or type(parsed.get("models")) is not dict:
+        _scoring_error("SCORING_INVALID_REGISTRY", "REGISTRY_METADATA")
+    return parsed
+
+
+def _scoring_artifact_model(name: str, version: str, entry: dict[str, Any], artifact: bytes) -> ScoringModel:
+    if type(entry) is not dict or entry.get("status") not in ("STAGING", "VALIDATED", "PRODUCTION"):
+        _scoring_error("SCORING_INVALID_MODEL_ENTRY", "MODEL_ENTRY")
+    metadata = entry.get("metadata")
+    if type(metadata) is not dict or type(metadata.get("scoring")) is not dict:
+        _scoring_error("SCORING_INVALID_MODEL_METADATA", "SCORING")
+    values = metadata["scoring"]
+    if set(values) != _SCORING_METADATA_FIELDS or type(values.get("languages")) is not list:
+        _scoring_error("SCORING_INVALID_MODEL_METADATA", "SCORING")
+    checksum = _scoring_sha256(entry.get("checksum"), "ARTIFACT_SHA256")
+    values = dict(values)
+    values["languages"] = tuple(values["languages"])
+    for key in ("training_cutoff_at", "model_available_at", "calibration_available_at"):
+        values[key] = _scoring_parse_timestamp(values[key], key.upper())
+    return ScoringModel(name=name, version=version, artifact_sha256=checksum, artifact=artifact, **values)
+
+
+def _scoring_valid_allowlist(allowed_models: tuple[tuple[str, str], ...]) -> tuple[tuple[str, str], ...]:
+    if type(allowed_models) is not tuple or not 1 <= len(allowed_models) <= 16:
+        _scoring_error("SCORING_INVALID_ALLOWLIST", "ALLOWED_MODELS")
+    normalized: list[tuple[str, str]] = []
+    for pair in allowed_models:
+        if type(pair) is not tuple or len(pair) != 2:
+            _scoring_error("SCORING_INVALID_ALLOWLIST", "ALLOWED_MODELS")
+        name = _scoring_identifier(pair[0], "NAME")
+        version = pair[1]
+        if type(version) is not str or _SCORING_SEMVER_RE.fullmatch(version) is None:
+            _scoring_error("SCORING_INVALID_SEMVER", "VERSION")
+        normalized.append((name, version))
+    if len(set(normalized)) != len(normalized):
+        _scoring_error("SCORING_DUPLICATE_MODEL", "ALLOWED_MODELS")
+    return tuple(normalized)
+
+
+def _scoring_registry_snapshot(registry: Any, allowed_models: tuple[tuple[str, str], ...]) -> ScoringRegistrySnapshot:
+    allowlist = _scoring_valid_allowlist(allowed_models)
+    root = Path(os.path.abspath(registry.registry_path))
+    metadata_path = Path(os.path.abspath(registry.metadata_file))
+    try:
+        metadata_bytes = _scoring_read_regular(metadata_path, root, _SCORING_MAX_METADATA_BYTES, "REGISTRY_METADATA")
+        parsed = _scoring_parse_metadata(metadata_bytes)
+        models: list[ScoringModel] = []
+        remaining_artifact_bytes = _SCORING_MAX_ARTIFACT_BYTES
+        for name, version in allowlist:
+            entry = parsed["models"][name]["versions"][version]
+            artifact_path = Path(os.path.abspath(registry.artifacts_path / name / version / "model.joblib"))
+            artifact = _scoring_read_regular(artifact_path, root, remaining_artifact_bytes, "ARTIFACT")
+            remaining_artifact_bytes -= len(artifact)
+            if (
+                type(entry) is not dict
+                or type(entry.get("artifact_path")) is not str
+                or entry["artifact_path"] != str(artifact_path)
+            ):
+                _scoring_error("SCORING_INVALID_ARTIFACT_PATH", "ARTIFACT_PATH")
+            models.append(_scoring_artifact_model(name, version, entry, artifact))
+        if _scoring_read_regular(metadata_path, root, _SCORING_MAX_METADATA_BYTES, "REGISTRY_METADATA") != metadata_bytes:
+            _scoring_error("SCORING_REGISTRY_CHANGED", "REGISTRY_METADATA")
+        return ScoringRegistrySnapshot(tuple(models))
+    except KeyError:
+        _scoring_error("SCORING_MODEL_NOT_FOUND", "MODEL_VERSION")
+    except ValueError as error:
+        if str(error).startswith("SCORING_"):
+            raise
+        _scoring_error("SCORING_REGISTRY_INVALID", "REGISTRY_METADATA")
+    except (OSError, TypeError, UnicodeError, RecursionError):
+        _scoring_error("SCORING_REGISTRY_INVALID", "REGISTRY_METADATA")
 
 
 def _robust_makedirs(path: Path, max_retries: int = 3) -> None:
@@ -303,14 +717,14 @@ class ModelRegistry:
     Institutional Model Registry for versioning and artifact management.
     """
 
-    def __init__(self, registry_path: str = ".models"):
+    def __init__(self, registry_path: Optional[str] = ".models"):
         """
         Initialize the model registry.
 
         Args:
-            registry_path: Root directory for the model registry.
+            registry_path: Root directory for the model registry; None uses .models.
         """
-        self.registry_path = Path(registry_path)
+        self.registry_path = Path(".models" if registry_path is None else registry_path)
         self.artifacts_path = self.registry_path / "artifacts"
         self.metadata_file = self.registry_path / "registry_metadata.json"
         self.audit_log_file = self.registry_path / "audit_log.jsonl"
@@ -323,6 +737,10 @@ class ModelRegistry:
 
         self._ensure_directories()
         self._load_registry()
+
+    def scoring_snapshot(self, allowed_models: tuple[tuple[str, str], ...]) -> ScoringRegistrySnapshot:
+        """Load a validated immutable snapshot of explicitly allowed scoring models."""
+        return _scoring_registry_snapshot(self, allowed_models)
 
     def _ensure_directories(self):
         """Create necessary directory structure."""

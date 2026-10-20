@@ -44,31 +44,85 @@ def test_get_model_registry_uses_default_registry_when_path_is_none(monkeypatch:
     created_paths: list[object] = []
 
     class FakeRegistry:
-        def __init__(self, registry_path: object = ".models") -> None:
+        def __init__(self, registry_path: object = None) -> None:
             created_paths.append(registry_path)
 
-    monkeypatch.setattr("omega.quant.multi_symbol_router.ModelRegistry", FakeRegistry)
+    monkeypatch.setattr("omega.quant.execution.multi_symbol_router.ModelRegistry", FakeRegistry)
 
     router = MultiSymbolRouter(RouterConfig(model_registry_path=None))
 
     assert router._get_model_registry() is router._get_model_registry()
-    assert created_paths == [".models"]
+    assert created_paths == [None]
 
 
 def test_get_model_registry_uses_configured_registry_path(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     created_paths: list[object] = []
 
     class FakeRegistry:
-        def __init__(self, registry_path: object = ".models") -> None:
+        def __init__(self, registry_path: object = None) -> None:
             created_paths.append(registry_path)
 
-    monkeypatch.setattr("omega.quant.multi_symbol_router.ModelRegistry", FakeRegistry)
+    monkeypatch.setattr("omega.quant.execution.multi_symbol_router.ModelRegistry", FakeRegistry)
 
     registry_path = tmp_path / "models"
     router = MultiSymbolRouter(RouterConfig(model_registry_path=str(registry_path)))
 
     assert router._get_model_registry() is router._get_model_registry()
     assert created_paths == [str(registry_path)]
+
+
+@pytest.mark.parametrize("registry_path", [None, "models", ""], ids=["default", "configured", "empty"])
+def test_get_model_registry_resolves_default_and_configured_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path, registry_path: str | None
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    router = MultiSymbolRouter(RouterConfig(model_registry_path=registry_path))
+
+    registry = router._get_model_registry()
+
+    assert registry.registry_path.as_posix() == (".models" if registry_path is None else registry_path or ".")
+    assert registry.metadata_file.is_file()
+    assert router._get_model_registry() is registry
+
+
+@pytest.mark.parametrize("registry_path", [None, "models"], ids=["default", "configured"])
+def test_get_model_registry_constructor_failure_preserves_empty_cache(
+    monkeypatch: pytest.MonkeyPatch, feature_frame: pd.DataFrame, registry_path: str | None
+) -> None:
+    created_paths: list[object] = []
+    failure = OSError("registry unavailable")
+
+    class FailingRegistry:
+        def __init__(self, registry_path: object = None) -> None:
+            created_paths.append(registry_path)
+            raise failure
+
+    monkeypatch.setattr("omega.quant.execution.multi_symbol_router.ModelRegistry", FailingRegistry)
+    router = MultiSymbolRouter(RouterConfig(model_registry_path=registry_path))
+
+    for _ in range(2):
+        with pytest.raises(OSError, match="registry unavailable") as exc:
+            router.process_all_symbols(["AAA"], feature_frame, pd.Timestamp("2026-05-18T00:00:00Z"))
+        assert exc.value is failure
+        assert router._model_registry is None
+        assert router.xgboost_model is None
+        assert router.lstm_model is None
+
+    assert created_paths == [registry_path, registry_path]
+
+    class RecoveredRegistry:
+        def __init__(self, registry_path: object = None) -> None:
+            created_paths.append(registry_path)
+
+    monkeypatch.setattr("omega.quant.execution.multi_symbol_router.ModelRegistry", RecoveredRegistry)
+    recovered = router._get_model_registry()
+    assert isinstance(recovered, RecoveredRegistry)
+    assert router._get_model_registry() is recovered
+    assert created_paths == [registry_path, registry_path, registry_path]
+
+    other_router = MultiSymbolRouter(RouterConfig(model_registry_path=registry_path))
+    assert other_router._get_model_registry() is not recovered
+    assert created_paths == [registry_path, registry_path, registry_path, registry_path]
 
 
 def test_process_all_symbols_runs_real_inference_in_parallel(feature_frame: pd.DataFrame) -> None:
