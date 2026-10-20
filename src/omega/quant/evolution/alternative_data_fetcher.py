@@ -18,7 +18,7 @@ from typing import Optional, Tuple
 import numpy as np
 import pandas as pd
 
-from omega.data.macro_rates import canonical_tenor
+from omega.data.macro_rates import OMO_NET_INJECTION_LIMIT, canonical_tenor
 from omega.quant.strategy.macro_context import get_fx_omo_indicators
 from omega.data.calendar import trading_session_open_utc
 from omega.quant.sentiment.focal_point_detector import VNFocalPointDetector
@@ -43,37 +43,46 @@ class AlternativeDataFetcher:
     @staticmethod
     def _utc_timestamp(value) -> pd.Timestamp:
         timestamp = pd.Timestamp(value)
-        return timestamp.tz_localize("UTC") if timestamp.tzinfo is None else timestamp.tz_convert("UTC")
+        if pd.isna(timestamp) or timestamp.tzinfo is None:
+            raise ValueError("macro timestamps must be timezone-aware")
+        return timestamp.tz_convert("UTC")
 
     def get_macro_bitemporal_features(self, panel: pd.DataFrame, macro_rows=None, as_of=None) -> pd.DataFrame:
         """Tạo tín hiệu macro theo availability/vintage, không nhìn trước."""
         rows = list((self.macro_rows if macro_rows is None else macro_rows) or [])
-        dates = pd.DatetimeIndex(panel.index.get_level_values("date")).tz_localize(None).normalize().unique().sort_values()
+        date_values = panel.index.get_level_values("date")
+        dates = pd.DatetimeIndex(pd.to_datetime(pd.unique(date_values)))
+        if dates.hasnans:
+            raise ValueError("macro session dates must be valid")
+        dates = dates.tz_localize(None).normalize().unique().sort_values()
         columns = ["interbank_on_spread", "term_structure_slope", "interbank_vol_5d", "macro_monetary_regime", "usd_vnd_zscore", "usd_vnd_vol_20d", "omo_net_injection_20d_sum", "macro_fx_liquidity_regime"]
         output = pd.DataFrame(np.nan, index=dates, columns=columns)
-        if not rows:
+        if not rows or not len(dates):
             return output
         cutoff = self._utc_timestamp(as_of) if as_of is not None else None
         normalized = []
         for row in rows:
             item = row.as_dict() if hasattr(row, "as_dict") else dict(row)
-            available = self._utc_timestamp(item["available_at"])
-            vintage = self._utc_timestamp(item.get("vintage_at", item.get("revision_at", item["available_at"])))
-            if pd.Timestamp(item["available_at"]).tzinfo is None or pd.Timestamp(item.get("vintage_at", item.get("revision_at", item["available_at"]))).tzinfo is None:
-                raise ValueError("macro timestamps must be timezone-aware")
+            if not any(key in item for key in ("tenor", "maturity", "indicator")):
+                continue
+            available_raw = item["available_at"]
+            vintage_raw = item.get("vintage_at", item.get("revision_at", available_raw))
+            revision_raw = item.get("revision_at", item.get("vintage_at", available_raw))
+            available = self._utc_timestamp(available_raw)
+            vintage = self._utc_timestamp(vintage_raw)
+            revision = self._utc_timestamp(revision_raw)
             tenor = canonical_tenor(item.get("tenor", item.get("maturity", item.get("indicator", ""))))
             value = float(item.get("rate", item.get("value")))
-            if not np.isfinite(value):
+            if isinstance(item.get("rate", item.get("value")), (bool, np.bool_)) or not np.isfinite(value):
                 raise ValueError("macro rate must be finite")
-            revision = self._utc_timestamp(item.get("revision_at", item.get("vintage_at", item["available_at"])))
             normalized.append((tenor, value, available, vintage, revision, str(item.get("provider", ""))))
         for position, session in enumerate(dates):
-            session_cutoff = trading_session_open_utc(session.date())
+            session_cutoff = self._utc_timestamp(trading_session_open_utc(session.date()))
             effective = session_cutoff if cutoff is None else min(session_cutoff, cutoff)
             latest = {}
             for tenor, value, available, vintage, revision, provider in normalized:
                 candidate = (revision, vintage, available, provider, value)
-                if available <= effective and vintage <= effective and (tenor not in latest or candidate > latest[tenor][3]):
+                if available <= effective and vintage <= effective and revision <= effective and (tenor not in latest or candidate > latest[tenor][3]):
                     latest[tenor] = (value, available, vintage, candidate)
             ages = [position - max((i for i, day in enumerate(dates) if day.date() <= available.date()), default=position) for _, available, _, _ in latest.values()]
             if not latest or any(age > 5 for age in ages):
@@ -83,28 +92,80 @@ class AlternativeDataFetcher:
             long_rate = next((latest[tenor] for tenor in ("12m", "6m", "3m") if tenor in latest), None)
             if on is None:
                 continue
-            output.loc[session, "interbank_on_spread"] = on[0] - policy[0] if policy else np.nan
-            output.loc[session, "term_structure_slope"] = long_rate[0] - on[0] if long_rate else np.nan
+            spread = on[0] - policy[0] if policy else np.nan
+            slope = long_rate[0] - on[0] if long_rate else np.nan
+            output.loc[session, "interbank_on_spread"] = spread if np.isfinite(spread) else np.nan
+            output.loc[session, "term_structure_slope"] = slope if np.isfinite(slope) else np.nan
             output.loc[session, "interbank_vol_5d"] = output.loc[:session, "interbank_on_spread"].rolling(5, min_periods=2).std().iloc[-1]
+            if not np.isfinite(spread):
+                continue
             history = output.loc[:session, "interbank_on_spread"].dropna()
-            output.loc[session, "macro_monetary_regime"] = 0 if len(history) < 20 else (1 if history.iloc[-1] - history.iloc[-20] > 0.05 else (-1 if history.iloc[-1] - history.iloc[-20] < -0.05 else 0))
-        fx_rows = []
+            delta = 0.0 if len(history) < 20 else history.iloc[-1] - history.iloc[-20]
+            if np.isfinite(delta):
+                output.loc[session, "macro_monetary_regime"] = 1 if delta > 0.05 else (-1 if delta < -0.05 else 0)
+        fx_aliases = {
+            "usd_vnd": ("usd_vnd", "usd_vnd_rate", "usdvnd"),
+            "omo_net_injection": ("net_injection", "omo_net_injection", "sbv_omo_net"),
+        }
+        fx_candidates = []
         for row in rows:
             item = row.as_dict() if hasattr(row, "as_dict") else dict(row)
-            if any(key in item for key in ("usd_vnd", "usd_vnd_rate", "usdvnd", "net_injection", "omo_net_injection", "sbv_omo_net")):
-                available = self._utc_timestamp(item["available_at"])
-                vintage = self._utc_timestamp(item.get("vintage_at", item.get("revision_at", item["available_at"])))
-                if available <= (cutoff or available) and vintage <= (cutoff or vintage):
-                    fx_rows.append(item)
-        if fx_rows:
-            macro = pd.DataFrame(fx_rows)
-            macro.index = pd.to_datetime(macro.get("date", macro["available_at"])).tz_localize(None).normalize()
-            macro = macro.reindex(dates).ffill()
-            try:
-                output = output.join(get_fx_omo_indicators(macro), how="left")
-            except ValueError:
-                pass
-        return output
+            if not any(key in item for aliases in fx_aliases.values() for key in aliases):
+                continue
+            available_raw = item["available_at"]
+            vintage_raw = item.get("vintage_at", item.get("revision_at", available_raw))
+            revision_raw = item.get("revision_at", item.get("vintage_at", available_raw))
+            available = self._utc_timestamp(available_raw)
+            vintage = self._utc_timestamp(vintage_raw)
+            revision = self._utc_timestamp(revision_raw)
+            date_value = item.get("date", item.get("rate_date", available_raw))
+            session_date = pd.Timestamp(date_value)
+            if pd.isna(session_date):
+                raise ValueError("macro observation dates must be valid")
+            session_date = session_date.tz_convert("Asia/Ho_Chi_Minh").tz_localize(None) if session_date.tzinfo is not None else session_date
+            session_date = session_date.normalize()
+            for alias, aliases in fx_aliases.items():
+                key = next((name for name in aliases if name in item), None)
+                if key is None:
+                    continue
+                value = float(item[key])
+                if isinstance(item[key], (bool, np.bool_)) or not np.isfinite(value):
+                    raise ValueError("macro indicator must be finite")
+                if alias == "usd_vnd" and value <= 0:
+                    raise ValueError("USD/VND must be positive")
+                fx_candidates.append((session_date.normalize(), available, vintage, revision, alias, value, str(item.get("provider", ""))))
+
+        if fx_candidates:
+            # Place observations on their declared ICT session, never before the session date.
+            released = {}
+            for session in dates:
+                session_cutoff = self._utc_timestamp(trading_session_open_utc(session.date()))
+                effective = session_cutoff if cutoff is None else min(session_cutoff, cutoff)
+                for observed, available, vintage, revision, alias, value, provider in fx_candidates:
+                    if observed > session or observed.date() > effective.tz_convert("Asia/Ho_Chi_Minh").date() or available > effective or vintage > effective or revision > effective:
+                        continue
+                    # Equal-provenance invalid OMO must not lose to a valid observation.
+                    invalid_omo = alias == "omo_net_injection" and abs(value) > OMO_NET_INJECTION_LIMIT
+                    candidate = (observed, revision, vintage, available, provider, invalid_omo, value)
+                    key = (session, alias)
+                    if key not in released or candidate > released[key][0]:
+                        released[key] = (candidate, value)
+
+            macro = pd.DataFrame(index=dates, columns=("usd_vnd", "omo_net_injection"), dtype=float)
+            for (session, alias), (_, value) in released.items():
+                macro.loc[session, alias] = value
+            macro["omo_net_injection"] = macro["omo_net_injection"].where(
+                macro["omo_net_injection"].abs() <= OMO_NET_INJECTION_LIMIT
+            )
+            indicators = get_fx_omo_indicators(macro)
+            indicators = indicators.where(np.isfinite(indicators))
+            if "macro_fx_liquidity_regime" in indicators:
+                indicators["macro_fx_liquidity_regime"] = indicators["macro_fx_liquidity_regime"].where(
+                    indicators["usd_vnd_zscore"].notna()
+                    & indicators["omo_net_injection_20d_sum"].notna()
+                )
+            output.loc[:, indicators.columns] = indicators.reindex(dates).to_numpy()
+        return output.where(np.isfinite(output))
 
     def get_foreign_flow_proxy(self, panel: pd.DataFrame) -> pd.Series:
         """
@@ -332,8 +393,12 @@ class AlternativeDataFetcher:
         features['vsi_score'] = vsi_s
         features['focal_stress_score'] = fss_s
 
+        # Align daily features on normalized temporary dates, keeping caller keys unchanged.
+        session_dates = pd.DatetimeIndex(pd.to_datetime(
+            panel.index.get_level_values('date')
+        )).tz_localize(None).normalize()
         macro = self.get_macro_bitemporal_features(panel, self.macro_rows)
-        features = features.join(macro, on="date")
+        features[macro.columns] = macro.reindex(session_dates).to_numpy()
 
         # Join all features back to original panel
         result = panel.join(features)
