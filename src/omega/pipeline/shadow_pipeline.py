@@ -30,6 +30,7 @@ from omega.quant.execution.smart_execution import build_randomized_twap_schedule
 from omega.quant.portfolio.black_litterman_overlay import apply_calibrated_black_litterman_overlay
 from omega.quant.portfolio.portfolio_optimizer import PortfolioOptimizer
 from omega.quant.portfolio.regime_overlay import map_four_state_regime
+from omega.quant.strategy.unified_alpha_evaluator import annotate_execution_costs, blend_features
 from omega.risk.contagion_risk_validator import event_concentration_advisory
 from omega.risk.validators import AssetLimitValidator, DrawdownValidator, ExposureValidator, SectorLimitValidator
 
@@ -492,8 +493,72 @@ class ShadowPipeline:
                                facts_hash=digest(spec["facts"]), schema_version=2)
         return envelope["selected"]["regime"]
 
+    def _p6_proposal(self, req, baseline, cutoff):
+        advisory = req["advisory"]
+        _fields(advisory, {"schema_version", "features", "weights", "macro_multiplier"})
+        if self.mode not in ("shadow", "replay"):
+            raise ValueError("P6 requires shadow or replay mode")
+        rows = advisory["features"]
+        columns = {"symbol", "direct_news", "spillover", "pead", "feature_as_of", "feature_available_at", "lineage"}
+        if type(rows) is not list or len(rows) != len(req["universe"]):
+            raise ValueError("P6 feature shape mismatch")
+        for symbol, row in zip(req["universe"], rows):
+            _fields(row, columns)
+            if row["symbol"] != symbol or _timestamp(row["feature_as_of"]).astimezone(ICT).date() >= cutoff.astimezone(ICT).date():
+                raise ValueError("P6 requires ordered prior-session features")
+        streams = ("direct_news", "spillover", "pead")
+        features = pd.DataFrame(rows, columns=["symbol", *streams, "feature_as_of", "feature_available_at", "lineage"]).set_index("symbol")
+        quant = pd.Series(req["signal"]["values"], index=req["universe"], dtype=float)
+        blend = blend_features(quant, features, weights=advisory["weights"], decision_time=cutoff,
+                               macro_multiplier=advisory["macro_multiplier"])
+        influence = math.fsum(advisory["weights"].values())
+        proposed = list(baseline)
+        if influence and baseline:
+            candidate = PortfolioOptimizer(max_concentration=.1).optimize_weights(
+                blend["score_before_macro"],
+                covariance_matrix=pd.DataFrame(req["signal"]["covariance"], index=quant.index, columns=quant.index))
+            if not isinstance(candidate, pd.Series) or not candidate.index.equals(quant.index):
+                raise ValueError("P6 portfolio shape mismatch")
+            for value in candidate:
+                _number(value, 0, .1 + 1e-9)
+            if math.fsum(candidate) > 1 + 1e-9:
+                raise ValueError("unsafe P6 allocation")
+            proposed = [base + influence * (float(value) - base) for base, value in zip(baseline, candidate)]
+        if math.fsum(abs(value - base) for value, base in zip(proposed, baseline)) > .1 + 1e-9:
+            raise ValueError("aggregate P6 influence exceeded")
+        proposed = [value * advisory["macro_multiplier"] for value in proposed]
+        for value in proposed:
+            _number(value, 0, .1 + 1e-9)
+        annotations = {"p6": {
+            "provenance": "caller_supplied_unverified", "historical_eligible": False, "deployment_evidence": False,
+            "macro_multiplier": advisory["macro_multiplier"],
+            "stream_validity": {key: blend[f"{key}_valid"].tolist() for key in streams},
+            "excluded_streams": [key for key in streams if not blend[f"{key}_valid"].any()],
+        }}
+        return proposed, annotations, "p6"
+
+    @staticmethod
+    def _p6_costs(selected, nav):
+        _number(nav, 1, 10**18, integer=True)
+        rows = [{"fill_id": row["id"], "side": row["side"], "quantity": row["quantity"],
+                 "price_vnd": row["price_vnd"], "nav_vnd": nav} for row in selected["fills"]]
+        ledger = annotate_execution_costs(pd.DataFrame(rows, columns=["fill_id", "side", "quantity", "price_vnd", "nav_vnd"]))
+        return {"scenario": "p6_17_27_bps", "booked_in_w7_cash": False, "units": "VND_FULL",
+                "fills": ledger.to_dict(orient="records")}
+
     def _proposal(self, req, baseline, cutoff, deadline, stages):
         advisory = req["advisory"]
+        if advisory.get("schema_version") == "p6/v1":
+            self._resources()
+            if time.monotonic() >= deadline - RESERVE_SECONDS:
+                raise TimeoutError
+            start = time.monotonic()
+            result = self._p6_proposal(req, baseline, cutoff)
+            stages["p6"] = time.monotonic() - start
+            self._resources()
+            if time.monotonic() >= deadline - RESERVE_SECONDS:
+                raise TimeoutError
+            return result
         _fields(advisory, ADVISORY_FIELDS)
         _number(advisory["lambda_r"], 0, .1)
         # No zero-influence call to a solver, cache or provider.
@@ -692,6 +757,11 @@ class ShadowPipeline:
                             if not self._risk(proposed, req, nav, state["peak"]):
                                 raise ValueError("proposal infeasible")
                             selected = baseline if reason == "disabled" else self._simulate(req, state, proposed, safe, cutoff)
+                            if "p6" in annotations:
+                                annotations["p6"]["execution_costs"] = self._p6_costs(selected, nav)
+                                self._resources()
+                                if time.monotonic() >= deadline - RESERVE_SECONDS:
+                                    raise TimeoutError
                             outcome = "baseline" if reason == "disabled" else "proposal"
                         except (Exception, MemoryError) as error:
                             selected, annotations = baseline, {}

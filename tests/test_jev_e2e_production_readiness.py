@@ -837,24 +837,277 @@ def test_w7_payload_key_bounds(cycle_request, tmp_path):
 
 PACKET = ROOT / ".ly_state/session/jev_deep_integration_20260926/W7"
 CURRENT_L3_REPORT = ".ly_state/session/audit_reports/role21_gate_jev_deep_integration_w7_20260930.md"
+W7_CANDIDATE_REVISION = "a154fb8cfba706f7973fd56a97f5caf6edc7398a"
+W7_BASELINE_REVISION = "02bb5a7b41a5bbf4e9ff9cc1e3f61dea667044d7"
+W7_BASELINE_SHA256 = "92f60946585659af2f10b29e0ea1ed9166c3fe975ae80204034d08f2aa2bd978"
+W7_PREDECESSOR_PATH = ".ly_state/session/phase_gates.json"
 
 
-def verify_packet_bindings(manifest, root=ROOT):
+def w7_predecessor_metadata(raw):
+    def pairs(items):
+        result = {}
+        for key, value in items:
+            if key in result:
+                raise ValueError("duplicate metadata key")
+            result[key] = value
+        return result
+    try:
+        if len(raw) > 1_048_576:
+            raise ValueError("metadata exceeds bound")
+        result = json.loads(raw.decode("utf-8"), object_pairs_hook=pairs,
+                            parse_constant=lambda _: (_ for _ in ()).throw(ValueError("non-finite metadata")))
+        if type(result) is not dict:
+            raise ValueError("metadata must be an object")
+        json.dumps(result, allow_nan=False)
+        return result
+    except (UnicodeError, RecursionError, TypeError, ValueError):
+        raise AssertionError("invalid W7 predecessor metadata") from None
+
+
+def verify_w7_predecessor(entry, raw):
+    anchor = entry.get("history_anchor", W7_BASELINE_REVISION)
+    if (anchor != W7_BASELINE_REVISION or entry.get("baseline_recorded_sha256") != W7_BASELINE_SHA256
+            or entry.get("recorded_packets") != [f"W{i}" for i in range(7)]):
+        raise AssertionError("invalid W7 predecessor anchor")
+    try:
+        baseline = subprocess.run(["git", "show", f"{anchor}:{W7_PREDECESSOR_PATH}"], cwd=ROOT,
+                                  capture_output=True, check=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        raise AssertionError("W7 predecessor baseline unavailable") from None
+    if hashlib.sha256(baseline).hexdigest() != entry["baseline_recorded_sha256"]:
+        raise AssertionError("W7 predecessor baseline SHA-256 mismatch")
+    historical, current = w7_predecessor_metadata(baseline), w7_predecessor_metadata(raw)
+    for packet in entry["recorded_packets"]:
+        prefix = f"GATE_JEV_DEEP_INTEGRATION_{packet}_"
+        keys = [key for key in historical if key.startswith(prefix)]
+        if (len(keys) != 1 or [key for key in current if key.startswith(prefix)] != keys
+                or type(historical[keys[0]]) is not dict or not historical[keys[0]]
+                or json.dumps(current[keys[0]], sort_keys=True, allow_nan=False)
+                != json.dumps(historical[keys[0]], sort_keys=True, allow_nan=False)):
+            raise AssertionError(f"W7 predecessor packet changed or missing: {packet}")
+
+
+def w7_candidate_bytes(value):
+    try:
+        return subprocess.run(["git", "show", f"{W7_CANDIDATE_REVISION}:{value}"], cwd=ROOT,
+                              capture_output=True, check=True, timeout=10).stdout
+    except (OSError, subprocess.SubprocessError):
+        raise AssertionError(f"W7 baseline unavailable: {value}") from None
+
+
+def verify_packet_bindings(manifest, root=ROOT, *, candidate_reader=None):
     entries = manifest["candidate_files"] + manifest["evidence_files"] + [
         manifest[key] for key in ("graph_evidence", "anti_drip", "controlling_plan", "calendar", "predecessor_metadata")]
-    for entry in entries:
+    for index, entry in enumerate(entries):
         value = entry["path"]
-        assert isinstance(value, str) and not any(char in value for char in "\\:")
+        if not isinstance(value, str) or any(char in value for char in "\\:"):
+            raise AssertionError("invalid packet path")
         path = Path(value)
-        assert not path.is_absolute() and not any(part in ("", ".", "..") for part in value.split("/"))
-        assert value != CURRENT_L3_REPORT, "mutable current L3 report cannot be immutable L2 evidence"
+        if path.is_absolute() or any(part in ("", ".", "..") for part in value.split("/")):
+            raise AssertionError("invalid packet path")
+        if value.casefold() == CURRENT_L3_REPORT.casefold():
+            raise AssertionError("mutable current L3 report cannot be immutable L2 evidence")
         target = root / path
-        assert target.resolve().is_relative_to(root.resolve()) and target.is_file()
-        assert hashlib.sha256(target.read_bytes()).hexdigest() == entry["sha256"], value
+        if not target.resolve().is_relative_to(root.resolve()):
+            raise AssertionError("packet path escapes root")
+        if candidate_reader is not None and index < len(manifest["candidate_files"]):
+            raw = candidate_reader(value)
+        else:
+            if not target.is_file():
+                raise AssertionError(f"packet file missing: {value}")
+            raw = target.read_bytes()
+        if hashlib.sha256(raw).hexdigest() != entry["sha256"]:
+            if (index == len(entries) - 1 and value == W7_PREDECESSOR_PATH
+                    and entry.get("binding_mode") == "historical_snapshot"):
+                verify_w7_predecessor(entry, raw)
+            else:
+                raise AssertionError(f"packet SHA-256 mismatch: {value}")
 
 
 def test_w7_packet_bindings():
-    verify_packet_bindings(strict_json((PACKET / "input_manifest.json").read_bytes()))
+    # W7 seals historical candidates, not subsequent P6 working-tree changes.
+    verify_packet_bindings(strict_json((PACKET / "input_manifest.json").read_bytes()),
+                           candidate_reader=w7_candidate_bytes)
+
+
+@pytest.mark.parametrize("fault", ["missing-git", "bad-revision", "timeout", "tamper"])
+def test_w7_packet_baseline_read_failures(tmp_path, monkeypatch, fault):
+    raw = b"historical candidate\n"
+    target = tmp_path / "evidence.md"
+    target.write_bytes(raw)
+    evidence = {"path": "evidence.md", "sha256": hashlib.sha256(raw).hexdigest()}
+    manifest = {"candidate_files": [{**evidence, "path": "candidate.py"}], "evidence_files": [],
+                **dict.fromkeys(("graph_evidence", "anti_drip", "controlling_plan", "calendar", "predecessor_metadata"), evidence)}
+
+    def git_show(args, **kwargs):
+        assert args == ["git", "show", f"{W7_CANDIDATE_REVISION}:candidate.py"]
+        assert kwargs == {"cwd": ROOT, "capture_output": True, "check": True, "timeout": 10}
+        if fault == "missing-git":
+            raise FileNotFoundError("git")
+        if fault == "bad-revision":
+            raise subprocess.CalledProcessError(128, args)
+        if fault == "timeout":
+            raise subprocess.TimeoutExpired(args, 10)
+        return subprocess.CompletedProcess(args, 0, stdout=raw + b"tampered")
+
+    monkeypatch.setattr(subprocess, "run", git_show)
+    message = "packet SHA-256 mismatch" if fault == "tamper" else "W7 baseline unavailable"
+    with pytest.raises(AssertionError, match=message):
+        verify_packet_bindings(manifest, tmp_path, candidate_reader=w7_candidate_bytes)
+
+
+@pytest.fixture
+def predecessor_packet(tmp_path):
+    manifest = strict_json((PACKET / "input_manifest.json").read_bytes())
+    entry = deepcopy(manifest["predecessor_metadata"])
+    baseline = subprocess.run(["git", "show", "02bb5a7b41a5bbf4e9ff9cc1e3f61dea667044d7:" + entry["path"]],
+                              cwd=ROOT, capture_output=True, check=True, timeout=10).stdout
+    current = w7_predecessor_metadata(baseline)
+    current["LATER_GATE"] = {"implementation": "unrelated append"}
+    target = tmp_path / entry["path"]
+    target.parent.mkdir(parents=True)
+    target.write_text(json.dumps(current), encoding="utf-8")
+    evidence = {"path": "evidence.md", "sha256": hashlib.sha256(b"sealed\n").hexdigest()}
+    (tmp_path / evidence["path"]).write_bytes(b"sealed\n")
+    packet = {"candidate_files": [], "evidence_files": [], "predecessor_metadata": entry,
+              **dict.fromkeys(("graph_evidence", "anti_drip", "controlling_plan", "calendar"), evidence)}
+    return packet, target, baseline
+
+
+@pytest.mark.parametrize("anchor", ["implicit", "explicit", "exact"])
+def test_w7_packet_predecessor_append_only(predecessor_packet, tmp_path, monkeypatch, anchor):
+    manifest, target, baseline = predecessor_packet
+    entry = manifest["predecessor_metadata"]
+    if anchor == "explicit":
+        entry["history_anchor"] = "02bb5a7b41a5bbf4e9ff9cc1e3f61dea667044d7"
+    if anchor == "exact":
+        entry["sha256"] = hashlib.sha256(target.read_bytes()).hexdigest()
+    calls = []
+
+    def git_show(args, **kwargs):
+        calls.append(args)
+        assert args == ["git", "show", "02bb5a7b41a5bbf4e9ff9cc1e3f61dea667044d7:" + entry["path"]]
+        assert kwargs == {"cwd": ROOT, "capture_output": True, "check": True, "timeout": 10}
+        return subprocess.CompletedProcess(args, 0, stdout=baseline)
+
+    monkeypatch.setattr(subprocess, "run", git_show)
+    before = target.read_bytes()
+    verify_packet_bindings(manifest, tmp_path)
+    assert len(calls) == (0 if anchor == "exact" else 1)
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("packet", ["W0", "W1", "W2", "W3", "W4", "W5", "W6"])
+@pytest.mark.parametrize("fault", ["missing", "rewrite", "duplicate", "boolean-as-int", "int-as-float"])
+def test_w7_packet_predecessor_gate_integrity(predecessor_packet, tmp_path, monkeypatch, packet, fault):
+    manifest, target, baseline = predecessor_packet
+    current = w7_predecessor_metadata(target.read_bytes())
+    key = next(key for key in current if key.startswith(f"GATE_JEV_DEEP_INTEGRATION_{packet}_"))
+    if fault == "missing":
+        del current[key]
+    elif fault == "rewrite":
+        current[key] = {"rewritten": True}
+    elif fault == "boolean-as-int":
+        current[key]["sod_boundary_checked"] = int(current[key]["sod_boundary_checked"])
+    elif fault == "int-as-float":
+        current[key]["l2_role_id"] = float(current[key]["l2_role_id"])
+    else:
+        current[f"GATE_JEV_DEEP_INTEGRATION_{packet}_99999999"] = current[key]
+    target.write_text(json.dumps(current), encoding="utf-8")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **k: subprocess.CompletedProcess(a, 0, stdout=baseline))
+    before = target.read_bytes()
+    with pytest.raises(AssertionError, match="predecessor"):
+        verify_packet_bindings(manifest, tmp_path)
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("fault", ["missing-git", "bad-revision", "timeout", "tamper", "baseline-schema",
+                                   "current-json", "duplicate-json", "none", "empty", "nan", "inf", "negative-inf",
+                                   "zero", "negative", "overflow", "exponent-overflow", "oversized", "bom", "invalid-utf8",
+                                   "anchor-none", "anchor-empty", "anchor-symbolic",
+                                   "anchor-abbreviated", "anchor-option", "digest", "packets", "mode", "other-evidence"])
+def test_w7_packet_predecessor_fail_closed(predecessor_packet, tmp_path, monkeypatch, fault):
+    manifest, target, baseline = predecessor_packet
+    entry = manifest["predecessor_metadata"]
+    if fault.startswith("anchor-"):
+        entry["history_anchor"] = {"anchor-none": None, "anchor-empty": "", "anchor-symbolic": "HEAD",
+                                   "anchor-abbreviated": "02bb5a7b", "anchor-option": "--help"}[fault]
+    elif fault == "digest":
+        entry["baseline_recorded_sha256"] = "0" * 64
+    elif fault == "packets":
+        entry["recorded_packets"] = ["W0"]
+    elif fault == "mode":
+        entry["binding_mode"] = "current"
+    elif fault == "other-evidence":
+        manifest["calendar"] = dict(entry)
+    else:
+        payloads = {"current-json": b"{", "duplicate-json": b'{"W0":{},"W0":{}}', "none": b"null",
+                    "empty": b"{}", "nan": b"NaN", "inf": b"Infinity", "negative-inf": b"-Infinity",
+                    "zero": b"0", "negative": b"-1", "overflow": b"100000000000000000000",
+                    "exponent-overflow": b'{"unrelated":1e400}', "oversized": b" " * 1_048_577,
+                    "bom": b"\xef\xbb\xbf{}", "invalid-utf8": b"\xff"}
+        if fault in payloads:
+            target.write_bytes(payloads[fault])
+
+    def git_show(args, **kwargs):
+        if fault == "missing-git":
+            raise FileNotFoundError("git")
+        if fault == "bad-revision":
+            raise subprocess.CalledProcessError(128, args)
+        if fault == "timeout":
+            raise subprocess.TimeoutExpired(args, 10)
+        return subprocess.CompletedProcess(args, 0, stdout=b"{}" if fault == "baseline-schema" else
+                                           baseline + b"tamper" if fault == "tamper" else baseline)
+
+    monkeypatch.setattr(subprocess, "run", git_show)
+    before = target.read_bytes()
+    with pytest.raises(AssertionError):
+        verify_packet_bindings(manifest, tmp_path)
+    assert target.read_bytes() == before
+
+
+@pytest.mark.parametrize("fault", ["rewrite", "delete"])
+def test_w7_packet_historical_candidate_isolation(tmp_path, fault):
+    raw = b"historical candidate\n"
+    candidate = tmp_path / "candidate.py"
+    candidate.write_bytes(raw)
+    evidence = tmp_path / "evidence.md"
+    evidence.write_bytes(b"sealed evidence\n")
+    entry = {"path": "evidence.md", "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest()}
+    manifest = {"candidate_files": [{"path": "candidate.py", "sha256": hashlib.sha256(raw).hexdigest()}],
+                "evidence_files": [],
+                **dict.fromkeys(("graph_evidence", "anti_drip", "controlling_plan", "calendar", "predecessor_metadata"), entry)}
+    manifest["predecessor_metadata"] = {**entry, "binding_mode": "historical_snapshot"}
+    calls = []
+
+    def historical(value):
+        calls.append(value)
+        return raw
+
+    if fault == "rewrite":
+        candidate.write_bytes(b"P6 candidate\n")
+    else:
+        candidate.unlink()
+    verify_packet_bindings(manifest, tmp_path, candidate_reader=historical)
+    assert calls == ["candidate.py"]
+    evidence.write_bytes(b"changed predecessor\n")
+    with pytest.raises(AssertionError, match="packet SHA-256 mismatch: evidence.md"):
+        verify_packet_bindings(manifest, tmp_path, candidate_reader=historical)
+    evidence.unlink()
+    with pytest.raises(AssertionError, match="packet file missing: evidence.md"):
+        verify_packet_bindings(manifest, tmp_path, candidate_reader=historical)
+
+
+@pytest.mark.parametrize("value", [None, "", "../candidate.py", "/candidate.py", "C:/candidate.py",
+                                   "dir\\candidate.py", "dir//candidate.py", CURRENT_L3_REPORT, CURRENT_L3_REPORT.upper()],
+                         ids=["none", "empty", "traversal", "absolute", "drive", "backslash", "empty-part", "audit", "audit-case"])
+def test_w7_packet_rejects_unsafe_historical_paths_before_read(tmp_path, value):
+    entry = {"path": value, "sha256": hashlib.sha256(b"candidate").hexdigest()}
+    manifest = {"candidate_files": [entry], "evidence_files": [],
+                **dict.fromkeys(("graph_evidence", "anti_drip", "controlling_plan", "calendar", "predecessor_metadata"), entry)}
+    audit = isinstance(value, str) and value.casefold() == CURRENT_L3_REPORT.casefold()
+    with pytest.raises(AssertionError, match="mutable current L3 report" if audit else "invalid packet path"):
+        verify_packet_bindings(manifest, tmp_path, candidate_reader=lambda _: pytest.fail("unsafe historical read"))
 
 
 @pytest.mark.parametrize("fault", ["tamper", "missing", "crlf", "traversal"], ids=["tamper", "missing", "crlf", "traversal"])
