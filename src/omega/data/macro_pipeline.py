@@ -65,7 +65,10 @@ def next_tradable_session(date: Any, holidays: set[pd.Timestamp]) -> pd.Timestam
 
 
 def _timestamp_column(frame: pd.DataFrame, column: str) -> pd.Series:
-    return pd.to_datetime(frame[column], utc=True).dt.tz_convert(TIMEZONE)
+    timestamps = pd.to_datetime(frame[column], format="ISO8601", utc=True, errors="raise").dt.tz_convert(TIMEZONE)
+    if timestamps.isna().any():
+        raise ValueError(f"PIT violation: {column} must contain non-null timestamps")
+    return timestamps
 
 
 class MacroDataPipeline:
