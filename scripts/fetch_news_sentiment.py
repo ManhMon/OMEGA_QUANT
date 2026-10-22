@@ -167,6 +167,7 @@ def build_news_sentiment(
     listing_days: dict[str, set] | None = None,
     listing_path: Path | None = None,
     max_articles_per_source: int = 100000,
+    *, sources: list[str] | None = None, skip_vnstock: bool = False,
 ) -> Path:
     """Fetch available articles and write canonical PIT-stamped sentiment rows."""
     listing_days = listing_days if listing_days is not None else _load_listing_days(listing_path)
@@ -175,7 +176,11 @@ def build_news_sentiment(
     max_publish_time = existing["publish_time"].max() if existing is not None and not existing.empty else None
     if incremental and max_publish_time is not None:
         hours_back = max(24, int((as_of_time - max_publish_time.to_pydatetime()).total_seconds() / 3600) + 24)
-    articles = (aggregator or NewsAggregator(max_articles_per_source=max_articles_per_source)).fetch_recent_news(as_of_time=as_of_time, hours_back=hours_back)
+    if aggregator is not None and (sources is not None or skip_vnstock):
+        raise ValueError("configure sources and skip_vnstock on the supplied aggregator")
+    articles = (aggregator or NewsAggregator(
+        max_articles_per_source=max_articles_per_source, sources=sources, skip_vnstock=skip_vnstock,
+    )).fetch_recent_news(as_of_time=as_of_time, hours_back=hours_back)
     rows, quarantined = [], []
     for article in articles:
         reason = None
@@ -194,15 +199,16 @@ def build_news_sentiment(
                 "raw_payload": json.dumps({"ticker": getattr(article, "ticker", None), "text": getattr(article, "text", None), "timestamp": getattr(article, "timestamp", None)}, default=str, sort_keys=True),
             })
             continue
+        fetched_at = getattr(article, "fetched_at", None) or as_of_time
         rows.append({
             "symbol": article.ticker,
             "title": article.text,
             "publish_time": article.timestamp,
             "sentiment_score": score_sentiment(article.text),
-            "available_at": article.timestamp + timedelta(days=1),
+            "available_at": max(fetched_at, getattr(article, "available_at", None) or (article.timestamp + timedelta(days=1))),
             "url": getattr(article, "url", None),
             "source": getattr(article, "source", "unknown"),
-            "fetched_at": getattr(article, "fetched_at", None) or as_of_time,
+            "fetched_at": fetched_at,
             "raw_timestamp": getattr(article, "raw_timestamp", None),
             "payload_sha256": getattr(article, "payload_sha256", None) or hashlib.sha256(article.text.encode("utf-8")).hexdigest(),
             "parser_version": getattr(article, "parser_version", "news-v10"),
@@ -710,11 +716,13 @@ def main() -> None:
     parser.add_argument("--incremental", action="store_true")
     parser.add_argument("--checkpoint-path", type=Path, default=CHECKPOINT_PATH)
     parser.add_argument("--listing-path", type=Path)
+    parser.add_argument("--skip-vnstock", action="store_true", help="Skip per-ticker VCI news requests")
+    parser.add_argument("--sources", nargs="+", choices=NewsAggregator.SOURCES, help="Live news sources (default: all)")
     args = parser.parse_args()
     if args.historical:
         if any(value is None for value in (args.universe, args.start, args.end, args.as_of, args.output)):
             parser.error("--historical requires --universe --start --end --as-of --output DIRECTORY")
-        if args.incremental or args.listing_path is not None or args.checkpoint_path != CHECKPOINT_PATH or args.hours_back != DEFAULT_HOURS_BACK or args.max_articles_per_source != 100000:
+        if args.incremental or args.listing_path is not None or args.checkpoint_path != CHECKPOINT_PATH or args.hours_back != DEFAULT_HOURS_BACK or args.max_articles_per_source != 100000 or args.skip_vnstock or args.sources is not None:
             parser.error("legacy options cannot be combined with --historical")
         if args.workers is not None and not 1 <= args.workers <= 16:
             parser.error("--workers must be within 1..16")
@@ -728,7 +736,7 @@ def main() -> None:
         return
     if args.resume or any(value is not None for value in (args.universe, args.start, args.end, args.as_of, args.workers)):
         parser.error("--universe --start --end --as-of --resume --workers require --historical")
-    build_news_sentiment(args.output or OUTPUT_PATH, hours_back=args.hours_back, incremental=args.incremental, checkpoint_path=args.checkpoint_path, listing_path=args.listing_path, max_articles_per_source=args.max_articles_per_source)
+    build_news_sentiment(args.output or OUTPUT_PATH, hours_back=args.hours_back, incremental=args.incremental, checkpoint_path=args.checkpoint_path, listing_path=args.listing_path, max_articles_per_source=args.max_articles_per_source, sources=args.sources, skip_vnstock=args.skip_vnstock)
 
 
 if __name__ == "__main__":

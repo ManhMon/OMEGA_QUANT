@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 import pandas as pd
 import pyarrow.parquet as pq
+import pytest
 
 from omega.quant.signal.sentiment_proxy import MarketImpliedSentimentProxy
 from omega.quant.graph.loader import FinancialStatementLoader
@@ -82,12 +83,42 @@ def test_news_engine_writes_pit_schema(tmp_path: Path):
             assert hours_back == DEFAULT_HOURS_BACK
             return [type("Article", (), {"ticker": "AAA", "text": "AAA tăng mạnh", "timestamp": published})()]
 
-    output = build_news_sentiment(tmp_path / "news.parquet", Aggregator())
+    output = build_news_sentiment(
+        tmp_path / "news.parquet", Aggregator(),
+        checkpoint_path=tmp_path / "checkpoint.json", quarantine_path=tmp_path / "quarantine.parquet",
+    )
     table = pq.read_table(output)
 
     assert table.schema == SCHEMA
-    assert table.column("available_at")[0].as_py() == published + timedelta(days=1)
+    assert table.column("available_at")[0].as_py() >= published + timedelta(days=1)
+    assert table.column("available_at")[0].as_py() >= table.column("fetched_at")[0].as_py()
     assert table.column("sentiment_score")[0].as_py() == 1.0
+
+
+@pytest.mark.parametrize("offset", [-1, 0, 1], ids=["before", "equal", "after"])
+@pytest.mark.parametrize("availability_offset", [None, -1, 1], ids=["missing", "premature", "delayed"])
+def test_news_engine_availability_respects_observation_floor(tmp_path: Path, offset, availability_offset):
+    published = datetime(2026, 1, 2, 8, 30, tzinfo=timezone.utc)
+    delayed_publication = published + timedelta(days=1)
+    fetched_at = delayed_publication + timedelta(microseconds=offset)
+    available_at = None if availability_offset is None else delayed_publication + timedelta(microseconds=availability_offset)
+
+    class Aggregator:
+        def fetch_recent_news(self, as_of_time, hours_back):
+            return [type("Article", (), {
+                "ticker": "AAA", "text": "AAA tăng mạnh", "timestamp": published,
+                "fetched_at": fetched_at, "available_at": available_at,
+            })()]
+
+    output = build_news_sentiment(
+        tmp_path / "news.parquet", Aggregator(),
+        checkpoint_path=tmp_path / "checkpoint.json", quarantine_path=tmp_path / "quarantine.parquet",
+    )
+    row = pq.read_table(output).to_pylist()[0]
+
+    assert row["fetched_at"] == fetched_at
+    assert row["available_at"] == max(fetched_at, available_at or delayed_publication)
+    assert row["available_at"] >= fetched_at
 
 
 def test_news_engine_passes_hours_back_to_aggregator(tmp_path: Path):

@@ -135,10 +135,22 @@ class SentimentInput:
 class NewsAggregator:
     """Vietnamese financial news collector with strict PIT safety."""
 
+    SOURCES = ("vnstock", "vietstock", "vietcap", "cafef", "tinnhanhck", "vneconomy")
+
     def __init__(
         self, max_articles_per_source: int = 100,
         event_history_path: str | Path | None = None, max_history_size: int = 5000,
+        *, sources: Optional[List[str]] = None, skip_vnstock: bool = False,
     ):
+        if sources is not None and (
+            not isinstance(sources, (list, tuple))
+            or any(not isinstance(source, str) or source not in self.SOURCES for source in sources)
+        ):
+            raise ValueError(f"sources must be a list of identifiers from {self.SOURCES}")
+        if type(skip_vnstock) is not bool:
+            raise ValueError("skip_vnstock must be bool")
+        self.sources = tuple(source for source in self.SOURCES
+                            if (sources is None or source in sources) and not (skip_vnstock and source == "vnstock"))
         if max_articles_per_source <= 0:
             raise ValueError("max_articles_per_source must be a positive integer")
         if type(max_history_size) is not int or max_history_size <= 0:
@@ -197,7 +209,7 @@ class NewsAggregator:
             response.raise_for_status()
             return response
         except Exception as exc:
-            logger.error("Failed to fetch %s: %s", url, exc)
+            logger.error("Failed to fetch %s: %s", redact(url), redact(exc))
             return None
 
     def _fetch_html(self, url: str, domain: str) -> Optional[BeautifulSoup]:
@@ -229,22 +241,28 @@ class NewsAggregator:
 
     @staticmethod
     def classify_event_revisions(
-        items: List[SentimentInput], as_of: datetime, prior_seen: Optional[dict[str, SentimentInput]] = None
+        items: List[SentimentInput], as_of: datetime, prior_seen: Optional[dict[str, SentimentInput]] = None,
+        *, fetched_at: Optional[datetime] = None,
     ) -> List[SentimentInput]:
-        """Annotate observable articles; retain corrections instead of discarding them."""
+        """Keep publication bounded by as_of; live sessions supply an observation cutoff."""
         if not isinstance(as_of, datetime):
             raise ValueError("as_of must be datetime")
-        cutoff = _as_utc(as_of)
+        if fetched_at is not None and not isinstance(fetched_at, datetime):
+            raise ValueError("fetched_at must be datetime")
+        publication_cutoff = _as_utc(as_of)
+        cutoff = _as_utc(fetched_at) if fetched_at is not None else publication_cutoff
         NewsAggregator._validate_prior_seen(prior_seen)
         seen = {
             identity: prior for identity, prior in (prior_seen or {}).items()
             if _as_utc(prior.available_at or prior.fetched_at or prior.timestamp) <= cutoff
-            and _as_utc(prior.timestamp) <= cutoff
+            and _as_utc(prior.timestamp) <= publication_cutoff
         }
         output = []
-        for item in sorted(items, key=lambda row: _as_utc(row.fetched_at or row.timestamp)):
-            available = _as_utc(item.fetched_at or item.timestamp)
-            if available > cutoff or _as_utc(item.timestamp) > cutoff or _as_utc(item.timestamp) > available:
+        for item in sorted(items, key=lambda row: _as_utc(row.available_at or row.fetched_at or row.timestamp)):
+            available = _as_utc(item.available_at or item.fetched_at or item.timestamp)
+            if (available > cutoff or _as_utc(item.timestamp) > publication_cutoff
+                    or _as_utc(item.timestamp) > available
+                    or (item.fetched_at is not None and _as_utc(item.fetched_at) > available)):
                 continue
             item.available_at = available
             identity = NewsAggregator._event_identity(item)
@@ -363,6 +381,7 @@ class NewsAggregator:
         if (
             parsed.scheme not in {"http", "https"}
             or not parsed.netloc
+            or parsed.username is not None or parsed.password is not None
             or not base_domain
             or (parsed.hostname or "").lower() not in {base_domain.lower()}
             and not (parsed.hostname or "").lower().endswith(f".{base_domain.lower()}")
@@ -405,10 +424,10 @@ class NewsAggregator:
         return None
 
     def _scrape_html_source(self, source: str, page_url: str, domain: str, as_of_time: datetime, hours_back: int, fetched_at: Optional[datetime] = None) -> List[SentimentInput]:
-        fetched_at = _as_utc(fetched_at or datetime.now(timezone.utc))
         soup = self._fetch_html(page_url, domain)
         if soup is None:
             return []
+        fetched_at = _as_utc(fetched_at or datetime.now(timezone.utc))
         payload_sha256 = self._payload_sha256(str(soup))
         cutoff = _as_utc(as_of_time) - timedelta(hours=hours_back)
         results, seen = [], set()
@@ -496,6 +515,9 @@ class NewsAggregator:
         cutoff = as_of_time - timedelta(hours=hours_back)
         results: List[SentimentInput] = []
 
+        universe_tickers = self._load_universe_tickers()
+        if not universe_tickers:
+            return results
         client = VnstockClient().direct_vci_client
 
         def fetch_ticker(ticker: str) -> List[SentimentInput]:
@@ -544,7 +566,7 @@ class NewsAggregator:
                         ticker_results.append(SentimentInput(
                             text=" ".join(part.strip() for part in [title or "", summary or ""] if part and part.strip()),
                             source="vnstock", timestamp=timestamp, ticker=ticker,
-                            fetched_at=as_of_time, raw_timestamp=str(row.get("public_date")),
+                            fetched_at=datetime.now(timezone.utc), raw_timestamp=str(row.get("public_date")),
                             payload_sha256=self._payload_sha256(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str)),
                         ))
                 if next_cursor is not None and next_cursor in seen_cursors:
@@ -564,7 +586,6 @@ class NewsAggregator:
                     break
             return ticker_results
 
-        universe_tickers = self._load_universe_tickers()
         with ThreadPoolExecutor(max_workers=NEWS_WORKERS) as executor:
             for ticker_results in executor.map(fetch_ticker, universe_tickers):
                 results.extend(ticker_results)
@@ -594,6 +615,9 @@ class NewsAggregator:
             },
             timeout=REQUEST_TIMEOUT,
         )
+        if response.status_code == 404:
+            logger.info("Vietcap news endpoint unavailable (404); skipping")
+            return [], None, self._payload_sha256(response.content)
         response.raise_for_status()
         rows, next_cursor = self._validate_vietcap_schema(response.json())
         return rows, next_cursor, self._payload_sha256(response.content)
@@ -622,7 +646,7 @@ class NewsAggregator:
                 results.append(SentimentInput(
                     text=title, source="Vietcap", timestamp=timestamp,
                     ticker=(infer_tickers_from_text(title) or [None])[0],
-                    url=row.get("url"), fetched_at=as_of_time,
+                    url=row.get("url"), fetched_at=datetime.now(timezone.utc),
                     raw_timestamp=str(row["published_at"]), payload_sha256=payload_sha256,
                 ))
                 if len(results) >= self.max_articles_per_source:
@@ -646,11 +670,11 @@ class NewsAggregator:
             raise ValueError("as_of_time is mandatory for PIT safety")
 
         as_of_time = _as_utc(as_of_time)
-        fetched_at = _as_utc(fetched_at or as_of_time)
         results = []
         response = self._fetch_raw(VIETSTOCK_HTML_URL, "vietstock.vn")
         if response is None:
             return results
+        fetched_at = _as_utc(fetched_at or datetime.now(timezone.utc))
         soup = BeautifulSoup(response.content, "html.parser")
         payload_sha256 = self._payload_sha256(response.content)
 
@@ -763,65 +787,77 @@ class NewsAggregator:
         all_news = []
         logger.info("Fetching news from last %d hours as of %s...", hours_back, as_of_time)
 
-        try:
-            vnstock_news = self._scrape_vnstock_news(as_of_time, hours_back)
-            all_news.extend(vnstock_news)
-            logger.info("vnstock: %d articles", len(vnstock_news))
-        except Exception as exc:
-            logger.error("vnstock scraping failed: %s", exc)
+        if "vnstock" in self.sources:
+            try:
+                vnstock_news = self._scrape_vnstock_news(as_of_time, hours_back)
+                all_news.extend(vnstock_news)
+                logger.info("vnstock: %d articles", len(vnstock_news))
+            except Exception as exc:
+                logger.error("vnstock scraping failed: %s", redact(exc))
 
-        try:
-            vietstock_news = self._scrape_vietstock(as_of_time, hours_back, fetched_at)
-            all_news.extend(vietstock_news)
-            logger.info("Vietstock: %d articles", len(vietstock_news))
-        except Exception as exc:
-            logger.error("Vietstock scraping failed: %s", exc)
+        if "vietstock" in self.sources:
+            try:
+                vietstock_news = self._scrape_vietstock(as_of_time, hours_back)
+                all_news.extend(vietstock_news)
+                logger.info("Vietstock: %d articles", len(vietstock_news))
+            except Exception as exc:
+                logger.error("Vietstock scraping failed: %s", redact(exc))
 
-        try:
-            vietcap_news = self._scrape_vietcap_news(as_of_time, hours_back)
-            all_news.extend(vietcap_news)
-            logger.info("Vietcap: %d articles", len(vietcap_news))
-        except Exception as exc:
-            logger.warning("Vietcap scraping failed; continuing without Vietcap articles: %s", exc)
+        if "vietcap" in self.sources:
+            try:
+                vietcap_news = self._scrape_vietcap_news(as_of_time, hours_back)
+                all_news.extend(vietcap_news)
+                logger.info("Vietcap: %d articles", len(vietcap_news))
+            except Exception as exc:
+                logger.warning("Vietcap scraping failed; continuing without Vietcap articles: %s", redact(exc))
 
         def run_scraper(scraper):
             try:
-                return scraper(as_of_time, hours_back, fetched_at)
+                return scraper(as_of_time, hours_back, None)
             except Exception as exc:
-                logger.error("HTML news scraping failed: %s", exc)
+                logger.error("HTML news scraping failed: %s", redact(exc))
                 return []
 
-        with ThreadPoolExecutor(max_workers=NEWS_WORKERS) as executor:
-            for items in executor.map(run_scraper, (self._scrape_cafef, self._scrape_tinnhanhck, self._scrape_vneconomy)):
-                all_news.extend(items)
+        html_scrapers = tuple(scraper for source, scraper in (
+            ("cafef", self._scrape_cafef), ("tinnhanhck", self._scrape_tinnhanhck),
+            ("vneconomy", self._scrape_vneconomy),
+        ) if source in self.sources)
+        if html_scrapers:
+            with ThreadPoolExecutor(max_workers=NEWS_WORKERS) as executor:
+                for items in executor.map(run_scraper, html_scrapers):
+                    all_news.extend(items)
 
+        fetched_at = datetime.now(timezone.utc)
         with self._history_lock:
             if self.event_history_path is None:
-                result, events = self._finalize_news(all_news, as_of_time, hours_back, self._event_history, prior_seen)
+                result, events = self._finalize_news(all_news, as_of_time, hours_back, self._event_history, prior_seen, fetched_at=fetched_at)
                 self._remember_event_history(events)
             else:
                 with closing(sqlite3.connect(self.event_history_path, timeout=15)) as connection:
                     connection.execute("BEGIN IMMEDIATE")
                     with connection:
-                        history = self._load_event_history(connection, as_of_time)
-                        result, events = self._finalize_news(all_news, as_of_time, hours_back, history, prior_seen)
+                        history = self._load_event_history(connection, fetched_at)
+                        result, events = self._finalize_news(all_news, as_of_time, hours_back, history, prior_seen, fetched_at=fetched_at)
                         self._persist_event_history(connection, events)
-                        retained = self._load_event_history(connection, as_of_time)
+                        retained = self._load_event_history(connection, fetched_at)
                 self._event_history = retained
         return result
 
     def _finalize_news(
         self, all_news: list, as_of_time: datetime, hours_back: int,
         history: dict[str, SentimentInput], prior_seen: Optional[dict[str, SentimentInput]],
+        *, fetched_at: Optional[datetime] = None,
     ) -> tuple[list, list[SentimentInput]]:
         self._validate_prior_seen(prior_seen)
+        as_of_time = _as_utc(as_of_time)
+        cutoff = _as_utc(fetched_at) if fetched_at is not None else as_of_time
         seen_history = {
             identity: item for identity, item in history.items()
-            if _as_utc(item.available_at or item.fetched_at or item.timestamp) <= as_of_time
+            if _as_utc(item.available_at or item.fetched_at or item.timestamp) <= cutoff
             and _as_utc(item.timestamp) <= as_of_time
         }
         for identity, item in (prior_seen or {}).items():
-            if _as_utc(item.available_at or item.fetched_at or item.timestamp) > as_of_time or _as_utc(item.timestamp) > as_of_time:
+            if _as_utc(item.available_at or item.fetched_at or item.timestamp) > cutoff or _as_utc(item.timestamp) > as_of_time:
                 continue
             previous = seen_history.get(identity)
             if previous is None or _as_utc(item.available_at or item.fetched_at or item.timestamp) >= _as_utc(
@@ -829,14 +865,19 @@ class NewsAggregator:
             ):
                 seen_history[identity] = item
         classified = self.classify_event_revisions(
-            [item for item in all_news if isinstance(item, SentimentInput)], as_of_time, prior_seen=seen_history
+            [item for item in all_news if isinstance(item, SentimentInput)], as_of_time,
+            prior_seen=seen_history, fetched_at=fetched_at,
         )
         for item in all_news:
             if not isinstance(item, SentimentInput) or item in classified:
                 continue
             previous = seen_history.get(self._event_identity(item))
-            if previous is not None and item.text == previous.text and _as_utc(item.fetched_at or item.timestamp) <= as_of_time:
-                item.available_at = _as_utc(item.fetched_at or item.timestamp)
+            available = _as_utc(item.available_at or item.fetched_at or item.timestamp)
+            if (previous is not None and item.text == previous.text
+                    and _as_utc(previous.available_at) <= available <= cutoff
+                    and _as_utc(item.timestamp) <= min(as_of_time, available)
+                    and (item.fetched_at is None or _as_utc(item.fetched_at) <= available)):
+                item.available_at = available
                 item.novelty = "duplicate"
                 item.event_id = previous.event_id
                 classified.append(item)
