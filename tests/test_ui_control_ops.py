@@ -9,11 +9,11 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 import pandas as pd
 from starlette.testclient import TestClient
-from omega.api.server import app
 import omega.api.routes.control as control_mod
 
 @pytest.fixture
 def client():
+    from omega.api.server import app
     return TestClient(app)
 
 @pytest.fixture(autouse=True)
@@ -195,7 +195,7 @@ def test_dim9_concurrency_race_condition_resistance(client):
 
     # Execute concurrent requests simultaneously
     def send_req():
-        c = TestClient(app)
+        c = TestClient(client.app)
         return c.post("/api/v1/control/rebalance", json=payload).status_code
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
@@ -546,13 +546,114 @@ def test_optimize_portfolio_success(client):
     assert "task-opt-" in data["task_id"]
 
 
-def test_run_backtest_success(client):
-    payload = {"strategy_id": "OMEGA_MOMENTUM_V1", "start_date": "2021-01-01", "slippage_bps": 15.0, "commission_bps": 10.0, "include_benchmark": False}
-    resp = client.post("/api/v1/control/run-backtest", json=payload)
+@pytest.fixture
+def freeze_control_clock(monkeypatch):
+    def freeze(value):
+        now = datetime.fromisoformat(value).astimezone(timezone.utc)
+
+        class FrozenDatetime(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return now.astimezone(tz) if tz else now.replace(tzinfo=None)
+
+        monkeypatch.setattr(control_mod, "datetime", FrozenDatetime)
+        return now
+
+    return freeze
+
+
+@pytest.mark.parametrize("now, expected_end", [
+    ("2026-10-22T00:00:00+00:00", "2026-10-21"),
+    ("2026-10-22T08:29:59.999999+00:00", "2026-10-21"),
+    ("2026-10-22T08:30:00+00:00", "2026-10-22"),
+    ("2026-10-22T08:30:00.000001+00:00", "2026-10-22"),
+    ("2026-10-23T00:30:00+07:00", "2026-10-22"),
+])
+@pytest.mark.parametrize("end_fields", [{}, {"end_date": None}], ids=["omitted", "null"])
+def test_run_backtest_success(client, freeze_control_clock, now, expected_end, end_fields):
+    cutoff = freeze_control_clock(now)
+    payload = {"strategy_id": "OMEGA_MOMENTUM_V1", "start_date": "2021-01-01", "slippage_bps": 15.0, "commission_bps": 10.0, "include_benchmark": False, **end_fields}
+    with patch.object(control_mod.BackgroundTasks, "add_task") as schedule:
+        resp = client.post("/api/v1/control/run-backtest", json=payload)
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "success"
     assert "task-bt-" in data["task_id"]
+    request = schedule.call_args.args[2]
+    assert request.end_date == expected_end
+    assert request.as_of_time == cutoff.isoformat()
+    assert control_mod._validate_dates(request.start_date, request.end_date, request.as_of_time) == cutoff
+
+
+@pytest.mark.parametrize("cutoff, expected_end", [
+    ("2023-01-02T08:29:59+00:00", "2023-01-01"),
+    ("2023-01-02T08:30:00Z", "2023-01-02"),
+    ("2023-01-02T15:30:00+07:00", "2023-01-02"),
+    ("2023-01-02T01:30:00-07:00", "2023-01-02"),
+])
+def test_backtest_omitted_end_uses_historical_cutoff(freeze_control_clock, cutoff, expected_end):
+    freeze_control_clock("2026-10-22T04:18:15+00:00")
+    request = control_mod.RunBacktestRequest(start_date="2021-01-01", as_of_time=cutoff)
+    assert request.end_date == expected_end
+    expected_cutoff = datetime.fromisoformat(cutoff.replace("Z", "+00:00")).astimezone(timezone.utc)
+    assert request.as_of_time == expected_cutoff.isoformat()
+    freeze_control_clock("2026-10-23T10:00:00+00:00")
+    assert control_mod.RunBacktestRequest.model_validate(request.model_dump()) == request
+    assert control_mod._validate_dates(request.start_date, request.end_date, request.as_of_time) == expected_cutoff
+
+
+@pytest.mark.parametrize("end_date, cutoff, expected_status", [
+    ("2023-01-02", "2023-01-02T08:29:59.999999+00:00", 422),
+    ("2023-01-02", "2023-01-02T08:30:00+00:00", 200),
+    ("2023-01-02", "2023-01-02T15:30:00+07:00", 200),
+    ("2023-01-03", "2023-01-02T23:59:59+00:00", 422),
+])
+def test_backtest_explicit_end_pit_boundary(client, freeze_control_clock, end_date, cutoff, expected_status):
+    freeze_control_clock("2026-10-22T04:18:15+00:00")
+    with patch.object(control_mod.BackgroundTasks, "add_task") as schedule:
+        resp = client.post("/api/v1/control/run-backtest", json={
+            "start_date": "2021-01-01", "end_date": end_date, "as_of_time": cutoff,
+        })
+    assert resp.status_code == expected_status
+    if expected_status == 422:
+        schedule.assert_not_called()
+        assert not control_mod.TASKS
+    else:
+        assert schedule.call_args.args[2].end_date == end_date
+
+
+@pytest.mark.parametrize("fields", [
+    {"end_date": ""}, {"end_date": " "}, {"end_date": "2023/01/02"},
+    {"end_date": []}, {"end_date": 0}, {"end_date": -1},
+    {"end_date": "NaN"}, {"end_date": "Inf"}, {"end_date": "-Inf"},
+    {"end_date": 10**13}, {"start_date": None}, {"start_date": ""},
+    {"start_date": "2024-01-01", "end_date": "2023-01-02"},
+    {"start_date": "2000-01-01", "end_date": "2023-01-02"},
+    {"as_of_time": "invalid"}, {"as_of_time": "2023-01-02T08:30:00"},
+    {"as_of_time": "2026-10-23T08:30:00+00:00"},
+    {"as_of_time": "0001-01-01T00:00:00+00:00"},
+    {"as_of_time": "0001-01-01T00:00:00+14:00"},
+    {"as_of_time": "9999-12-31T23:59:59-12:00"},
+])
+def test_backtest_invalid_dates_never_admitted(client, freeze_control_clock, fields):
+    freeze_control_clock("2026-10-22T08:30:00+00:00")
+    artifacts_before = set(control_mod.CONTROL_ARTIFACT_ROOT.iterdir())
+    with patch.object(control_mod.BackgroundTasks, "add_task") as schedule:
+        resp = client.post("/api/v1/control/run-backtest", json={"start_date": "2021-01-01", **fields})
+    assert resp.status_code == 422
+    schedule.assert_not_called()
+    assert not control_mod.TASKS
+    assert set(control_mod.CONTROL_ARTIFACT_ROOT.iterdir()) == artifacts_before
+
+
+@pytest.mark.parametrize("endpoint", ["pipeline-run", "ingest-data", "compute-alphas", "optimize-portfolio", "run-backtest"])
+@pytest.mark.parametrize("cutoff", ["0001-01-01T00:00:00+14:00", "9999-12-31T23:59:59-12:00"])
+def test_control_timestamp_overflow_is_validation_error(client, endpoint, cutoff):
+    with patch.object(control_mod.BackgroundTasks, "add_task") as schedule:
+        response = client.post(f"/api/v1/control/{endpoint}", json={"as_of_time": cutoff})
+    assert response.status_code == 422
+    schedule.assert_not_called()
+    assert not control_mod.TASKS
 
 
 def test_rebalance_success_and_replay_protection(client):
@@ -715,8 +816,19 @@ def test_active_task_limit_rejection_at_500(client):
     resp_opt = client.post("/api/v1/control/optimize-portfolio", json={"universe": ["FPT"]})
     assert resp_opt.status_code == 429
 
-    resp_bt = client.post("/api/v1/control/run-backtest", json={"strategy_id": "OMEGA_MOMENTUM_V1", "universe": ["FPT"]})
-    assert resp_bt.status_code == 429
+    with patch.object(control_mod.BackgroundTasks, "add_task") as schedule:
+        resp_bt = client.post("/api/v1/control/run-backtest", json={
+            "strategy_id": "OMEGA_MOMENTUM_V1", "universe": ["FPT"],
+            "start_date": "2021-01-01", "end_date": "2023-01-02",
+            "as_of_time": "2023-01-02T08:30:00+00:00",
+        })
+        assert resp_bt.status_code == 429
+        assert "Active task capacity exhausted" in resp_bt.json()["detail"]
+        schedule.assert_not_called()
+        invalid = client.post("/api/v1/control/run-backtest", json={"end_date": ""})
+        assert invalid.status_code == 422
+        schedule.assert_not_called()
+    assert len(control_mod.TASKS) == control_mod.MAX_ACTIVE_TASKS_LIMIT
 
     # Free up one slot by marking a task COMPLETED
     control_mod.TASKS["task-active-0"]["status"] = "COMPLETED"

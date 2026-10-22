@@ -1,0 +1,147 @@
+{
+  "schema_version": "omega-unified-data-pipeline-plan/v1",
+  "session_id": "l4_role15_unified_data_pipeline_plan_20261022",
+  "gate": "GATE_UNIFIED_DATA_PIPELINE_AND_DEPRECATION_CLEANUP_20261022",
+  "role_id": 15,
+  "date": "2026-10-22",
+  "as_of_time": "2026-10-22T02:11:03Z",
+  "delivery": "plan_only",
+  "runtime_implemented": false,
+  "repo_commit": "91afe560b9d0e7439de83d13c632350707ee2e0e",
+  "graph_evidence": {
+    "path": ".ly_state/session/graph_evidence_l4_role15_unified_data_pipeline_plan_20261022.json",
+    "sha256": "127d18ea3aa9e5ffe7b6ed6d05f55bb73c686d8bee1fe8c07e2369f71883a403",
+    "hash_verified": true,
+    "source_hashes_verified": 11,
+    "scope_files": 11,
+    "listed_impacted_files": 40,
+    "total_impacted_reported": 76,
+    "query_complete": true,
+    "coverage_limit": "Graph reachability is not proof that every reachable source or external scheduler was inspected."
+  },
+  "anti_drip": {
+    "path": ".ly_state/session/anti_drip_contract_l4_role15_unified_data_pipeline_plan_20261022.json",
+    "sha256": "fbfcc057561f7ecd6a5d09909240acb474c351aabecb75dc9b99bdca6cd7079a",
+    "hash_verified": true,
+    "mode": "baseline",
+    "required_findings": [],
+    "root_cause_architectural_sweep_written": false
+  },
+  "protected_phase_gates_sha256_before": "eef90cd821f1ca5c45a2adf597af4d56b1c99861db5b7a619f619927f95b6b59",
+  "source_files": [
+    {"path": "scripts/update_market_data.py", "sha256": "f9bf45c7ad3a416e25d782850b6edf0000a6d0341a47f56a42baf10244588741"},
+    {"path": "scripts/fetch_financial_statements.py", "sha256": "329a181f64038a808af04eed9736af38f47c4148424dbab4bdd878961226ba28"},
+    {"path": "scripts/run_macro_news_pipeline.py", "sha256": "d6a072537d4916d4ce1bacd81751286bf73563335209c38f5718fba02c3c61b2"},
+    {"path": "scripts/fetch_news_sentiment.py", "sha256": "dfce1092f3986fd2abcb43e7e0de8f9d48d8a97d24adde6461b8cead92a9f001"},
+    {"path": "scripts/update_market_flow.py", "sha256": "3f1b69f3c0e121df8ea498374ae231a1b56b0029f41e9cd6b1ca28dad99313ac"},
+    {"path": "scripts/update_recent_portfolio_data.py", "sha256": "449a93d38afe613896e4ac474f2e1ef7539bb5c42761129010918f2e2eb238ff"},
+    {"path": "scripts/ingest_all_market_data.py", "sha256": "65f2527d108d8cd7a44b275b20ab2b66ad3149c61bfd376d1a30ffe7d21fece0"},
+    {"path": "scripts/batch_market_loader_resume.py", "sha256": "3bd95d0589b1a5a33deec48ba02621e4dec254db585d401d5ca26bd23237947f"},
+    {"path": "scripts/migrate_news_parquet.py", "sha256": "1121d074a99b44697c9ab225090fed8721b08f884b3d5b7c4328260099cfb62c"},
+    {"path": "src/omega/api/routes/control.py", "sha256": "1bf2e60572fac390522fc5070229c6f329cd5bc4b23a12cc4ee940f80ce55aca"},
+    {"path": "omega-ui/src/modules/control_center/tabs/IngestTab.tsx", "sha256": "74faf11164b342d7438e67627610705b7259b6b09b5af561da4f534c832ae311"}
+  ],
+  "advisor_responses": [
+    {"purpose": "architecture", "path": ".ly_state/session/l4_role15_unified_data_pipeline_plan_20261022_advisor_architecture.json", "response_sha256": "d2a8b6e428d6754c74788f1ca66616d4e99562a04f96edd92aba33e2929f2b4c", "accepted_context_sha256": "19a1af75476af5224b19a46d4e958821121b59225232d686f412cc02e28380a0"},
+    {"purpose": "correctness", "path": ".ly_state/session/l4_role15_unified_data_pipeline_plan_20261022_advisor_correctness.json", "response_sha256": "81ab9a7a88d52a0d484a950e5fc9368d25a54563664487896d3ad5c93bcfb37e", "accepted_context_sha256": "36ba99f0f4ed18f8e8521593cbc51ce73ef1fa3fc3cc3d1e7cd66073b03fec0c"}
+  ],
+  "deprecations": [
+    {"path": "scripts/update_market_data.py", "state": "candidate_not_retired", "replacement": "unified market stage", "preserve": "run_updater, publication lock, lifecycle/reconciliation gates, signed receipts, release pointer and import API"},
+    {"path": "scripts/fetch_financial_statements.py", "state": "candidate_not_retired", "replacement": "unified financials stage", "preserve": "raw cache, 13-column schema, primary key, PIT availability and atomic write"},
+    {"path": "scripts/run_macro_news_pipeline.py", "state": "candidate_not_retired", "replacement": "unified macro_news stage and explicitly enabled extraction substage", "preserve": "PIT universe preflight, raw-first records, revision history, source health and extraction errors"},
+    {"path": "scripts/fetch_news_sentiment.py", "state": "candidate_not_retired", "replacement": "unified live news stage; explicit separate historical collection operation", "preserve": "live v10 schema/quarantine/checkpoint and historical manifest with pit_verified=false"},
+    {"path": "scripts/update_market_flow.py", "state": "candidate_not_retired", "replacement": "unified flows stage", "preserve": "separate foreign/proprietary/derivatives schemas and unverified historical provenance"},
+    {"path": "scripts/update_recent_portfolio_data.py", "state": "candidate_not_retired", "replacement": "unified market stage with an explicit portfolio symbol selection", "preserve": "required subset selection only; never preserve unguarded canonical overwrite"}
+  ],
+  "other_scripts": {
+    "scripts/ingest_all_market_data.py": "Already deprecated market-only delegate; do not repurpose silently as a new multi-domain API.",
+    "scripts/batch_market_loader_resume.py": "Active legacy recovery operation in the bound checkout; exclude from routine scheduler and migrate any required resume behavior to the shared publication boundary before retiring direct writes.",
+    "scripts/migrate_news_parquet.py": "Explicit offline schema migration; excluded from daily scheduler; require target version and source backup."
+  },
+  "runtime_package_proposal": {
+    "status": "future_separately_authorized_implementation",
+    "cli": "scripts/run_data_pipeline.py",
+    "service": "src/omega/data/pipeline.py",
+    "quality": "src/omega/data/pipeline_quality.py",
+    "scheduler": "src/omega/data/pipeline_scheduler.py",
+    "dependencies_added": [],
+    "reuse": ["existing hardened ingestion engines", "src/omega/data/sanitizer.py", "existing provider clients", "existing FastAPI task service", "sqlite3", "zoneinfo", "existing exchange calendar"],
+    "prohibited": ["new provider implementation", "new orchestration framework", "import-time legacy portfolio execution", "unvalidated signed provenance", "independent legacy scheduled writers"]
+  },
+  "scheduler": {
+    "status": "proposed_not_implemented",
+    "enabled": false,
+    "timezone": "Asia/Ho_Chi_Minh",
+    "eod_time": "15:30",
+    "catch_up": "latest_eligible_session_only",
+    "leader": "one owner with fencing; no per-ASGI-worker scheduler",
+    "deduplication_key": "schedule_id, eligible_exchange_session, config_version",
+    "skip": ["weekends", "official exchange holidays", "unsupported calendar coverage", "source publication lag not elapsed"],
+    "manual_disable_independent": true,
+    "event_semantics": "15:30 is dispatch policy, not proof of market close or data availability"
+  },
+  "publication_invariants": [
+    "One shared execution path for CLI, API, schedule and compatibility wrappers.",
+    "Run-scoped immutable staging; validate all requested datasets before any success claim.",
+    "Preserve signed market release semantics; an orchestration manifest cannot confer provenance authority.",
+    "Manifest pointer consistency requires reader migration; otherwise only per-dataset atomicity is claimed.",
+    "SQLite and filesystem are not one transaction; reconcile prepared and published states against manifest hashes.",
+    "Only a live lock owner with the current fencing token can publish; stale workers cannot overwrite a newer generation.",
+    "Checkpoint after durable output; bind resume to code, config, schema, input, universe and source versions.",
+    "Rollback disables scheduling and switches validated pointers under the same lock; never replay committed writes.",
+    "Strict PIT eligibility requires as_of <= available_at <= decision_time; missing historical availability remains unverified.",
+    "Exact cutoff equality accepted; ingestion time cannot be backdated to manufacture historical knowledge."
+  ],
+  "dimension_cases": {
+    "1": ["Reject None/empty/string/list payloads, booleans as integers, NaN, Inf, -Inf, bounds and unknown fields before mutation."],
+    "2": ["Reject directories, traversal, symlinks/reparse roots and malformed UTF-8; reject BOM/duplicate JSON keys; preserve documented CRLF input policy and LF artifacts."],
+    "3": ["Corrupt, duplicate, truncated and cross-run checkpoint shards fail hash/schema/input binding checks before resume writes."],
+    "4": ["Provider/validation/publication failure never returns pipeline success; CLI nonzero and durable failed or cancelled state."],
+    "5": ["Inject write, flush, fsync, replace, pointer and cleanup failure; preserve last-known-good and reconcile ambiguous commits."],
+    "6": ["Reject future availability and naive timestamps; inclusive cutoff; derived availability maximum; live caller input never inherits signed historical provenance."],
+    "7": ["Vietnam holidays, weekends, 15:29:59/15:30:00/15:30:01 ICT, source-specific close and delayed publication, missing calendar coverage."],
+    "8": ["Reject finite arithmetic overflow, zero/negative denominators, oversized integers above supported domain; do not globally ban legitimate large VND balances."],
+    "9": ["Simultaneous manual/scheduled/legacy dispatch, lock timeout, lease expiry and stale publisher fenced; worker isolation and cancellation race."],
+    "10": ["Normalize known provider thousand-VND scale once; explicit VND_FULL metadata; legitimate sub-1000 Dong price not rejected by heuristic."],
+    "11": ["Historical delisted/suspended/new listings, PIT universe changes and lifecycle receipt failure; no current-only universe substitution."],
+    "12": ["Reject shell strings, flag smuggling, path/URL injection and invalid tickers; fixed command arrays, no shell=True."],
+    "13": ["Strict versioned dataset schemas; extra/missing/renamed columns, duplicate keys and incorrect types fail before publication."],
+    "14": ["Bound request range, symbols, workers, provider bytes, checkpoint sizes, log tails, pages and memory; stream partitions."],
+    "15": ["Timeout and 429 exhaust finite attempts/deadline; injected clock, cancellation and Retry-After cap, no real sleep loops."],
+    "16": ["Secrets/userinfo/query tokens redacted in persisted errors, logs, manifests and provider failure artifacts."],
+    "17": ["Plan package binds integer role 15 and low risk; retain standing JEV role/risk/cycle validation suites unchanged."],
+    "18": ["Advisor model exactly cx/gpt-6-astra; do not change routing catalog or cross-tier allowlists."],
+    "19": ["Gate/session/role/risk/idempotency and actor binding; reject wrong-run resume, replay and cross-user operation."],
+    "20": ["Graph/contract/source/advisor hashes and strict duplicate-key parsing; tampered manifests fail before use."],
+    "21": ["Fsync/atomic-replace/durability fault injection for future run publication; retain advisor decision durability regression suites."],
+    "22": ["Lock ownership, live/stale owner checks, concurrent publisher isolation; retain standing decision-lock regressions."],
+    "23": ["Bound provider retry; no silent provider/fallback provenance upgrade; advisor fallback unchanged and low-risk only."],
+    "24": ["Secret-safe task prompts, no auth material requested or printed, advisory-only receipts, URL redaction standing regressions."]
+  },
+  "backend_contract": {
+    "status": "proposed_not_implemented",
+    "existing_prefix": "/api/v1/control",
+    "existing_route_decorators": 20,
+    "existing_route_handlers": 19,
+    "new_prefix": "/api/v1/control/data-pipeline",
+    "operations": ["POST /runs", "GET /runs", "GET /runs/{run_id}", "GET /runs/{run_id}/quality", "GET /runs/{run_id}/logs", "POST /runs/{run_id}/cancel", "POST /runs/{run_id}/resume", "GET /schedule", "PUT /schedule"],
+    "states": ["queued", "running", "cancelling", "cancelled", "failed", "completed"],
+    "status_map": {"invalid_input": 422, "unauthenticated": 401, "unauthorized": 403, "not_found": 404, "conflict": 409, "required_dependency_unavailable": 424, "executor_unavailable": 503, "unexpected_internal_error": 500},
+    "idempotency": "actor plus request key and normalized body digest; same body returns same durable run, changed body conflicts",
+    "legacy_contracts": "preserve old DTO defaults, response fields, task statuses, cancellation endpoint and both SSE aliases"
+  },
+  "ui_contract": {
+    "status": "proposed_not_implemented",
+    "existing_file": "omega-ui/src/modules/control_center/tabs/IngestTab.tsx",
+    "controls": ["stage selection", "mode/date/cutoff", "no-network preflight", "explicit extraction opt-in", "idempotent dispatch", "server-authoritative progress", "quality/PIT summary", "bounded redacted logs", "acknowledged cancellation", "eligible checkpoint resume", "versioned disabled-by-default schedule"],
+    "accessibility": ["visible labels", "keyboard support", "focus restoration", "aria-live status", "perceivable disabled reasons"],
+    "lifecycle": "abort and generation-fence stale reads; poll active work only; stop after terminal state or unmount",
+    "existing_limitations": ["source toggles are not proof all domains are implemented", "telemetry probe is not scheduler execution", "cancel request failure must not become terminal cancelled", "receipt presence is not cryptographic verification"]
+  },
+  "implementation_boundaries": {
+    "production_files_changed": [],
+    "audit_or_gate_approval": false,
+    "standing_regressions_required": ["literal/legacy IPv4 denial", "IPv6 embedded IPv4 payloads", "special-use ranges", "sparse config merge preservation", "test isolation snapshot restore", "durable TLS SNI evidence", "userinfo credential rejection", "URL redaction in errors"],
+    "runtime_acceptance": "All dimension cases are future acceptance requirements, not claims that runtime fault injection was executed in this plan-only delivery."
+  }
+}

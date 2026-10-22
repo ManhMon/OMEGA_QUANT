@@ -401,7 +401,10 @@ def _parse_utc(value: Optional[str], *, default: Optional[datetime] = None) -> d
         raise ValueError("timestamp is required")
     if parsed.tzinfo is None:
         raise ValueError("timestamp must include a UTC offset")
-    parsed = parsed.astimezone(timezone.utc)
+    try:
+        parsed = parsed.astimezone(timezone.utc)
+    except (ValueError, OverflowError) as exc:
+        raise ValueError("timestamp is outside supported UTC range") from exc
     if parsed > datetime.now(timezone.utc):
         raise ValueError("timestamp cannot be in the future")
     return parsed
@@ -762,7 +765,7 @@ class RunBacktestRequest(StrictRequest):
     ] = "OMEGA_MOMENTUM_V1"
     universe: List[str] = Field(default_factory=lambda: ["FPT", "HPG", "MBB", "MWG", "DGC", "VNM", "TCB", "PNJ"])
     start_date: str = Field(default="2020-01-01", description="Start date YYYY-MM-DD")
-    end_date: Optional[str] = Field(default=None, description="End date YYYY-MM-DD")
+    end_date: Optional[str] = Field(default=None, description="End date YYYY-MM-DD; omitted/null uses latest date closed by the PIT cutoff (15:30 ICT)")
     initial_capital: float = Field(default=1_000_000_000.0, ge=10_000_000.0, description="Capital in VND")
     slippage_bps: float = Field(default=15.0, ge=0.0, description="Execution slippage in bps")
     commission_bps: float = Field(default=10.0, ge=0.0, description="Broker commission in bps")
@@ -772,9 +775,18 @@ class RunBacktestRequest(StrictRequest):
     @model_validator(mode="after")
     def validate_request(self):
         self.universe = _canonical_symbols(self.universe)
-        end = self.end_date or datetime.now(timezone.utc).date().isoformat()
-        _validate_dates(self.start_date, end, self.as_of_time)
+        cutoff = _parse_utc(self.as_of_time, default=datetime.now(timezone.utc))
+        end = self.end_date
+        if end is None:
+            # Shift the inclusive 15:30 ICT boundary before choosing a date.
+            try:
+                closed_day = cutoff.date() - timedelta(days=cutoff.time() < dt_time(8, 30))
+            except OverflowError as exc:
+                raise ValueError("as_of_time has no completed date") from exc
+            end = closed_day.isoformat()
+        _validate_dates(self.start_date, end, cutoff.isoformat())
         self.end_date = end
+        self.as_of_time = cutoff.isoformat()
         return self
 
 
